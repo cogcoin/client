@@ -1,0 +1,78 @@
+{
+  "name": "@cogcoin/client",
+  "version": "0.5.0",
+  "description": "Store-backed Cogcoin client with wallet flows, SQLite persistence, and managed Bitcoin Core integration.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "homepage": "https://cogcoin.org",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cogcoin/client.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cogcoin/client/issues"
+  },
+  "keywords": [
+    "cogcoin",
+    "coglex",
+    "bitcoin",
+    "client",
+    "wallet",
+    "sqlite",
+    "bitcoind",
+    "cli",
+    "indexer",
+    "protocol"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "bin": {
+    "cogcoin": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./bitcoind": {
+      "types": "./dist/bitcoind/index.d.ts",
+      "import": "./dist/bitcoind/index.js"
+    },
+    "./sqlite": {
+      "types": "./dist/sqlite/index.d.ts",
+      "import": "./dist/sqlite/index.js"
+    }
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "dist/**/*"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && node ./node_modules/typescript/bin/tsc -p tsconfig.json && node -e \"import('node:fs/promises').then(async (fs) => { await fs.mkdir('dist/art', { recursive: true }); await Promise.all([fs.copyFile('src/writing_quotes.json', 'dist/writing_quotes.json'), fs.copyFile('src/art/banner.txt', 'dist/art/banner.txt'), fs.copyFile('src/art/scroll.txt', 'dist/art/scroll.txt'), fs.copyFile('src/art/train-smoke.txt', 'dist/art/train-smoke.txt'), fs.copyFile('src/art/train.txt', 'dist/art/train.txt'), fs.copyFile('src/art/train-car.txt', 'dist/art/train-car.txt')]); })\"",
+    "test": "rm -rf .test-dist && node ./node_modules/typescript/bin/tsc -p tsconfig.test.json && node -e \"import('node:fs/promises').then(async (fs) => { await fs.mkdir('.test-dist/src/art', { recursive: true }); await Promise.all([fs.copyFile('src/writing_quotes.json', '.test-dist/src/writing_quotes.json'), fs.copyFile('src/art/banner.txt', '.test-dist/src/art/banner.txt'), fs.copyFile('src/art/scroll.txt', '.test-dist/src/art/scroll.txt'), fs.copyFile('src/art/train-smoke.txt', '.test-dist/src/art/train-smoke.txt'), fs.copyFile('src/art/train.txt', '.test-dist/src/art/train.txt'), fs.copyFile('src/art/train-car.txt', '.test-dist/src/art/train-car.txt')]); })\" && node --test .test-dist/test/*.test.js"
+  },
+  "dependencies": {
+    "@cogcoin/bitcoin": "30.2.0",
+    "@cogcoin/genesis": "1.0.0",
+    "@cogcoin/indexer": "1.0.0",
+    "@cogcoin/scoring": "1.0.0",
+    "@scure/base": "^2.0.0",
+    "@scure/bip32": "^2.0.1",
+    "@scure/bip39": "^2.0.1",
+    "better-sqlite3": "12.8.0",
+    "zeromq": "6.5.0"
+  },
+  "devDependencies": {
+    "@cogcoin/vectors": "1.0.0",
+    "@types/node": "^25.5.0",
+    "typescript": "^6.0.2"
+  }
+}

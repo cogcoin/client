@@ -1,0 +1,172 @@
+import {
+  applyBlockWithScoring,
+  deserializeBlockRecord,
+  rewindBlock,
+  serializeIndexerState,
+} from "@cogcoin/indexer";
+import type {
+  BitcoinBlock,
+  GenesisParameters,
+  IndexerState,
+} from "@cogcoin/indexer/types";
+
+import { createCheckpoint, createStoredBlockRecord, createTip } from "./persistence.js";
+import type {
+  ApplyBlockResult,
+  Client,
+  ClientStoreAdapter,
+  ClientTip,
+  WriteAppliedBlockEntry,
+} from "../types.js";
+
+export class DefaultClient implements Client {
+  readonly #store: ClientStoreAdapter;
+  readonly #genesisParameters: GenesisParameters;
+  readonly #snapshotInterval: number;
+  #state: IndexerState;
+  #tip: ClientTip | null;
+  #closed = false;
+  #queue: Promise<void> = Promise.resolve();
+
+  constructor(
+    store: ClientStoreAdapter,
+    genesisParameters: GenesisParameters,
+    state: IndexerState,
+    tip: ClientTip | null,
+    snapshotInterval: number,
+  ) {
+    this.#store = store;
+    this.#genesisParameters = genesisParameters;
+    this.#state = state;
+    this.#tip = tip;
+    this.#snapshotInterval = snapshotInterval;
+  }
+
+  async getTip(): Promise<ClientTip | null> {
+    await this.#queue;
+    return this.#tip === null ? null : { ...this.#tip };
+  }
+
+  async getState(): Promise<IndexerState> {
+    await this.#queue;
+    return this.#state;
+  }
+
+  async applyBlock(block: BitcoinBlock): Promise<ApplyBlockResult> {
+    return this.#enqueue(async () => {
+      this.#assertOpen();
+
+      const applied = await applyBlockWithScoring(this.#state, block, this.#genesisParameters);
+      const tip = createTip(block, applied.stateHashHex);
+      const stateBytes = serializeIndexerState(applied.state);
+      const createdAt = Date.now();
+      const checkpoint = this.#shouldCheckpoint(block.height)
+        ? createCheckpoint(tip, stateBytes, createdAt)
+        : null;
+      const writeEntry: WriteAppliedBlockEntry = {
+        tip,
+        stateBytes,
+        blockRecord: createStoredBlockRecord(applied.blockRecord, createdAt),
+        checkpoint,
+        deleteAboveHeight: null,
+      };
+
+      await this.#store.writeAppliedBlock(writeEntry);
+
+      this.#state = applied.state;
+      this.#tip = tip;
+
+      return {
+        tip,
+        checkpoint,
+        applied,
+      };
+    });
+  }
+
+  async rewindToHeight(height: number): Promise<ClientTip | null> {
+    return this.#enqueue(async () => {
+      this.#assertOpen();
+
+      if (this.#tip === null) {
+        return null;
+      }
+
+      if (height >= this.#tip.height) {
+        return { ...this.#tip };
+      }
+
+      let nextState = this.#state;
+      let nextTip: ClientTip | null = this.#tip;
+
+      while (nextTip !== null && nextTip.height > height) {
+        const storedRecord = await this.#store.loadBlockRecord(nextTip.height);
+
+        if (storedRecord === null) {
+          throw new Error(`client_store_missing_block_record_${nextTip.height}`);
+        }
+
+        nextState = rewindBlock(nextState, deserializeBlockRecord(storedRecord.recordBytes));
+        const currentHeight = nextState.history.currentHeight;
+
+        if (currentHeight === null) {
+          nextTip = null;
+          continue;
+        }
+
+        const currentRecord = await this.#store.loadBlockRecord(currentHeight);
+
+        nextTip = {
+          height: currentHeight,
+          blockHashHex: nextState.history.currentHashHex ?? currentRecord?.blockHashHex ?? "",
+          previousHashHex: currentRecord?.previousHashHex ?? null,
+          stateHashHex: nextState.history.stateHashByHeight.get(currentHeight) ?? null,
+        };
+      }
+
+      const stateBytes = nextTip === null ? null : serializeIndexerState(nextState);
+      await this.#store.writeAppliedBlock({
+        tip: nextTip,
+        stateBytes,
+        blockRecord: null,
+        checkpoint: null,
+        deleteAboveHeight: height,
+      });
+
+      this.#state = nextState;
+      this.#tip = nextTip;
+
+      return nextTip === null ? null : { ...nextTip };
+    });
+  }
+
+  async close(): Promise<void> {
+    await this.#enqueue(async () => {
+      if (this.#closed) {
+        return;
+      }
+
+      this.#closed = true;
+      await this.#store.close();
+    });
+  }
+
+  #assertOpen(): void {
+    if (this.#closed) {
+      throw new Error("client_closed");
+    }
+  }
+
+  #shouldCheckpoint(height: number): boolean {
+    return this.#snapshotInterval > 0 && height % this.#snapshotInterval === 0;
+  }
+
+  #enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.#queue.then(operation, operation);
+    this.#queue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+}
