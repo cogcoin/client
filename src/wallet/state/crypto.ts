@@ -1,12 +1,13 @@
-import {
-  argon2,
-  createCipheriv,
-  createDecipheriv,
-  randomBytes,
-} from "node:crypto";
+import * as crypto from "node:crypto";
 
 import type { Argon2EnvelopeParams, EncryptedEnvelopeV1 } from "../types.js";
 import type { WalletSecretProvider, WalletSecretReference } from "./provider.js";
+
+const {
+  createCipheriv,
+  createDecipheriv,
+  randomBytes,
+} = crypto;
 
 const DEFAULT_ARGON2_MEMORY_KIB = 65_536;
 const DEFAULT_ARGON2_ITERATIONS = 3;
@@ -15,6 +16,14 @@ const DERIVED_KEY_LENGTH = 32;
 const GCM_NONCE_BYTES = 12;
 const ARGON2_SALT_BYTES = 16;
 const BIGINT_JSON_TAG = "$cogcoinBigInt";
+
+function requireArgon2() {
+  if (typeof crypto.argon2 !== "function") {
+    throw new Error("Node.js 24.7.0 or newer is required because node:crypto argon2 is unavailable.");
+  }
+
+  return crypto.argon2;
+}
 
 export interface DeriveKeyOptions {
   memoryKib?: number;
@@ -59,7 +68,7 @@ function deriveArgon2Key(
   parallelism: number,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    argon2("argon2id", {
+    requireArgon2()("argon2id", {
       message,
       nonce,
       memory: memoryKib,
