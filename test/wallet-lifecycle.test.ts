@@ -31,7 +31,7 @@ import {
   createMemoryWalletSecretProviderForTesting,
   createWalletSecretReference,
 } from "../src/wallet/state/provider.js";
-import { loadWalletState } from "../src/wallet/state/storage.js";
+import { loadWalletState, saveWalletState } from "../src/wallet/state/storage.js";
 import type { WalletStateV1 } from "../src/wallet/types.js";
 import {
   INDEXER_DAEMON_SCHEMA_VERSION,
@@ -45,7 +45,7 @@ function hash160(value: Uint8Array): Uint8Array {
 }
 
 function deriveAddressFromDescriptor(descriptor: string): string {
-  const match = descriptor.match(/]([A-Za-z0-9]+)\/0\/\*/);
+  const match = stripDescriptorChecksum(descriptor).match(/]([A-Za-z0-9]+)\/0\/\*/);
 
   if (match == null) {
     throw new Error(`cannot_parse_descriptor_${descriptor}`);
@@ -58,6 +58,32 @@ function deriveAddressFromDescriptor(descriptor: string): string {
   }
 
   return bech32.encode("bc", [0, ...bech32.toWords(hash160(node.publicKey))]);
+}
+
+function stripDescriptorChecksum(descriptor: string): string {
+  return descriptor.replace(/#[A-Za-z0-9]+$/, "");
+}
+
+function mockDescriptorChecksum(descriptor: string): string {
+  return createHash("sha256").update(stripDescriptorChecksum(descriptor)).digest("hex").slice(0, 8);
+}
+
+function toPublicDescriptor(descriptor: string): string {
+  const stripped = stripDescriptorChecksum(descriptor);
+  const match = /^wpkh\((\[[^\]]+\])([A-Za-z0-9]+)(\/0\/\*)\)$/.exec(stripped);
+
+  if (match == null) {
+    throw new Error(`cannot_convert_descriptor_${descriptor}`);
+  }
+
+  const node = HDKey.fromExtendedKey(match[2]!);
+  const publicExtendedKey = node.publicExtendedKey;
+
+  if (publicExtendedKey == null) {
+    throw new Error("descriptor_missing_public_extended_key");
+  }
+
+  return `wpkh(${match[1]}${publicExtendedKey}${match[3]})`;
 }
 
 function createTempWalletPaths(root: string) {
@@ -122,6 +148,7 @@ class CapturingPrompter implements WalletPrompter {
 
 function createRpcHarness() {
   const importedDescriptors: string[] = [];
+  const listedDescriptors: string[] = [];
   const wallets = new Set<string>();
   let walletLocked = false;
 
@@ -129,13 +156,13 @@ function createRpcHarness() {
     rpcFactory() {
       return {
         async getDescriptorInfo(descriptor: string) {
-          const checksum = descriptor.includes("xprv") ? "privsum" : "pubsum";
+          const checksum = mockDescriptorChecksum(descriptor);
           return {
-            descriptor: `${descriptor}#${checksum}`,
+            descriptor: toPublicDescriptor(descriptor),
             checksum,
             isrange: true,
             issolvable: true,
-            hasprivatekeys: descriptor.includes("xprv"),
+            hasprivatekeys: stripDescriptorChecksum(descriptor).includes("xprv"),
           };
         },
         async walletPassphrase() {
@@ -151,7 +178,21 @@ function createRpcHarness() {
         },
         async importDescriptors(_walletName: string, requests: Array<{ desc: string }>) {
           importedDescriptors.push(...requests.map((request) => request.desc));
-          return requests.map(() => ({ success: true }));
+          return requests.map((request) => {
+            if (!stripDescriptorChecksum(request.desc).includes("xprv")) {
+              return {
+                success: false,
+                error: {
+                  code: -4,
+                  message: "Cannot import descriptor without private keys to a wallet with private keys enabled",
+                },
+              };
+            }
+
+            const publicDescriptor = toPublicDescriptor(request.desc);
+            listedDescriptors.push(`${publicDescriptor}#${mockDescriptorChecksum(publicDescriptor)}`);
+            return { success: true };
+          });
         },
         async walletLock() {
           walletLocked = true;
@@ -175,7 +216,7 @@ function createRpcHarness() {
         },
         async listDescriptors() {
           return {
-            descriptors: importedDescriptors.map((desc) => ({ desc })),
+            descriptors: listedDescriptors.map((desc) => ({ desc })),
           };
         },
         async getWalletInfo(walletName: string) {
@@ -195,6 +236,9 @@ function createRpcHarness() {
     },
     get importedDescriptors() {
       return importedDescriptors.slice();
+    },
+    get listedDescriptors() {
+      return listedDescriptors.slice();
     },
     get walletLocked() {
       return walletLocked;
@@ -514,10 +558,19 @@ test("initializeWallet writes provider-backed state, creates an unlock session, 
   assert.ok(result.walletRootId.startsWith("wallet-"));
   assert.equal(result.state.stateRevision, 2);
   assert.equal(result.state.managedCoreWallet.proofStatus, "ready");
+  assert.match(result.state.descriptor.privateExternal, /xprv/);
+  assert.match(result.state.descriptor.publicExternal, /xpub/);
+  assert.equal(result.state.descriptor.checksum, mockDescriptorChecksum(result.state.descriptor.publicExternal));
+  assert.equal(
+    result.state.managedCoreWallet.descriptorChecksum,
+    mockDescriptorChecksum(result.state.descriptor.publicExternal),
+  );
   assert.equal(result.state.funding.address, result.fundingAddress);
   assert.equal(unlocked?.state.walletRootId, result.walletRootId);
   assert.equal(unlocked?.session.sourceStateRevision, 2);
   assert.equal(harness.importedDescriptors.length, 1);
+  assert.equal(harness.importedDescriptors[0], result.state.descriptor.privateExternal);
+  assert.equal(harness.listedDescriptors[0], result.state.descriptor.publicExternal);
   assert.equal(harness.walletLocked, true);
   assert.deepEqual(prompter.clearedScopes, ["mnemonic-reveal"]);
 });
@@ -690,6 +743,90 @@ test("unlockWallet and lockWallet rotate the session blob and preserve locked tr
   assert.equal(afterLock, null);
   assert.equal(unlocked.state.walletRootId, initialized.walletRootId);
   assert.equal(unlocked.unlockUntilUnixMs, 1_700_000_010_000 + (15 * 60 * 1000));
+});
+
+test("loadUnlockedWalletState auto-repairs descriptor state during read flows", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-repair-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const prompter = new CapturingPrompter();
+  const harness = createRpcHarness();
+
+  const initialized = await initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter,
+    nowUnixMs: 1_700_000_000_000,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+  });
+
+  const secretReference = createWalletSecretReference(initialized.walletRootId);
+  const corruptedState: WalletStateV1 = {
+    ...initialized.state,
+    descriptor: {
+      ...initialized.state.descriptor,
+      privateExternal: initialized.state.descriptor.publicExternal,
+      checksum: mockDescriptorChecksum(initialized.state.descriptor.privateExternal),
+    },
+    managedCoreWallet: {
+      ...initialized.state.managedCoreWallet,
+      descriptorChecksum: mockDescriptorChecksum(initialized.state.descriptor.privateExternal),
+    },
+  };
+
+  await saveWalletState(
+    {
+      primaryPath: paths.walletStatePath,
+      backupPath: paths.walletStateBackupPath,
+    },
+    corruptedState,
+    {
+      provider,
+      secretReference,
+    },
+  );
+
+  const repaired = await loadUnlockedWalletState({
+    provider,
+    paths,
+    dataDir: paths.bitcoinDataDir,
+    nowUnixMs: 1_700_000_000_100,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+  });
+  const persisted = await loadWalletState({
+    primaryPath: paths.walletStatePath,
+    backupPath: paths.walletStateBackupPath,
+  }, {
+    provider,
+  });
+
+  assert.equal(repaired?.state.stateRevision, initialized.state.stateRevision + 1);
+  assert.equal(repaired?.session.sourceStateRevision, initialized.state.stateRevision + 1);
+  assert.equal(repaired?.state.descriptor.privateExternal, initialized.state.descriptor.privateExternal);
+  assert.equal(repaired?.state.descriptor.publicExternal, initialized.state.descriptor.publicExternal);
+  assert.equal(repaired?.state.descriptor.checksum, initialized.state.descriptor.checksum);
+  assert.equal(
+    repaired?.state.managedCoreWallet.descriptorChecksum,
+    initialized.state.managedCoreWallet.descriptorChecksum,
+  );
+  assert.equal(persisted.state.stateRevision, initialized.state.stateRevision + 1);
+  assert.equal(persisted.state.descriptor.privateExternal, initialized.state.descriptor.privateExternal);
+  assert.equal(persisted.state.descriptor.publicExternal, initialized.state.descriptor.publicExternal);
 });
 
 test("exportWallet writes a portable archive only when the wallet is unlocked and quiescent", async () => {
@@ -946,6 +1083,105 @@ test("repairWallet restores provider-backed state from backup and resets an unhe
   assert.equal(repaired.indexerCompatibilityIssue, "none");
   assert.equal(repaired.indexerPostRepairHealth, "catching-up");
   assert.equal(loaded.state.walletRootId, initialized.walletRootId);
+});
+
+test("repairWallet normalizes descriptor state introduced by the old managed import path", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-repair-descriptor-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const prompter = new CapturingPrompter();
+  const harness = createRpcHarness();
+  const databasePath = join(tempRoot, "client.sqlite");
+
+  const initialized = await initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter,
+    nowUnixMs: 1_700_000_000_000,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+  });
+  const secretReference = createWalletSecretReference(initialized.walletRootId);
+  const corruptedState: WalletStateV1 = {
+    ...initialized.state,
+    descriptor: {
+      ...initialized.state.descriptor,
+      privateExternal: initialized.state.descriptor.publicExternal,
+      checksum: mockDescriptorChecksum(initialized.state.descriptor.privateExternal),
+    },
+    managedCoreWallet: {
+      ...initialized.state.managedCoreWallet,
+      descriptorChecksum: mockDescriptorChecksum(initialized.state.descriptor.privateExternal),
+    },
+  };
+
+  await saveWalletState(
+    {
+      primaryPath: paths.walletStatePath,
+      backupPath: paths.walletStateBackupPath,
+    },
+    corruptedState,
+    {
+      provider,
+      secretReference,
+    },
+  );
+
+  const repaired = await repairWallet({
+    dataDir: paths.bitcoinDataDir,
+    databasePath,
+    provider,
+    paths,
+    nowUnixMs: 1_700_000_300_000,
+    assumeYes: true,
+    requestMiningPreemption: async () => ({
+      requestId: "repair-request",
+      async release() {},
+    }),
+    probeIndexerDaemon: async () => ({
+      compatibility: "unreachable",
+      status: null,
+      client: null,
+      error: null,
+    }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    attachIndexerDaemon: async () => createRepairIndexerDaemonStub({
+      walletRootId: initialized.walletRootId,
+      state: "synced",
+      coreBestHeight: 123,
+      snapshotHeight: 123,
+    }) as never,
+    rpcFactory: harness.rpcFactory,
+  });
+  const loaded = await loadWalletState({
+    primaryPath: paths.walletStatePath,
+    backupPath: paths.walletStateBackupPath,
+  }, {
+    provider,
+  });
+
+  assert.equal(repaired.recreatedManagedCoreWallet, false);
+  assert.equal(repaired.indexerPostRepairHealth, "synced");
+  assert.equal(loaded.state.descriptor.privateExternal, initialized.state.descriptor.privateExternal);
+  assert.equal(loaded.state.descriptor.publicExternal, initialized.state.descriptor.publicExternal);
+  assert.equal(loaded.state.descriptor.checksum, initialized.state.descriptor.checksum);
+  assert.equal(
+    loaded.state.managedCoreWallet.descriptorChecksum,
+    initialized.state.managedCoreWallet.descriptorChecksum,
+  );
 });
 
 test("repairWallet stops an incompatible managed indexer daemon and clears stale artifacts", async () => {
@@ -1558,7 +1794,7 @@ test("verifyManagedCoreWalletReplica surfaces descriptor mismatches cleanly", as
       },
       async listDescriptors() {
         return {
-          descriptors: [{ desc: `${state.descriptor.privateExternal}#wrong` }],
+          descriptors: [{ desc: `${stripDescriptorChecksum(state.descriptor.publicExternal)}#wrong` }],
         };
       },
       async deriveAddresses() {

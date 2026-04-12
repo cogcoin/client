@@ -26,12 +26,14 @@ import {
   loadUnlockedWalletState,
   verifyManagedCoreWalletReplica,
 } from "../lifecycle.js";
+import { persistNormalizedWalletDescriptorStateIfNeeded } from "../descriptor-normalization.js";
 import { inspectMiningControlPlane } from "../mining/index.js";
 import { normalizeMiningStateRecord } from "../mining/state.js";
 import { resolveWalletRuntimePathsForTesting } from "../runtime.js";
-import { loadWalletState } from "../state/storage.js";
+import { loadWalletState, type LoadedWalletState } from "../state/storage.js";
 import {
   createDefaultWalletSecretProvider,
+  createWalletSecretReference,
   type WalletSecretProvider,
 } from "../state/provider.js";
 import { createWalletReadModel } from "./project.js";
@@ -58,7 +60,51 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+async function normalizeLoadedWalletStateForRead(options: {
+  access: Uint8Array | string | { provider: WalletSecretProvider };
+  dataDir?: string;
+  loaded: LoadedWalletState;
+  now: number;
+  paths: WalletRuntimePaths;
+}): Promise<LoadedWalletState> {
+  if (options.dataDir === undefined) {
+    return options.loaded;
+  }
+
+  const node = await attachOrStartManagedBitcoindService({
+    dataDir: options.dataDir,
+    chain: "main",
+    startHeight: 0,
+    walletRootId: options.loaded.state.walletRootId,
+  });
+
+  try {
+    const access = typeof options.access === "string" || options.access instanceof Uint8Array
+      ? options.access
+      : {
+        provider: options.access.provider,
+        secretReference: createWalletSecretReference(options.loaded.state.walletRootId),
+      };
+    const normalized = await persistNormalizedWalletDescriptorStateIfNeeded({
+      state: options.loaded.state,
+      access,
+      paths: options.paths,
+      nowUnixMs: options.now,
+      replacePrimary: options.loaded.source === "backup",
+      rpc: createRpcClient(node.rpc),
+    });
+
+    return {
+      source: normalized.changed ? "primary" : options.loaded.source,
+      state: normalized.state,
+    };
+  } finally {
+    await node.stop?.().catch(() => undefined);
+  }
+}
+
 async function inspectWalletLocalState(options: {
+  dataDir?: string;
   passphrase?: Uint8Array | string;
   secretProvider?: WalletSecretProvider;
   now?: number;
@@ -93,15 +139,23 @@ async function inspectWalletLocalState(options: {
         provider,
         nowUnixMs: now,
         paths,
+        dataDir: options.dataDir,
       });
 
       if (unlocked === null) {
         try {
-          await loadWalletState({
+          const loaded = await loadWalletState({
             primaryPath: paths.walletStatePath,
             backupPath: paths.walletStateBackupPath,
           }, {
             provider,
+          });
+          await normalizeLoadedWalletStateForRead({
+            loaded,
+            access: { provider },
+            dataDir: options.dataDir,
+            now,
+            paths,
           });
         } catch (error) {
           return {
@@ -162,10 +216,16 @@ async function inspectWalletLocalState(options: {
   }
 
   try {
-    const loaded = await loadWalletState({
-      primaryPath: paths.walletStatePath,
-      backupPath: paths.walletStateBackupPath,
-    }, options.passphrase);
+    const loaded = await normalizeLoadedWalletStateForRead({
+      loaded: await loadWalletState({
+        primaryPath: paths.walletStatePath,
+        backupPath: paths.walletStateBackupPath,
+      }, options.passphrase),
+      access: options.passphrase,
+      dataDir: options.dataDir,
+      now,
+      paths,
+    });
 
     return {
       availability: "ready",
@@ -521,6 +581,7 @@ export async function openWalletReadContext(options: {
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_SERVICE_START_TIMEOUT_MS;
   const now = options.now ?? Date.now();
   const localState = await inspectWalletLocalState({
+    dataDir: options.dataDir,
     passphrase: options.walletStatePassphrase,
     secretProvider: options.secretProvider,
     now,

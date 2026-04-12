@@ -21,6 +21,13 @@ import type {
 } from "../bitcoind/types.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import { readPortableWalletArchive, writePortableWalletArchive } from "./archive.js";
+import {
+  normalizeWalletDescriptorState,
+  persistNormalizedWalletDescriptorStateIfNeeded,
+  persistWalletStateUpdate,
+  resolveNormalizedWalletDescriptorState,
+  stripDescriptorChecksum,
+} from "./descriptor-normalization.js";
 import { acquireFileLock } from "./fs/lock.js";
 import {
   createInternalCoreWalletPassphrase,
@@ -150,10 +157,6 @@ interface WalletLifecycleRpcClient {
 
 function sanitizeWalletName(walletRootId: string): string {
   return `cogcoin-${walletRootId}`.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 63);
-}
-
-function stripDescriptorChecksum(descriptor: string): string {
-  return descriptor.replace(/#[A-Za-z0-9]+$/, "");
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -804,29 +807,16 @@ async function persistRepairState(options: {
   nowUnixMs: number;
   replacePrimary?: boolean;
 }): Promise<WalletStateV1> {
-  const nextState = {
-    ...options.state,
-    stateRevision: options.state.stateRevision + 1,
-    lastWrittenAtUnixMs: options.nowUnixMs,
-  };
-
-  if (options.replacePrimary) {
-    await rm(options.paths.walletStatePath, { force: true }).catch(() => undefined);
-  }
-
-  await saveWalletState(
-    {
-      primaryPath: options.paths.walletStatePath,
-      backupPath: options.paths.walletStateBackupPath,
-    },
-    nextState,
-    {
+  return await persistWalletStateUpdate({
+    state: options.state,
+    access: {
       provider: options.provider,
-      secretReference: createWalletSecretReference(nextState.walletRootId),
+      secretReference: createWalletSecretReference(options.state.walletRootId),
     },
-  );
-
-  return nextState;
+    paths: options.paths,
+    nowUnixMs: options.nowUnixMs,
+    replacePrimary: options.replacePrimary,
+  });
 }
 
 async function stopBackgroundMiningForRepair(options: {
@@ -970,14 +960,13 @@ async function importDescriptorIntoManagedCoreWallet(
   await createManagedWalletReplica(rpc, state.walletRootId, {
     managedWalletPassphrase: state.managedCoreWallet.internalPassphrase,
   });
-  const privateDescriptor = await rpc.getDescriptorInfo(state.descriptor.privateExternal);
-  const publicDescriptor = await rpc.getDescriptorInfo(state.descriptor.publicExternal);
+  const normalizedDescriptors = await resolveNormalizedWalletDescriptorState(state, rpc);
   const walletName = sanitizeWalletName(state.walletRootId);
 
   await rpc.walletPassphrase(walletName, state.managedCoreWallet.internalPassphrase, 10);
   try {
     const importResults = await rpc.importDescriptors(walletName, [{
-      desc: privateDescriptor.descriptor,
+      desc: normalizedDescriptors.privateExternal,
       timestamp: state.walletBirthTime,
       active: false,
       internal: false,
@@ -991,14 +980,14 @@ async function importDescriptorIntoManagedCoreWallet(
     await rpc.walletLock(walletName).catch(() => undefined);
   }
 
-  const derivedFunding = await rpc.deriveAddresses(publicDescriptor.descriptor, [0, 0]);
+  const derivedFunding = await rpc.deriveAddresses(normalizedDescriptors.publicExternal, [0, 0]);
 
   if (derivedFunding[0] !== state.funding.address) {
     throw new Error("wallet_funding_address_verification_failed");
   }
 
   const descriptors = await rpc.listDescriptors(walletName);
-  const importedDescriptor = descriptors.descriptors.find((entry) => entry.desc === privateDescriptor.descriptor);
+  const importedDescriptor = descriptors.descriptors.find((entry) => entry.desc === normalizedDescriptors.publicExternal);
 
   if (importedDescriptor == null) {
     throw new Error("wallet_descriptor_not_present_after_import");
@@ -1012,7 +1001,7 @@ async function importDescriptorIntoManagedCoreWallet(
     privateKeysEnabled: true,
     created: false,
     proofStatus: "ready",
-    descriptorChecksum: privateDescriptor.checksum,
+    descriptorChecksum: normalizedDescriptors.checksum,
     fundingAddress0: state.funding.address,
     fundingScriptPubKeyHex0: state.funding.scriptPubKeyHex,
     message: null,
@@ -1024,14 +1013,14 @@ async function importDescriptorIntoManagedCoreWallet(
     lastWrittenAtUnixMs: nowUnixMs,
     descriptor: {
       ...state.descriptor,
-      privateExternal: privateDescriptor.descriptor,
-      publicExternal: publicDescriptor.descriptor,
-      checksum: privateDescriptor.checksum,
+      privateExternal: normalizedDescriptors.privateExternal,
+      publicExternal: normalizedDescriptors.publicExternal,
+      checksum: normalizedDescriptors.checksum,
     },
     managedCoreWallet: {
       ...state.managedCoreWallet,
       walletName,
-      descriptorChecksum: privateDescriptor.checksum,
+      descriptorChecksum: normalizedDescriptors.checksum,
       fundingAddress0: verifiedReplica.fundingAddress0 ?? null,
       fundingScriptPubKeyHex0: verifiedReplica.fundingScriptPubKeyHex0 ?? null,
       proofStatus: "ready",
@@ -1148,13 +1137,16 @@ export async function loadUnlockedWalletState(options: {
   provider?: WalletSecretProvider;
   nowUnixMs?: number;
   paths?: WalletRuntimePaths;
+  dataDir?: string;
+  attachService?: typeof attachOrStartManagedBitcoindService;
+  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
 } = {}): Promise<LoadedUnlockedWalletState | null> {
   const provider = options.provider ?? createDefaultWalletSecretProvider();
   const nowUnixMs = options.nowUnixMs ?? Date.now();
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
 
   try {
-    const session = await loadUnlockSession(paths.walletUnlockSessionPath, {
+    let session = await loadUnlockSession(paths.walletUnlockSessionPath, {
       provider,
     });
 
@@ -1178,13 +1170,45 @@ export async function loadUnlockedWalletState(options: {
       return null;
     }
 
+    let state = loaded.state;
+    let source = loaded.source;
+
+    if (options.dataDir !== undefined) {
+      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
+        dataDir: options.dataDir,
+        chain: "main",
+        startHeight: 0,
+        walletRootId: state.walletRootId,
+      });
+
+      try {
+        const normalized = await persistNormalizedWalletDescriptorStateIfNeeded({
+          state,
+          access: {
+            provider,
+            secretReference: createWalletSecretReference(state.walletRootId),
+          },
+          session,
+          paths,
+          nowUnixMs,
+          replacePrimary: loaded.source === "backup",
+          rpc: (options.rpcFactory ?? createRpcClient)(node.rpc),
+        });
+        state = normalized.state;
+        session = normalized.session ?? session;
+        source = normalized.changed ? "primary" : loaded.source;
+      } finally {
+        await node.stop?.().catch(() => undefined);
+      }
+    }
+
     return {
       session,
       state: {
-        ...loaded.state,
-        miningState: normalizeMiningStateRecord(loaded.state.miningState),
+        ...state,
+        miningState: normalizeMiningStateRecord(state.miningState),
       },
-      source: loaded.source,
+      source,
     };
   } catch {
     return null;
@@ -1765,6 +1789,13 @@ export async function repairWallet(options: {
         walletRootId: repairedState.walletRootId,
       });
       const bitcoindRpc = (options.rpcFactory ?? createRpcClient)(bitcoindHandle.rpc);
+      const normalizedDescriptorState = await normalizeWalletDescriptorState(repairedState, bitcoindRpc);
+
+      if (normalizedDescriptorState.changed) {
+        repairedState = normalizedDescriptorState.state;
+        repairStateNeedsPersist = true;
+      }
+
       let replica = await verifyManagedCoreWalletReplica(repairedState, options.dataDir, {
         nodeHandle: bitcoindHandle,
         attachService: options.attachService,
