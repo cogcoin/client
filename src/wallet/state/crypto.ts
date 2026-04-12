@@ -1,13 +1,12 @@
-import * as crypto from "node:crypto";
-
-import type { Argon2EnvelopeParams, EncryptedEnvelopeV1 } from "../types.js";
-import type { WalletSecretProvider, WalletSecretReference } from "./provider.js";
-
-const {
+import { argon2id } from "hash-wasm";
+import {
   createCipheriv,
   createDecipheriv,
   randomBytes,
-} = crypto;
+} from "node:crypto";
+
+import type { Argon2EnvelopeParams, EncryptedEnvelopeV1 } from "../types.js";
+import type { WalletSecretProvider, WalletSecretReference } from "./provider.js";
 
 const DEFAULT_ARGON2_MEMORY_KIB = 65_536;
 const DEFAULT_ARGON2_ITERATIONS = 3;
@@ -16,14 +15,6 @@ const DERIVED_KEY_LENGTH = 32;
 const GCM_NONCE_BYTES = 12;
 const ARGON2_SALT_BYTES = 16;
 const BIGINT_JSON_TAG = "$cogcoinBigInt";
-
-function requireArgon2() {
-  if (typeof crypto.argon2 !== "function") {
-    throw new Error("Node.js 24.7.0 or newer is required because node:crypto argon2 is unavailable.");
-  }
-
-  return crypto.argon2;
-}
 
 export interface DeriveKeyOptions {
   memoryKib?: number;
@@ -60,30 +51,24 @@ function jsonReviver(_key: string, value: unknown): unknown {
   return value;
 }
 
-function deriveArgon2Key(
+async function deriveArgon2Key(
   message: Uint8Array,
   nonce: Uint8Array,
   memoryKib: number,
   iterations: number,
   parallelism: number,
 ): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    requireArgon2()("argon2id", {
-      message,
-      nonce,
-      memory: memoryKib,
-      passes: iterations,
-      parallelism,
-      tagLength: DERIVED_KEY_LENGTH,
-    }, (error, derivedKey) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-
-      resolve(Buffer.from(derivedKey));
-    });
+  const derivedKey = await argon2id({
+    password: message,
+    salt: nonce,
+    memorySize: memoryKib,
+    iterations,
+    parallelism,
+    hashLength: DERIVED_KEY_LENGTH,
+    outputType: "binary",
   });
+
+  return Buffer.from(derivedKey);
 }
 
 export async function deriveKeyFromPassphrase(

@@ -724,11 +724,15 @@ test("missing runtime config starts as starting and becomes failed after a succe
       walletRootId,
     });
 
-    try {
-      await waitForCondition(async () => (await daemon.getStatus()).state === "starting", 10_000, 100);
-      const startingStatus = await daemon.getStatus();
-      assert.equal(startingStatus.lastError, "managed_bitcoind_runtime_config_unavailable");
-    } finally {
+	    try {
+	      await waitForCondition(async () => {
+	        const status = await daemon.getStatus();
+	        return status.state === "starting"
+	          && status.lastError === "managed_bitcoind_runtime_config_unavailable";
+	      }, 10_000, 100);
+	      const startingStatus = await daemon.getStatus();
+	      assert.equal(startingStatus.lastError, "managed_bitcoind_runtime_config_unavailable");
+	    } finally {
       await daemon.close();
       await shutdownIndexerDaemonForTesting({ dataDir: fixture.dataDir, walletRootId }).catch(() => undefined);
     }
@@ -760,10 +764,14 @@ test("missing runtime config starts as starting and becomes failed after a succe
     try {
       await waitForCondition(async () => (await syncedDaemon.getStatus()).state === "synced", 10_000, 100);
       await rm(paths.bitcoindRuntimeConfigPath, { force: true }).catch(() => undefined);
-      await waitForCondition(async () => (await syncedDaemon.getStatus()).state === "failed", 10_000, 100);
-      const failedStatus = await syncedDaemon.getStatus();
-      assert.equal(failedStatus.state, "failed");
-      assert.equal(failedStatus.lastError, "managed_bitcoind_runtime_config_unavailable");
+	      await waitForCondition(async () => {
+	        const status = await syncedDaemon.getStatus();
+	        return status.state === "failed"
+	          && status.lastError === "managed_bitcoind_runtime_config_unavailable";
+	      }, 10_000, 100);
+	      const failedStatus = await syncedDaemon.getStatus();
+	      assert.equal(failedStatus.state, "failed");
+	      assert.equal(failedStatus.lastError, "managed_bitcoind_runtime_config_unavailable");
     } finally {
       await syncedDaemon.close();
       await shutdownIndexerDaemonForTesting({ dataDir: fixture.dataDir, walletRootId }).catch(() => undefined);

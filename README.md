@@ -1,8 +1,8 @@
 # `@cogcoin/client`
 
-`@cogcoin/client@0.5.1` is the store-backed Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
+`@cogcoin/client@0.5.2` is the store-backed Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
 
-Use Node 24.7.0 or newer.
+Use Node 22 or newer.
 
 ## Links
 
@@ -45,6 +45,7 @@ The published package depends on:
 - `@scure/bip32@^2.0.1`
 - `@scure/bip39@^2.0.1`
 - `better-sqlite3@12.8.0`
+- `hash-wasm@^4.12.0`
 - `zeromq@6.5.0`
 
 `@cogcoin/vectors` is kept as a repository development dependency for conformance tests and is not part of the published runtime dependency surface.
