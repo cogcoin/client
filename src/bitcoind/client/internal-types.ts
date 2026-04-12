@@ -1,5 +1,3 @@
-import type { Subscriber } from "zeromq";
-
 import type { Client, ClientStoreAdapter } from "../../types.js";
 import type { AssumeUtxoBootstrapController } from "../bootstrap.js";
 import type { ManagedProgressController } from "../progress.js";
@@ -36,8 +34,18 @@ export interface SyncEngineDependencies {
   loadVisibleFollowBlockTimes(tip: Awaited<ReturnType<Client["getTip"]>>): Promise<Record<number, number>>;
 }
 
+export interface FollowLoopSubscriber extends AsyncIterable<unknown> {
+  close(): void;
+  connect(endpoint: string): void;
+  subscribe(topic: string): void;
+}
+
+export interface ZeroMqModuleLike {
+  Subscriber: new () => FollowLoopSubscriber;
+}
+
 export interface FollowLoopResources {
-  subscriber: Subscriber;
+  subscriber: FollowLoopSubscriber;
   followLoop: Promise<void>;
   pollTimer: ReturnType<typeof setInterval>;
 }
@@ -50,6 +58,7 @@ export interface StartFollowingTipLoopDependencies {
   scheduleSync(): void;
   shouldContinue(): boolean;
   loadVisibleFollowBlockTimes(tip: Awaited<ReturnType<Client["getTip"]>>): Promise<Record<number, number>>;
+  loadZeroMq?(): Promise<ZeroMqModuleLike>;
 }
 
 export interface ScheduleSyncDependencies {

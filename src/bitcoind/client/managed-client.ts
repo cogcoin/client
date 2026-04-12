@@ -1,5 +1,4 @@
 import type { BitcoinBlock } from "@cogcoin/indexer/types";
-import type { Subscriber } from "zeromq";
 
 import type { Client, ClientStoreAdapter } from "../../types.js";
 import type { AssumeUtxoBootstrapController } from "../bootstrap.js";
@@ -14,7 +13,11 @@ import type {
 } from "../types.js";
 import { closeFollowLoopResources, scheduleSync, startFollowingTipLoop } from "./follow-loop.js";
 import { loadVisibleFollowBlockTimes } from "./follow-block-times.js";
-import { createBlockRateTracker, createInitialSyncResult } from "./internal-types.js";
+import {
+  createBlockRateTracker,
+  createInitialSyncResult,
+  type FollowLoopSubscriber,
+} from "./internal-types.js";
 import { syncToTip as runManagedSync } from "./sync-engine.js";
 
 export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
@@ -29,7 +32,7 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
   readonly #syncDebounceMs: number;
   #following = false;
   #closed = false;
-  #subscriber: Subscriber | null = null;
+  #subscriber: FollowLoopSubscriber | null = null;
   #followLoop: Promise<void> | null = null;
   #pollTimer: ReturnType<typeof setInterval> | null = null;
   #bitcoinRateTracker = createBlockRateTracker();

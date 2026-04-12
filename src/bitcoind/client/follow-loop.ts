@@ -1,15 +1,37 @@
-import { Subscriber } from "zeromq";
-
 import type {
   FollowLoopControlDependencies,
+  FollowLoopSubscriber,
   FollowLoopResources,
   ScheduleSyncDependencies,
   StartFollowingTipLoopDependencies,
+  ZeroMqModuleLike,
 } from "./internal-types.js";
+
+async function loadZeroMqModule(): Promise<ZeroMqModuleLike> {
+  return await import("zeromq") as unknown as ZeroMqModuleLike;
+}
+
+async function createSubscriber(
+  loadZeroMq?: () => Promise<ZeroMqModuleLike>,
+): Promise<FollowLoopSubscriber> {
+  try {
+    const zeroMq = loadZeroMq === undefined
+      ? await loadZeroMqModule()
+      : await loadZeroMq();
+    return new zeroMq.Subscriber();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Managed tip following could not initialize \`zeromq\`: ${detail}`,
+      { cause: error instanceof Error ? error : undefined },
+    );
+  }
+}
 
 export async function startFollowingTipLoop(
   dependencies: StartFollowingTipLoopDependencies,
 ): Promise<FollowLoopResources> {
+  const subscriber = await createSubscriber(dependencies.loadZeroMq);
   const currentTip = await dependencies.client.getTip();
   await dependencies.progress.enableFollowVisualMode(
     currentTip?.height ?? null,
@@ -17,7 +39,6 @@ export async function startFollowingTipLoop(
   );
   await dependencies.syncToTip();
 
-  const subscriber = new Subscriber();
   subscriber.connect(dependencies.node.zmq.endpoint);
   subscriber.subscribe(dependencies.node.zmq.topic);
   const followLoop = consumeZmq(subscriber, {
@@ -36,7 +57,7 @@ export async function startFollowingTipLoop(
 }
 
 export async function consumeZmq(
-  subscriber: Subscriber,
+  subscriber: FollowLoopSubscriber,
   dependencies: FollowLoopControlDependencies,
 ): Promise<void> {
   try {
@@ -71,7 +92,7 @@ export function scheduleSync(dependencies: ScheduleSyncDependencies): void {
 
 export async function closeFollowLoopResources(
   resources: {
-    subscriber: Subscriber | null;
+    subscriber: FollowLoopSubscriber | null;
     followLoop: Promise<void> | null;
     pollTimer: ReturnType<typeof setInterval> | null;
   },
