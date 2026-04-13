@@ -42,6 +42,11 @@ import { inspectMiningHookState } from "./mining/hooks.js";
 import { loadMiningRuntimeStatus, saveMiningRuntimeStatus } from "./mining/runtime-artifacts.js";
 import { normalizeMiningStateRecord } from "./mining/state.js";
 import type { MiningRuntimeStatusV1 } from "./mining/types.js";
+import {
+  clearWalletExplicitLock,
+  loadWalletExplicitLock,
+  saveWalletExplicitLock,
+} from "./state/explicit-lock.js";
 import { clearUnlockSession, loadUnlockSession, saveUnlockSession } from "./state/session.js";
 import {
   createDefaultWalletSecretProvider,
@@ -53,6 +58,7 @@ import { loadWalletState, saveWalletState } from "./state/storage.js";
 import type {
   PortableWalletArchivePayloadV1,
   UnlockSessionStateV1,
+  WalletExplicitLockStateV1,
   WalletStateV1,
 } from "./types.js";
 
@@ -286,6 +292,71 @@ function createUnlockSession(
     unlockUntilUnixMs,
     sourceStateRevision: state.stateRevision,
     wrappedSessionKeyMaterial: secretKeyId,
+  };
+}
+
+function createWalletExplicitLock(
+  walletRootId: string,
+  nowUnixMs: number,
+): WalletExplicitLockStateV1 {
+  return {
+    schemaVersion: 1,
+    walletRootId,
+    lockedAtUnixMs: nowUnixMs,
+  };
+}
+
+async function normalizeUnlockedWalletStateIfNeeded(options: {
+  provider: WalletSecretProvider;
+  session: UnlockSessionStateV1;
+  state: WalletStateV1;
+  source: "primary" | "backup";
+  nowUnixMs: number;
+  paths: WalletRuntimePaths;
+  dataDir?: string;
+  attachService?: typeof attachOrStartManagedBitcoindService;
+  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
+}): Promise<LoadedUnlockedWalletState> {
+  let state = options.state;
+  let session = options.session;
+  let source = options.source;
+
+  if (options.dataDir !== undefined) {
+    const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
+      dataDir: options.dataDir,
+      chain: "main",
+      startHeight: 0,
+      walletRootId: state.walletRootId,
+    });
+
+    try {
+      const normalized = await persistNormalizedWalletDescriptorStateIfNeeded({
+        state,
+        access: {
+          provider: options.provider,
+          secretReference: createWalletSecretReference(state.walletRootId),
+        },
+        session,
+        paths: options.paths,
+        nowUnixMs: options.nowUnixMs,
+        replacePrimary: options.source === "backup",
+        rpc: (options.rpcFactory ?? createRpcClient)(node.rpc),
+      });
+      state = normalized.state;
+      session = normalized.session ?? session;
+      source = normalized.changed ? "primary" : options.source;
+    } finally {
+      await node.stop?.().catch(() => undefined);
+    }
+  }
+
+  return {
+    session,
+    state: {
+      ...state,
+      miningState: normalizeMiningStateRecord(state.miningState),
+    },
+    source,
   };
 }
 
@@ -1170,48 +1241,121 @@ export async function loadUnlockedWalletState(options: {
       return null;
     }
 
-    let state = loaded.state;
-    let source = loaded.source;
-
-    if (options.dataDir !== undefined) {
-      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-        dataDir: options.dataDir,
-        chain: "main",
-        startHeight: 0,
-        walletRootId: state.walletRootId,
-      });
-
-      try {
-        const normalized = await persistNormalizedWalletDescriptorStateIfNeeded({
-          state,
-          access: {
-            provider,
-            secretReference: createWalletSecretReference(state.walletRootId),
-          },
-          session,
-          paths,
-          nowUnixMs,
-          replacePrimary: loaded.source === "backup",
-          rpc: (options.rpcFactory ?? createRpcClient)(node.rpc),
-        });
-        state = normalized.state;
-        session = normalized.session ?? session;
-        source = normalized.changed ? "primary" : loaded.source;
-      } finally {
-        await node.stop?.().catch(() => undefined);
-      }
-    }
-
-    return {
+    return await normalizeUnlockedWalletStateIfNeeded({
+      provider,
       session,
-      state: {
-        ...state,
-        miningState: normalizeMiningStateRecord(state.miningState),
-      },
-      source,
-    };
+      state: loaded.state,
+      source: loaded.source,
+      nowUnixMs,
+      paths,
+      dataDir: options.dataDir,
+      attachService: options.attachService,
+      rpcFactory: options.rpcFactory,
+    });
   } catch {
     return null;
+  }
+}
+
+export async function loadOrAutoUnlockWalletState(options: {
+  provider?: WalletSecretProvider;
+  nowUnixMs?: number;
+  unlockDurationMs?: number;
+  paths?: WalletRuntimePaths;
+  dataDir?: string;
+  controlLockHeld?: boolean;
+  attachService?: typeof attachOrStartManagedBitcoindService;
+  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
+} = {}): Promise<LoadedUnlockedWalletState | null> {
+  const provider = options.provider ?? createDefaultWalletSecretProvider();
+  const nowUnixMs = options.nowUnixMs ?? Date.now();
+  const unlockDurationMs = options.unlockDurationMs ?? DEFAULT_UNLOCK_DURATION_MS;
+  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
+
+  const loadExisting = () => loadUnlockedWalletState({
+    provider,
+    nowUnixMs,
+    paths,
+    dataDir: options.dataDir,
+    attachService: options.attachService,
+    rpcFactory: options.rpcFactory,
+  });
+
+  const existing = await loadExisting();
+
+  if (existing !== null) {
+    return existing;
+  }
+
+  const loadAndMaybeAutoUnlock = async (): Promise<LoadedUnlockedWalletState | null> => {
+    const reloaded = await loadExisting();
+
+    if (reloaded !== null) {
+      return reloaded;
+    }
+
+    let loaded;
+
+    try {
+      loaded = await loadWalletState({
+        primaryPath: paths.walletStatePath,
+        backupPath: paths.walletStateBackupPath,
+      }, {
+        provider,
+      });
+    } catch {
+      return null;
+    }
+
+    const explicitLock = await loadWalletExplicitLock(paths.walletExplicitLockPath);
+
+    if (explicitLock !== null) {
+      if (explicitLock.walletRootId === loaded.state.walletRootId) {
+        await clearUnlockSession(paths.walletUnlockSessionPath);
+        return null;
+      }
+
+      await clearWalletExplicitLock(paths.walletExplicitLockPath);
+    }
+
+    const secretReference = createWalletSecretReference(loaded.state.walletRootId);
+    const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
+    const session = createUnlockSession(loaded.state, unlockUntilUnixMs, secretReference.keyId, nowUnixMs);
+    await saveUnlockSession(
+      paths.walletUnlockSessionPath,
+      session,
+      {
+        provider,
+        secretReference,
+      },
+    );
+
+    return await normalizeUnlockedWalletStateIfNeeded({
+      provider,
+      session,
+      state: loaded.state,
+      source: loaded.source,
+      nowUnixMs,
+      paths,
+      dataDir: options.dataDir,
+      attachService: options.attachService,
+      rpcFactory: options.rpcFactory,
+    });
+  };
+
+  if (options.controlLockHeld) {
+    return await loadAndMaybeAutoUnlock();
+  }
+
+  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
+    purpose: "wallet-auto-unlock",
+    walletRootId: null,
+  });
+
+  try {
+    return await loadAndMaybeAutoUnlock();
+  } finally {
+    await controlLock.release();
   }
 }
 
@@ -1292,6 +1436,7 @@ export async function initializeWallet(options: {
       options.rpcFactory,
     );
     const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
+    await clearWalletExplicitLock(paths.walletExplicitLockPath);
     await saveUnlockSession(
       paths.walletUnlockSessionPath,
       createUnlockSession(verifiedState, unlockUntilUnixMs, secretReference.keyId, nowUnixMs),
@@ -1336,6 +1481,7 @@ export async function unlockWallet(options: {
     });
     const secretReference = createWalletSecretReference(loaded.state.walletRootId);
     const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
+    await clearWalletExplicitLock(paths.walletExplicitLockPath);
     await saveUnlockSession(
       paths.walletUnlockSessionPath,
       createUnlockSession(loaded.state, unlockUntilUnixMs, secretReference.keyId, nowUnixMs),
@@ -1358,11 +1504,13 @@ export async function unlockWallet(options: {
 export async function lockWallet(options: {
   dataDir: string;
   provider?: WalletSecretProvider;
+  nowUnixMs?: number;
   paths?: WalletRuntimePaths;
   attachService?: typeof attachOrStartManagedBitcoindService;
   rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
 }): Promise<{ walletRootId: string | null; coreLocked: boolean }> {
   const provider = options.provider ?? createDefaultWalletSecretProvider();
+  const nowUnixMs = options.nowUnixMs ?? Date.now();
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
   const controlLock = await acquireFileLock(paths.walletControlLockPath, {
     purpose: "wallet-lock",
@@ -1401,6 +1549,13 @@ export async function lockWallet(options: {
 
     await clearUnlockSession(paths.walletUnlockSessionPath);
 
+    if (walletRootId !== null) {
+      await saveWalletExplicitLock(
+        paths.walletExplicitLockPath,
+        createWalletExplicitLock(walletRootId, nowUnixMs),
+      );
+    }
+
     return {
       walletRootId,
       coreLocked,
@@ -1435,10 +1590,11 @@ export async function exportWallet(options: {
   });
 
   try {
-    const unlocked = await loadUnlockedWalletState({
+    const unlocked = await loadOrAutoUnlockWalletState({
       provider,
       nowUnixMs,
       paths,
+      controlLockHeld: true,
     });
 
     if (unlocked === null) {
@@ -1551,6 +1707,7 @@ export async function importWallet(options: {
     });
 
     await clearUnlockSession(paths.walletUnlockSessionPath);
+    await clearWalletExplicitLock(paths.walletExplicitLockPath);
     await saveWalletState(
       {
         primaryPath: paths.walletStatePath,
@@ -1575,6 +1732,7 @@ export async function importWallet(options: {
       },
     );
     const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
+    await clearWalletExplicitLock(paths.walletExplicitLockPath);
     await saveUnlockSession(
       paths.walletUnlockSessionPath,
       createUnlockSession(importedState, unlockUntilUnixMs, secretReference.keyId, nowUnixMs),

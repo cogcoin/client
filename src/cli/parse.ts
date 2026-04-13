@@ -12,7 +12,7 @@ Commands:
   init                    Initialize a new local wallet root
   init --output json      Emit the stable v1 machine-readable init result envelope
   repair                  Recover bounded wallet/indexer/runtime state
-  unlock                  Unlock the local wallet for a limited duration
+  unlock                  Clear an explicit wallet lock and unlock for a limited duration
   wallet address          Alias for address
   wallet ids              Alias for ids
   hooks enable mining     Enable a validated custom mining hook
@@ -44,8 +44,8 @@ Commands:
                          Lock COG to an anchored recipient domain
   wallet status           Show detailed wallet-local status and service health
   wallet init             Initialize a new local wallet root
-  wallet unlock           Unlock the local wallet for a limited duration
-  wallet lock             Lock the local wallet immediately
+  wallet unlock           Clear an explicit wallet lock and unlock for a limited duration
+  wallet lock             Lock the local wallet and disable on-demand unlock
   wallet export <path>    Export a portable encrypted wallet archive
   wallet import <path>    Import a portable encrypted wallet archive
   address                 Show the BTC funding identity for this wallet
@@ -73,7 +73,7 @@ Commands:
 Options:
   --db <path>       Override the SQLite database path
   --data-dir <path> Override the managed bitcoin datadir
-  --for <duration>  Unlock duration like 15m, 2h, or 1d
+  --for <duration>  Unlock duration like 15m, 2h, or 1d when unlocking explicitly
   --message <text>  Founding message text for anchor
   --to <btc-target> Transfer or send target as an address or spk:<hex>
   --from <identity> Resolve sender identity as id:<n>, domain:<name>, address, or spk:<hex>

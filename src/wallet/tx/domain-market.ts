@@ -1070,6 +1070,7 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       secretProvider: provider,
+      walletControlLockHeld: true,
       paths,
     });
 
@@ -1333,6 +1334,7 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       secretProvider: provider,
+      walletControlLockHeld: true,
       paths,
     });
 
@@ -1588,6 +1590,7 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       secretProvider: provider,
+      walletControlLockHeld: true,
       paths,
     });
 

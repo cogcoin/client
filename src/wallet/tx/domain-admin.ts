@@ -916,6 +916,7 @@ async function submitDomainAdminMutation(options: DomainAdminBaseOptions & {
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       secretProvider: provider,
+      walletControlLockHeld: true,
       paths,
     });
 

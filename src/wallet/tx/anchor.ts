@@ -1375,6 +1375,7 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       secretProvider: provider,
+      walletControlLockHeld: true,
       paths,
     });
 

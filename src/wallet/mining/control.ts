@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { acquireFileLock } from "../fs/lock.js";
-import { loadUnlockedWalletState, type WalletPrompter } from "../lifecycle.js";
+import { loadOrAutoUnlockWalletState, type WalletPrompter } from "../lifecycle.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../runtime.js";
 import { saveWalletState } from "../state/storage.js";
 import {
@@ -544,7 +544,7 @@ export async function enableMiningHooks(options: {
       paths,
       reason: "hooks-enable-mining",
     });
-    const unlocked = await loadUnlockedWalletState({
+    const unlocked = await loadOrAutoUnlockWalletState({
       provider,
       nowUnixMs,
       paths,
@@ -736,7 +736,7 @@ export async function disableMiningHooks(options: {
       paths,
       reason: "hooks-disable-mining",
     });
-    const unlocked = await loadUnlockedWalletState({
+    const unlocked = await loadOrAutoUnlockWalletState({
       provider,
       nowUnixMs,
       paths,
@@ -868,7 +868,7 @@ export async function setupBuiltInMining(options: {
       paths,
       reason: "mine-setup",
     });
-    const unlocked = await loadUnlockedWalletState({
+    const unlocked = await loadOrAutoUnlockWalletState({
       provider,
       nowUnixMs,
       paths,

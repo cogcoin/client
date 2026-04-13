@@ -22,6 +22,7 @@ export interface CogcoinResolvedPaths {
   walletStatePath: string;
   walletStateBackupPath: string;
   walletUnlockSessionPath: string;
+  walletExplicitLockPath: string;
   walletControlLockPath: string;
   bitcoindLockPath: string;
   bitcoindStatusPath: string;
@@ -129,6 +130,7 @@ export function resolveCogcoinPathsForTesting(
   const walletStatePath = joinForPlatform(platform, walletStateDirectory, "wallet-state.enc");
   const walletStateBackupPath = joinForPlatform(platform, walletStateDirectory, "wallet-state.enc.bak");
   const walletUnlockSessionPath = joinForPlatform(platform, runtimeRoot, "wallet-unlock-session.enc");
+  const walletExplicitLockPath = joinForPlatform(platform, runtimeRoot, "wallet-explicit-lock.json");
   const walletControlLockPath = joinForPlatform(platform, runtimeRoot, "wallet-control.lock");
   const bitcoindLockPath = joinForPlatform(platform, runtimeRoot, "bitcoind.lock");
   const bitcoindStatusPath = joinForPlatform(platform, runtimeRoot, "bitcoind-status.json");
@@ -157,6 +159,7 @@ export function resolveCogcoinPathsForTesting(
     walletStatePath,
     walletStateBackupPath,
     walletUnlockSessionPath,
+    walletExplicitLockPath,
     walletControlLockPath,
     bitcoindLockPath,
     bitcoindStatusPath,

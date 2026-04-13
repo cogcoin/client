@@ -23,13 +23,14 @@ import {
   type ManagedIndexerTruthSource,
 } from "../../bitcoind/types.js";
 import {
-  loadUnlockedWalletState,
+  loadOrAutoUnlockWalletState,
   verifyManagedCoreWalletReplica,
 } from "../lifecycle.js";
 import { persistNormalizedWalletDescriptorStateIfNeeded } from "../descriptor-normalization.js";
 import { inspectMiningControlPlane } from "../mining/index.js";
 import { normalizeMiningStateRecord } from "../mining/state.js";
 import { resolveWalletRuntimePathsForTesting } from "../runtime.js";
+import { loadWalletExplicitLock } from "../state/explicit-lock.js";
 import { loadWalletState, type LoadedWalletState } from "../state/storage.js";
 import {
   createDefaultWalletSecretProvider,
@@ -58,6 +59,41 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function isLockedWalletAccessError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message === "wallet_envelope_missing_secret_provider"
+    || message.startsWith("wallet_secret_missing_")
+    || message.startsWith("wallet_secret_provider_");
+}
+
+function describeLockedWalletMessage(options: {
+  accessError?: unknown;
+  explicitlyLocked: boolean;
+  hasUnlockSessionFile: boolean;
+}): string {
+  if (options.explicitlyLocked) {
+    return "Wallet state exists but is explicitly locked until `cogcoin unlock` is run.";
+  }
+
+  const message = options.accessError instanceof Error ? options.accessError.message : String(options.accessError ?? "");
+
+  if (message === "wallet_envelope_missing_secret_provider") {
+    return "Wallet state exists but requires the local wallet-state passphrase.";
+  }
+
+  if (message.startsWith("wallet_secret_provider_")) {
+    return "Wallet state exists but the local secret provider is unavailable.";
+  }
+
+  if (message.startsWith("wallet_secret_missing_")) {
+    return "Wallet state exists but its local secret-provider material is unavailable.";
+  }
+
+  return options.hasUnlockSessionFile
+    ? "Wallet state exists but the unlock session is expired, invalid, or belongs to a different wallet root."
+    : "Wallet state exists but is currently locked.";
 }
 
 async function normalizeLoadedWalletStateForRead(options: {
@@ -109,6 +145,7 @@ async function inspectWalletLocalState(options: {
   secretProvider?: WalletSecretProvider;
   now?: number;
   paths?: WalletRuntimePaths;
+  walletControlLockHeld?: boolean;
 } = {}): Promise<WalletLocalStateStatus> {
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
   const now = options.now ?? Date.now();
@@ -135,14 +172,18 @@ async function inspectWalletLocalState(options: {
   if (options.passphrase === undefined) {
     try {
       const provider = options.secretProvider ?? createDefaultWalletSecretProvider();
-      const unlocked = await loadUnlockedWalletState({
+      const unlocked = await loadOrAutoUnlockWalletState({
         provider,
         nowUnixMs: now,
         paths,
         dataDir: options.dataDir,
+        controlLockHeld: options.walletControlLockHeld,
       });
 
       if (unlocked === null) {
+        const explicitLock = await loadWalletExplicitLock(paths.walletExplicitLockPath);
+        const hasUnlockSessionFileNow = await pathExists(paths.walletUnlockSessionPath);
+
         try {
           const loaded = await loadWalletState({
             primaryPath: paths.walletStatePath,
@@ -157,7 +198,39 @@ async function inspectWalletLocalState(options: {
             now,
             paths,
           });
+          return {
+            availability: "locked",
+            walletRootId: loaded.state.walletRootId,
+            state: null,
+            source: loaded.source,
+            unlockUntilUnixMs: null,
+            hasPrimaryStateFile,
+            hasBackupStateFile,
+            hasUnlockSessionFile: hasUnlockSessionFileNow,
+            message: describeLockedWalletMessage({
+              explicitlyLocked: explicitLock?.walletRootId === loaded.state.walletRootId,
+              hasUnlockSessionFile: hasUnlockSessionFileNow,
+            }),
+          };
         } catch (error) {
+          if (isLockedWalletAccessError(error)) {
+            return {
+              availability: "locked",
+              walletRootId: null,
+              state: null,
+              source: null,
+              unlockUntilUnixMs: null,
+              hasPrimaryStateFile,
+              hasBackupStateFile,
+              hasUnlockSessionFile: hasUnlockSessionFileNow,
+              message: describeLockedWalletMessage({
+                accessError: error,
+                explicitlyLocked: false,
+                hasUnlockSessionFile: hasUnlockSessionFileNow,
+              }),
+            };
+          }
+
           return {
             availability: "local-state-corrupt",
             walletRootId: null,
@@ -166,24 +239,10 @@ async function inspectWalletLocalState(options: {
             unlockUntilUnixMs: null,
             hasPrimaryStateFile,
             hasBackupStateFile,
-            hasUnlockSessionFile,
+            hasUnlockSessionFile: hasUnlockSessionFileNow,
             message: error instanceof Error ? error.message : String(error),
           };
         }
-
-        return {
-          availability: "locked",
-          walletRootId: null,
-          state: null,
-          source: null,
-          unlockUntilUnixMs: null,
-          hasPrimaryStateFile,
-          hasBackupStateFile,
-          hasUnlockSessionFile,
-          message: hasUnlockSessionFile
-            ? "Wallet state exists but the unlock session is expired, invalid, or belongs to a different wallet root."
-            : "Wallet state exists but is currently locked.",
-        };
       }
 
       return {
@@ -197,7 +256,7 @@ async function inspectWalletLocalState(options: {
         unlockUntilUnixMs: unlocked.session.unlockUntilUnixMs,
         hasPrimaryStateFile,
         hasBackupStateFile,
-        hasUnlockSessionFile,
+        hasUnlockSessionFile: true,
         message: null,
       };
     } catch (error) {
@@ -574,6 +633,7 @@ export async function openWalletReadContext(options: {
   databasePath: string;
   walletStatePassphrase?: Uint8Array | string;
   secretProvider?: WalletSecretProvider;
+  walletControlLockHeld?: boolean;
   startupTimeoutMs?: number;
   now?: number;
   paths?: WalletRuntimePaths;
@@ -584,6 +644,7 @@ export async function openWalletReadContext(options: {
     dataDir: options.dataDir,
     passphrase: options.walletStatePassphrase,
     secretProvider: options.secretProvider,
+    walletControlLockHeld: options.walletControlLockHeld,
     now,
     paths: options.paths,
   });

@@ -972,6 +972,7 @@ export async function sendCog(options: SendCogOptions): Promise<CogMutationResul
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       secretProvider: provider,
+      walletControlLockHeld: true,
       paths,
     });
 
@@ -1125,6 +1126,7 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       secretProvider: provider,
+      walletControlLockHeld: true,
       paths,
     });
 
@@ -1310,6 +1312,7 @@ async function runClaimLikeMutation(
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       secretProvider: provider,
+      walletControlLockHeld: true,
       paths,
     });
 

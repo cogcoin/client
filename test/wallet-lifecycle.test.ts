@@ -14,6 +14,7 @@ import {
   exportWallet,
   importWallet,
   initializeWallet,
+  loadOrAutoUnlockWalletState,
   loadUnlockedWalletState,
   lockWallet,
   parseUnlockDurationToMs,
@@ -31,6 +32,8 @@ import {
   createMemoryWalletSecretProviderForTesting,
   createWalletSecretReference,
 } from "../src/wallet/state/provider.js";
+import { loadWalletExplicitLock } from "../src/wallet/state/explicit-lock.js";
+import { clearUnlockSession, loadUnlockSession } from "../src/wallet/state/session.js";
 import { loadWalletState, saveWalletState } from "../src/wallet/state/storage.js";
 import type { WalletStateV1 } from "../src/wallet/types.js";
 import {
@@ -691,7 +694,7 @@ test("initializeWallet rejects non-interactive prompters before revealing the mn
   assert.deepEqual(calls, []);
 });
 
-test("unlockWallet and lockWallet rotate the session blob and preserve locked truth", async () => {
+test("unlockWallet and lockWallet rotate the session blob, persist explicit lock state, and gate auto-unlock", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-lock-"));
   const paths = createTempWalletPaths(tempRoot);
   const provider = createMemoryWalletSecretProviderForTesting();
@@ -716,6 +719,7 @@ test("unlockWallet and lockWallet rotate the session blob and preserve locked tr
 
   const locked = await lockWallet({
     dataDir: paths.bitcoinDataDir,
+    nowUnixMs: 1_700_000_005_000,
     provider,
     paths,
     attachService: async () => ({
@@ -732,17 +736,94 @@ test("unlockWallet and lockWallet rotate the session blob and preserve locked tr
     paths,
     nowUnixMs: 1_700_000_000_100,
   });
+  const blockedAutoUnlock = await loadOrAutoUnlockWalletState({
+    provider,
+    paths,
+    nowUnixMs: 1_700_000_006_000,
+  });
+  const explicitLock = await loadWalletExplicitLock(paths.walletExplicitLockPath);
 
   const unlocked = await unlockWallet({
     provider,
     paths,
     nowUnixMs: 1_700_000_010_000,
   });
+  const reopened = await loadOrAutoUnlockWalletState({
+    provider,
+    paths,
+    nowUnixMs: 1_700_000_010_100,
+  });
 
   assert.equal(locked.walletRootId, initialized.walletRootId);
   assert.equal(afterLock, null);
+  assert.equal(blockedAutoUnlock, null);
+  assert.deepEqual(explicitLock, {
+    schemaVersion: 1,
+    walletRootId: initialized.walletRootId,
+    lockedAtUnixMs: 1_700_000_005_000,
+  });
   assert.equal(unlocked.state.walletRootId, initialized.walletRootId);
   assert.equal(unlocked.unlockUntilUnixMs, 1_700_000_010_000 + (15 * 60 * 1000));
+  assert.equal(reopened?.state.walletRootId, initialized.walletRootId);
+  assert.equal(await loadWalletExplicitLock(paths.walletExplicitLockPath), null);
+});
+
+test("loadOrAutoUnlockWalletState reuses a valid session and auto-unlocks provider-backed state when the session is missing", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-auto-unlock-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const prompter = new CapturingPrompter();
+  const harness = createRpcHarness();
+
+  const initialized = await initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter,
+    nowUnixMs: 1_700_000_000_000,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+  });
+
+  const existingSession = await loadUnlockSession(paths.walletUnlockSessionPath, {
+    provider,
+  });
+  const reused = await loadOrAutoUnlockWalletState({
+    provider,
+    paths,
+    nowUnixMs: 1_700_000_000_100,
+  });
+  const sessionAfterReuse = await loadUnlockSession(paths.walletUnlockSessionPath, {
+    provider,
+  });
+
+  await clearUnlockSession(paths.walletUnlockSessionPath);
+
+  const autoUnlocked = await loadOrAutoUnlockWalletState({
+    provider,
+    paths,
+    nowUnixMs: 1_700_000_020_000,
+  });
+  const recreatedSession = await loadUnlockSession(paths.walletUnlockSessionPath, {
+    provider,
+  });
+
+  assert.equal(reused?.state.walletRootId, initialized.walletRootId);
+  assert.equal(reused?.session.sessionId, existingSession.sessionId);
+  assert.deepEqual(sessionAfterReuse, existingSession);
+  assert.equal(await loadWalletExplicitLock(paths.walletExplicitLockPath), null);
+  assert.equal(autoUnlocked?.state.walletRootId, initialized.walletRootId);
+  assert.equal(autoUnlocked?.session.walletRootId, initialized.walletRootId);
+  assert.equal(recreatedSession.walletRootId, initialized.walletRootId);
+  assert.equal(recreatedSession.unlockUntilUnixMs, 1_700_000_020_000 + (15 * 60 * 1000));
+  assert.equal(autoUnlocked?.session.unlockUntilUnixMs, recreatedSession.unlockUntilUnixMs);
+  assert.notEqual(recreatedSession.sessionId, existingSession.sessionId);
 });
 
 test("loadUnlockedWalletState auto-repairs descriptor state during read flows", async () => {

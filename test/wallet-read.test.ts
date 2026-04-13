@@ -20,7 +20,8 @@ import {
 } from "../src/wallet/read/project.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting, createWalletSecretReference } from "../src/wallet/state/provider.js";
-import { saveUnlockSession } from "../src/wallet/state/session.js";
+import { saveWalletExplicitLock } from "../src/wallet/state/explicit-lock.js";
+import { loadUnlockSession, saveUnlockSession } from "../src/wallet/state/session.js";
 import { saveWalletState } from "../src/wallet/state/storage.js";
 import type { WalletReadContext } from "../src/wallet/read/types.js";
 import type { WalletStateV1 } from "../src/wallet/types.js";
@@ -644,6 +645,108 @@ test("inspectWalletLocalState uses a valid provider-backed unlock session to exp
   assert.equal(inspected.availability, "ready");
   assert.equal(inspected.walletRootId, state.walletRootId);
   assert.equal(inspected.unlockUntilUnixMs, 1_700_000_900_000);
+});
+
+test("inspectWalletLocalState auto-unlocks provider-backed wallets when no unlock session exists", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-auto-unlock-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const state = createWalletState();
+  const secretReference = createWalletSecretReference(state.walletRootId);
+
+  await provider.storeSecret(secretReference.keyId, Buffer.alloc(32, 6));
+  await saveWalletState(
+    {
+      primaryPath: paths.walletStatePath,
+      backupPath: paths.walletStateBackupPath,
+    },
+    state,
+    {
+      provider,
+      secretReference,
+    },
+  );
+
+  const inspected = await inspectWalletLocalState({
+    secretProvider: provider,
+    now: 1_700_000_100_000,
+    paths,
+  });
+  const session = await loadUnlockSession(paths.walletUnlockSessionPath, {
+    provider,
+  });
+
+  assert.equal(inspected.availability, "ready");
+  assert.equal(inspected.walletRootId, state.walletRootId);
+  assert.equal(inspected.unlockUntilUnixMs, 1_700_000_100_000 + (15 * 60 * 1000));
+  assert.equal(inspected.hasUnlockSessionFile, true);
+  assert.equal(session.walletRootId, state.walletRootId);
+  assert.equal(session.unlockUntilUnixMs, 1_700_000_100_000 + (15 * 60 * 1000));
+});
+
+test("inspectWalletLocalState respects explicit locks for provider-backed wallets", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-explicit-lock-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const state = createWalletState();
+  const secretReference = createWalletSecretReference(state.walletRootId);
+
+  await provider.storeSecret(secretReference.keyId, Buffer.alloc(32, 7));
+  await saveWalletState(
+    {
+      primaryPath: paths.walletStatePath,
+      backupPath: paths.walletStateBackupPath,
+    },
+    state,
+    {
+      provider,
+      secretReference,
+    },
+  );
+  await saveWalletExplicitLock(paths.walletExplicitLockPath, {
+    schemaVersion: 1,
+    walletRootId: state.walletRootId,
+    lockedAtUnixMs: 1_700_000_000_000,
+  });
+
+  const inspected = await inspectWalletLocalState({
+    secretProvider: provider,
+    now: 1_700_000_100_000,
+    paths,
+  });
+
+  assert.equal(inspected.availability, "locked");
+  assert.equal(inspected.walletRootId, state.walletRootId);
+  assert.equal(inspected.unlockUntilUnixMs, null);
+  assert.equal(inspected.hasUnlockSessionFile, false);
+  assert.match(inspected.message ?? "", /explicitly locked/i);
+});
+
+test("inspectWalletLocalState keeps passphrase-backed wallets locked until a passphrase is supplied", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-passphrase-locked-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const state = createWalletState();
+
+  await saveWalletState(
+    {
+      primaryPath: paths.walletStatePath,
+      backupPath: paths.walletStateBackupPath,
+    },
+    state,
+    "test-passphrase",
+  );
+
+  const inspected = await inspectWalletLocalState({
+    secretProvider: createMemoryWalletSecretProviderForTesting(),
+    now: 1_700_000_100_000,
+    paths,
+  });
+
+  assert.equal(inspected.availability, "locked");
+  assert.equal(inspected.walletRootId, null);
+  assert.equal(inspected.unlockUntilUnixMs, null);
+  assert.equal(inspected.hasUnlockSessionFile, false);
+  assert.match(inspected.message ?? "", /wallet-state passphrase/i);
 });
 
 test("inspectWalletLocalState reports local-state-corrupt when neither primary nor backup is trusted", async () => {

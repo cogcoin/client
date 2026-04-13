@@ -541,19 +541,28 @@ test("sendCog preserves anchored sender vin[0] and anchor output", async () => {
 });
 
 test("sendCog requires explicit --from when multiple local identities are eligible", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-cog-send-ambiguous-"));
+  const paths = createTempWalletPaths(tempRoot);
   const state = createWalletState();
   const snapshotState = await createSnapshotState();
   const context = createReadContext(state, snapshotState);
+  let observedWalletControlLockHeld: boolean | undefined;
 
   await assert.rejects(() => sendCog({
     amountCogtoshi: 25n,
     target: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
     dataDir: "/tmp/bitcoin",
     databasePath: "/tmp/client.sqlite",
+    paths,
     provider: createMemoryWalletSecretProviderForTesting(),
     prompter: new ScriptedPrompter(["yes"]),
-    openReadContext: async () => context,
+    openReadContext: async (options) => {
+      observedWalletControlLockHeld = options.walletControlLockHeld;
+      return context;
+    },
   }), /wallet_send_ambiguous_sender/);
+
+  assert.equal(observedWalletControlLockHeld, true);
 });
 
 test("sendCog auto-selects the only eligible sender and surfaces the resolved sender", async () => {
@@ -760,6 +769,8 @@ test("claimCogLock resolves the recipient-owner path, surfaces the sender, and k
 });
 
 test("claimCogLock rejects a wrong preimage before attempting any broadcast", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-cog-claim-mismatch-"));
+  const paths = createTempWalletPaths(tempRoot);
   const state = createWalletState();
   const snapshotState = await createSnapshotState();
   const currentHeight = snapshotState.history.currentHeight ?? 0;
@@ -780,6 +791,7 @@ test("claimCogLock rejects a wrong preimage before attempting any broadcast", as
     preimageHex: "33".repeat(32),
     dataDir: "/tmp/bitcoin",
     databasePath: "/tmp/client.sqlite",
+    paths,
     provider: createMemoryWalletSecretProviderForTesting(),
     prompter: new ScriptedPrompter(["yes"]),
     openReadContext: async () => context,

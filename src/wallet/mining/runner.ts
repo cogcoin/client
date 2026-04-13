@@ -30,7 +30,7 @@ import {
   type WalletMutationRpcClient,
 } from "../tx/common.js";
 import { acquireFileLock } from "../fs/lock.js";
-import { loadUnlockedWalletState, type WalletPrompter } from "../lifecycle.js";
+import { loadOrAutoUnlockWalletState, type WalletPrompter } from "../lifecycle.js";
 import {
   isMineableWalletDomain,
   openWalletReadContext,
@@ -2259,7 +2259,7 @@ async function ensureBuiltInSetupIfNeeded(options: {
   prompter: WalletPrompter;
   paths: WalletRuntimePaths;
 }): Promise<boolean> {
-  const unlocked = await loadUnlockedWalletState({
+  const unlocked = await loadOrAutoUnlockWalletState({
     provider: options.provider,
     paths: options.paths,
   });

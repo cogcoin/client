@@ -12,6 +12,7 @@ export interface WalletRuntimePaths {
   walletStatePath: string;
   walletStateBackupPath: string;
   walletUnlockSessionPath: string;
+  walletExplicitLockPath: string;
   walletControlLockPath: string;
   bitcoindLockPath: string;
   bitcoindStatusPath: string;
@@ -42,6 +43,7 @@ export function resolveWalletRuntimePathsForTesting(
     walletStatePath: paths.walletStatePath,
     walletStateBackupPath: paths.walletStateBackupPath,
     walletUnlockSessionPath: paths.walletUnlockSessionPath,
+    walletExplicitLockPath: paths.walletExplicitLockPath,
     walletControlLockPath: paths.walletControlLockPath,
     bitcoindLockPath: paths.bitcoindLockPath,
     bitcoindStatusPath: paths.bitcoindStatusPath,

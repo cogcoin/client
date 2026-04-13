@@ -24,7 +24,8 @@ import {
   createMemoryWalletSecretProviderForTesting,
   createWalletSecretReference,
 } from "../src/wallet/state/provider.js";
-import { saveUnlockSession } from "../src/wallet/state/session.js";
+import { saveWalletExplicitLock } from "../src/wallet/state/explicit-lock.js";
+import { loadUnlockSession, saveUnlockSession } from "../src/wallet/state/session.js";
 import { saveWalletState } from "../src/wallet/state/storage.js";
 import type { WalletStateV1 } from "../src/wallet/types.js";
 
@@ -150,7 +151,10 @@ class ScriptedPrompter implements WalletPrompter {
   }
 }
 
-async function createUnlockedWalletHarness() {
+async function createUnlockedWalletHarness(options: {
+  withUnlockSession?: boolean;
+  explicitlyLocked?: boolean;
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), "cogcoin-mining-control-"));
   const paths = createTempWalletPaths(root);
   const provider = createMemoryWalletSecretProviderForTesting();
@@ -168,22 +172,32 @@ async function createUnlockedWalletHarness() {
       secretReference,
     },
   );
-  await saveUnlockSession(
-    paths.walletUnlockSessionPath,
-    {
+  if (options.withUnlockSession !== false) {
+    await saveUnlockSession(
+      paths.walletUnlockSessionPath,
+      {
+        schemaVersion: 1,
+        walletRootId: state.walletRootId,
+        sessionId: "session-1",
+        createdAtUnixMs: 1_700_000_000_000,
+        unlockUntilUnixMs: 1_800_000_000_000,
+        sourceStateRevision: state.stateRevision,
+        wrappedSessionKeyMaterial: secretReference.keyId,
+      },
+      {
+        provider,
+        secretReference,
+      },
+    );
+  }
+
+  if (options.explicitlyLocked) {
+    await saveWalletExplicitLock(paths.walletExplicitLockPath, {
       schemaVersion: 1,
       walletRootId: state.walletRootId,
-      sessionId: "session-1",
-      createdAtUnixMs: 1_700_000_000_000,
-      unlockUntilUnixMs: 1_800_000_000_000,
-      sourceStateRevision: state.stateRevision,
-      wrappedSessionKeyMaterial: secretReference.keyId,
-    },
-    {
-      provider,
-      secretReference,
-    },
-  );
+      lockedAtUnixMs: 1_700_000_000_000,
+    });
+  }
 
   return {
     paths,
@@ -274,6 +288,60 @@ test("setupBuiltInMining stores encrypted provider config and logs setup events 
     "mine-setup-completed",
   ]);
   assert.ok(events.every((event) => !event.message.includes("sk-test-secret")));
+});
+
+test("setupBuiltInMining auto-unlocks provider-backed wallets when the unlock session is missing", async () => {
+  const harness = await createUnlockedWalletHarness({
+    withUnlockSession: false,
+  });
+  const prompter = new ScriptedPrompter([
+    "openai",
+    "sk-test-secret",
+    "Prefer vivid imagery.",
+    "gpt-5.4",
+  ]);
+
+  await setupBuiltInMining({
+    provider: harness.provider,
+    prompter,
+    paths: harness.paths,
+    nowUnixMs: 1_700_000_000_000,
+  });
+
+  const session = await loadUnlockSession(harness.paths.walletUnlockSessionPath, {
+    provider: harness.provider,
+  });
+  const loaded = await loadClientConfig({
+    path: harness.paths.clientConfigPath,
+    provider: harness.provider,
+  });
+
+  assert.equal(session.walletRootId, harness.state.walletRootId);
+  assert.equal(session.unlockUntilUnixMs, 1_700_000_000_000 + (15 * 60 * 1000));
+  assert.equal(loaded?.mining.builtIn?.provider, "openai");
+});
+
+test("setupBuiltInMining respects explicit wallet locks instead of auto-unlocking", async () => {
+  const harness = await createUnlockedWalletHarness({
+    withUnlockSession: false,
+    explicitlyLocked: true,
+  });
+  const prompter = new ScriptedPrompter([
+    "openai",
+    "sk-test-secret",
+    "Prefer vivid imagery.",
+    "gpt-5.4",
+  ]);
+
+  await assert.rejects(
+    () => setupBuiltInMining({
+      provider: harness.provider,
+      prompter,
+      paths: harness.paths,
+      nowUnixMs: 1_700_000_000_000,
+    }),
+    /wallet_locked/,
+  );
 });
 
 test("readMiningEvents ignores partial final lines and respects limits", async () => {

@@ -1,6 +1,6 @@
 # `@cogcoin/client`
 
-`@cogcoin/client@0.5.2` is the store-backed Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
+`@cogcoin/client@0.5.3` is the store-backed Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
 
 Use Node 22 or newer.
 
@@ -32,6 +32,8 @@ npx cogcoin sync
 
 Verify the installed genesis artifacts before using the client in a production implementation.
 The installed package provides the `cogcoin` command for local wallet setup, sync, reads, writes, and mining workflows.
+Provider-backed local wallets unlock on demand by default; `cogcoin wallet lock` suppresses that behavior until `cogcoin unlock` is run again.
+Passphrase-wrapped wallet-state flows still require explicit passphrase-based access.
 
 ## Dependency Surface
 
@@ -79,6 +81,7 @@ The installed `cogcoin` command covers the first-party local wallet and node wor
 - mining and hook commands such as `mine`, `mine start`, `mine stop`, `mine status`, `mine log`, `mine setup`, and `hooks status`
 
 The CLI also supports stable `--output json` and `--output preview-json` envelopes on the commands that advertise machine-readable output.
+For provider-backed local wallets, normal reads, mutations, export, and mining setup flows auto-materialize a local unlock session when the wallet is not explicitly locked.
 
 ## SQLite Store
 

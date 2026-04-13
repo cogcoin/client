@@ -310,3 +310,9 @@ export interface UnlockSessionStateV1 {
   sourceStateRevision: number;
   wrappedSessionKeyMaterial: string;
 }
+
+export interface WalletExplicitLockStateV1 {
+  schemaVersion: 1;
+  walletRootId: string;
+  lockedAtUnixMs: number;
+}

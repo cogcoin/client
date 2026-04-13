@@ -1062,6 +1062,7 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       secretProvider: provider,
+      walletControlLockHeld: true,
       paths,
     });
 

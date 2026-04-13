@@ -455,7 +455,7 @@ export function createCliErrorPresentation(
   if (errorCode === "wallet_locked") {
     return {
       what: "Wallet is locked.",
-      why: "This command needs access to the unlocked local wallet state before it can continue.",
+      why: "This command needs access to the unlocked local wallet state before it can continue. Provider-backed wallets unlock on demand unless they were explicitly locked or the local secret store is unavailable.",
       next: "Run `cogcoin unlock --for 15m` and retry.",
     };
   }

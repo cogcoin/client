@@ -881,6 +881,7 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       secretProvider: provider,
+      walletControlLockHeld: true,
       paths,
     });
 

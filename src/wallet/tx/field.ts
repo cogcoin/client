@@ -1845,6 +1845,7 @@ async function submitStandaloneFieldMutation(options: {
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       secretProvider: provider,
+      walletControlLockHeld: true,
       paths,
     });
 
@@ -2029,6 +2030,7 @@ async function submitFieldCreateFamily(options: {
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       secretProvider: provider,
+      walletControlLockHeld: true,
       paths,
     });
 
