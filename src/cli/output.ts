@@ -598,7 +598,7 @@ export function createCliErrorPresentation(
     return {
       what: "Mnemonic confirmation failed.",
       why: "The requested recovery-phrase confirmation word did not match, so wallet initialization was canceled before it could finish.",
-      next: "Run `cogcoin init` again and re-enter the requested confirmation words carefully.",
+      next: "Run `cogcoin init` again and re-enter the requested confirmation words carefully. The same recovery phrase will be shown until confirmation succeeds.",
     };
   }
 

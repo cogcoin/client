@@ -5555,6 +5555,7 @@ test("secure-admin json failures map to stable schemas and exit codes", async ()
   assert.equal(initConfirmEnvelope.error.details.wordIndex, 7);
   assert.equal(initConfirmEnvelope.error.details.rawMessage, "wallet_init_confirmation_failed_word_7");
   assert.ok(initConfirmEnvelope.nextSteps.some((step) => step.includes("cogcoin init")));
+  assert.ok(initConfirmEnvelope.nextSteps.some((step) => step.includes("same recovery phrase")));
 
   const initRuntimeStdout = new MemoryStream();
   const initRuntimeCode = await runCli(["init", "--output", "json"], {

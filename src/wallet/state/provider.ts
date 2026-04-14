@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -53,6 +53,15 @@ export function createWalletSecretReference(
   return {
     kind: "wallet-state-key",
     keyId: `wallet-state:${walletRootId}`,
+  };
+}
+
+export function createWalletPendingInitSecretReference(
+  stateRoot: string,
+): WalletSecretReference {
+  return {
+    kind: "wallet-init-pending-key",
+    keyId: `wallet-init-pending:${createHash("sha256").update(stateRoot).digest("hex")}`,
   };
 }
 

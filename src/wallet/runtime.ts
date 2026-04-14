@@ -11,6 +11,8 @@ export interface WalletRuntimePaths {
   indexerRoot: string;
   walletStatePath: string;
   walletStateBackupPath: string;
+  walletInitPendingPath: string;
+  walletInitPendingBackupPath: string;
   walletUnlockSessionPath: string;
   walletExplicitLockPath: string;
   walletControlLockPath: string;
@@ -42,6 +44,8 @@ export function resolveWalletRuntimePathsForTesting(
     indexerRoot: paths.indexerRoot,
     walletStatePath: paths.walletStatePath,
     walletStateBackupPath: paths.walletStateBackupPath,
+    walletInitPendingPath: paths.walletInitPendingPath,
+    walletInitPendingBackupPath: paths.walletInitPendingBackupPath,
     walletUnlockSessionPath: paths.walletUnlockSessionPath,
     walletExplicitLockPath: paths.walletExplicitLockPath,
     walletControlLockPath: paths.walletControlLockPath,

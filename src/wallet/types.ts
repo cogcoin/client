@@ -316,3 +316,12 @@ export interface WalletExplicitLockStateV1 {
   walletRootId: string;
   lockedAtUnixMs: number;
 }
+
+export interface WalletPendingInitializationStateV1 {
+  schemaVersion: 1;
+  createdAtUnixMs: number;
+  mnemonic: {
+    phrase: string;
+    language: WalletMnemonicLanguage;
+  };
+}

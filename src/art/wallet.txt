@@ -1,10 +1,10 @@
-                     ⛭ Write this down. Keep it secret, keep it safe. ⛭         
-▐▀▀▀▀▀▀▚    ╔──────────────────────────────────────────────────────────────────╗
-▛▞▀▀▀▀▀▀▚   │                                                                  │
-▌▝▀▀▀▀▀▀▀▌  │  1.achieved   6.achieved  11.achieved  16.achieved  21.achieved  │
-▌  ▗▙▙   ▌  │  2.achieved   7.achieved  12.achieved  17.achieved  22.achieved  │
-▌  ▐  ▌  ▌  │  3.achieved   8.achieved  13.achieved  18.achieved  23.achieved  │
-▌  ▐▀▀▚  ▌  │  4.achieved   9.achieved  14.achieved  19.achieved  24.achieved  │
-▌  ▐▄▄▞  ▌  │  5.achieved  10.achieved  15.achieved  20.achieved               │
-▌   ▘▘   ▌  │                                                                  │
-▝▀▀▀▀▀▀▀▀▘  ╚──────────────────────────────────────────────────────────────────╝
+                  ⛭ Write this down. Keep it secret, keep it safe. ⛭         
+▐▀▀▀▀▀▀▀▚   ╔──────────────────────────────────────────────────────────────────╗
+▛▞▀▀▀▀▀▀▀▚  │                                                                  │
+▌▝▀▀▀▀▀▀▀▀▌ │  1.achieved   6.achieved  11.achieved  16.achieved  21.achieved  │
+▌   ▗▙▙   ▌ │  2.achieved   7.achieved  12.achieved  17.achieved  22.achieved  │
+▌   ▐  ▌  ▌ │  3.achieved   8.achieved  13.achieved  18.achieved  23.achieved  │
+▌   ▐▀▀▚  ▌ │  4.achieved   9.achieved  14.achieved  19.achieved  24.achieved  │
+▌   ▐▄▄▞  ▌ │  5.achieved  10.achieved  15.achieved  20.achieved               │
+▌    ▘▘   ▌ │                                                                  │
+▝▀▀▀▀▀▀▀▀▀▘ ╚──────────────────────────────────────────────────────────────────╝

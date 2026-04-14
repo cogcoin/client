@@ -30,15 +30,20 @@ import { saveMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.
 import type { MiningRuntimeStatusV1 } from "../src/wallet/mining/types.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
+  loadWalletPendingInitializationState,
+  saveWalletPendingInitializationState,
+} from "../src/wallet/state/pending-init.js";
+import {
   createDefaultWalletSecretProviderForTesting,
   createMemoryWalletSecretProviderForTesting,
+  createWalletPendingInitSecretReference,
   createWalletSecretReference,
 } from "../src/wallet/state/provider.js";
 import { acquireFileLock } from "../src/wallet/fs/lock.js";
 import { loadWalletExplicitLock } from "../src/wallet/state/explicit-lock.js";
 import { clearUnlockSession, loadUnlockSession } from "../src/wallet/state/session.js";
 import { loadWalletState, saveWalletState } from "../src/wallet/state/storage.js";
-import type { WalletStateV1 } from "../src/wallet/types.js";
+import type { WalletPendingInitializationStateV1, WalletStateV1 } from "../src/wallet/types.js";
 import {
   INDEXER_DAEMON_SCHEMA_VERSION,
   INDEXER_DAEMON_SERVICE_API_VERSION,
@@ -105,6 +110,42 @@ function createTempWalletPaths(root: string) {
       XDG_RUNTIME_DIR: join(root, "runtime"),
     },
   });
+}
+
+function createPendingInitializationStoragePaths(
+  paths: ReturnType<typeof createTempWalletPaths>,
+) {
+  return {
+    primaryPath: paths.walletInitPendingPath,
+    backupPath: paths.walletInitPendingBackupPath,
+  };
+}
+
+async function savePendingInitializationFixture(options: {
+  paths: ReturnType<typeof createTempWalletPaths>;
+  provider: ReturnType<typeof createMemoryWalletSecretProviderForTesting>;
+  phrase: string;
+  createdAtUnixMs?: number;
+}) {
+  const secretReference = createWalletPendingInitSecretReference(options.paths.stateRoot);
+  const state: WalletPendingInitializationStateV1 = {
+    schemaVersion: 1,
+    createdAtUnixMs: options.createdAtUnixMs ?? 1_700_000_000_000,
+    mnemonic: {
+      phrase: options.phrase,
+      language: "english",
+    },
+  };
+
+  await options.provider.storeSecret(secretReference.keyId, new Uint8Array(32).fill(7));
+  await saveWalletPendingInitializationState(
+    createPendingInitializationStoragePaths(options.paths),
+    state,
+    {
+      provider: options.provider,
+      secretReference,
+    },
+  );
 }
 
 function isPidRunning(pid: number | null | undefined): boolean {
@@ -651,6 +692,13 @@ test("initializeWallet writes provider-backed state, creates an unlock session, 
   assert.ok(singleLineCopyIndex > -1);
   assert.equal(phraseIndex, singleLineCopyIndex + 1);
   assert.ok(prompter.lines.indexOf(artRow1) < singleLineCopyIndex);
+  assert.equal(
+    prompter.lines.includes("The same phrase will be shown again until confirmation succeeds:"),
+    true,
+  );
+  await assert.rejects(() => access(paths.walletInitPendingPath, constants.F_OK));
+  await assert.rejects(() => access(paths.walletInitPendingBackupPath, constants.F_OK));
+  await assert.rejects(() => provider.loadSecret(createWalletPendingInitSecretReference(paths.stateRoot).keyId));
 });
 
 test("initializeWallet works with the Linux default secret-provider testing seam", async () => {
@@ -691,11 +739,12 @@ test("initializeWallet works with the Linux default secret-provider testing seam
   assert.deepEqual(prompter.clearedScopes, ["mnemonic-reveal"]);
 });
 
-test("initializeWallet aborts on confirmation failure without leaving state behind", async () => {
+test("initializeWallet stores pending init state on confirmation failure without creating final wallet state", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-init-fail-"));
   const paths = createTempWalletPaths(tempRoot);
   const provider = createMemoryWalletSecretProviderForTesting();
   const prompter = new CapturingPrompter();
+  const harness = createRpcHarness();
   prompter.mode = "wrong";
 
   await assert.rejects(() => initializeWallet({
@@ -703,13 +752,155 @@ test("initializeWallet aborts on confirmation failure without leaving state behi
     provider,
     paths,
     prompter,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+  }));
+
+  await assert.rejects(() => access(paths.walletStatePath, constants.F_OK));
+  await assert.rejects(() => access(paths.walletUnlockSessionPath, constants.F_OK));
+  await access(paths.walletInitPendingPath, constants.F_OK);
+  await access(paths.walletInitPendingBackupPath, constants.F_OK);
+  const pending = await loadWalletPendingInitializationState(
+    createPendingInitializationStoragePaths(paths),
+    {
+      provider,
+    },
+  );
+  assert.deepEqual(pending.state.mnemonic.phrase.split(" "), prompter.mnemonicWords);
+  assert.equal(harness.importedDescriptors.length, 0);
+  assert.deepEqual(prompter.clearedScopes, ["mnemonic-reveal"]);
+});
+
+test("initializeWallet reuses the same pending mnemonic across retries and clears it after success", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-init-retry-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const firstPrompter = new CapturingPrompter();
+  const secondPrompter = new CapturingPrompter();
+  const thirdPrompter = new CapturingPrompter();
+  const harness = createRpcHarness();
+  firstPrompter.mode = "wrong";
+  secondPrompter.mode = "wrong";
+
+  const attachService = async () => ({
+    rpc: {
+      url: "http://127.0.0.1:18443",
+      cookieFile: "/tmp/does-not-matter",
+      port: 18_443,
+    },
+  } as never);
+
+  await assert.rejects(() => initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter: firstPrompter,
+    nowUnixMs: 1_700_000_000_000,
+    attachService,
+    rpcFactory: harness.rpcFactory,
+  }));
+  await assert.rejects(() => initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter: secondPrompter,
+    nowUnixMs: 1_700_000_100_000,
+    attachService,
+    rpcFactory: harness.rpcFactory,
+  }));
+
+  const result = await initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter: thirdPrompter,
+    nowUnixMs: 1_700_000_200_000,
+    attachService,
+    rpcFactory: harness.rpcFactory,
+  });
+
+  assert.deepEqual(firstPrompter.mnemonicWords, secondPrompter.mnemonicWords);
+  assert.deepEqual(secondPrompter.mnemonicWords, thirdPrompter.mnemonicWords);
+  assert.equal(result.state.mnemonic.phrase, firstPrompter.mnemonicWords.join(" "));
+  assert.equal(harness.importedDescriptors.length, 1);
+  await assert.rejects(() => access(paths.walletInitPendingPath, constants.F_OK));
+  await assert.rejects(() => access(paths.walletInitPendingBackupPath, constants.F_OK));
+  await assert.rejects(() => provider.loadSecret(createWalletPendingInitSecretReference(paths.stateRoot).keyId));
+});
+
+test("initializeWallet falls back to the pending-init backup when the primary file is corrupt", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-init-pending-backup-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const firstPrompter = new CapturingPrompter();
+  const secondPrompter = new CapturingPrompter();
+  firstPrompter.mode = "wrong";
+  secondPrompter.mode = "wrong";
+
+  await assert.rejects(() => initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter: firstPrompter,
     attachService: async () => {
       throw new Error("should-not-run");
     },
   }));
 
-  await assert.rejects(() => access(paths.walletStatePath, constants.F_OK));
-  assert.deepEqual(prompter.clearedScopes, ["mnemonic-reveal"]);
+  await writeFile(paths.walletInitPendingPath, "{corrupt\n", "utf8");
+
+  await assert.rejects(() => initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter: secondPrompter,
+    attachService: async () => {
+      throw new Error("should-not-run");
+    },
+  }));
+
+  assert.deepEqual(firstPrompter.mnemonicWords, secondPrompter.mnemonicWords);
+});
+
+test("initializeWallet regenerates the pending mnemonic when both pending-init copies are corrupt", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-init-pending-reset-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const firstPrompter = new CapturingPrompter();
+  const secondPrompter = new CapturingPrompter();
+  firstPrompter.mode = "wrong";
+  secondPrompter.mode = "wrong";
+
+  await assert.rejects(() => initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter: firstPrompter,
+    attachService: async () => {
+      throw new Error("should-not-run");
+    },
+  }));
+
+  await writeFile(paths.walletInitPendingPath, "{corrupt\n", "utf8");
+  await writeFile(paths.walletInitPendingBackupPath, "{corrupt\n", "utf8");
+
+  await assert.rejects(() => initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter: secondPrompter,
+    attachService: async () => {
+      throw new Error("should-not-run");
+    },
+  }));
+
+  assert.notDeepEqual(firstPrompter.mnemonicWords, secondPrompter.mnemonicWords);
 });
 
 test("initializeWallet ignores cleanup-hook errors after mnemonic confirmation", async () => {
@@ -1132,6 +1323,92 @@ test("importWallet restores portable state, recreates the managed Core replica, 
   assert.equal(importHarness.walletLocked, true);
 });
 
+test("importWallet clears pending init state without requiring replacement acknowledgement when no wallet exists", async () => {
+  const exportRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-import-pending-export-"));
+  const importRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-import-pending-target-"));
+  const exportPaths = createTempWalletPaths(exportRoot);
+  const importPaths = createTempWalletPaths(importRoot);
+  const archivePath = join(importRoot, "wallet.cogwallet");
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const exportPrompter = new CapturingPrompter();
+  const archivePrompter = new CapturingPrompter();
+  archivePrompter.extraPrompts.push("archive-passphrase", "archive-passphrase");
+  const importPrompter = new CapturingPrompter();
+  importPrompter.extraPrompts.push("archive-passphrase");
+  const exportHarness = createRpcHarness();
+  const importHarness = createRpcHarness();
+
+  const initialized = await initializeWallet({
+    dataDir: exportPaths.bitcoinDataDir,
+    provider,
+    paths: exportPaths,
+    prompter: exportPrompter,
+    nowUnixMs: 1_700_000_000_000,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: exportHarness.rpcFactory,
+  });
+
+  await exportWallet({
+    archivePath,
+    dataDir: exportPaths.bitcoinDataDir,
+    databasePath: join(exportRoot, "client.sqlite"),
+    provider,
+    paths: exportPaths,
+    prompter: archivePrompter,
+    nowUnixMs: 1_700_000_100_000,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: exportHarness.rpcFactory,
+    readSnapshotTip: healthySnapshotTip,
+  });
+
+  await savePendingInitializationFixture({
+    paths: importPaths,
+    provider,
+    phrase: TEST_MNEMONIC,
+  });
+
+  const imported = await importWallet({
+    archivePath,
+    dataDir: importPaths.bitcoinDataDir,
+    databasePath: join(importRoot, "client.sqlite"),
+    provider,
+    paths: importPaths,
+    prompter: importPrompter,
+    nowUnixMs: 1_700_000_200_000,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    attachIndexerDaemon: async () => createRepairIndexerDaemonStub({
+      walletRootId: initialized.walletRootId,
+      state: "synced",
+      coreBestHeight: 123,
+      snapshotHeight: 123,
+    }) as never,
+    rpcFactory: importHarness.rpcFactory,
+  });
+
+  assert.equal(imported.walletRootId, initialized.walletRootId);
+  await assert.rejects(() => access(importPaths.walletInitPendingPath, constants.F_OK));
+  await assert.rejects(() => access(importPaths.walletInitPendingBackupPath, constants.F_OK));
+  await assert.rejects(() => provider.loadSecret(createWalletPendingInitSecretReference(importPaths.stateRoot).keyId));
+});
+
 test("restoreWalletFromMnemonic rebuilds fresh local state from a valid mnemonic without eagerly starting the managed indexer", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-restore-"));
   const paths = createTempWalletPaths(tempRoot);
@@ -1183,6 +1460,42 @@ test("restoreWalletFromMnemonic rebuilds fresh local state from a valid mnemonic
   assert.equal(unlocked?.state.walletRootId, restored.walletRootId);
   assert.equal(harness.importedDescriptors.length, 1);
   assert.deepEqual(restored.warnings, []);
+});
+
+test("restoreWalletFromMnemonic clears pending init state without requiring replacement acknowledgement when no wallet exists", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-restore-pending-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const prompter = new CapturingPrompter();
+  const harness = createRpcHarness();
+
+  await savePendingInitializationFixture({
+    paths,
+    provider,
+    phrase: TEST_MNEMONIC,
+  });
+  prompter.hiddenPrompts.push(...TEST_MNEMONIC.split(" "));
+
+  const restored = await restoreWalletFromMnemonic({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter,
+    nowUnixMs: 1_700_000_000_000,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+  });
+
+  assert.equal(restored.state.mnemonic.phrase, TEST_MNEMONIC);
+  await assert.rejects(() => access(paths.walletInitPendingPath, constants.F_OK));
+  await assert.rejects(() => access(paths.walletInitPendingBackupPath, constants.F_OK));
+  await assert.rejects(() => provider.loadSecret(createWalletPendingInitSecretReference(paths.stateRoot).keyId));
 });
 
 test("restoreWalletFromMnemonic rejects non-interactive execution before collecting mnemonic words", async () => {

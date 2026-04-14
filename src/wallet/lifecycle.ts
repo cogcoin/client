@@ -50,9 +50,15 @@ import {
   loadWalletExplicitLock,
   saveWalletExplicitLock,
 } from "./state/explicit-lock.js";
+import {
+  clearWalletPendingInitializationState,
+  loadWalletPendingInitializationStateOrNull,
+  saveWalletPendingInitializationState,
+} from "./state/pending-init.js";
 import { clearUnlockSession, loadUnlockSession, saveUnlockSession } from "./state/session.js";
 import {
   createDefaultWalletSecretProvider,
+  createWalletPendingInitSecretReference,
   createWalletRootId,
   createWalletSecretReference,
   type WalletSecretProvider,
@@ -63,6 +69,7 @@ import type {
   PortableWalletArchivePayloadV1,
   UnlockSessionStateV1,
   WalletExplicitLockStateV1,
+  WalletPendingInitializationStateV1,
   WalletStateV1,
 } from "./types.js";
 
@@ -225,6 +232,78 @@ function extractWalletRootIdFromEnvelope(envelope: EncryptedEnvelopeV1 | null): 
   }
 
   return keyId.slice(prefix.length);
+}
+
+function resolvePendingInitializationStoragePaths(paths: WalletRuntimePaths): {
+  primaryPath: string;
+  backupPath: string;
+} {
+  return {
+    primaryPath: paths.walletInitPendingPath,
+    backupPath: paths.walletInitPendingBackupPath,
+  };
+}
+
+async function clearPendingInitialization(
+  paths: WalletRuntimePaths,
+  provider: WalletSecretProvider,
+): Promise<void> {
+  await clearWalletPendingInitializationState(
+    resolvePendingInitializationStoragePaths(paths),
+    {
+      provider,
+      secretReference: createWalletPendingInitSecretReference(paths.stateRoot),
+    },
+  );
+}
+
+async function loadOrCreatePendingInitializationMaterial(options: {
+  provider: WalletSecretProvider;
+  paths: WalletRuntimePaths;
+  nowUnixMs: number;
+}): Promise<ReturnType<typeof deriveWalletMaterialFromMnemonic>> {
+  try {
+    const loaded = await loadWalletPendingInitializationStateOrNull(
+      resolvePendingInitializationStoragePaths(options.paths),
+      {
+        provider: options.provider,
+      },
+    );
+
+    if (loaded !== null) {
+      return deriveWalletMaterialFromMnemonic(loaded.state.mnemonic.phrase);
+    }
+  } catch {
+    await clearPendingInitialization(options.paths, options.provider);
+  }
+
+  const material = generateWalletMaterial();
+  const secretReference = createWalletPendingInitSecretReference(options.paths.stateRoot);
+  const pendingState: WalletPendingInitializationStateV1 = {
+    schemaVersion: 1,
+    createdAtUnixMs: options.nowUnixMs,
+    mnemonic: {
+      phrase: material.mnemonic.phrase,
+      language: material.mnemonic.language,
+    },
+  };
+
+  await options.provider.storeSecret(secretReference.keyId, randomBytes(32));
+  try {
+    await saveWalletPendingInitializationState(
+      resolvePendingInitializationStoragePaths(options.paths),
+      pendingState,
+      {
+        provider: options.provider,
+        secretReference,
+      },
+    );
+  } catch (error) {
+    await options.provider.deleteSecret(secretReference.keyId).catch(() => undefined);
+    throw error;
+  }
+
+  return material;
 }
 
 function createInitialWalletState(options: {
@@ -1183,8 +1262,12 @@ export function parseUnlockDurationToMs(raw: string | null | undefined): number 
   return duration;
 }
 
-async function ensureWalletNotInitialized(paths: WalletRuntimePaths): Promise<void> {
+async function ensureWalletNotInitialized(
+  paths: WalletRuntimePaths,
+  provider: WalletSecretProvider,
+): Promise<void> {
   if (await pathExists(paths.walletStatePath) || await pathExists(paths.walletStateBackupPath)) {
+    await clearPendingInitialization(paths, provider);
     throw new Error("wallet_already_initialized");
   }
 }
@@ -1576,12 +1659,17 @@ export async function initializeWallet(options: {
   });
 
   try {
-    await ensureWalletNotInitialized(paths);
+    await ensureWalletNotInitialized(paths, provider);
 
-    const material = generateWalletMaterial();
+    const material = await loadOrCreatePendingInitializationMaterial({
+      provider,
+      paths,
+      nowUnixMs,
+    });
     let mnemonicRevealed = false;
     options.prompter.writeLine("Cogcoin Wallet Initialization");
-    options.prompter.writeLine("Write down this 24-word recovery phrase. It will only be shown once:");
+    options.prompter.writeLine("Write down this 24-word recovery phrase.");
+    options.prompter.writeLine("The same phrase will be shown again until confirmation succeeds:");
     options.prompter.writeLine("");
     for (const line of renderWalletMnemonicRevealArt(material.mnemonic.words)) {
       options.prompter.writeLine(line);
@@ -1643,6 +1731,7 @@ export async function initializeWallet(options: {
         secretReference,
       },
     );
+    await clearPendingInitialization(paths, provider);
 
     return {
       walletRootId,
@@ -1872,6 +1961,7 @@ export async function importWallet(options: {
     const replacementStateExists = await pathExists(paths.walletStatePath) || await pathExists(paths.walletStateBackupPath);
     const importedWalletDir = join(options.dataDir, "wallets", sanitizeWalletName(payload.walletRootId));
     const replacementCoreWalletExists = await pathExists(importedWalletDir);
+    await clearPendingInitialization(paths, provider);
 
     if (replacementStateExists || replacementCoreWalletExists) {
       await confirmTypedAcknowledgement(
@@ -1939,6 +2029,7 @@ export async function importWallet(options: {
         secretReference,
       },
     );
+    await clearPendingInitialization(paths, provider);
 
     if (previousWalletRootId !== null && previousWalletRootId !== payload.walletRootId) {
       await provider.deleteSecret(createWalletSecretReference(previousWalletRootId).keyId).catch(() => undefined);
@@ -1992,6 +2083,7 @@ export async function restoreWalletFromMnemonic(options: {
       || await pathExists(paths.walletStateBackupPath);
     const replacementCoreWalletExists = await detectExistingManagedWalletReplica(options.dataDir);
     const mnemonicPhrase = await promptForRestoreMnemonic(options.prompter);
+    await clearPendingInitialization(paths, provider);
 
     if (replacementStateExists || replacementCoreWalletExists) {
       await confirmRestoreReplacement(options.prompter);
@@ -2066,6 +2158,7 @@ export async function restoreWalletFromMnemonic(options: {
           secretReference,
         },
       );
+      await clearPendingInitialization(paths, provider);
 
       if (previousWalletRootId !== null && previousWalletRootId !== walletRootId) {
         try {

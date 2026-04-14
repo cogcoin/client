@@ -1,6 +1,6 @@
 {
   "name": "@cogcoin/client",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Store-backed Cogcoin client with wallet flows, SQLite persistence, and managed Bitcoin Core integration.",
   "license": "MIT",
   "type": "module",
@@ -53,7 +53,7 @@
   "files": [
     "LICENSE",
     "README.md",
-    "dist/**/*"
+    "dist"
   ],
   "scripts": {
     "build": "rm -rf dist && node ./node_modules/typescript/bin/tsc -p tsconfig.json && node -e \"import('node:fs/promises').then(async (fs) => { await fs.mkdir('dist/art', { recursive: true }); await Promise.all([fs.copyFile('src/writing_quotes.json', 'dist/writing_quotes.json'), fs.copyFile('src/art/banner.txt', 'dist/art/banner.txt'), fs.copyFile('src/art/scroll.txt', 'dist/art/scroll.txt'), fs.copyFile('src/art/train-smoke.txt', 'dist/art/train-smoke.txt'), fs.copyFile('src/art/train.txt', 'dist/art/train.txt'), fs.copyFile('src/art/train-car.txt', 'dist/art/train-car.txt'), fs.copyFile('src/art/wallet.txt', 'dist/art/wallet.txt')]); })\"",
