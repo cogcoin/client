@@ -2,6 +2,7 @@ export { openManagedBitcoindClientInternal } from "./client.js";
 export {
   attachOrStartIndexerDaemon,
   readIndexerDaemonStatusForTesting,
+  stopIndexerDaemonService,
   shutdownIndexerDaemonForTesting,
 } from "./indexer-daemon.js";
 export { normalizeRpcBlock } from "./normalize.js";
@@ -9,6 +10,7 @@ export { BitcoinRpcClient } from "./rpc.js";
 export {
   attachOrStartManagedBitcoindService,
   readManagedBitcoindServiceStatusForTesting,
+  stopManagedBitcoindService,
   shutdownManagedBitcoindServiceForTesting,
 } from "./service.js";
 export {

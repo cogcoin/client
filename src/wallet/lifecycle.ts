@@ -28,7 +28,7 @@ import {
   resolveNormalizedWalletDescriptorState,
   stripDescriptorChecksum,
 } from "./descriptor-normalization.js";
-import { acquireFileLock } from "./fs/lock.js";
+import { acquireFileLock, clearOrphanedFileLock } from "./fs/lock.js";
 import {
   createInternalCoreWalletPassphrase,
   createMnemonicConfirmationChallenge,
@@ -959,6 +959,12 @@ async function stopRecordedManagedProcess(
   }
 
   await waitForProcessExit(pid, 5_000, errorCode);
+}
+
+async function clearOrphanedRepairLocks(lockPaths: readonly string[]): Promise<void> {
+  for (const lockPath of lockPaths) {
+    await clearOrphanedFileLock(lockPath, isProcessAlive);
+  }
 }
 
 async function clearPreviousManagedWalletRuntime(options: {
@@ -2111,6 +2117,10 @@ export async function repairWallet(options: {
   const probeManagedIndexerDaemon = options.probeIndexerDaemon ?? probeIndexerDaemon;
   const attachManagedIndexerDaemon = options.attachIndexerDaemon ?? attachOrStartIndexerDaemon;
   const requestMiningPreemptionForRepair = options.requestMiningPreemption ?? requestMiningGenerationPreemption;
+  await clearOrphanedRepairLocks([
+    paths.walletControlLockPath,
+    paths.miningControlLockPath,
+  ]);
   const controlLock = await acquireFileLock(paths.walletControlLockPath, {
     purpose: "wallet-repair",
     walletRootId: null,
@@ -2136,6 +2146,10 @@ export async function repairWallet(options: {
     let repairedState = loaded.state;
     let repairStateNeedsPersist = false;
     const servicePaths = resolveManagedServicePaths(options.dataDir, repairedState.walletRootId);
+    await clearOrphanedRepairLocks([
+      servicePaths.bitcoindLockPath,
+      servicePaths.indexerDaemonLockPath,
+    ]);
     const preRepairMiningRuntime = await loadMiningRuntimeStatus(paths.miningStatusPath).catch(() => null);
     const backgroundWorkerAlive = preRepairMiningRuntime?.runMode === "background"
       && preRepairMiningRuntime.backgroundWorkerPid !== null

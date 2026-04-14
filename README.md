@@ -75,12 +75,14 @@ Managed node subpath:
 The installed `cogcoin` command covers the first-party local wallet and node workflow:
 
 - wallet lifecycle commands such as `init`, `restore`, `unlock`, `lock`, `repair`, `export`, and `import`
-- sync and service commands such as `status`, `sync`, and `follow`
+- sync and service commands such as `status`, `sync`, `follow`, `bitcoin start`, `bitcoin stop`, `bitcoin status`, `indexer start`, `indexer stop`, and `indexer status`
 - domain and field commands such as `register`, `anchor`, `show`, `domains`, `fields`, `buy`, `sell`, and `transfer`
 - COG and reputation commands such as `send`, `cog lock`, `claim`, `reclaim`, `rep give`, and `rep revoke`
 - mining and hook commands such as `mine`, `mine start`, `mine stop`, `mine status`, `mine log`, `mine setup`, and `hooks status`
 
 The CLI also supports stable `--output json` and `--output preview-json` envelopes on the commands that advertise machine-readable output.
+Ordinary `sync`, `follow`, and wallet-aware read/status flows detach from the managed Bitcoin and indexer services on exit instead of stopping them.
+Use the explicit `bitcoin ...` and `indexer ...` commands when you want direct service inspection or start/stop control.
 For provider-backed local wallets, normal reads, mutations, export, and mining setup flows auto-materialize a local unlock session when the wallet is not explicitly locked.
 `cogcoin restore` and `cogcoin wallet restore` rebuild a fresh local wallet from a 24-word English BIP39 mnemonic and recreate the managed Core wallet replica.
 Run `cogcoin sync` afterward to bootstrap the managed Bitcoin/indexer state.
@@ -124,6 +126,9 @@ The managed `bitcoind` client also exposes:
 
 - `onProgress(event)` for structured bootstrap/sync progress updates
 - `progressOutput: "auto" | "tty" | "none"` for the built-in scroll-train terminal progress UI
+
+At the CLI layer, managed services are persistent until explicitly stopped.
+`cogcoin bitcoin start` starts managed `bitcoind`, `cogcoin bitcoin stop` stops managed `bitcoind` and the paired indexer, `cogcoin indexer start` starts the managed indexer and auto-starts `bitcoind` first when needed, and `cogcoin indexer stop` stops only the indexer.
 
 The default TTY progress renderer ships with the package and uses the bundled scroll, train, and quote assets from `dist/art/*` and `dist/writing_quotes.json`.
 

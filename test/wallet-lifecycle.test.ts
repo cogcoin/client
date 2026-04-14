@@ -1528,6 +1528,153 @@ test("repairWallet restores provider-backed state from backup and resets an unhe
   assert.equal(loaded.state.walletRootId, initialized.walletRootId);
 });
 
+test("repairWallet clears orphaned control locks before acquiring the repair lock", async () => {
+  const fixture = await initializeRepairWalletFixture("cogcoin-wallet-repair-orphaned-control-");
+
+  await writeFile(fixture.paths.walletControlLockPath, `${JSON.stringify({
+    processId: null,
+    acquiredAtUnixMs: 1_700_000_100_000,
+    purpose: "orphaned-wallet-control",
+    walletRootId: fixture.initialized.walletRootId,
+  }, null, 2)}\n`, "utf8");
+  await writeFile(fixture.paths.miningControlLockPath, "not-json\n", "utf8");
+
+  const repaired = await repairWallet({
+    dataDir: fixture.paths.bitcoinDataDir,
+    databasePath: fixture.databasePath,
+    provider: fixture.provider,
+    paths: fixture.paths,
+    nowUnixMs: 1_700_000_300_000,
+    assumeYes: true,
+    requestMiningPreemption: async () => ({
+      requestId: "repair-request",
+      async release() {},
+    }),
+    probeIndexerDaemon: async () => ({
+      compatibility: "unreachable",
+      status: null,
+      client: null,
+      error: null,
+    }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    attachIndexerDaemon: async () => createRepairIndexerDaemonStub({
+      walletRootId: fixture.initialized.walletRootId,
+      state: "synced",
+      coreBestHeight: 123,
+      snapshotHeight: 123,
+    }) as never,
+    rpcFactory: fixture.harness.rpcFactory,
+  });
+
+  await assert.rejects(() => access(fixture.paths.walletControlLockPath, constants.F_OK));
+  await assert.rejects(() => access(fixture.paths.miningControlLockPath, constants.F_OK));
+  assert.equal(repaired.walletRootId, fixture.initialized.walletRootId);
+  assert.equal(repaired.indexerPostRepairHealth, "synced");
+});
+
+test("repairWallet clears orphaned managed service locks for the current wallet root", async () => {
+  const fixture = await initializeRepairWalletFixture("cogcoin-wallet-repair-orphaned-services-");
+  const servicePaths = resolveManagedServicePaths(fixture.paths.bitcoinDataDir, fixture.initialized.walletRootId);
+
+  await mkdir(servicePaths.walletRuntimeRoot, { recursive: true });
+  await writeFile(servicePaths.bitcoindLockPath, `${JSON.stringify({
+    processId: null,
+    acquiredAtUnixMs: 1_700_000_100_000,
+    purpose: "orphaned-bitcoind-lock",
+    walletRootId: fixture.initialized.walletRootId,
+  }, null, 2)}\n`, "utf8");
+  await writeFile(servicePaths.indexerDaemonLockPath, "not-json\n", "utf8");
+
+  const repaired = await repairWallet({
+    dataDir: fixture.paths.bitcoinDataDir,
+    databasePath: fixture.databasePath,
+    provider: fixture.provider,
+    paths: fixture.paths,
+    nowUnixMs: 1_700_000_300_000,
+    assumeYes: true,
+    requestMiningPreemption: async () => ({
+      requestId: "repair-request",
+      async release() {},
+    }),
+    probeIndexerDaemon: async () => ({
+      compatibility: "unreachable",
+      status: null,
+      client: null,
+      error: null,
+    }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    attachIndexerDaemon: async () => createRepairIndexerDaemonStub({
+      walletRootId: fixture.initialized.walletRootId,
+      state: "synced",
+      coreBestHeight: 123,
+      snapshotHeight: 123,
+    }) as never,
+    rpcFactory: fixture.harness.rpcFactory,
+  });
+
+  await assert.rejects(() => access(servicePaths.bitcoindLockPath, constants.F_OK));
+  await assert.rejects(() => access(servicePaths.indexerDaemonLockPath, constants.F_OK));
+  assert.equal(repaired.walletRootId, fixture.initialized.walletRootId);
+  assert.equal(repaired.indexerPostRepairHealth, "synced");
+});
+
+test("repairWallet still respects a live wallet-control lock", async () => {
+  const fixture = await initializeRepairWalletFixture("cogcoin-wallet-repair-live-lock-");
+  const heldLock = await acquireFileLock(fixture.paths.walletControlLockPath, {
+    purpose: "test-live-wallet-control-lock",
+    walletRootId: fixture.initialized.walletRootId,
+  });
+
+  try {
+    await assert.rejects(() => repairWallet({
+      dataDir: fixture.paths.bitcoinDataDir,
+      databasePath: fixture.databasePath,
+      provider: fixture.provider,
+      paths: fixture.paths,
+      nowUnixMs: 1_700_000_300_000,
+      assumeYes: true,
+      requestMiningPreemption: async () => ({
+        requestId: "repair-request",
+        async release() {},
+      }),
+      probeIndexerDaemon: async () => ({
+        compatibility: "unreachable",
+        status: null,
+        client: null,
+        error: null,
+      }),
+      attachService: async () => ({
+        rpc: {
+          url: "http://127.0.0.1:18443",
+          cookieFile: "/tmp/does-not-matter",
+          port: 18_443,
+        },
+      } as never),
+      attachIndexerDaemon: async () => createRepairIndexerDaemonStub({
+        walletRootId: fixture.initialized.walletRootId,
+        state: "synced",
+        coreBestHeight: 123,
+        snapshotHeight: 123,
+      }) as never,
+      rpcFactory: fixture.harness.rpcFactory,
+    }), /file_lock_busy_.*wallet-control\.lock/);
+  } finally {
+    await heldLock.release();
+  }
+});
+
 test("repairWallet normalizes descriptor state introduced by the old managed import path", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-repair-descriptor-"));
   const paths = createTempWalletPaths(tempRoot);

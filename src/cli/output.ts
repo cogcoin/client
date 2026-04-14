@@ -1197,6 +1197,18 @@ export function resolveStableJsonSchema(parsed: ParsedCliArgs): string | null {
   switch (parsed.command) {
     case "status":
       return "cogcoin/status/v1";
+    case "bitcoin-start":
+      return "cogcoin/bitcoin-start/v1";
+    case "bitcoin-stop":
+      return "cogcoin/bitcoin-stop/v1";
+    case "bitcoin-status":
+      return "cogcoin/bitcoin-status/v1";
+    case "indexer-start":
+      return "cogcoin/indexer-start/v1";
+    case "indexer-stop":
+      return "cogcoin/indexer-stop/v1";
+    case "indexer-status":
+      return "cogcoin/indexer-status/v1";
     case "wallet-address":
     case "address":
       return "cogcoin/address/v1";

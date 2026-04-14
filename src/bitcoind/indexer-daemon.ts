@@ -104,6 +104,11 @@ export interface IndexerDaemonProbeResult {
   error: string | null;
 }
 
+export interface IndexerDaemonStopResult {
+  status: "stopped" | "not-running";
+  walletRootId: string;
+}
+
 export interface CoherentIndexerSnapshotLease {
   payload: IndexerSnapshotPayload;
   status: ManagedIndexerDaemonStatus;
@@ -152,6 +157,31 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+async function waitForProcessExit(
+  pid: number,
+  timeoutMs: number,
+  errorCode: string,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (!await isProcessAlive(pid)) {
+      return;
+    }
+
+    await sleep(50);
+  }
+
+  throw new Error(errorCode);
+}
+
+async function clearIndexerDaemonRuntimeArtifacts(
+  paths: ReturnType<typeof resolveManagedServicePaths>,
+): Promise<void> {
+  await rm(paths.indexerDaemonStatusPath, { force: true }).catch(() => undefined);
+  await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
 }
 
 function createIndexerDaemonClient(socketPath: string): IndexerDaemonClient {
@@ -551,30 +581,63 @@ export async function attachOrStartIndexerDaemon(options: {
   }
 }
 
+export async function stopIndexerDaemonService(options: {
+  dataDir: string;
+  walletRootId?: string;
+  shutdownTimeoutMs?: number;
+}): Promise<IndexerDaemonStopResult> {
+  const walletRootId = options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
+  const paths = resolveManagedServicePaths(options.dataDir, walletRootId);
+  const lock = await acquireFileLock(paths.indexerDaemonLockPath, {
+    purpose: "indexer-daemon-stop",
+    walletRootId,
+    dataDir: options.dataDir,
+  });
+
+  try {
+    const status = await readJsonFile<ManagedIndexerDaemonStatus>(paths.indexerDaemonStatusPath);
+    const processId = status?.processId ?? null;
+
+    if (status === null || processId === null || !await isProcessAlive(processId)) {
+      await clearIndexerDaemonRuntimeArtifacts(paths);
+      return {
+        status: "not-running",
+        walletRootId,
+      };
+    }
+
+    try {
+      process.kill(processId, "SIGTERM");
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH")) {
+        throw error;
+      }
+    }
+
+    await waitForProcessExit(
+      processId,
+      options.shutdownTimeoutMs ?? 5_000,
+      "indexer_daemon_stop_timeout",
+    );
+    await clearIndexerDaemonRuntimeArtifacts(paths);
+    return {
+      status: "stopped",
+      walletRootId,
+    };
+  } finally {
+    await lock.release();
+  }
+}
+
 export async function shutdownIndexerDaemonForTesting(options: {
   dataDir: string;
   walletRootId?: string;
 }): Promise<void> {
-  const walletRootId = options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
-  const paths = resolveManagedServicePaths(options.dataDir, walletRootId);
-  const status = await readJsonFile<ManagedIndexerDaemonStatus>(paths.indexerDaemonStatusPath);
-
-  if (status?.processId !== null && status?.processId !== undefined) {
-    try {
-      process.kill(status.processId, "SIGTERM");
-      const deadline = Date.now() + 5_000;
-      while (Date.now() < deadline) {
-        if (!await isProcessAlive(status.processId)) {
-          break;
-        }
-        await sleep(50);
-      }
-    } catch {
-      // ignore stale pid cleanup failures
-    }
-  }
-
-  await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
+  await stopIndexerDaemonService(options).catch(async () => {
+    const walletRootId = options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
+    const paths = resolveManagedServicePaths(options.dataDir, walletRootId);
+    await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
+  });
 }
 
 export async function readIndexerDaemonStatusForTesting(options: {

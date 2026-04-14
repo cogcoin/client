@@ -16,9 +16,12 @@ import {
   openManagedBitcoindClientInternal,
   readIndexerDaemonStatusForTesting,
   readManagedBitcoindServiceStatusForTesting,
+  stopIndexerDaemonService,
+  stopManagedBitcoindService,
   shutdownIndexerDaemonForTesting,
   shutdownManagedBitcoindServiceForTesting,
 } from "../src/bitcoind/testing.js";
+import { openWalletReadContext } from "../src/wallet/read/index.js";
 import { resolveManagedServicePaths } from "../src/bitcoind/service-paths.js";
 import {
   INDEXER_DAEMON_SCHEMA_VERSION,
@@ -81,6 +84,10 @@ async function cleanupManagedFixture(fixture: RegtestFixture, ...extraDataDirs: 
 
   for (const dataDir of dataDirs) {
     await shutdownIndexerDaemonForTesting({ dataDir }).catch(() => undefined);
+    await shutdownManagedBitcoindServiceForTesting({
+      dataDir,
+      chain: "main",
+    }).catch(() => undefined);
     await shutdownManagedBitcoindServiceForTesting({
       dataDir,
       chain: "regtest",
@@ -515,6 +522,158 @@ test("managed bitcoind service reuses a singleton node and records runtime statu
     assert.equal(status?.walletReplica?.proofStatus, "missing");
     assert.equal(loadedWallets.includes(status?.walletReplica?.walletName ?? ""), false);
   } finally {
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("managed client close detaches without stopping the managed services", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-client-managed-client-detach");
+  let client: Awaited<ReturnType<typeof openManagedBitcoindClientInternal>> | null = null;
+
+  try {
+    const store = await openSqliteStore({ filename: fixture.databasePath });
+    client = await openManagedBitcoindClientInternal({
+      store,
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      chain: "regtest",
+      startHeight: 0,
+      snapshotInterval: 2,
+      pollIntervalMs: 250,
+      syncDebounceMs: 50,
+    });
+
+    const statusBeforeClose = await client.getNodeStatus();
+    const daemonInstanceIdBeforeClose = statusBeforeClose.indexerDaemon?.daemonInstanceId ?? null;
+    const bitcoindPidBeforeClose = statusBeforeClose.pid;
+
+    await client.close();
+    client = null;
+
+    const reattachedNode = await attachOrStartManagedBitcoindService({
+      dataDir: fixture.dataDir,
+      chain: "regtest",
+      startHeight: 0,
+    });
+    const reattachedDaemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+    });
+
+    try {
+      const daemonStatus = await reattachedDaemon.getStatus();
+      assert.equal(reattachedNode.pid, bitcoindPidBeforeClose);
+      assert.equal(daemonStatus.daemonInstanceId, daemonInstanceIdBeforeClose);
+    } finally {
+      await reattachedDaemon.close();
+    }
+  } finally {
+    await client?.close().catch(() => undefined);
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("wallet read context close detaches without stopping managed services", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-client-read-context-detach");
+  let readContext: Awaited<ReturnType<typeof openWalletReadContext>> | null = null;
+
+  try {
+    readContext = await openWalletReadContext({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+    });
+
+    const bitcoindPidBeforeClose = readContext.nodeStatus?.pid ?? null;
+    const daemonInstanceIdBeforeClose = readContext.indexer.status?.daemonInstanceId ?? null;
+
+    await readContext.close();
+    readContext = null;
+
+    const reattachedNode = await attachOrStartManagedBitcoindService({
+      dataDir: fixture.dataDir,
+      chain: "main",
+      startHeight: 0,
+    });
+    const reattachedDaemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+    });
+
+    try {
+      const daemonStatus = await reattachedDaemon.getStatus();
+      assert.equal(reattachedNode.pid, bitcoindPidBeforeClose);
+      assert.equal(daemonStatus.daemonInstanceId, daemonInstanceIdBeforeClose);
+    } finally {
+      await reattachedDaemon.close();
+    }
+  } finally {
+    await readContext?.close().catch(() => undefined);
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("stopManagedBitcoindService stops the managed node and clears runtime status", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-client-bitcoind-stop");
+
+  try {
+    const node = await attachOrStartManagedBitcoindService({
+      dataDir: fixture.dataDir,
+      chain: "regtest",
+      startHeight: 0,
+    });
+    const pid = node.pid;
+    const result = await stopManagedBitcoindService({
+      dataDir: fixture.dataDir,
+    });
+    const status = await readManagedBitcoindServiceStatusForTesting(fixture.dataDir);
+
+    assert.equal(result.status, "stopped");
+    assert.equal(result.walletRootId, "wallet-root-uninitialized");
+    assert.equal(status, null);
+
+    if (pid !== null) {
+      assert.throws(() => process.kill(pid, 0), /ESRCH/);
+    }
+  } finally {
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("stopIndexerDaemonService stops only the managed indexer", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-client-indexer-stop");
+  let client: Awaited<ReturnType<typeof openManagedBitcoindClientInternal>> | null = null;
+
+  try {
+    const store = await openSqliteStore({ filename: fixture.databasePath });
+    client = await openManagedBitcoindClientInternal({
+      store,
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      chain: "regtest",
+      startHeight: 0,
+      snapshotInterval: 2,
+      pollIntervalMs: 250,
+      syncDebounceMs: 50,
+    });
+
+    const statusBeforeStop = await client.getNodeStatus();
+    const nodeRpc = statusBeforeStop.rpc;
+    const result = await stopIndexerDaemonService({
+      dataDir: fixture.dataDir,
+    });
+    const daemonStatus = await readIndexerDaemonStatusForTesting({ dataDir: fixture.dataDir });
+    const chainInfo = await createRpcClient(nodeRpc).getBlockchainInfo();
+
+    assert.equal(result.status, "stopped");
+    assert.equal(result.walletRootId, "wallet-root-uninitialized");
+    assert.equal(daemonStatus, null);
+    assert.equal(chainInfo.chain, "regtest");
+  } finally {
+    await client?.close().catch(() => undefined);
     await cleanupManagedFixture(fixture);
   }
 });

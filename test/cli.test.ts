@@ -20,8 +20,10 @@ import {
   resolveDefaultClientDatabasePathForTesting,
 } from "../src/app-paths.js";
 import {
+  MANAGED_BITCOIND_SERVICE_API_VERSION,
   INDEXER_DAEMON_SCHEMA_VERSION,
   INDEXER_DAEMON_SERVICE_API_VERSION,
+  type ManagedBitcoindServiceStatus,
 } from "../src/bitcoind/types.js";
 import { inspectPassiveClientStatus } from "../src/passive-status.js";
 import { openSqliteStore } from "../src/sqlite/index.js";
@@ -174,6 +176,62 @@ function createIndexerDaemonStatus(walletRootId: string, overrides: Partial<{
     reorgDepth: overrides.reorgDepth ?? null,
     lastAppliedAtUnixMs: overrides.lastAppliedAtUnixMs ?? 1_700_000_000_000,
     activeSnapshotCount: overrides.activeSnapshotCount ?? 0,
+    lastError: overrides.lastError ?? null,
+  };
+}
+
+function createBitcoindServiceStatus(walletRootId: string, overrides: Partial<{
+  serviceInstanceId: string;
+  state: "starting" | "ready" | "stopping" | "failed";
+  processId: number | null;
+  dataDir: string;
+  runtimeRoot: string;
+  startedAtUnixMs: number;
+  heartbeatAtUnixMs: number;
+  updatedAtUnixMs: number;
+  lastError: string | null;
+  walletReplicaProofStatus: "not-proven" | "ready" | "missing" | "mismatch";
+}> = {}): ManagedBitcoindServiceStatus {
+  return {
+    serviceApiVersion: MANAGED_BITCOIND_SERVICE_API_VERSION,
+    binaryVersion: "0.0.0-test",
+    buildId: null,
+    serviceInstanceId: overrides.serviceInstanceId ?? "bitcoind-1",
+    state: overrides.state ?? "ready",
+    processId: overrides.processId ?? 1234,
+    walletRootId,
+    chain: "main" as const,
+    dataDir: overrides.dataDir ?? "/tmp/cogcoin-bitcoin",
+    runtimeRoot: overrides.runtimeRoot ?? `/tmp/runtime/${walletRootId}`,
+    startHeight: 0,
+    rpc: {
+      url: "http://127.0.0.1:8332",
+      cookieFile: "/tmp/cogcoin-bitcoin/.cookie",
+      port: 8332,
+    },
+    zmq: {
+      endpoint: "tcp://127.0.0.1:28332",
+      topic: "hashblock" as const,
+      port: 28332,
+      pollIntervalMs: 15_000,
+    },
+    p2pPort: 8333,
+    walletReplica: {
+      walletRootId,
+      walletName: `cogcoin-${walletRootId}`,
+      loaded: true,
+      descriptors: true,
+      privateKeysEnabled: true,
+      created: false,
+      proofStatus: overrides.walletReplicaProofStatus ?? "ready",
+      descriptorChecksum: "priv",
+      fundingAddress0: "bc1qfundingidentity0000000000000000000000000",
+      fundingScriptPubKeyHex0: "0014ed495c1face9da3c7028519dbb36576c37f90e56",
+      message: null,
+    },
+    startedAtUnixMs: overrides.startedAtUnixMs ?? 1_700_000_000_000,
+    heartbeatAtUnixMs: overrides.heartbeatAtUnixMs ?? 1_700_000_000_100,
+    updatedAtUnixMs: overrides.updatedAtUnixMs ?? 1_700_000_000_200,
     lastError: overrides.lastError ?? null,
   };
 }
@@ -907,6 +965,25 @@ test("parseCliArgs handles wallet status and field inspection commands", () => {
   assert.equal(hooksStatus.command, "hooks-mining-status");
   assert.equal(hooksStatus.verify, true);
 
+  const bitcoinStart = parseCliArgs(["bitcoin", "start"]);
+  assert.equal(bitcoinStart.command, "bitcoin-start");
+
+  const bitcoinStop = parseCliArgs(["bitcoin", "stop"]);
+  assert.equal(bitcoinStop.command, "bitcoin-stop");
+
+  const bitcoinStatus = parseCliArgs(["bitcoin", "status", "--output", "json"]);
+  assert.equal(bitcoinStatus.command, "bitcoin-status");
+  assert.equal(bitcoinStatus.outputMode, "json");
+
+  const indexerStart = parseCliArgs(["indexer", "start"]);
+  assert.equal(indexerStart.command, "indexer-start");
+
+  const indexerStop = parseCliArgs(["indexer", "stop"]);
+  assert.equal(indexerStop.command, "indexer-stop");
+
+  const indexerStatus = parseCliArgs(["indexer", "status"]);
+  assert.equal(indexerStatus.command, "indexer-status");
+
   const mineSetup = parseCliArgs(["mine", "setup"]);
   assert.equal(mineSetup.command, "mine-setup");
 
@@ -984,6 +1061,12 @@ test("parseCliArgs allows json on covered action commands and rejects excluded c
     ["wallet", "import", "/tmp/archive.cogwallet", "--output", "json"],
     ["wallet", "lock", "--output", "json"],
     ["repair", "--output", "json"],
+    ["bitcoin", "start", "--output", "json"],
+    ["bitcoin", "stop", "--output", "json"],
+    ["bitcoin", "status", "--output", "json"],
+    ["indexer", "start", "--output", "json"],
+    ["indexer", "stop", "--output", "json"],
+    ["indexer", "status", "--output", "json"],
     ["register", "alpha-child", "--output", "json"],
     ["domain", "buy", "alpha", "--output", "json"],
     ["send", "1", "--to", "spk:00141111111111111111111111111111111111111111", "--output", "json"],
@@ -1434,12 +1517,337 @@ test("runCli shows help and rejects unknown commands", async () => {
   assert.match(stdout.toString(), /wallet address/);
   assert.match(stdout.toString(), /domain list/);
   assert.match(stdout.toString(), /status --output json/);
+  assert.match(stdout.toString(), /bitcoin start/);
+  assert.match(stdout.toString(), /indexer status/);
 
   const badStdout = new MemoryStream();
   const badStderr = new MemoryStream();
   const badCode = await runCli(["wat"], { stdout: badStdout, stderr: badStderr });
   assert.equal(badCode, 2);
   assert.match(badStderr.toString(), /cli_unknown_command_wat/);
+});
+
+test("bitcoin status json reports live node data without resolving the client db path", async () => {
+  const stdout = new MemoryStream();
+  const walletRootId = "wallet-root-services";
+
+  const code = await runCli(["bitcoin", "status", "--output", "json"], {
+    stdout,
+    stderr: new MemoryStream(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveDefaultClientDatabasePath: () => {
+      throw new Error("client db path should not be resolved");
+    },
+    resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
+    loadWalletState: async () => ({
+      source: "primary",
+      state: createWalletState({ walletRootId }),
+    }),
+    probeManagedBitcoindService: async () => ({
+      compatibility: "compatible",
+      status: createBitcoindServiceStatus(walletRootId, {
+        dataDir: "/tmp/cogcoin-bitcoin",
+      }),
+      error: null,
+    }),
+    createBitcoinRpcClient: () => ({
+      async getBlockchainInfo() {
+        return {
+          chain: "main",
+          blocks: 910_000,
+          headers: 910_005,
+          bestblockhash: "aa".repeat(32),
+          pruned: false,
+          verificationprogress: 0.9999,
+          initialblockdownload: false,
+        };
+      },
+      async getNetworkInfo() {
+        return {
+          networkactive: true,
+          connections: 8,
+          connections_in: 3,
+          connections_out: 5,
+        };
+      },
+    }) as never,
+  });
+
+  assert.equal(code, 0);
+  const envelope = parseJsonEnvelope(stdout) as {
+    schema: string;
+    ok: boolean;
+    command: string;
+    warnings: string[];
+    explanations: string[];
+    nextSteps: string[];
+    data: {
+      walletRootId: string;
+      walletRootSource: string;
+      compatibility: string;
+      service: { serviceInstanceId: string; runtimeRoot: string };
+      node: { bestHeight: number; headerHeight: number; connections: number };
+    };
+  };
+  assert.equal(envelope.schema, "cogcoin/bitcoin-status/v1");
+  assert.equal(envelope.ok, true);
+  assert.equal(envelope.command, "cogcoin bitcoin status");
+  assert.deepEqual(envelope.warnings, []);
+  assert.deepEqual(envelope.explanations, []);
+  assert.deepEqual(envelope.nextSteps, []);
+  assert.equal(envelope.data.walletRootId, walletRootId);
+  assert.equal(envelope.data.walletRootSource, "wallet-state");
+  assert.equal(envelope.data.compatibility, "compatible");
+  assert.equal(envelope.data.service.serviceInstanceId, "bitcoind-1");
+  assert.equal(envelope.data.service.runtimeRoot, `/tmp/runtime/${walletRootId}`);
+  assert.equal(envelope.data.node.bestHeight, 910_000);
+  assert.equal(envelope.data.node.headerHeight, 910_005);
+  assert.equal(envelope.data.node.connections, 8);
+});
+
+test("indexer status reads stale status files without resolving the client db path", async () => {
+  const stdout = new MemoryStream();
+
+  const code = await runCli(["indexer", "status"], {
+    stdout,
+    stderr: new MemoryStream(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveDefaultClientDatabasePath: () => {
+      throw new Error("client db path should not be resolved");
+    },
+    resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
+    loadWalletState: async () => {
+      throw new Error("wallet state unavailable");
+    },
+    loadUnlockSession: async () => {
+      throw new Error("unlock session unavailable");
+    },
+    loadWalletExplicitLock: async () => null,
+    probeManagedBitcoindService: async () => ({
+      compatibility: "unreachable",
+      status: null,
+      error: null,
+    }),
+    probeIndexerDaemon: async () => ({
+      compatibility: "unreachable",
+      status: null,
+      client: null,
+      error: null,
+    }),
+    readObservedIndexerDaemonStatus: async () => createIndexerDaemonStatus("wallet-root-uninitialized", {
+      state: "failed",
+      lastError: "stale_status_file",
+    }),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.toString(), /Managed Indexer Status/);
+  assert.match(stdout.toString(), /Observed source: status-file/);
+  assert.match(stdout.toString(), /Daemon state: failed/);
+  assert.match(stdout.toString(), /Recommended next step: Run `cogcoin indexer start`/);
+});
+
+test("bitcoin start only starts bitcoind and does not resolve the client db path", async () => {
+  const stdout = new MemoryStream();
+  let attached = false;
+
+  const code = await runCli(["bitcoin", "start", "--output", "json"], {
+    stdout,
+    stderr: new MemoryStream(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveDefaultClientDatabasePath: () => {
+      throw new Error("client db path should not be resolved");
+    },
+    resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
+    loadWalletState: async () => ({
+      source: "primary",
+      state: createWalletState({ walletRootId: "wallet-root-services" }),
+    }),
+    probeManagedBitcoindService: async () => ({
+      compatibility: "unreachable",
+      status: null,
+      error: null,
+    }),
+    attachManagedBitcoindService: async () => {
+      attached = true;
+      return {
+        rpc: { url: "http://127.0.0.1:8332", cookieFile: "/tmp/.cookie", port: 8332 },
+        zmq: { endpoint: "tcp://127.0.0.1:28332", topic: "hashblock", port: 28332, pollIntervalMs: 15_000 },
+        pid: 4321,
+        expectedChain: "main",
+        startHeight: 0,
+        dataDir: "/tmp/cogcoin-bitcoin",
+        walletRootId: "wallet-root-services",
+        runtimeRoot: "/tmp/runtime/wallet-root-services",
+        async validate() {},
+        async refreshServiceStatus() {
+          return createBitcoindServiceStatus("wallet-root-services");
+        },
+        async stop() {},
+      };
+    },
+    attachIndexerDaemon: async () => {
+      throw new Error("indexer should not start during bitcoin start");
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.equal(attached, true);
+  const envelope = parseJsonEnvelope(stdout) as { schema: string; data: { bitcoind: { status: string } } };
+  assert.equal(envelope.schema, "cogcoin/bitcoin-start/v1");
+  assert.equal(envelope.data.bitcoind.status, "started");
+});
+
+test("indexer start resolves the client db path and auto-starts bitcoind", async () => {
+  const stdout = new MemoryStream();
+  let ensuredPath: string | null = null;
+  let attachedBitcoind = false;
+  let attachedIndexer = false;
+
+  const code = await runCli(["indexer", "start", "--output", "json"], {
+    stdout,
+    stderr: new MemoryStream(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-client/client.sqlite",
+    ensureDirectory: async (path) => {
+      ensuredPath = path;
+    },
+    resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
+    loadWalletState: async () => ({
+      source: "primary",
+      state: createWalletState({ walletRootId: "wallet-root-services" }),
+    }),
+    probeManagedBitcoindService: async () => ({
+      compatibility: "unreachable",
+      status: null,
+      error: null,
+    }),
+    attachManagedBitcoindService: async () => {
+      attachedBitcoind = true;
+      return {
+        rpc: { url: "http://127.0.0.1:8332", cookieFile: "/tmp/.cookie", port: 8332 },
+        zmq: { endpoint: "tcp://127.0.0.1:28332", topic: "hashblock", port: 28332, pollIntervalMs: 15_000 },
+        pid: 4321,
+        expectedChain: "main",
+        startHeight: 0,
+        dataDir: "/tmp/cogcoin-bitcoin",
+        walletRootId: "wallet-root-services",
+        runtimeRoot: "/tmp/runtime/wallet-root-services",
+        async validate() {},
+        async refreshServiceStatus() {
+          return createBitcoindServiceStatus("wallet-root-services");
+        },
+        async stop() {},
+      };
+    },
+    probeIndexerDaemon: async () => ({
+      compatibility: "unreachable",
+      status: null,
+      client: null,
+      error: null,
+    }),
+    attachIndexerDaemon: async ({ databasePath }) => {
+      attachedIndexer = true;
+      assert.equal(databasePath, "/tmp/cogcoin-client/client.sqlite");
+      return {
+        async getStatus() {
+          return createIndexerDaemonStatus("wallet-root-services");
+        },
+        async openSnapshot() {
+          throw new Error("not used");
+        },
+        async readSnapshot() {
+          throw new Error("not used");
+        },
+        async closeSnapshot() {},
+        async close() {},
+      };
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.equal(ensuredPath, "/tmp/cogcoin-client");
+  assert.equal(attachedBitcoind, true);
+  assert.equal(attachedIndexer, true);
+  const envelope = parseJsonEnvelope(stdout) as {
+    schema: string;
+    data: { bitcoind: { status: string }; indexer: { status: string } };
+  };
+  assert.equal(envelope.schema, "cogcoin/indexer-start/v1");
+  assert.equal(envelope.data.bitcoind.status, "started");
+  assert.equal(envelope.data.indexer.status, "started");
+});
+
+test("bitcoin stop stops the paired indexer and managed bitcoind", async () => {
+  const stdout = new MemoryStream();
+  const calls: string[] = [];
+
+  const code = await runCli(["bitcoin", "stop", "--output", "json"], {
+    stdout,
+    stderr: new MemoryStream(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
+    loadWalletState: async () => ({
+      source: "primary",
+      state: createWalletState({ walletRootId: "wallet-root-services" }),
+    }),
+    stopIndexerDaemonService: async () => {
+      calls.push("indexer");
+      return {
+        status: "stopped",
+        walletRootId: "wallet-root-services",
+      };
+    },
+    stopManagedBitcoindService: async () => {
+      calls.push("bitcoind");
+      return {
+        status: "stopped",
+        walletRootId: "wallet-root-services",
+      };
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.deepEqual(calls, ["indexer", "bitcoind"]);
+  const envelope = parseJsonEnvelope(stdout) as {
+    schema: string;
+    data: { bitcoind: { status: string }; indexer: { status: string } };
+  };
+  assert.equal(envelope.schema, "cogcoin/bitcoin-stop/v1");
+  assert.equal(envelope.data.indexer.status, "stopped");
+  assert.equal(envelope.data.bitcoind.status, "stopped");
+});
+
+test("indexer stop only stops the managed indexer", async () => {
+  const stdout = new MemoryStream();
+  let indexerStopped = false;
+
+  const code = await runCli(["indexer", "stop", "--output", "json"], {
+    stdout,
+    stderr: new MemoryStream(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
+    loadWalletState: async () => ({
+      source: "primary",
+      state: createWalletState({ walletRootId: "wallet-root-services" }),
+    }),
+    stopIndexerDaemonService: async () => {
+      indexerStopped = true;
+      return {
+        status: "stopped",
+        walletRootId: "wallet-root-services",
+      };
+    },
+    stopManagedBitcoindService: async () => {
+      throw new Error("bitcoind should not stop during indexer stop");
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.equal(indexerStopped, true);
+  const envelope = parseJsonEnvelope(stdout) as { schema: string; data: { indexer: { status: string } } };
+  assert.equal(envelope.schema, "cogcoin/indexer-stop/v1");
+  assert.equal(envelope.data.indexer.status, "stopped");
 });
 
 test("wallet admin commands dispatch through the lifecycle hooks", async () => {
@@ -5383,7 +5791,61 @@ test("status renders wallet-aware degraded output for an uninitialized wallet", 
   assert.match(stdout.toString(), /Wallet state: uninitialized/);
   assert.match(stdout.toString(), /Bitcoin service: starting/);
   assert.match(stdout.toString(), /Indexer service: starting/);
-  assert.match(stdout.toString(), /Recommended next step: Run `cogcoin sync` to bootstrap assumeutxo and the managed Bitcoin\/indexer state\./);
+  assert.match(stdout.toString(), /Recommended next step: Run `cogcoin init` to create a new local wallet root\./);
+  assert.doesNotMatch(stdout.toString(), /cogcoin sync/);
+});
+
+test("status json recommends init for an uninitialized wallet", async () => {
+  const stdout = new MemoryStream();
+
+  const code = await runCli(["status", "--output", "json"], {
+    stdout,
+    stderr: new MemoryStream(),
+    ensureDirectory: async () => {},
+    openWalletReadContext: async () => ({
+      dataDir: "/tmp/bitcoin",
+      databasePath: "/tmp/client.sqlite",
+      localState: {
+        availability: "uninitialized",
+        walletRootId: null,
+        state: null,
+        source: null,
+        unlockUntilUnixMs: null,
+        hasPrimaryStateFile: false,
+        hasBackupStateFile: false,
+        hasUnlockSessionFile: false,
+        message: "Wallet state has not been initialized yet.",
+      },
+      bitcoind: {
+        health: "starting",
+        status: null,
+        message: "Managed bitcoind service is still starting.",
+      },
+      nodeStatus: null,
+      nodeHealth: "starting",
+      nodeMessage: "Bitcoin service is starting.",
+      indexer: {
+        health: "starting",
+        status: null,
+        message: "Indexer daemon is still starting.",
+        snapshotTip: null,
+      },
+      snapshot: null,
+      model: null,
+      async close() {},
+    }),
+  });
+
+  assert.equal(code, 0);
+  const envelope = parseJsonEnvelope(stdout) as {
+    nextSteps: string[];
+    data: {
+      wallet: { availability: string };
+    };
+  };
+  assert.equal(envelope.data.wallet.availability, "uninitialized");
+  assert.ok(envelope.nextSteps.includes("Run `cogcoin init` to create a new local wallet root."));
+  assert.ok(!envelope.nextSteps.some((step) => step.includes("cogcoin sync")));
 });
 
 test("status renders explicit reorging output and reorg depth", async () => {

@@ -9,6 +9,12 @@ export const HELP_TEXT = `Usage: cogcoin <command> [options]
 Commands:
   status                  Show wallet-aware local service and chain status
   status --output json    Emit the stable v1 machine-readable status envelope
+  bitcoin start           Start the managed Bitcoin daemon
+  bitcoin stop            Stop the managed Bitcoin daemon and paired indexer
+  bitcoin status          Show managed Bitcoin daemon status without starting it
+  indexer start           Start the managed Cogcoin indexer (and bitcoind if needed)
+  indexer stop            Stop the managed Cogcoin indexer only
+  indexer status          Show managed Cogcoin indexer status without starting it
   init                    Initialize a new local wallet root
   init --output json      Emit the stable v1 machine-readable init result envelope
   restore                 Restore a fresh local wallet from a 24-word mnemonic; run sync afterward
@@ -118,6 +124,8 @@ Quickstart:
 
 Examples:
   cogcoin status --output json
+  cogcoin bitcoin status
+  cogcoin indexer status
   cogcoin init --output json
   cogcoin wallet address
   cogcoin domain list --mineable
@@ -558,6 +566,54 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
         throw new Error(`cli_unknown_command_wallet${subcommand === null ? "" : `_${subcommand}`}`);
       }
 
+      if (token === "bitcoin") {
+        const subcommand = argv[index + 1] ?? null;
+
+        if (subcommand === "start") {
+          command = "bitcoin-start";
+          index += 1;
+          continue;
+        }
+
+        if (subcommand === "stop") {
+          command = "bitcoin-stop";
+          index += 1;
+          continue;
+        }
+
+        if (subcommand === "status") {
+          command = "bitcoin-status";
+          index += 1;
+          continue;
+        }
+
+        throw new Error(`cli_unknown_command_bitcoin${subcommand === null ? "" : `_${subcommand}`}`);
+      }
+
+      if (token === "indexer") {
+        const subcommand = argv[index + 1] ?? null;
+
+        if (subcommand === "start") {
+          command = "indexer-start";
+          index += 1;
+          continue;
+        }
+
+        if (subcommand === "stop") {
+          command = "indexer-stop";
+          index += 1;
+          continue;
+        }
+
+        if (subcommand === "status") {
+          command = "indexer-status";
+          index += 1;
+          continue;
+        }
+
+        throw new Error(`cli_unknown_command_indexer${subcommand === null ? "" : `_${subcommand}`}`);
+      }
+
       if (token === "hooks") {
         const subcommand = argv[index + 1] ?? null;
 
@@ -872,6 +928,12 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
   if (
     (command === "status"
+      || command === "bitcoin-start"
+      || command === "bitcoin-stop"
+      || command === "bitcoin-status"
+      || command === "indexer-start"
+      || command === "indexer-stop"
+      || command === "indexer-status"
       || command === "init"
       || command === "restore"
       || command === "reset"

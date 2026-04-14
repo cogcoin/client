@@ -1,6 +1,18 @@
 import { mkdir, readFile } from "node:fs/promises";
 
 import {
+  attachOrStartIndexerDaemon,
+  probeIndexerDaemon,
+  readObservedIndexerDaemonStatus,
+  stopIndexerDaemonService,
+} from "../bitcoind/indexer-daemon.js";
+import { createRpcClient } from "../bitcoind/node.js";
+import {
+  attachOrStartManagedBitcoindService,
+  probeManagedBitcoindService,
+  stopManagedBitcoindService,
+} from "../bitcoind/service.js";
+import {
   resolveDefaultBitcoindDataDirForTesting,
   resolveDefaultClientDatabasePathForTesting,
 } from "../app-paths.js";
@@ -20,6 +32,9 @@ import {
 } from "../wallet/lifecycle.js";
 import { resolveWalletRuntimePathsForTesting } from "../wallet/runtime.js";
 import { openWalletReadContext } from "../wallet/read/index.js";
+import { loadWalletExplicitLock } from "../wallet/state/explicit-lock.js";
+import { loadUnlockSession } from "../wallet/state/session.js";
+import { loadWalletState } from "../wallet/state/storage.js";
 import {
   disableMiningHooks,
   enableMiningHooks,
@@ -124,7 +139,18 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     ensureDirectory: overrides.ensureDirectory ?? (async (path) => {
       await mkdir(path, { recursive: true });
     }),
+    attachManagedBitcoindService: overrides.attachManagedBitcoindService ?? attachOrStartManagedBitcoindService,
+    probeManagedBitcoindService: overrides.probeManagedBitcoindService ?? probeManagedBitcoindService,
+    stopManagedBitcoindService: overrides.stopManagedBitcoindService ?? stopManagedBitcoindService,
+    createBitcoinRpcClient: overrides.createBitcoinRpcClient ?? createRpcClient,
+    attachIndexerDaemon: overrides.attachIndexerDaemon ?? attachOrStartIndexerDaemon,
+    probeIndexerDaemon: overrides.probeIndexerDaemon ?? probeIndexerDaemon,
+    readObservedIndexerDaemonStatus: overrides.readObservedIndexerDaemonStatus ?? readObservedIndexerDaemonStatus,
+    stopIndexerDaemonService: overrides.stopIndexerDaemonService ?? stopIndexerDaemonService,
     readPackageVersion: overrides.readPackageVersion ?? readPackageVersionFromDisk,
+    loadWalletState: overrides.loadWalletState ?? loadWalletState,
+    loadUnlockSession: overrides.loadUnlockSession ?? loadUnlockSession,
+    loadWalletExplicitLock: overrides.loadWalletExplicitLock ?? loadWalletExplicitLock,
     resolveDefaultBitcoindDataDir: overrides.resolveDefaultBitcoindDataDir ?? resolveDefaultBitcoindDataDirForTesting,
     resolveDefaultClientDatabasePath: overrides.resolveDefaultClientDatabasePath ?? resolveDefaultClientDatabasePathForTesting,
     resolveWalletRuntimePaths: overrides.resolveWalletRuntimePaths ?? resolveWalletRuntimePathsForTesting,

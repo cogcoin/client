@@ -108,6 +108,10 @@ function formatPendingMutationDomainLabel(mutation: PendingMutationRecord): stri
 }
 
 export function getRepairRecommendation(context: WalletReadContext): string | null {
+  if (context.localState.availability === "uninitialized") {
+    return "Run `cogcoin init` to create a new local wallet root.";
+  }
+
   if (context.localState.availability === "local-state-corrupt") {
     return "Run `cogcoin repair` to recover local wallet state.";
   }

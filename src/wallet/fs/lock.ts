@@ -55,6 +55,39 @@ export async function clearLockIfOwnedByCurrentProcess(
   return true;
 }
 
+export async function clearOrphanedFileLock(
+  lockPath: string,
+  isProcessAlive: (pid: number) => Promise<boolean>,
+): Promise<boolean> {
+  let metadata: FileLockMetadata | null = null;
+
+  try {
+    metadata = await readLockMetadata(lockPath);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+
+    await rm(lockPath, { force: true });
+    return true;
+  }
+
+  if (metadata === null) {
+    return false;
+  }
+
+  const processId = typeof metadata.processId === "number" && Number.isInteger(metadata.processId)
+    ? metadata.processId
+    : null;
+
+  if (processId === null || !await isProcessAlive(processId)) {
+    await rm(lockPath, { force: true });
+    return true;
+  }
+
+  return false;
+}
+
 export async function acquireFileLock(
   lockPath: string,
   metadata: Partial<FileLockMetadata> = {},

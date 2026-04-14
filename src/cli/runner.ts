@@ -14,6 +14,7 @@ import { runFollowCommand } from "./commands/follow.js";
 import { runMiningAdminCommand } from "./commands/mining-admin.js";
 import { runMiningReadCommand } from "./commands/mining-read.js";
 import { runMiningRuntimeCommand } from "./commands/mining-runtime.js";
+import { runServiceRuntimeCommand } from "./commands/service-runtime.js";
 import { runStatusCommand } from "./commands/status.js";
 import { runSyncCommand } from "./commands/sync.js";
 import { runWalletAdminCommand } from "./commands/wallet-admin.js";
@@ -77,6 +78,17 @@ export async function runCli(
 
     if (parsed.command === "status") {
       return runStatusCommand(parsed, context);
+    }
+
+    if (
+      parsed.command === "bitcoin-start"
+      || parsed.command === "bitcoin-stop"
+      || parsed.command === "bitcoin-status"
+      || parsed.command === "indexer-start"
+      || parsed.command === "indexer-stop"
+      || parsed.command === "indexer-status"
+    ) {
+      return runServiceRuntimeCommand(parsed, context);
     }
 
     if (

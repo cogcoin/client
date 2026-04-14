@@ -1,5 +1,17 @@
 import type { inspectPassiveClientStatus } from "../passive-status.js";
 import { openManagedBitcoindClient } from "../bitcoind/index.js";
+import { createRpcClient } from "../bitcoind/node.js";
+import {
+  attachOrStartIndexerDaemon,
+  probeIndexerDaemon,
+  readObservedIndexerDaemonStatus,
+  stopIndexerDaemonService,
+} from "../bitcoind/indexer-daemon.js";
+import {
+  attachOrStartManagedBitcoindService,
+  probeManagedBitcoindService,
+  stopManagedBitcoindService,
+} from "../bitcoind/service.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import type { ClientStoreAdapter } from "../types.js";
 import type { WalletRuntimePaths } from "../wallet/runtime.js";
@@ -16,6 +28,9 @@ import type {
   unlockWallet,
 } from "../wallet/lifecycle.js";
 import type { openWalletReadContext } from "../wallet/read/index.js";
+import { loadWalletExplicitLock } from "../wallet/state/explicit-lock.js";
+import { loadUnlockSession } from "../wallet/state/session.js";
+import { loadWalletState } from "../wallet/state/storage.js";
 import type { WalletSecretProvider } from "../wallet/state/provider.js";
 import type {
   disableMiningHooks,
@@ -62,6 +77,12 @@ export type CommandName =
   | "sync"
   | "status"
   | "follow"
+  | "bitcoin-start"
+  | "bitcoin-stop"
+  | "bitcoin-status"
+  | "indexer-start"
+  | "indexer-stop"
+  | "indexer-status"
   | "unlock"
   | "anchor"
   | "domain-anchor"
@@ -211,8 +232,19 @@ export interface CliRunnerContext {
     dataDir?: string;
     progressOutput?: ProgressOutput;
   }) => Promise<ManagedClientLike>;
+  attachManagedBitcoindService?: typeof attachOrStartManagedBitcoindService;
+  probeManagedBitcoindService?: typeof probeManagedBitcoindService;
+  stopManagedBitcoindService?: typeof stopManagedBitcoindService;
+  createBitcoinRpcClient?: typeof createRpcClient;
+  attachIndexerDaemon?: typeof attachOrStartIndexerDaemon;
+  probeIndexerDaemon?: typeof probeIndexerDaemon;
+  readObservedIndexerDaemonStatus?: typeof readObservedIndexerDaemonStatus;
+  stopIndexerDaemonService?: typeof stopIndexerDaemonService;
   inspectPassiveClientStatus?: typeof inspectPassiveClientStatus;
   openWalletReadContext?: typeof openWalletReadContext;
+  loadWalletState?: typeof loadWalletState;
+  loadUnlockSession?: typeof loadUnlockSession;
+  loadWalletExplicitLock?: typeof loadWalletExplicitLock;
   initializeWallet?: typeof initializeWallet;
   restoreWalletFromMnemonic?: typeof restoreWalletFromMnemonic;
   previewResetWallet?: typeof previewResetWallet;
