@@ -53,6 +53,7 @@ Commands:
   wallet status           Show detailed wallet-local status and service health
   wallet init             Initialize a new local wallet root
   wallet restore          Restore a fresh local wallet from a 24-word mnemonic; run sync afterward
+  wallet show-mnemonic    Reveal the initialized wallet recovery phrase after typed confirmation
   wallet unlock           Clear an explicit wallet lock and unlock for a limited duration
   wallet lock             Lock the local wallet and disable on-demand unlock
   wallet export <path>    Export a portable encrypted wallet archive
@@ -535,6 +536,12 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
         if (subcommand === "restore") {
           command = "wallet-restore";
+          index += 1;
+          continue;
+        }
+
+        if (subcommand === "show-mnemonic") {
+          command = "wallet-show-mnemonic";
           index += 1;
           continue;
         }

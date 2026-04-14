@@ -73,10 +73,10 @@ export async function runWalletAdminCommand(
 
   try {
     const outcome = await waitForCompletionOrStop((async () => {
-      const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
       const provider = context.walletSecretProvider;
 
       if (parsed.command === "init" || parsed.command === "wallet-init") {
+        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         const prompter = createCommandPrompter(parsed, context);
         const result = await context.initializeWallet({
           dataDir,
@@ -109,6 +109,7 @@ export async function runWalletAdminCommand(
       }
 
       if (parsed.command === "restore" || parsed.command === "wallet-restore") {
+        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         const prompter = createCommandPrompter(parsed, context);
         const result = await context.restoreWalletFromMnemonic({
           dataDir,
@@ -145,6 +146,15 @@ export async function runWalletAdminCommand(
         return 0;
       }
 
+      if (parsed.command === "wallet-show-mnemonic") {
+        const prompter = createCommandPrompter(parsed, context);
+        await context.showWalletMnemonic({
+          provider,
+          prompter,
+        });
+        return 0;
+      }
+
       const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
 
       if (parsed.command === "unlock" || parsed.command === "wallet-unlock") {
@@ -169,6 +179,7 @@ export async function runWalletAdminCommand(
       }
 
       if (parsed.command === "reset") {
+        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         if (parsed.outputMode === "preview-json") {
           const preview = await context.previewResetWallet({
             dataDir,
@@ -227,6 +238,7 @@ export async function runWalletAdminCommand(
       }
 
       if (parsed.command === "wallet-export") {
+        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         const prompter = createCommandPrompter(parsed, context);
         const result = await context.exportWallet({
           archivePath: parsed.args[0]!,
@@ -251,6 +263,7 @@ export async function runWalletAdminCommand(
       }
 
       if (parsed.command === "wallet-import") {
+        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         const prompter = createCommandPrompter(parsed, context);
         const result = await context.importWallet({
           archivePath: parsed.args[0]!,
@@ -276,6 +289,7 @@ export async function runWalletAdminCommand(
       }
 
       if (parsed.command === "wallet-lock") {
+        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         const result = await context.lockWallet({
           dataDir,
           provider,
@@ -304,6 +318,7 @@ export async function runWalletAdminCommand(
       }
 
       if (parsed.command === "repair") {
+        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         const result = await context.repairWallet({
           dataDir,
           databasePath: dbPath,

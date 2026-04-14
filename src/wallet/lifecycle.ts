@@ -681,11 +681,12 @@ async function confirmTypedAcknowledgement(
   prompter: WalletPrompter,
   expected: string,
   message: string,
+  errorCode = "wallet_typed_confirmation_rejected",
 ): Promise<void> {
   const answer = (await prompter.prompt(message)).trim();
 
   if (answer !== expected) {
-    throw new Error("wallet_typed_confirmation_rejected");
+    throw new Error(errorCode);
   }
 }
 
@@ -1272,6 +1273,32 @@ async function ensureWalletNotInitialized(
   }
 }
 
+function isWalletSecretAccessError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message === "wallet_envelope_missing_secret_provider"
+    || message.startsWith("wallet_secret_missing_")
+    || message.startsWith("wallet_secret_provider_");
+}
+
+function writeMnemonicReveal(
+  prompter: WalletPrompter,
+  phrase: string,
+  introLines: readonly string[],
+): void {
+  const words = phrase.trim().split(/\s+/);
+
+  for (const line of introLines) {
+    prompter.writeLine(line);
+  }
+
+  for (const line of renderWalletMnemonicRevealArt(words)) {
+    prompter.writeLine(line);
+  }
+
+  prompter.writeLine("Single-line copy:");
+  prompter.writeLine(phrase);
+}
+
 async function confirmMnemonic(
   prompter: WalletPrompter,
   words: string[],
@@ -1667,15 +1694,12 @@ export async function initializeWallet(options: {
       nowUnixMs,
     });
     let mnemonicRevealed = false;
-    options.prompter.writeLine("Cogcoin Wallet Initialization");
-    options.prompter.writeLine("Write down this 24-word recovery phrase.");
-    options.prompter.writeLine("The same phrase will be shown again until confirmation succeeds:");
-    options.prompter.writeLine("");
-    for (const line of renderWalletMnemonicRevealArt(material.mnemonic.words)) {
-      options.prompter.writeLine(line);
-    }
-    options.prompter.writeLine("Single-line copy:");
-    options.prompter.writeLine(material.mnemonic.phrase);
+    writeMnemonicReveal(options.prompter, material.mnemonic.phrase, [
+      "Cogcoin Wallet Initialization",
+      "Write down this 24-word recovery phrase.",
+      "The same phrase will be shown again until confirmation succeeds:",
+      "",
+    ]);
     mnemonicRevealed = true;
     try {
       await confirmMnemonic(options.prompter, material.mnemonic.words);
@@ -1739,6 +1763,89 @@ export async function initializeWallet(options: {
       unlockUntilUnixMs,
       state: verifiedState,
     };
+  } finally {
+    await controlLock.release();
+  }
+}
+
+export async function showWalletMnemonic(options: {
+  provider?: WalletSecretProvider;
+  prompter: WalletPrompter;
+  nowUnixMs?: number;
+  paths?: WalletRuntimePaths;
+}): Promise<void> {
+  if (!options.prompter.isInteractive) {
+    throw new Error("wallet_show_mnemonic_requires_tty");
+  }
+
+  const provider = options.provider ?? createDefaultWalletSecretProvider();
+  const nowUnixMs = options.nowUnixMs ?? Date.now();
+  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
+  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
+    purpose: "wallet-show-mnemonic",
+    walletRootId: null,
+  });
+
+  try {
+    const [hasPrimaryStateFile, hasBackupStateFile] = await Promise.all([
+      pathExists(paths.walletStatePath),
+      pathExists(paths.walletStateBackupPath),
+    ]);
+
+    if (!hasPrimaryStateFile && !hasBackupStateFile) {
+      throw new Error("wallet_uninitialized");
+    }
+
+    const unlocked = await loadOrAutoUnlockWalletState({
+      provider,
+      nowUnixMs,
+      paths,
+      controlLockHeld: true,
+    });
+
+    if (unlocked === null) {
+      try {
+        await loadWalletState({
+          primaryPath: paths.walletStatePath,
+          backupPath: paths.walletStateBackupPath,
+        }, {
+          provider,
+        });
+      } catch (error) {
+        if (isWalletSecretAccessError(error)) {
+          throw new Error("wallet_locked");
+        }
+
+        throw new Error("local-state-corrupt");
+      }
+
+      throw new Error("wallet_locked");
+    }
+
+    await confirmTypedAcknowledgement(
+      options.prompter,
+      "show mnemonic",
+      "Type \"show mnemonic\" to continue: ",
+      "wallet_show_mnemonic_typed_ack_required",
+    );
+
+    let mnemonicRevealed = false;
+    writeMnemonicReveal(options.prompter, unlocked.state.mnemonic.phrase, [
+      "Cogcoin Wallet Recovery Phrase",
+      "This 24-word recovery phrase controls the wallet.",
+      "",
+    ]);
+    mnemonicRevealed = true;
+
+    try {
+      await options.prompter.prompt("Press Enter to clear the recovery phrase from the screen: ");
+    } finally {
+      if (mnemonicRevealed) {
+        await Promise.resolve()
+          .then(() => options.prompter.clearSensitiveDisplay?.("mnemonic-reveal"))
+          .catch(() => undefined);
+      }
+    }
   } finally {
     await controlLock.release();
   }

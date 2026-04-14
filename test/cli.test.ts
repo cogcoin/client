@@ -11,8 +11,9 @@ import {
   parseCliArgs,
   runCli,
 } from "../src/cli-runner.js";
+import { formatWalletOverviewReport } from "../src/cli/wallet-format.js";
 import { createTerminalPrompter } from "../src/cli/prompt.js";
-import { formatCliTextError } from "../src/cli/output.js";
+import { describeCanonicalCommand, formatCliTextError } from "../src/cli/output.js";
 import { getLocksNextSteps } from "../src/cli/workflow-hints.js";
 import {
   resolveCogcoinPathsForTesting,
@@ -1029,6 +1030,10 @@ test("parseCliArgs handles wallet init/restore/unlock/lock/export/import and rep
   const walletRestore = parseCliArgs(["wallet", "restore"]);
   assert.equal(walletRestore.command, "wallet-restore");
 
+  const walletShowMnemonic = parseCliArgs(["wallet", "show-mnemonic"]);
+  assert.equal(walletShowMnemonic.command, "wallet-show-mnemonic");
+  assert.deepEqual(walletShowMnemonic.args, []);
+
   const unlock = parseCliArgs(["unlock", "--for", "2h"]);
   assert.equal(unlock.command, "unlock");
   assert.equal(unlock.unlockFor, "2h");
@@ -1047,6 +1052,11 @@ test("parseCliArgs handles wallet init/restore/unlock/lock/export/import and rep
   const repair = parseCliArgs(["repair", "--yes"]);
   assert.equal(repair.command, "repair");
   assert.equal(repair.assumeYes, true);
+
+  assert.equal(
+    describeCanonicalCommand(walletShowMnemonic),
+    "cogcoin wallet show-mnemonic",
+  );
 });
 
 test("parseCliArgs allows json on covered action commands and rejects excluded commands", () => {
@@ -1088,6 +1098,52 @@ test("parseCliArgs allows json on covered action commands and rejects excluded c
 
   assert.throws(() => parseCliArgs(["mine", "--output", "json"]), /cli_output_not_supported_for_command/);
   assert.throws(() => parseCliArgs(["restore", "--output", "preview-json"]), /cli_output_not_supported_for_command/);
+  assert.throws(() => parseCliArgs(["wallet", "show-mnemonic", "--output", "json"]), /cli_output_not_supported_for_command/);
+  assert.throws(() => parseCliArgs(["wallet", "show-mnemonic", "--output", "preview-json"]), /cli_output_not_supported_for_command/);
+});
+
+test("help output lists wallet show-mnemonic", async () => {
+  const stdout = new MemoryStream();
+  const code = await runCli(["--help"], {
+    stdout,
+    stderr: new MemoryStream(),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.toString(), /wallet show-mnemonic/);
+});
+
+test("wallet show-mnemonic dispatches through wallet admin without resolving db or data paths", async () => {
+  const stdout = new MemoryStream();
+  const prompter = {
+    isInteractive: true,
+    writeLine() {},
+    async prompt() {
+      return "";
+    },
+    clearSensitiveDisplay() {},
+  };
+  let called = false;
+
+  const code = await runCli(["wallet", "show-mnemonic"], {
+    stdout,
+    stderr: new MemoryStream(),
+    createPrompter: () => prompter,
+    showWalletMnemonic: async (options) => {
+      called = true;
+      assert.equal(options.prompter, prompter);
+    },
+    resolveDefaultBitcoindDataDir: () => {
+      throw new Error("should_not_resolve_data_dir");
+    },
+    resolveDefaultClientDatabasePath: () => {
+      throw new Error("should_not_resolve_db_path");
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.equal(called, true);
+  assert.equal(stdout.toString(), "");
 });
 
 test("parseCliArgs allows preview-json on covered preview commands and rejects unsupported commands", () => {
@@ -5789,11 +5845,13 @@ test("status renders wallet-aware degraded output for an uninitialized wallet", 
   );
 
   assert.equal(code, 0);
-  assert.match(stdout.toString(), /Wallet state: uninitialized/);
-  assert.match(stdout.toString(), /Bitcoin service: starting/);
-  assert.match(stdout.toString(), /Indexer service: starting/);
-  assert.match(stdout.toString(), /Recommended next step: Run `cogcoin init` to create a new local wallet root\./);
-  assert.doesNotMatch(stdout.toString(), /cogcoin sync/);
+  const output = stdout.toString();
+  assert.match(output, /\n⛭ Cogcoin Status ⛭\n\nPaths\n✓ DB path: \/tmp\/client\.sqlite\n✓ Bitcoin datadir: \/tmp\/bitcoin\n\nWallet\n✗ State: uninitialized\n✗ Root: none\n✗ Unlock: locked\n✗ Note: Wallet state has not been initialized yet\./u);
+  assert.match(output, /\n\nServices\n✗ Managed bitcoind: starting\n✗ Managed bitcoind note: Managed bitcoind service is still starting\.\n✗ Bitcoin service: starting\n✗ Bitcoin note: Bitcoin service is starting\.\n✗ Indexer service: starting\n✗ Indexer truth source: none\n✗ Indexer tip height: unavailable\n✗ Indexer note: Indexer daemon is still starting\./u);
+  assert.match(output, /\n\nLocal Inventory\n✗ Status: Wallet-derived sections unavailable\n\nPending Work\n✓ Status: none\n\nNext step: Run `cogcoin init` to create a new local wallet root\.\n$/u);
+  assert.doesNotMatch(output, /Recommended next step:/);
+  assert.doesNotMatch(output, /Mutation note:/);
+  assert.doesNotMatch(output, /cogcoin sync/);
 });
 
 test("status json recommends init for an uninitialized wallet", async () => {
@@ -5881,8 +5939,90 @@ test("status renders explicit reorging output and reorg depth", async () => {
 
   assert.equal(code, 0);
   assert.equal(stderr.toString(), "");
-  assert.match(stdout.toString(), /Indexer service: reorging/);
-  assert.match(stdout.toString(), /Indexer reorg depth: 6/);
+  const servicesSection = stdout.toString()
+    .split("\n\n")
+    .find((section) => section.startsWith("Services\n"));
+  assert.ok(servicesSection);
+  assert.match(servicesSection, /✗ Indexer service: reorging/u);
+  assert.match(servicesSection, /✗ Indexer reorg depth: 6/u);
+});
+
+test("formatWalletOverviewReport renders sectioned status layout and omits next step when none is needed", async () => {
+  const report = formatWalletOverviewReport(await createReadyWalletReadContext());
+  const sections = report.split("\n\n");
+
+  assert.deepEqual(
+    sections.map((section) => section.split("\n")[0]),
+    ["", "Paths", "Wallet", "Services", "Local Inventory", "Pending Work"],
+  );
+  assert.equal(sections[0], "\n⛭ Cogcoin Status ⛭");
+  assert.match(sections[1] ?? "", /^Paths\n✓ DB path: \/tmp\/cogcoin-client\.sqlite\n✓ Bitcoin datadir: \/tmp\/cogcoin-bitcoin$/u);
+  assert.match(sections[2] ?? "", /^Wallet\n✓ State: ready\n✓ Root: wallet-root-test\n✓ Unlock: unlocked until /u);
+  assert.match(sections[3] ?? "", /^Services\n✓ Managed bitcoind: ready/u);
+  assert.match(sections[4] ?? "", /^Local Inventory\n✓ Local identities: 3\n✓ Locally related domains: 2\n✓ Read-only identities: 0$/u);
+  assert.equal(sections[5], "Pending Work\n✓ Status: none");
+  assert.equal(report.endsWith("\n"), false);
+  assert.doesNotMatch(report, /\n\nNext step:/);
+  assert.doesNotMatch(report, /Recommended next step:/);
+  assert.doesNotMatch(report, /Mutation note:/);
+});
+
+test("formatWalletOverviewReport shows only the highest-priority next step at the bottom", async () => {
+  const mutationContext = await createReadyWalletReadContext(createWalletState({
+    pendingMutations: [{
+      mutationId: "mutation-1",
+      kind: "register",
+      registerKind: "root",
+      domainName: "gamma",
+      parentDomainName: null,
+      senderScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+      senderLocalIndex: 1,
+      intentFingerprintHex: "ab".repeat(32),
+      status: "broadcast-unknown",
+      createdAtUnixMs: 1_700_000_000_000,
+      lastUpdatedAtUnixMs: 1_700_000_000_001,
+      attemptedTxid: null,
+      attemptedWtxid: null,
+      temporaryBuilderLockedOutpoints: [],
+    }],
+  }));
+  mutationContext.nodeHealth = "starting";
+  mutationContext.nodeMessage = "Bitcoin service is starting.";
+
+  const mutationReport = formatWalletOverviewReport(mutationContext);
+  assert.match(
+    mutationReport,
+    /\n\nNext step: Run `cogcoin sync` to bootstrap assumeutxo and the managed Bitcoin\/indexer state\.$/,
+  );
+  assert.doesNotMatch(mutationReport, /Rerun `cogcoin register gamma`/);
+
+  const repairContext = await createReadyWalletReadContext(createWalletState({
+    pendingMutations: [{
+      mutationId: "mutation-2",
+      kind: "register",
+      registerKind: "root",
+      domainName: "delta",
+      parentDomainName: null,
+      senderScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+      senderLocalIndex: 1,
+      intentFingerprintHex: "cd".repeat(32),
+      status: "broadcast-unknown",
+      createdAtUnixMs: 1_700_000_000_000,
+      lastUpdatedAtUnixMs: 1_700_000_000_001,
+      attemptedTxid: null,
+      attemptedWtxid: null,
+      temporaryBuilderLockedOutpoints: [],
+    }],
+  }));
+  repairContext.bitcoind.health = "failed";
+  repairContext.bitcoind.message = "Managed bitcoind stopped unexpectedly.";
+
+  const repairReport = formatWalletOverviewReport(repairContext);
+  assert.match(
+    repairReport,
+    /\n\nNext step: Run `cogcoin repair` to recover the managed bitcoind service and Core wallet replica\.$/,
+  );
+  assert.doesNotMatch(repairReport, /Rerun `cogcoin register delta`/);
 });
 
 test("status emits the stable json envelope in degraded mode", async () => {
@@ -6785,9 +6925,9 @@ test("wallet status and domain views surface pending transfer, sell, unsell, and
     return out.toString();
   };
 
-  assert.match(await runRead(["status"]), /Pending mutation: transfer alpha  live/);
-  assert.match(await runRead(["status"]), /Pending mutation: sell beta  broadcast-unknown/);
-  assert.match(await runRead(["status"]), /Pending mutation: buy beta  live/);
+  assert.match(await runRead(["status"]), /✗ Mutation: transfer alpha  live/u);
+  assert.match(await runRead(["status"]), /✗ Mutation: sell beta  broadcast-unknown/u);
+  assert.match(await runRead(["status"]), /✗ Mutation: buy beta  live/u);
   assert.match(await runRead(["domains"]), /alpha  anchored  owned.*pending transfer:live,unsell:live/);
   assert.match(await runRead(["domains"]), /beta  anchored  owned.*pending sell:broadcast-unknown,buy:live/);
   assert.match(await runRead(["show", "alpha"]), /Pending mutation: transfer  live/);
@@ -6878,10 +7018,10 @@ test("wallet status and domain views surface pending endpoint, delegate, miner, 
     return out.toString();
   };
 
-  assert.match(await runRead(["status"]), /Pending mutation: endpoint alpha  live/);
-  assert.match(await runRead(["status"]), /Pending mutation: delegate alpha  broadcast-unknown/);
-  assert.match(await runRead(["status"]), /Pending mutation: miner-clear beta  live/);
-  assert.match(await runRead(["status"]), /Pending mutation: canonical beta  live/);
+  assert.match(await runRead(["status"]), /✗ Mutation: endpoint alpha  live/u);
+  assert.match(await runRead(["status"]), /✗ Mutation: delegate alpha  broadcast-unknown/u);
+  assert.match(await runRead(["status"]), /✗ Mutation: miner-clear beta  live/u);
+  assert.match(await runRead(["status"]), /✗ Mutation: canonical beta  live/u);
   assert.match(await runRead(["domains"]), /alpha  anchored  owned.*pending endpoint:live,delegate:broadcast-unknown/);
   assert.match(await runRead(["domains"]), /beta  anchored  owned.*pending miner-clear:live,canonical:live/);
   assert.match(await runRead(["show", "alpha"]), /Pending mutation: endpoint  live/);
@@ -6962,8 +7102,8 @@ test("wallet status and show views surface pending reputation intents and chain 
     return out.toString();
   };
 
-  assert.match(await runRead(["status"]), /Pending mutation: rep-give alpha->beta  live/);
-  assert.match(await runRead(["status"]), /Pending mutation: rep-revoke alpha->beta  broadcast-unknown/);
+  assert.match(await runRead(["status"]), /✗ Mutation: rep-give alpha->beta  live/u);
+  assert.match(await runRead(["status"]), /✗ Mutation: rep-revoke alpha->beta  broadcast-unknown/u);
   assert.match(await runRead(["status"]), /Rerun `cogcoin rep revoke alpha beta \.\.\.` to reconcile the pending reputation revoke/);
   assert.match(await runRead(["show", "alpha"]), /Reputation self-stake: 0\.00000100 COG/);
   assert.match(await runRead(["show", "alpha"]), /Reputation total supported: 0\.00000125 COG/);
@@ -7041,9 +7181,9 @@ test("wallet field views surface pending field mutations and field families hone
     return out.toString();
   };
 
-  assert.match(await runRead(["status"]), /Pending mutation: field-set alpha\.bio  live/);
-  assert.match(await runRead(["status"]), /Pending field family: beta\.tagline  broadcast-unknown  step tx2/);
-  assert.match(await runRead(["status"]), /Mutation note: Rerun `cogcoin field create beta tagline \.\.\.`/);
+  assert.match(await runRead(["status"]), /✗ Mutation: field-set alpha\.bio  live/u);
+  assert.match(await runRead(["status"]), /✗ Field family: beta\.tagline  broadcast-unknown  step tx2/u);
+  assert.match(await runRead(["status"]), /Next step: Rerun `cogcoin field create beta tagline \.\.\.`/);
   assert.match(await runRead(["domains"]), /alpha  anchored  owned.*field-pending bio:field-set:live/);
   assert.match(await runRead(["domains"]), /beta  anchored  owned.*field-pending tagline:family:broadcast-unknown:tx2/);
   assert.match(await runRead(["show", "alpha"]), /Pending field mutation: bio  field-set  live/);
@@ -7137,8 +7277,8 @@ test("wallet-aware status recommends repair for corrupt local state", async () =
   });
 
   assert.equal(code, 0);
-  assert.match(stdout.toString(), /Wallet state: local-state-corrupt/);
-  assert.match(stdout.toString(), /Recommended next step: Run `cogcoin repair`/);
+  assert.match(stdout.toString(), /Wallet\n✗ State: local-state-corrupt/u);
+  assert.match(stdout.toString(), /Next step: Run `cogcoin repair`/);
 });
 
 test("wallet-aware status surfaces active pending registrations and reconciliation guidance", async () => {
@@ -7181,8 +7321,8 @@ test("wallet-aware status surfaces active pending registrations and reconciliati
   });
 
   assert.equal(code, 0);
-  assert.match(stdout.toString(), /Pending mutation: register weatherbot  broadcast-unknown/);
-  assert.match(stdout.toString(), /Mutation note: Rerun `cogcoin register weatherbot`/);
+  assert.match(stdout.toString(), /✗ Mutation: register weatherbot  broadcast-unknown/u);
+  assert.match(stdout.toString(), /Next step: Rerun `cogcoin register weatherbot`/);
 });
 
 test("wallet status and domain views surface pending anchor family state and guidance", async () => {
@@ -7241,7 +7381,7 @@ test("wallet status and domain views surface pending anchor family state and gui
     return out.toString();
   };
 
-  assert.match(await runRead(["status"]), /Pending anchor family: alpha  broadcast-unknown  step tx1  index 3/);
+  assert.match(await runRead(["status"]), /✗ Anchor family: alpha  broadcast-unknown  step tx1  index 3/u);
   assert.match(await runRead(["status"]), /Rerun `cogcoin anchor alpha`/);
   assert.match(await runRead(["wallet", "status"]), /Pending anchor family: alpha  broadcast-unknown  step tx1  index 3/);
   assert.match(await runRead(["domains"]), /alpha  anchored  owned.*anchor tx1-live/);

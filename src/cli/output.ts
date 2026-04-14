@@ -1067,6 +1067,8 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
     case "restore":
     case "wallet-restore":
       return "cogcoin restore";
+    case "wallet-show-mnemonic":
+      return "cogcoin wallet show-mnemonic";
     case "unlock":
     case "wallet-unlock":
       return "cogcoin unlock";

@@ -28,6 +28,7 @@ import {
   repairWallet,
   resetWallet,
   restoreWalletFromMnemonic,
+  showWalletMnemonic,
   unlockWallet,
 } from "../wallet/lifecycle.js";
 import { resolveWalletRuntimePathsForTesting } from "../wallet/runtime.js";
@@ -97,6 +98,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     previewResetWallet: overrides.previewResetWallet ?? previewResetWallet,
     exportWallet: overrides.exportWallet ?? exportWallet,
     importWallet: overrides.importWallet ?? importWallet,
+    showWalletMnemonic: overrides.showWalletMnemonic ?? showWalletMnemonic,
     unlockWallet: overrides.unlockWallet ?? unlockWallet,
     lockWallet: overrides.lockWallet ?? lockWallet,
     registerDomain: overrides.registerDomain ?? registerDomain,

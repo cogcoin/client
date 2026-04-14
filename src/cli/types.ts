@@ -25,6 +25,7 @@ import type {
   repairWallet,
   resetWallet,
   restoreWalletFromMnemonic,
+  showWalletMnemonic,
   unlockWallet,
 } from "../wallet/lifecycle.js";
 import type { openWalletReadContext } from "../wallet/read/index.js";
@@ -132,6 +133,7 @@ export type CommandName =
   | "wallet-import"
   | "wallet-init"
   | "wallet-restore"
+  | "wallet-show-mnemonic"
   | "wallet-lock"
   | "wallet-unlock"
   | "wallet-status"
@@ -250,6 +252,7 @@ export interface CliRunnerContext {
   previewResetWallet?: typeof previewResetWallet;
   exportWallet?: typeof exportWallet;
   importWallet?: typeof importWallet;
+  showWalletMnemonic?: typeof showWalletMnemonic;
   unlockWallet?: typeof unlockWallet;
   lockWallet?: typeof lockWallet;
   registerDomain?: typeof registerDomain;

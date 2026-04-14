@@ -117,6 +117,7 @@ export async function runCli(
       || parsed.command === "wallet-import"
       || parsed.command === "wallet-init"
       || parsed.command === "wallet-restore"
+      || parsed.command === "wallet-show-mnemonic"
       || parsed.command === "wallet-unlock"
       || parsed.command === "wallet-lock"
     ) {

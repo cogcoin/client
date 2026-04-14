@@ -20,6 +20,7 @@ import {
   parseUnlockDurationToMs,
   repairWallet,
   restoreWalletFromMnemonic,
+  showWalletMnemonic,
   unlockWallet,
   verifyManagedCoreWalletReplica,
   type WalletPrompter,
@@ -183,6 +184,7 @@ function assertFragmentsAppearInOrder(line: string, fragments: readonly string[]
 class CapturingPrompter implements WalletPrompter {
   readonly isInteractive = true;
   readonly lines: string[] = [];
+  readonly prompts: string[] = [];
   readonly clearedScopes: Array<"mnemonic-reveal"> = [];
   mnemonicWords: string[] = [];
   mode: "correct" | "wrong" = "correct";
@@ -200,6 +202,8 @@ class CapturingPrompter implements WalletPrompter {
   }
 
   async prompt(message: string): Promise<string> {
+    this.prompts.push(message);
+
     if (!message.includes("Confirm word #")) {
       const next = this.extraPrompts.shift();
 
@@ -958,6 +962,219 @@ test("initializeWallet rejects non-interactive prompters before revealing the mn
   }), /wallet_init_requires_tty/);
 
   assert.deepEqual(calls, []);
+});
+
+test("showWalletMnemonic rejects non-interactive prompters before accessing wallet state", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-show-mnemonic-noninteractive-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const calls: string[] = [];
+  const prompter: WalletPrompter = {
+    isInteractive: false,
+    writeLine() {
+      calls.push("writeLine");
+    },
+    async prompt() {
+      calls.push("prompt");
+      return "";
+    },
+    clearSensitiveDisplay() {
+      calls.push("clearSensitiveDisplay");
+    },
+  };
+
+  await assert.rejects(() => showWalletMnemonic({
+    provider,
+    paths,
+    prompter,
+  }), /wallet_show_mnemonic_requires_tty/);
+
+  assert.deepEqual(calls, []);
+});
+
+test("showWalletMnemonic requires initialized final wallet state and ignores pending-init-only state", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-show-mnemonic-uninitialized-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const prompter = new CapturingPrompter();
+
+  await assert.rejects(() => showWalletMnemonic({
+    provider,
+    paths,
+    prompter,
+  }), /wallet_uninitialized/);
+
+  await savePendingInitializationFixture({
+    paths,
+    provider,
+    phrase: TEST_MNEMONIC,
+  });
+
+  await assert.rejects(() => showWalletMnemonic({
+    provider,
+    paths,
+    prompter,
+  }), /wallet_uninitialized/);
+});
+
+test("showWalletMnemonic auto-unlocks, reveals the stored phrase, and clears it after Enter", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-show-mnemonic-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const initPrompter = new CapturingPrompter();
+  const revealPrompter = new CapturingPrompter();
+  const harness = createRpcHarness();
+
+  const initialized = await initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter: initPrompter,
+    nowUnixMs: 1_700_000_000_000,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+  });
+
+  await clearUnlockSession(paths.walletUnlockSessionPath);
+  revealPrompter.extraPrompts.push("show mnemonic", "");
+
+  await showWalletMnemonic({
+    provider,
+    paths,
+    prompter: revealPrompter,
+    nowUnixMs: 1_700_000_100_000,
+  });
+
+  const unlocked = await loadUnlockedWalletState({
+    provider,
+    paths,
+    nowUnixMs: 1_700_000_100_100,
+  });
+  const mnemonicWords = initialized.state.mnemonic.phrase.split(" ");
+  const artRow1 = revealPrompter.lines.find((line) => line.includes(formatMnemonicArtSlot(1, mnemonicWords[0]!)));
+  const artRow5 = revealPrompter.lines.find((line) => line.includes(formatMnemonicArtSlot(5, mnemonicWords[4]!)));
+
+  assert.equal(unlocked?.state.walletRootId, initialized.walletRootId);
+  assert.ok(artRow1);
+  assert.ok(artRow5);
+  assert.equal(revealPrompter.lines.includes("Cogcoin Wallet Recovery Phrase"), true);
+  assert.equal(revealPrompter.lines.includes("This 24-word recovery phrase controls the wallet."), true);
+  assert.ok(revealPrompter.lines.includes(initialized.state.mnemonic.phrase));
+  assert.deepEqual(revealPrompter.prompts, [
+    "Type \"show mnemonic\" to continue: ",
+    "Press Enter to clear the recovery phrase from the screen: ",
+  ]);
+  assert.deepEqual(revealPrompter.clearedScopes, ["mnemonic-reveal"]);
+});
+
+test("showWalletMnemonic rejects the wrong typed acknowledgement without revealing the phrase", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-show-mnemonic-typed-ack-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const initPrompter = new CapturingPrompter();
+  const revealPrompter = new CapturingPrompter();
+  const harness = createRpcHarness();
+
+  const initialized = await initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter: initPrompter,
+    nowUnixMs: 1_700_000_000_000,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+  });
+
+  revealPrompter.extraPrompts.push("SHOW MNEMONIC");
+
+  await assert.rejects(() => showWalletMnemonic({
+    provider,
+    paths,
+    prompter: revealPrompter,
+    nowUnixMs: 1_700_000_100_000,
+  }), /wallet_show_mnemonic_typed_ack_required/);
+
+  assert.equal(revealPrompter.lines.includes(initialized.state.mnemonic.phrase), false);
+  assert.deepEqual(revealPrompter.clearedScopes, []);
+});
+
+test("showWalletMnemonic respects explicit wallet locks and ignores cleanup-hook errors after reveal", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-show-mnemonic-locked-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const initPrompter = new CapturingPrompter();
+  const lockedPrompter = new CapturingPrompter();
+  const revealPrompter = new CapturingPrompter();
+  const harness = createRpcHarness();
+
+  await initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter: initPrompter,
+    nowUnixMs: 1_700_000_000_000,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+  });
+
+  await lockWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    nowUnixMs: 1_700_000_100_000,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+  });
+
+  lockedPrompter.extraPrompts.push("show mnemonic");
+  await assert.rejects(() => showWalletMnemonic({
+    provider,
+    paths,
+    prompter: lockedPrompter,
+    nowUnixMs: 1_700_000_100_100,
+  }), /wallet_locked/);
+
+  await unlockWallet({
+    provider,
+    paths,
+    nowUnixMs: 1_700_000_100_200,
+  });
+
+  revealPrompter.extraPrompts.push("show mnemonic", "");
+  revealPrompter.clearError = new Error("clear_failed");
+
+  await showWalletMnemonic({
+    provider,
+    paths,
+    prompter: revealPrompter,
+    nowUnixMs: 1_700_000_100_300,
+  });
+
+  assert.deepEqual(revealPrompter.clearedScopes, ["mnemonic-reveal"]);
 });
 
 test("unlockWallet and lockWallet rotate the session blob, persist explicit lock state, and gate auto-unlock", async () => {
