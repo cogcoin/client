@@ -29,6 +29,7 @@ import {
 import { persistNormalizedWalletDescriptorStateIfNeeded } from "../descriptor-normalization.js";
 import { inspectMiningControlPlane } from "../mining/index.js";
 import { normalizeMiningStateRecord } from "../mining/state.js";
+import { resolveWalletRootIdFromLocalArtifacts } from "../root-resolution.js";
 import { resolveWalletRuntimePathsForTesting } from "../runtime.js";
 import { loadWalletExplicitLock } from "../state/explicit-lock.js";
 import { loadWalletState, type LoadedWalletState } from "../state/storage.js";
@@ -149,6 +150,7 @@ async function inspectWalletLocalState(options: {
 } = {}): Promise<WalletLocalStateStatus> {
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
   const now = options.now ?? Date.now();
+  const provider = options.secretProvider ?? createDefaultWalletSecretProvider();
   const [hasPrimaryStateFile, hasBackupStateFile, hasUnlockSessionFile] = await Promise.all([
     pathExists(paths.walletStatePath),
     pathExists(paths.walletStateBackupPath),
@@ -171,7 +173,6 @@ async function inspectWalletLocalState(options: {
 
   if (options.passphrase === undefined) {
     try {
-      const provider = options.secretProvider ?? createDefaultWalletSecretProvider();
       const unlocked = await loadOrAutoUnlockWalletState({
         provider,
         nowUnixMs: now,
@@ -213,10 +214,15 @@ async function inspectWalletLocalState(options: {
             }),
           };
         } catch (error) {
+          const resolvedRoot = await resolveWalletRootIdFromLocalArtifacts({
+            paths,
+            provider,
+          }).catch(() => null);
+
           if (isLockedWalletAccessError(error)) {
             return {
               availability: "locked",
-              walletRootId: null,
+              walletRootId: resolvedRoot?.walletRootId ?? null,
               state: null,
               source: null,
               unlockUntilUnixMs: null,
@@ -233,7 +239,7 @@ async function inspectWalletLocalState(options: {
 
           return {
             availability: "local-state-corrupt",
-            walletRootId: null,
+            walletRootId: resolvedRoot?.walletRootId ?? null,
             state: null,
             source: null,
             unlockUntilUnixMs: null,

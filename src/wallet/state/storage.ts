@@ -20,6 +20,11 @@ export interface LoadedWalletState {
   state: WalletStateV1;
 }
 
+export interface RawWalletStateEnvelope {
+  source: "primary" | "backup";
+  envelope: EncryptedEnvelopeV1;
+}
+
 export type WalletStateSaveAccess =
   | Uint8Array
   | string
@@ -38,6 +43,54 @@ export type WalletStateLoadAccess =
 async function readEnvelope(path: string): Promise<EncryptedEnvelopeV1> {
   const raw = await readFile(path, "utf8");
   return JSON.parse(raw) as EncryptedEnvelopeV1;
+}
+
+export async function loadRawWalletStateEnvelope(
+  paths: WalletStateStoragePaths,
+): Promise<RawWalletStateEnvelope | null> {
+  try {
+    return {
+      source: "primary",
+      envelope: await readEnvelope(paths.primaryPath),
+    };
+  } catch (primaryError) {
+    try {
+      return {
+        source: "backup",
+        envelope: await readEnvelope(paths.backupPath),
+      };
+    } catch {
+      if (
+        primaryError instanceof SyntaxError
+        || !(primaryError instanceof Error)
+        || !("code" in primaryError)
+        || (primaryError as NodeJS.ErrnoException).code !== "ENOENT"
+      ) {
+        throw primaryError;
+      }
+
+      return null;
+    }
+  }
+}
+
+export function extractWalletRootIdHintFromWalletStateEnvelope(
+  envelope: EncryptedEnvelopeV1 | null,
+): string | null {
+  const hint = envelope?.walletRootIdHint?.trim() ?? "";
+
+  if (hint.length > 0) {
+    return hint;
+  }
+
+  const keyId = envelope?.secretProvider?.keyId ?? null;
+  const prefix = "wallet-state:";
+
+  if (keyId === null || !keyId.startsWith(prefix)) {
+    return null;
+  }
+
+  return keyId.slice(prefix.length);
 }
 
 export async function saveWalletState(
@@ -60,6 +113,7 @@ export async function saveWalletState(
   const envelope = typeof access === "string" || access instanceof Uint8Array
     ? await encryptJsonWithPassphrase(state, access, {
       format: "cogcoin-local-wallet-state",
+      walletRootIdHint: state.walletRootId,
     })
     : await encryptJsonWithSecretProvider(
       state,
@@ -67,6 +121,7 @@ export async function saveWalletState(
       access.secretReference,
       {
         format: "cogcoin-local-wallet-state",
+        walletRootIdHint: state.walletRootId,
       },
     );
 

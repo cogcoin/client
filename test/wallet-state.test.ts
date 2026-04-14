@@ -7,7 +7,12 @@ import test from "node:test";
 import { encryptJsonWithPassphrase } from "../src/wallet/state/crypto.js";
 import { createMemoryWalletSecretProviderForTesting, createWalletSecretReference } from "../src/wallet/state/provider.js";
 import { clearUnlockSession, loadUnlockSession, saveUnlockSession } from "../src/wallet/state/session.js";
-import { loadWalletState, saveWalletState } from "../src/wallet/state/storage.js";
+import {
+  extractWalletRootIdHintFromWalletStateEnvelope,
+  loadRawWalletStateEnvelope,
+  loadWalletState,
+  saveWalletState,
+} from "../src/wallet/state/storage.js";
 import type { UnlockSessionStateV1, WalletStateV1 } from "../src/wallet/types.js";
 
 function createWalletState(partial: Partial<WalletStateV1> = {}): WalletStateV1 {
@@ -134,10 +139,13 @@ test("wallet state saves a primary file and refreshes a backup from the prior pr
   );
 
   const loaded = await loadWalletState({ primaryPath, backupPath }, passphrase);
+  const raw = await loadRawWalletStateEnvelope({ primaryPath, backupPath });
   const backupRaw = await readFile(backupPath, "utf8");
 
   assert.equal(loaded.source, "primary");
   assert.equal(loaded.state.stateRevision, 2);
+  assert.equal(raw?.envelope.walletRootIdHint, "wallet-root-test");
+  assert.equal(extractWalletRootIdHintFromWalletStateEnvelope(raw?.envelope ?? null), "wallet-root-test");
   assert.match(backupRaw, /"ciphertext"/);
 });
 
@@ -161,8 +169,29 @@ test("wallet state also round-trips through a provider-backed envelope", async (
   const loaded = await loadWalletState({ primaryPath, backupPath }, {
     provider,
   });
+  const raw = await loadRawWalletStateEnvelope({ primaryPath, backupPath });
   assert.equal(loaded.state.stateRevision, 9);
   assert.equal(loaded.state.walletRootId, "wallet-root-test");
+  assert.equal(raw?.envelope.walletRootIdHint, "wallet-root-test");
+  assert.equal(extractWalletRootIdHintFromWalletStateEnvelope(raw?.envelope ?? null), "wallet-root-test");
+});
+
+test("wallet root resolution falls back to the legacy provider key id when the hint is absent", async () => {
+  const envelope = await encryptJsonWithPassphrase(
+    createWalletState(),
+    "correct horse battery staple",
+    {
+      format: "cogcoin-local-wallet-state",
+      walletRootIdHint: null,
+    },
+  );
+
+  envelope.secretProvider = {
+    kind: "wallet-state-key",
+    keyId: "wallet-state:wallet-root-legacy",
+  };
+
+  assert.equal(extractWalletRootIdHintFromWalletStateEnvelope(envelope), "wallet-root-legacy");
 });
 
 test("wallet state falls back to backup when the primary is unreadable", async () => {

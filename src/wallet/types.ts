@@ -291,6 +291,7 @@ export interface EncryptedEnvelopeV1 {
   version: 1;
   cipher: "aes-256-gcm";
   wrappedBy: string;
+  walletRootIdHint?: string | null;
   argon2id?: Argon2EnvelopeParams | null;
   secretProvider?: {
     kind: string;

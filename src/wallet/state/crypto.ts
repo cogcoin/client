@@ -124,6 +124,7 @@ export function encryptBytesWithKey(
   metadata: {
     format: string;
     wrappedBy: string;
+    walletRootIdHint?: string | null;
     argon2id?: Argon2EnvelopeParams | null;
     secretProvider?: WalletSecretReference | null;
   },
@@ -138,6 +139,7 @@ export function encryptBytesWithKey(
     version: 1,
     cipher: "aes-256-gcm",
     wrappedBy: metadata.wrappedBy,
+    walletRootIdHint: metadata.walletRootIdHint ?? null,
     argon2id: metadata.argon2id ?? null,
     secretProvider: metadata.secretProvider ?? null,
     nonce: nonce.toString("base64"),
@@ -169,6 +171,7 @@ export async function encryptJsonWithPassphrase<T>(
   metadata: {
     format: string;
     wrappedBy?: string;
+    walletRootIdHint?: string | null;
   },
 ): Promise<EncryptedEnvelopeV1> {
   const derived = await deriveKeyFromPassphrase(passphrase);
@@ -179,6 +182,7 @@ export async function encryptJsonWithPassphrase<T>(
     {
       format: metadata.format,
       wrappedBy: metadata.wrappedBy ?? "passphrase",
+      walletRootIdHint: metadata.walletRootIdHint ?? null,
       argon2id: derived.params,
     },
   );
@@ -191,6 +195,7 @@ export async function encryptJsonWithSecretProvider<T>(
   metadata: {
     format: string;
     wrappedBy?: string;
+    walletRootIdHint?: string | null;
   },
 ): Promise<EncryptedEnvelopeV1> {
   const key = await provider.loadSecret(secretReference.keyId);
@@ -201,6 +206,7 @@ export async function encryptJsonWithSecretProvider<T>(
     {
       format: metadata.format,
       wrappedBy: metadata.wrappedBy ?? "secret-provider",
+      walletRootIdHint: metadata.walletRootIdHint ?? null,
       secretProvider: secretReference,
     },
   );

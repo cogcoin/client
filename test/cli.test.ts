@@ -78,6 +78,22 @@ function createTempWalletPaths(root: string) {
   });
 }
 
+function createWalletStateEnvelopeStub(walletRootId: string) {
+  return {
+    source: "primary" as const,
+    envelope: {
+      format: "cogcoin-local-wallet-state",
+      version: 1 as const,
+      wrappedBy: "secret-provider",
+      cipher: "aes-256-gcm" as const,
+      walletRootIdHint: walletRootId,
+      nonce: "nonce",
+      tag: "tag",
+      ciphertext: "ciphertext",
+    },
+  };
+}
+
 async function waitForMissingPath(path: string): Promise<void> {
   const deadline = Date.now() + 5_000;
 
@@ -1595,10 +1611,7 @@ test("bitcoin status json reports live node data without resolving the client db
       throw new Error("client db path should not be resolved");
     },
     resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
-    loadWalletState: async () => ({
-      source: "primary",
-      state: createWalletState({ walletRootId }),
-    }),
+    loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub(walletRootId),
     probeManagedBitcoindService: async () => ({
       compatibility: "compatible",
       status: createBitcoindServiceStatus(walletRootId, {
@@ -1715,10 +1728,7 @@ test("bitcoin start only starts bitcoind and does not resolve the client db path
       throw new Error("client db path should not be resolved");
     },
     resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
-    loadWalletState: async () => ({
-      source: "primary",
-      state: createWalletState({ walletRootId: "wallet-root-services" }),
-    }),
+    loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub("wallet-root-services"),
     probeManagedBitcoindService: async () => ({
       compatibility: "unreachable",
       status: null,
@@ -1769,10 +1779,7 @@ test("indexer start resolves the client db path and auto-starts bitcoind", async
       ensuredPath = path;
     },
     resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
-    loadWalletState: async () => ({
-      source: "primary",
-      state: createWalletState({ walletRootId: "wallet-root-services" }),
-    }),
+    loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub("wallet-root-services"),
     probeManagedBitcoindService: async () => ({
       compatibility: "unreachable",
       status: null,
@@ -1843,10 +1850,7 @@ test("bitcoin stop stops the paired indexer and managed bitcoind", async () => {
     stderr: new MemoryStream(),
     resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
     resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
-    loadWalletState: async () => ({
-      source: "primary",
-      state: createWalletState({ walletRootId: "wallet-root-services" }),
-    }),
+    loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub("wallet-root-services"),
     stopIndexerDaemonService: async () => {
       calls.push("indexer");
       return {
@@ -1883,10 +1887,7 @@ test("indexer stop only stops the managed indexer", async () => {
     stderr: new MemoryStream(),
     resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
     resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
-    loadWalletState: async () => ({
-      source: "primary",
-      state: createWalletState({ walletRootId: "wallet-root-services" }),
-    }),
+    loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub("wallet-root-services"),
     stopIndexerDaemonService: async () => {
       indexerStopped = true;
       return {
@@ -7391,11 +7392,13 @@ test("wallet status and domain views surface pending anchor family state and gui
 
 test("sync uses resolved defaults and prints a concise summary", async () => {
   const stdout = new MemoryStream();
+  const runtimePaths = createTempWalletPaths("/tmp/cogcoin-cli-sync-root");
   const opened: {
     dbPath?: string;
     dataDir?: string;
     ensured?: string;
     progressOutput?: string;
+    walletRootId?: string;
     completionScenePlayed?: boolean;
   } = {};
 
@@ -7407,13 +7410,32 @@ test("sync uses resolved defaults and prints a concise summary", async () => {
     ensureDirectory: async (path) => {
       opened.ensured = path;
     },
+    resolveWalletRuntimePaths: () => runtimePaths,
+    loadRawWalletStateEnvelope: async () => ({
+      source: "primary",
+      envelope: {
+        format: "cogcoin-local-wallet-state",
+        cipher: "aes-256-gcm",
+        nonce: "nonce",
+        ciphertext: "ciphertext",
+        authTag: "auth-tag",
+        walletRootIdHint: "wallet-root-sync",
+      } as never,
+    }),
+    loadUnlockSession: async () => {
+      throw new Error("should-not-read-unlock-session");
+    },
+    loadWalletExplicitLock: async () => {
+      throw new Error("should-not-read-explicit-lock");
+    },
     openSqliteStore: async ({ filename }) => {
       opened.dbPath = filename;
       return createNoopStore();
     },
-    openManagedBitcoindClient: async ({ dataDir, progressOutput }) => {
+    openManagedBitcoindClient: async ({ dataDir, progressOutput, walletRootId }) => {
       opened.dataDir = dataDir;
       opened.progressOutput = progressOutput;
+      opened.walletRootId = walletRootId;
       return {
         async syncToTip() {
           return {
@@ -7449,6 +7471,7 @@ test("sync uses resolved defaults and prints a concise summary", async () => {
   assert.equal(opened.dataDir, "/tmp/cogcoin-bitcoin");
   assert.equal(opened.ensured, "/tmp");
   assert.equal(opened.progressOutput, "auto");
+  assert.equal(opened.walletRootId, "wallet-root-sync");
   assert.equal(opened.completionScenePlayed, true);
   assert.match(stdout.toString(), /Applied blocks: 12/);
   assert.match(stdout.toString(), /Rewound blocks: 3/);
@@ -7644,8 +7667,10 @@ test("follow stays active until signal and shuts down cleanly", async () => {
   const stdout = new MemoryStream();
   const stderr = new MemoryStream();
   const signals = new FakeSignalSource();
+  const runtimePaths = createTempWalletPaths("/tmp/cogcoin-cli-follow-root");
   let started = false;
   let closed = false;
+  let walletRootId: string | undefined;
 
   const followPromise = runCli(["follow"], {
     stdout,
@@ -7654,8 +7679,26 @@ test("follow stays active until signal and shuts down cleanly", async () => {
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-follow.sqlite",
     resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-follow-bitcoin",
     ensureDirectory: async () => {},
+    resolveWalletRuntimePaths: () => runtimePaths,
+    loadRawWalletStateEnvelope: async () => ({
+      source: "primary",
+      envelope: {
+        format: "cogcoin-local-wallet-state",
+        cipher: "aes-256-gcm",
+        nonce: "nonce",
+        ciphertext: "ciphertext",
+        authTag: "auth-tag",
+        walletRootIdHint: "wallet-root-follow",
+      } as never,
+    }),
+    loadUnlockSession: async () => {
+      throw new Error("should-not-read-unlock-session");
+    },
+    loadWalletExplicitLock: async () => {
+      throw new Error("should-not-read-explicit-lock");
+    },
     openSqliteStore: async () => createNoopStore(),
-    openManagedBitcoindClient: async () => ({
+    openManagedBitcoindClient: async ({ walletRootId: resolvedWalletRootId }) => ({
       async syncToTip() {
         return {
           appliedBlocks: 0,
@@ -7665,6 +7708,7 @@ test("follow stays active until signal and shuts down cleanly", async () => {
         };
       },
       async startFollowingTip() {
+        walletRootId = resolvedWalletRootId;
         started = true;
       },
       async getNodeStatus() {
@@ -7686,6 +7730,7 @@ test("follow stays active until signal and shuts down cleanly", async () => {
   assert.equal(code, 0);
   assert.equal(started, true);
   assert.equal(closed, true);
+  assert.equal(walletRootId, "wallet-root-follow");
   assert.match(stdout.toString(), /Following managed Cogcoin tip/);
   assert.match(stderr.toString(), /Stopping managed Cogcoin client/);
 });

@@ -9,6 +9,11 @@ import type {
   ManagedBitcoindObservedStatus,
   ManagedIndexerDaemonObservedStatus,
 } from "../../bitcoind/types.js";
+import {
+  resolveWalletRootIdFromLocalArtifacts,
+  type WalletRootResolution,
+  type WalletRootResolutionSource,
+} from "../../wallet/root-resolution.js";
 import { writeLine } from "../io.js";
 import {
   createSuccessEnvelope,
@@ -18,17 +23,7 @@ import {
 } from "../output.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 
-type WalletRootSource =
-  | "wallet-state"
-  | "unlock-session"
-  | "explicit-lock"
-  | "bitcoind-status"
-  | "default-uninitialized";
-
-interface WalletRootResolution {
-  walletRootId: string;
-  source: WalletRootSource;
-}
+type WalletRootSource = WalletRootResolutionSource;
 
 interface BitcoinNodeSnapshot {
   bestHeight: number;
@@ -76,75 +71,25 @@ function formatCompatibility(value: string): string {
 }
 
 async function resolveEffectiveWalletRootId(
-  dataDir: string,
   context: RequiredCliRunnerContext,
 ): Promise<WalletRootResolution> {
-  const paths = context.resolveWalletRuntimePaths();
-
-  try {
-    const loaded = await context.loadWalletState({
-      primaryPath: paths.walletStatePath,
-      backupPath: paths.walletStateBackupPath,
-    }, {
-      provider: context.walletSecretProvider,
-    });
-    return {
-      walletRootId: loaded.state.walletRootId,
-      source: "wallet-state",
-    };
-  } catch {
-    // fall through
-  }
-
-  try {
-    const unlockSession = await context.loadUnlockSession(paths.walletUnlockSessionPath, {
-      provider: context.walletSecretProvider,
-    });
-    return {
-      walletRootId: unlockSession.walletRootId,
-      source: "unlock-session",
-    };
-  } catch {
-    // fall through
-  }
-
-  try {
-    const explicitLock = await context.loadWalletExplicitLock(paths.walletExplicitLockPath);
-    if (explicitLock?.walletRootId) {
-      return {
-        walletRootId: explicitLock.walletRootId,
-        source: "explicit-lock",
-      };
-    }
-  } catch {
-    // fall through
-  }
-
-  const fallbackProbe = await context.probeManagedBitcoindService({
-    dataDir,
-    chain: "main",
-    startHeight: 0,
-    walletRootId: UNINITIALIZED_WALLET_ROOT_ID,
-  });
-
-  if (fallbackProbe.status?.walletRootId) {
-    return {
-      walletRootId: fallbackProbe.status.walletRootId,
-      source: "bitcoind-status",
-    };
-  }
-
-  return {
+  return resolveWalletRootIdFromLocalArtifacts({
+    paths: context.resolveWalletRuntimePaths(),
+    provider: context.walletSecretProvider,
+    loadRawWalletStateEnvelope: context.loadRawWalletStateEnvelope,
+    loadUnlockSession: context.loadUnlockSession,
+    loadWalletExplicitLock: context.loadWalletExplicitLock,
+  }).catch(() => ({
     walletRootId: UNINITIALIZED_WALLET_ROOT_ID,
     source: "default-uninitialized",
-  };
+  }));
 }
 
 async function inspectManagedBitcoindStatus(
   dataDir: string,
   context: RequiredCliRunnerContext,
 ): Promise<BitcoinStatusPayload> {
-  const resolution = await resolveEffectiveWalletRootId(dataDir, context);
+  const resolution = await resolveEffectiveWalletRootId(context);
   const probe = await context.probeManagedBitcoindService({
     dataDir,
     chain: "main",
@@ -193,7 +138,7 @@ async function inspectManagedIndexerStatus(
   dataDir: string,
   context: RequiredCliRunnerContext,
 ): Promise<IndexerStatusPayload> {
-  const resolution = await resolveEffectiveWalletRootId(dataDir, context);
+  const resolution = await resolveEffectiveWalletRootId(context);
   const runtimeRoot = resolveManagedServicePaths(dataDir, resolution.walletRootId).walletRuntimeRoot;
   const probe = await context.probeIndexerDaemon({
     dataDir,
@@ -405,7 +350,7 @@ export async function runServiceRuntimeCommand(
     }
 
     if (parsed.command === "bitcoin-start") {
-      const resolution = await resolveEffectiveWalletRootId(dataDir, context);
+      const resolution = await resolveEffectiveWalletRootId(context);
       const probe = await context.probeManagedBitcoindService({
         dataDir,
         chain: "main",
@@ -453,7 +398,7 @@ export async function runServiceRuntimeCommand(
     }
 
     if (parsed.command === "bitcoin-stop") {
-      const resolution = await resolveEffectiveWalletRootId(dataDir, context);
+      const resolution = await resolveEffectiveWalletRootId(context);
       const indexer = await context.stopIndexerDaemonService({
         dataDir,
         walletRootId: resolution.walletRootId,
@@ -491,7 +436,7 @@ export async function runServiceRuntimeCommand(
     }
 
     if (parsed.command === "indexer-start") {
-      const resolution = await resolveEffectiveWalletRootId(dataDir, context);
+      const resolution = await resolveEffectiveWalletRootId(context);
       const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
       await context.ensureDirectory(dirname(dbPath));
       const genesis = await loadBundledGenesisParameters();
@@ -554,7 +499,7 @@ export async function runServiceRuntimeCommand(
     }
 
     if (parsed.command === "indexer-stop") {
-      const resolution = await resolveEffectiveWalletRootId(dataDir, context);
+      const resolution = await resolveEffectiveWalletRootId(context);
       const indexer = await context.stopIndexerDaemonService({
         dataDir,
         walletRootId: resolution.walletRootId,

@@ -12,6 +12,7 @@ import {
   attachOrStartManagedBitcoindService,
   createManagedWalletReplica,
   probeManagedBitcoindService,
+  withClaimedUninitializedManagedRuntime,
 } from "../bitcoind/service.js";
 import { resolveManagedServicePaths } from "../bitcoind/service-paths.js";
 import { createRpcClient } from "../bitcoind/node.js";
@@ -63,9 +64,13 @@ import {
   createWalletSecretReference,
   type WalletSecretProvider,
 } from "./state/provider.js";
-import { loadWalletState, saveWalletState } from "./state/storage.js";
+import {
+  extractWalletRootIdHintFromWalletStateEnvelope,
+  loadRawWalletStateEnvelope,
+  loadWalletState,
+  saveWalletState,
+} from "./state/storage.js";
 import type {
-  EncryptedEnvelopeV1,
   PortableWalletArchivePayloadV1,
   UnlockSessionStateV1,
   WalletExplicitLockStateV1,
@@ -211,27 +216,6 @@ async function readJsonFileOrNull<T>(path: string): Promise<T | null> {
 
     return null;
   }
-}
-
-async function loadRawWalletEnvelope(paths: WalletRuntimePaths): Promise<EncryptedEnvelopeV1 | null> {
-  const primary = await readJsonFileOrNull<EncryptedEnvelopeV1>(paths.walletStatePath);
-
-  if (primary !== null) {
-    return primary;
-  }
-
-  return readJsonFileOrNull<EncryptedEnvelopeV1>(paths.walletStateBackupPath);
-}
-
-function extractWalletRootIdFromEnvelope(envelope: EncryptedEnvelopeV1 | null): string | null {
-  const keyId = envelope?.secretProvider?.keyId ?? null;
-  const prefix = "wallet-state:";
-
-  if (keyId === null || !keyId.startsWith(prefix)) {
-    return null;
-  }
-
-  return keyId.slice(prefix.length);
 }
 
 function resolvePendingInitializationStoragePaths(paths: WalletRuntimePaths): {
@@ -1723,28 +1707,32 @@ export async function initializeWallet(options: {
       material,
       internalCoreWalletPassphrase,
     });
+    const verifiedState = await withClaimedUninitializedManagedRuntime({
+      dataDir: options.dataDir,
+      walletRootId,
+    }, async () => {
+      await saveWalletState(
+        {
+          primaryPath: paths.walletStatePath,
+          backupPath: paths.walletStateBackupPath,
+        },
+        initialState,
+        {
+          provider,
+          secretReference,
+        },
+      );
 
-    await saveWalletState(
-      {
-        primaryPath: paths.walletStatePath,
-        backupPath: paths.walletStateBackupPath,
-      },
-      initialState,
-      {
+      return importDescriptorIntoManagedCoreWallet(
+        initialState,
         provider,
-        secretReference,
-      },
-    );
-
-    const verifiedState = await importDescriptorIntoManagedCoreWallet(
-      initialState,
-      provider,
-      paths,
-      options.dataDir,
-      nowUnixMs,
-      options.attachService,
-      options.rpcFactory,
-    );
+        paths,
+        options.dataDir,
+        nowUnixMs,
+        options.attachService,
+        options.rpcFactory,
+      );
+    });
     const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
     await clearWalletExplicitLock(paths.walletExplicitLockPath);
     await saveUnlockSession(
@@ -2184,7 +2172,10 @@ export async function restoreWalletFromMnemonic(options: {
   });
 
   try {
-    const rawEnvelope = await loadRawWalletEnvelope(paths);
+    const rawEnvelope = await loadRawWalletStateEnvelope({
+      primaryPath: paths.walletStatePath,
+      backupPath: paths.walletStateBackupPath,
+    });
     const replacementStateExists = rawEnvelope !== null
       || await pathExists(paths.walletStatePath)
       || await pathExists(paths.walletStateBackupPath);
@@ -2196,7 +2187,7 @@ export async function restoreWalletFromMnemonic(options: {
       await confirmRestoreReplacement(options.prompter);
     }
 
-    let previousWalletRootId = extractWalletRootIdFromEnvelope(rawEnvelope);
+    let previousWalletRootId = extractWalletRootIdHintFromWalletStateEnvelope(rawEnvelope?.envelope ?? null);
     try {
       const loaded = await loadWalletState({
         primaryPath: paths.walletStatePath,

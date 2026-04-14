@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, constants, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, constants, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -48,6 +48,8 @@ import type { WalletPendingInitializationStateV1, WalletStateV1 } from "../src/w
 import {
   INDEXER_DAEMON_SCHEMA_VERSION,
   INDEXER_DAEMON_SERVICE_API_VERSION,
+  MANAGED_BITCOIND_SERVICE_API_VERSION,
+  type ManagedBitcoindServiceStatus,
 } from "../src/bitcoind/types.js";
 import { resolveManagedServicePaths } from "../src/bitcoind/service-paths.js";
 
@@ -703,6 +705,97 @@ test("initializeWallet writes provider-backed state, creates an unlock session, 
   await assert.rejects(() => access(paths.walletInitPendingPath, constants.F_OK));
   await assert.rejects(() => access(paths.walletInitPendingBackupPath, constants.F_OK));
   await assert.rejects(() => provider.loadSecret(createWalletPendingInitSecretReference(paths.stateRoot).keyId));
+});
+
+test("initializeWallet claims and replaces a live uninitialized managed runtime", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-init-claim-uninitialized-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const prompter = new CapturingPrompter();
+  const harness = createRpcHarness();
+  const uninitializedPaths = resolveManagedServicePaths(paths.bitcoinDataDir, "wallet-root-uninitialized");
+  const oldBitcoind = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  const oldIndexer = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+
+  try {
+    oldBitcoind.unref();
+    oldIndexer.unref();
+    await mkdir(uninitializedPaths.walletRuntimeRoot, { recursive: true });
+    await mkdir(uninitializedPaths.indexerServiceRoot, { recursive: true });
+
+    const oldBitcoindStatus: ManagedBitcoindServiceStatus = {
+      serviceApiVersion: MANAGED_BITCOIND_SERVICE_API_VERSION,
+      binaryVersion: "0.0.0-test",
+      buildId: null,
+      serviceInstanceId: "bitcoind-uninitialized",
+      state: "ready",
+      processId: oldBitcoind.pid ?? null,
+      walletRootId: "wallet-root-uninitialized",
+      chain: "main",
+      dataDir: paths.bitcoinDataDir,
+      runtimeRoot: uninitializedPaths.walletRuntimeRoot,
+      startHeight: 0,
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: join(paths.bitcoinDataDir, ".cookie"),
+        port: 18_443,
+      },
+      zmq: {
+        endpoint: "tcp://127.0.0.1:28332",
+        topic: "hashblock",
+        port: 28_332,
+        pollIntervalMs: 15_000,
+      },
+      p2pPort: 18_444,
+      walletReplica: null,
+      startedAtUnixMs: 1_700_000_000_000,
+      heartbeatAtUnixMs: 1_700_000_000_000,
+      updatedAtUnixMs: 1_700_000_000_000,
+      lastError: null,
+    };
+
+    await writeFile(uninitializedPaths.bitcoindStatusPath, JSON.stringify(oldBitcoindStatus), "utf8");
+    await writeFile(uninitializedPaths.indexerDaemonStatusPath, JSON.stringify({
+      processId: oldIndexer.pid ?? null,
+    }), "utf8");
+
+    const result = await initializeWallet({
+      dataDir: paths.bitcoinDataDir,
+      provider,
+      paths,
+      prompter,
+      nowUnixMs: 1_700_000_000_000,
+      attachService: async () => ({
+        rpc: {
+          url: "http://127.0.0.1:18443",
+          cookieFile: "/tmp/does-not-matter",
+          port: 18_443,
+        },
+      } as never),
+      rpcFactory: harness.rpcFactory,
+    });
+
+    assert.ok(result.walletRootId.startsWith("wallet-"));
+    assert.equal(isPidRunning(oldBitcoind.pid), false);
+    assert.equal(isPidRunning(oldIndexer.pid), false);
+    await assert.rejects(() => access(uninitializedPaths.bitcoindStatusPath, constants.F_OK));
+    await assert.rejects(() => access(uninitializedPaths.indexerDaemonStatusPath, constants.F_OK));
+    const loaded = await loadWalletState({
+      primaryPath: paths.walletStatePath,
+      backupPath: paths.walletStateBackupPath,
+    }, {
+      provider,
+    });
+    assert.equal(loaded.state.walletRootId, result.walletRootId);
+  } finally {
+    if (isPidRunning(oldBitcoind.pid)) {
+      oldBitcoind.kill("SIGKILL");
+    }
+    if (isPidRunning(oldIndexer.pid)) {
+      oldIndexer.kill("SIGKILL");
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("initializeWallet works with the Linux default secret-provider testing seam", async () => {

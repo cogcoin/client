@@ -1,5 +1,6 @@
 import { dirname } from "node:path";
 
+import { resolveWalletRootIdFromLocalArtifacts } from "../../wallet/root-resolution.js";
 import { usesTtyProgress, writeLine } from "../io.js";
 import { classifyCliError } from "../output.js";
 import { createStopSignalWatcher } from "../signals.js";
@@ -11,6 +12,13 @@ export async function runFollowCommand(
 ): Promise<number> {
   const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
   const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+  const walletRoot = await resolveWalletRootIdFromLocalArtifacts({
+    paths: context.resolveWalletRuntimePaths(),
+    provider: context.walletSecretProvider,
+    loadRawWalletStateEnvelope: context.loadRawWalletStateEnvelope,
+    loadUnlockSession: context.loadUnlockSession,
+    loadWalletExplicitLock: context.loadWalletExplicitLock,
+  });
   await context.ensureDirectory(dirname(dbPath));
   const store = await context.openSqliteStore({ filename: dbPath });
   let storeOwned = true;
@@ -20,6 +28,7 @@ export async function runFollowCommand(
       store,
       databasePath: dbPath,
       dataDir,
+      walletRootId: walletRoot.walletRootId,
       progressOutput: parsed.progressOutput,
     });
     storeOwned = false;

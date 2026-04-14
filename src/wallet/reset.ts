@@ -24,13 +24,15 @@ import {
   createWalletSecretReference,
   type WalletSecretProvider,
 } from "./state/provider.js";
-import { loadWalletState, saveWalletState } from "./state/storage.js";
+import {
+  extractWalletRootIdHintFromWalletStateEnvelope,
+  loadRawWalletStateEnvelope,
+  loadWalletState,
+  saveWalletState,
+  type RawWalletStateEnvelope,
+} from "./state/storage.js";
 import { confirmTypedAcknowledgement } from "./tx/confirm.js";
-import type {
-  EncryptedEnvelopeV1,
-  WalletExplicitLockStateV1,
-  WalletStateV1,
-} from "./types.js";
+import type { WalletExplicitLockStateV1, WalletStateV1 } from "./types.js";
 import type { WalletPrompter } from "./lifecycle.js";
 
 export type WalletResetAction =
@@ -96,11 +98,6 @@ export interface WalletResetPreview {
 
 type WalletEnvelopeMode = "provider-backed" | "passphrase-wrapped" | "unknown";
 
-interface RawWalletEnvelope {
-  source: "primary" | "backup";
-  envelope: EncryptedEnvelopeV1;
-}
-
 interface WalletResetPreflight {
   dataRoot: string;
   removedRoots: string[];
@@ -110,7 +107,7 @@ interface WalletResetPreflight {
     envelopeSource: "primary" | "backup" | null;
     secretProviderKeyId: string | null;
     explicitLock: WalletExplicitLockStateV1 | null;
-    rawEnvelope: RawWalletEnvelope | null;
+    rawEnvelope: RawWalletStateEnvelope | null;
   };
   snapshot: {
     status: "not-present" | "invalid" | "valid";
@@ -182,47 +179,6 @@ async function readJsonFileOrNull<T>(path: string): Promise<T | null> {
 
     return null;
   }
-}
-
-async function readWalletEnvelope(path: string): Promise<EncryptedEnvelopeV1 | null> {
-  try {
-    return JSON.parse(await readFile(path, "utf8")) as EncryptedEnvelopeV1;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-      return null;
-    }
-
-    return null;
-  }
-}
-
-async function loadRawWalletEnvelope(paths: WalletRuntimePaths): Promise<RawWalletEnvelope | null> {
-  const primary = await readWalletEnvelope(paths.walletStatePath);
-  if (primary !== null) {
-    return {
-      source: "primary",
-      envelope: primary,
-    };
-  }
-
-  const backup = await readWalletEnvelope(paths.walletStateBackupPath);
-  if (backup !== null) {
-    return {
-      source: "backup",
-      envelope: backup,
-    };
-  }
-
-  return null;
-}
-
-function extractWalletRootIdFromSecretKeyId(keyId: string | null): string | null {
-  if (keyId === null) {
-    return null;
-  }
-
-  const prefix = "wallet-state:";
-  return keyId.startsWith(prefix) ? keyId.slice(prefix.length) : null;
 }
 
 async function isProcessAlive(pid: number | null): Promise<boolean> {
@@ -663,7 +619,10 @@ async function preflightReset(options: {
   paths: WalletRuntimePaths;
   validateSnapshotFile?: (path: string) => Promise<void>;
 }): Promise<WalletResetPreflight> {
-  const rawEnvelope = await loadRawWalletEnvelope(options.paths);
+  const rawEnvelope = await loadRawWalletStateEnvelope({
+    primaryPath: options.paths.walletStatePath,
+    backupPath: options.paths.walletStateBackupPath,
+  });
   const explicitLock = await loadWalletExplicitLock(options.paths.walletExplicitLockPath).catch(() => null);
   const snapshotPaths = resolveBootstrapPathsForTesting(options.dataDir, DEFAULT_SNAPSHOT_METADATA);
   const validateSnapshot = options.validateSnapshotFile
@@ -930,7 +889,7 @@ export async function resetWallet(options: {
   const deletedSecretRefs: string[] = [];
   const failedSecretRefs: string[] = [];
   const preservedSecretRefs: string[] = [];
-  let walletOldRootId = extractWalletRootIdFromSecretKeyId(preflight.wallet.secretProviderKeyId)
+  let walletOldRootId = extractWalletRootIdHintFromWalletStateEnvelope(preflight.wallet.rawEnvelope?.envelope ?? null)
     ?? preflight.wallet.explicitLock?.walletRootId
     ?? null;
   let walletNewRootId: string | null = null;

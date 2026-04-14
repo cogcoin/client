@@ -31,7 +31,7 @@ import type {
 import type { openWalletReadContext } from "../wallet/read/index.js";
 import { loadWalletExplicitLock } from "../wallet/state/explicit-lock.js";
 import { loadUnlockSession } from "../wallet/state/session.js";
-import { loadWalletState } from "../wallet/state/storage.js";
+import { loadRawWalletStateEnvelope, loadWalletState } from "../wallet/state/storage.js";
 import type { WalletSecretProvider } from "../wallet/state/provider.js";
 import type {
   disableMiningHooks,
@@ -232,6 +232,7 @@ export interface CliRunnerContext {
     store: ClientStoreAdapter;
     databasePath?: string;
     dataDir?: string;
+    walletRootId?: string;
     progressOutput?: ProgressOutput;
   }) => Promise<ManagedClientLike>;
   attachManagedBitcoindService?: typeof attachOrStartManagedBitcoindService;
@@ -245,6 +246,7 @@ export interface CliRunnerContext {
   inspectPassiveClientStatus?: typeof inspectPassiveClientStatus;
   openWalletReadContext?: typeof openWalletReadContext;
   loadWalletState?: typeof loadWalletState;
+  loadRawWalletStateEnvelope?: typeof loadRawWalletStateEnvelope;
   loadUnlockSession?: typeof loadUnlockSession;
   loadWalletExplicitLock?: typeof loadWalletExplicitLock;
   initializeWallet?: typeof initializeWallet;

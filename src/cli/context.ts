@@ -35,7 +35,7 @@ import { resolveWalletRuntimePathsForTesting } from "../wallet/runtime.js";
 import { openWalletReadContext } from "../wallet/read/index.js";
 import { loadWalletExplicitLock } from "../wallet/state/explicit-lock.js";
 import { loadUnlockSession } from "../wallet/state/session.js";
-import { loadWalletState } from "../wallet/state/storage.js";
+import { loadRawWalletStateEnvelope, loadWalletState } from "../wallet/state/storage.js";
 import {
   disableMiningHooks,
   enableMiningHooks,
@@ -151,6 +151,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     stopIndexerDaemonService: overrides.stopIndexerDaemonService ?? stopIndexerDaemonService,
     readPackageVersion: overrides.readPackageVersion ?? readPackageVersionFromDisk,
     loadWalletState: overrides.loadWalletState ?? loadWalletState,
+    loadRawWalletStateEnvelope: overrides.loadRawWalletStateEnvelope ?? loadRawWalletStateEnvelope,
     loadUnlockSession: overrides.loadUnlockSession ?? loadUnlockSession,
     loadWalletExplicitLock: overrides.loadWalletExplicitLock ?? loadWalletExplicitLock,
     resolveDefaultBitcoindDataDir: overrides.resolveDefaultBitcoindDataDir ?? resolveDefaultBitcoindDataDirForTesting,
