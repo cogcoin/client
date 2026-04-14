@@ -20,6 +20,10 @@ export function getInitNextSteps(): string[] {
   return ["cogcoin sync", "cogcoin address"];
 }
 
+export function getRestoreNextSteps(): string[] {
+  return ["cogcoin sync", "cogcoin address"];
+}
+
 function blocksSyncBootstrap(
   context: Pick<WalletReadContext, "bitcoind" | "indexer">,
 ): boolean {

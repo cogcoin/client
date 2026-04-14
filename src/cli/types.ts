@@ -11,6 +11,7 @@ import type {
   previewResetWallet,
   repairWallet,
   resetWallet,
+  restoreWalletFromMnemonic,
   unlockWallet,
 } from "../wallet/lifecycle.js";
 import type { openWalletReadContext } from "../wallet/read/index.js";
@@ -54,6 +55,7 @@ export type ProgressOutput = "auto" | "tty" | "none";
 export type OutputMode = "text" | "json" | "preview-json";
 export type CommandName =
   | "init"
+  | "restore"
   | "reset"
   | "repair"
   | "sync"
@@ -107,6 +109,7 @@ export type CommandName =
   | "wallet-export"
   | "wallet-import"
   | "wallet-init"
+  | "wallet-restore"
   | "wallet-lock"
   | "wallet-unlock"
   | "wallet-status"
@@ -210,6 +213,7 @@ export interface CliRunnerContext {
   inspectPassiveClientStatus?: typeof inspectPassiveClientStatus;
   openWalletReadContext?: typeof openWalletReadContext;
   initializeWallet?: typeof initializeWallet;
+  restoreWalletFromMnemonic?: typeof restoreWalletFromMnemonic;
   previewResetWallet?: typeof previewResetWallet;
   exportWallet?: typeof exportWallet;
   importWallet?: typeof importWallet;

@@ -13,6 +13,7 @@ import type {
   WalletImportResult,
   WalletRepairResult,
   WalletResetResult,
+  WalletRestoreResult,
   WalletUnlockResult,
 } from "../wallet/lifecycle.js";
 import {
@@ -385,6 +386,21 @@ export function buildInitMutationData(result: WalletInitializationResult) {
     kind: "init",
     state: after,
     before: null,
+    after,
+  });
+}
+
+export function buildRestoreMutationData(result: WalletRestoreResult) {
+  const after = {
+    walletRootId: result.walletRootId,
+    fundingAddress: result.fundingAddress,
+    unlockUntilUnixMs: result.unlockUntilUnixMs,
+    locked: false,
+  };
+
+  return buildStateChangeData({
+    kind: "restore",
+    state: after,
     after,
   });
 }

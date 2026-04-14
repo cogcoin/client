@@ -11,6 +11,7 @@ Commands:
   status --output json    Emit the stable v1 machine-readable status envelope
   init                    Initialize a new local wallet root
   init --output json      Emit the stable v1 machine-readable init result envelope
+  restore                 Restore a fresh local wallet from a 24-word mnemonic; run sync afterward
   reset                   Factory-reset local Cogcoin state with interactive retention prompts
   repair                  Recover bounded wallet/indexer/runtime state
   unlock                  Clear an explicit wallet lock and unlock for a limited duration
@@ -45,6 +46,7 @@ Commands:
                          Lock COG to an anchored recipient domain
   wallet status           Show detailed wallet-local status and service health
   wallet init             Initialize a new local wallet root
+  wallet restore          Restore a fresh local wallet from a 24-word mnemonic; run sync afterward
   wallet unlock           Clear an explicit wallet lock and unlock for a limited duration
   wallet lock             Lock the local wallet and disable on-demand unlock
   wallet export <path>    Export a portable encrypted wallet archive
@@ -523,6 +525,12 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
           continue;
         }
 
+        if (subcommand === "restore") {
+          command = "wallet-restore";
+          index += 1;
+          continue;
+        }
+
         if (subcommand === "unlock") {
           command = "wallet-unlock";
           index += 1;
@@ -828,6 +836,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
       if (
         token === "init"
+        || token === "restore"
         || token === "reset"
         || token === "repair"
         || token === "sync"
@@ -864,9 +873,11 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   if (
     (command === "status"
       || command === "init"
+      || command === "restore"
       || command === "reset"
       || command === "unlock"
       || command === "wallet-init"
+      || command === "wallet-restore"
       || command === "wallet-lock"
       || command === "wallet-unlock"
       || command === "wallet-status"

@@ -15,6 +15,7 @@ import {
   previewResetWallet,
   repairWallet,
   resetWallet,
+  restoreWalletFromMnemonic,
   unlockWallet,
 } from "../wallet/lifecycle.js";
 import { openWalletReadContext } from "../wallet/read/index.js";
@@ -76,6 +77,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     inspectPassiveClientStatus: overrides.inspectPassiveClientStatus ?? inspectPassiveClientStatus,
     openWalletReadContext: overrides.openWalletReadContext ?? openWalletReadContext,
     initializeWallet: overrides.initializeWallet ?? initializeWallet,
+    restoreWalletFromMnemonic: overrides.restoreWalletFromMnemonic ?? restoreWalletFromMnemonic,
     previewResetWallet: overrides.previewResetWallet ?? previewResetWallet,
     exportWallet: overrides.exportWallet ?? exportWallet,
     importWallet: overrides.importWallet ?? importWallet,

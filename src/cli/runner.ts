@@ -97,12 +97,14 @@ export async function runCli(
 
     if (
       parsed.command === "init"
+      || parsed.command === "restore"
       || parsed.command === "reset"
       || parsed.command === "repair"
       || parsed.command === "unlock"
       || parsed.command === "wallet-export"
       || parsed.command === "wallet-import"
       || parsed.command === "wallet-init"
+      || parsed.command === "wallet-restore"
       || parsed.command === "wallet-unlock"
       || parsed.command === "wallet-lock"
     ) {

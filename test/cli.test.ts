@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { openClient } from "../src/client.js";
@@ -888,12 +889,18 @@ test("parseCliArgs handles mining runtime commands", () => {
   assert.deepEqual(stop.args, []);
 });
 
-test("parseCliArgs handles wallet init/unlock/lock/export/import and repair commands", () => {
+test("parseCliArgs handles wallet init/restore/unlock/lock/export/import and repair commands", () => {
   const init = parseCliArgs(["init"]);
   assert.equal(init.command, "init");
 
   const walletInit = parseCliArgs(["wallet", "init"]);
   assert.equal(walletInit.command, "wallet-init");
+
+  const restore = parseCliArgs(["restore"]);
+  assert.equal(restore.command, "restore");
+
+  const walletRestore = parseCliArgs(["wallet", "restore"]);
+  assert.equal(walletRestore.command, "wallet-restore");
 
   const unlock = parseCliArgs(["unlock", "--for", "2h"]);
   assert.equal(unlock.command, "unlock");
@@ -919,6 +926,8 @@ test("parseCliArgs allows json on covered action commands and rejects excluded c
   const supportedArgv = [
     ["init", "--output", "json"],
     ["wallet", "init", "--output", "json"],
+    ["restore", "--output", "json"],
+    ["wallet", "restore", "--output", "json"],
     ["unlock", "--output", "json"],
     ["wallet", "unlock", "--output", "json"],
     ["wallet", "export", "/tmp/archive.cogwallet", "--output", "json"],
@@ -945,6 +954,7 @@ test("parseCliArgs allows json on covered action commands and rejects excluded c
   }
 
   assert.throws(() => parseCliArgs(["mine", "--output", "json"]), /cli_output_not_supported_for_command/);
+  assert.throws(() => parseCliArgs(["restore", "--output", "preview-json"]), /cli_output_not_supported_for_command/);
 });
 
 test("parseCliArgs allows preview-json on covered preview commands and rejects unsupported commands", () => {
@@ -1391,6 +1401,9 @@ test("wallet admin commands dispatch through the lifecycle hooks", async () => {
     async prompt() {
       return "";
     },
+    async promptHidden() {
+      return "";
+    },
   });
 
   const initCode = await runCli(["init"], {
@@ -1405,6 +1418,45 @@ test("wallet admin commands dispatch through the lifecycle hooks", async () => {
         fundingAddress: "bc1qfundingidentity0000000000000000000000000",
         unlockUntilUnixMs: 1_700_000_900_000,
         state: createWalletState(),
+      };
+    },
+    restoreWalletFromMnemonic: async () => {
+      throw new Error("unreachable");
+    },
+    exportWallet: async () => {
+      throw new Error("unreachable");
+    },
+    importWallet: async () => {
+      throw new Error("unreachable");
+    },
+    unlockWallet: async () => {
+      throw new Error("unreachable");
+    },
+    lockWallet: async () => {
+      throw new Error("unreachable");
+    },
+    repairWallet: async () => {
+      throw new Error("unreachable");
+    },
+  });
+
+  const restoreCode = await runCli(["restore"], {
+    stdout: new MemoryStream(),
+    stderr: new MemoryStream(),
+    walletSecretProvider: {} as never,
+    createPrompter,
+    initializeWallet: async () => {
+      throw new Error("unreachable");
+    },
+    restoreWalletFromMnemonic: async () => {
+      calls.push("restore");
+      return {
+        walletRootId: "wallet-root-restored",
+        fundingAddress: "bc1qfundingidentity0000000000000000000000000",
+        unlockUntilUnixMs: 1_700_000_900_000,
+        state: createWalletState({
+          walletRootId: "wallet-root-restored",
+        }),
       };
     },
     exportWallet: async () => {
@@ -1430,6 +1482,9 @@ test("wallet admin commands dispatch through the lifecycle hooks", async () => {
     walletSecretProvider: {} as never,
     createPrompter,
     initializeWallet: async () => {
+      throw new Error("unreachable");
+    },
+    restoreWalletFromMnemonic: async () => {
       throw new Error("unreachable");
     },
     exportWallet: async () => {
@@ -1462,6 +1517,9 @@ test("wallet admin commands dispatch through the lifecycle hooks", async () => {
     initializeWallet: async () => {
       throw new Error("unreachable");
     },
+    restoreWalletFromMnemonic: async () => {
+      throw new Error("unreachable");
+    },
     exportWallet: async () => {
       throw new Error("unreachable");
     },
@@ -1491,6 +1549,9 @@ test("wallet admin commands dispatch through the lifecycle hooks", async () => {
     initializeWallet: async () => {
       throw new Error("unreachable");
     },
+    restoreWalletFromMnemonic: async () => {
+      throw new Error("unreachable");
+    },
     exportWallet: async () => {
       calls.push("export");
       return {
@@ -1518,6 +1579,9 @@ test("wallet admin commands dispatch through the lifecycle hooks", async () => {
     walletSecretProvider: {} as never,
     createPrompter,
     initializeWallet: async () => {
+      throw new Error("unreachable");
+    },
+    restoreWalletFromMnemonic: async () => {
       throw new Error("unreachable");
     },
     exportWallet: async () => {
@@ -1550,6 +1614,9 @@ test("wallet admin commands dispatch through the lifecycle hooks", async () => {
     walletSecretProvider: {} as never,
     createPrompter,
     initializeWallet: async () => {
+      throw new Error("unreachable");
+    },
+    restoreWalletFromMnemonic: async () => {
       throw new Error("unreachable");
     },
     exportWallet: async () => {
@@ -1588,12 +1655,13 @@ test("wallet admin commands dispatch through the lifecycle hooks", async () => {
   });
 
   assert.equal(initCode, 0);
+  assert.equal(restoreCode, 0);
   assert.equal(unlockCode, 0);
   assert.equal(lockCode, 0);
   assert.equal(exportCode, 0);
   assert.equal(importCode, 0);
   assert.equal(repairCode, 0);
-  assert.deepEqual(calls, ["init", "unlock", "lock", "export", "import", "repair"]);
+  assert.deepEqual(calls, ["init", "restore", "unlock", "lock", "export", "import", "repair"]);
   assert.match(stdout.toString(), /Wallet initialized/);
   assert.match(stdout.toString(), /Quickstart: Fund this wallet with about 0\.0015 BTC/);
   assert.match(stdout.toString(), /Next step: cogcoin sync/);
@@ -4309,6 +4377,29 @@ test("terminal prompter clears sensitive displays only on interactive ttys", () 
   assert.equal(nonTtyOutput.toString(), "");
 });
 
+test("terminal prompter hidden input keeps the prompt visible without echoing the entered value", async () => {
+  const input = new PassThrough() as PassThrough & { isTTY?: boolean };
+  const output = new PassThrough() as PassThrough & { isTTY?: boolean };
+  let rendered = "";
+
+  output.setEncoding("utf8");
+  output.on("data", (chunk: string) => {
+    rendered += chunk;
+  });
+
+  const prompter = createTerminalPrompter(input as never, output as never);
+  setImmediate(() => {
+    input.write("super-secret\n");
+    input.end();
+  });
+
+  const value = await prompter.promptHidden?.("Archive passphrase: ");
+
+  assert.equal(value, "super-secret");
+  assert.match(rendered, /Archive passphrase:/);
+  assert.doesNotMatch(rendered, /super-secret/);
+});
+
 test("json init cleanup output stays on the prompt stream", async () => {
   const stdout = new MemoryStream();
   const stderr = new MemoryStream(true);
@@ -4339,7 +4430,86 @@ test("json init cleanup output stays on the prompt stream", async () => {
   assert.match(stderr.toString(), /\u001b\[H/);
 });
 
-test("unlock, wallet export, and wallet import emit stable secure-admin json envelopes", async () => {
+test("restore, unlock, wallet export, and wallet import emit stable secure-admin json envelopes", async () => {
+  const restoreStdout = new MemoryStream();
+  const restoreCode = await runCli(["restore", "--output", "json"], {
+    stdout: restoreStdout,
+    stderr: new MemoryStream(),
+    walletSecretProvider: {} as never,
+    restoreWalletFromMnemonic: async () => ({
+      walletRootId: "wallet-root-restored",
+      fundingAddress: "bc1qfundingidentity0000000000000000000000000",
+      unlockUntilUnixMs: 1_700_000_900_000,
+      state: createWalletState({
+        walletRootId: "wallet-root-restored",
+      }),
+      warnings: ["Previous managed runtime cleanup did not complete. Run `cogcoin repair` if status shows stale or conflicting managed services."],
+    }),
+  });
+  assert.equal(restoreCode, 0);
+  const restoreEnvelope = parseJsonEnvelope(restoreStdout) as {
+    schema: string;
+    command: string;
+    outcome: string;
+    warnings: string[];
+    explanations: string[];
+    nextSteps: string[];
+    data: {
+      resultType: string;
+      state: {
+        walletRootId: string;
+        locked: boolean;
+        unlockUntilUnixMs: number;
+        fundingAddress: string;
+      };
+      stateChange: {
+        after: {
+          walletRootId: string;
+          locked: boolean;
+          unlockUntilUnixMs: number;
+          fundingAddress: string;
+        } | null;
+      };
+    };
+  };
+  assert.equal(restoreEnvelope.schema, "cogcoin/restore/v1");
+  assert.equal(restoreEnvelope.command, "cogcoin restore");
+  assert.equal(restoreEnvelope.outcome, "restored");
+  assert.equal(restoreEnvelope.data.resultType, "state-change");
+  assert.equal(restoreEnvelope.data.state.walletRootId, "wallet-root-restored");
+  assert.equal(restoreEnvelope.data.state.locked, false);
+  assert.equal(restoreEnvelope.data.state.unlockUntilUnixMs, 1_700_000_900_000);
+  assert.equal(restoreEnvelope.data.state.fundingAddress, "bc1qfundingidentity0000000000000000000000000");
+  assert.equal(restoreEnvelope.data.stateChange.after?.walletRootId, "wallet-root-restored");
+  assert.ok(restoreEnvelope.explanations.some((line) => line.includes("Managed Bitcoin/indexer bootstrap is deferred")));
+  assert.ok(restoreEnvelope.nextSteps.some((line) => line.includes("cogcoin sync")));
+  assert.ok(restoreEnvelope.warnings.some((line) => line.includes("Previous managed runtime cleanup did not complete")));
+
+  const restoreAliasStdout = new MemoryStream();
+  const restoreAliasCode = await runCli(["wallet", "restore", "--output", "json"], {
+    stdout: restoreAliasStdout,
+    stderr: new MemoryStream(),
+    walletSecretProvider: {} as never,
+    restoreWalletFromMnemonic: async () => ({
+      walletRootId: "wallet-root-restored",
+      fundingAddress: "bc1qfundingidentity0000000000000000000000000",
+      unlockUntilUnixMs: 1_700_000_900_000,
+      state: createWalletState({
+        walletRootId: "wallet-root-restored",
+      }),
+      warnings: ["Previous managed runtime cleanup did not complete. Run `cogcoin repair` if status shows stale or conflicting managed services."],
+    }),
+  });
+  assert.equal(restoreAliasCode, 0);
+  const restoreAliasEnvelope = parseJsonEnvelope(restoreAliasStdout) as {
+    schema: string;
+    command: string;
+    data: unknown;
+  };
+  assert.equal(restoreAliasEnvelope.schema, "cogcoin/restore/v1");
+  assert.equal(restoreAliasEnvelope.command, "cogcoin restore");
+  assert.deepEqual(restoreAliasEnvelope.data, restoreEnvelope.data);
+
   const unlockStdout = new MemoryStream();
   const unlockCode = await runCli(["unlock", "--for", "2h", "--output", "json"], {
     stdout: unlockStdout,
@@ -4501,6 +4671,49 @@ test("unlock, wallet export, and wallet import emit stable secure-admin json env
   assert.equal(importEnvelope.data.state.fundingAddress, "bc1qfundingidentity0000000000000000000000000");
   assert.equal(importEnvelope.data.state.unlockUntilUnixMs, 1_700_000_900_000);
   assert.equal(importEnvelope.data.stateChange.after?.archivePath, "/tmp/archive.cogwallet");
+});
+
+test("restore text success defers Bitcoin/indexer bootstrap and does not resolve a default db path", async () => {
+  const stdout = new MemoryStream();
+  let resolvedDbPath = false;
+
+  const code = await runCli(["restore"], {
+    stdout,
+    stderr: new MemoryStream(),
+    walletSecretProvider: {} as never,
+    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveDefaultClientDatabasePath: () => {
+      resolvedDbPath = true;
+      throw new Error("restore_should_not_resolve_default_db_path");
+    },
+    createPrompter: () => ({
+      isInteractive: true,
+      writeLine() {},
+      async prompt() {
+        return "";
+      },
+      async promptHidden() {
+        return "";
+      },
+    }),
+    restoreWalletFromMnemonic: async () => ({
+      walletRootId: "wallet-root-restored",
+      fundingAddress: "bc1qfundingidentity0000000000000000000000000",
+      unlockUntilUnixMs: 1_700_000_900_000,
+      state: createWalletState({
+        walletRootId: "wallet-root-restored",
+      }),
+      warnings: ["Previous managed runtime cleanup did not complete. Run `cogcoin repair` if status shows stale or conflicting managed services."],
+    }),
+  });
+
+  assert.equal(code, 0);
+  assert.equal(resolvedDbPath, false);
+  assert.match(stdout.toString(), /Wallet restored from mnemonic\./);
+  assert.match(stdout.toString(), /Managed Bitcoin\/indexer bootstrap is deferred until you run `cogcoin sync`\./);
+  assert.match(stdout.toString(), /Warning: Previous managed runtime cleanup did not complete\./);
+  assert.match(stdout.toString(), /Next step: cogcoin sync/);
+  assert.match(stdout.toString(), /Next step: cogcoin address/);
 });
 
 test("preview json keeps prompt chatter off stdout", async () => {
@@ -4923,6 +5136,48 @@ test("secure-admin json failures map to stable schemas and exit codes", async ()
   assert.equal(initLinuxSecretEnvelope.ok, false);
   assert.equal(initLinuxSecretEnvelope.error.code, "wallet_secret_provider_linux_secret_tool_missing");
   assert.match(initLinuxSecretEnvelope.error.message, /secret-tool/i);
+
+  const restoreRequiresTtyStdout = new MemoryStream();
+  const restoreRequiresTtyCode = await runCli(["restore", "--output", "json"], {
+    stdout: restoreRequiresTtyStdout,
+    stderr: new MemoryStream(),
+    walletSecretProvider: {} as never,
+    restoreWalletFromMnemonic: async () => {
+      throw new Error("wallet_restore_requires_tty");
+    },
+  });
+  assert.equal(restoreRequiresTtyCode, 4);
+  const restoreRequiresTtyEnvelope = parseJsonEnvelope(restoreRequiresTtyStdout) as {
+    schema: string;
+    ok: boolean;
+    error: { code: string; message: string };
+  };
+  assert.equal(restoreRequiresTtyEnvelope.schema, "cogcoin/restore/v1");
+  assert.equal(restoreRequiresTtyEnvelope.ok, false);
+  assert.equal(restoreRequiresTtyEnvelope.error.code, "wallet_restore_requires_tty");
+  assert.match(restoreRequiresTtyEnvelope.error.message, /Interactive terminal input is required/);
+
+  const restoreInvalidMnemonicStdout = new MemoryStream();
+  const restoreInvalidMnemonicCode = await runCli(["restore", "--output", "json"], {
+    stdout: restoreInvalidMnemonicStdout,
+    stderr: new MemoryStream(),
+    walletSecretProvider: {} as never,
+    restoreWalletFromMnemonic: async () => {
+      throw new Error("wallet_restore_mnemonic_invalid");
+    },
+  });
+  assert.equal(restoreInvalidMnemonicCode, 2);
+  const restoreInvalidMnemonicEnvelope = parseJsonEnvelope(restoreInvalidMnemonicStdout) as {
+    schema: string;
+    ok: boolean;
+    error: { code: string; message: string };
+    nextSteps: string[];
+  };
+  assert.equal(restoreInvalidMnemonicEnvelope.schema, "cogcoin/restore/v1");
+  assert.equal(restoreInvalidMnemonicEnvelope.ok, false);
+  assert.equal(restoreInvalidMnemonicEnvelope.error.code, "wallet_restore_mnemonic_invalid");
+  assert.match(restoreInvalidMnemonicEnvelope.error.message, /Recovery phrase is invalid/);
+  assert.ok(restoreInvalidMnemonicEnvelope.nextSteps.some((step) => step.includes("cogcoin restore")));
 
   const unlockStdout = new MemoryStream();
   const unlockCode = await runCli(["unlock", "--output", "json"], {

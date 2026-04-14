@@ -44,21 +44,37 @@ export function createTerminalPrompter(
       return await ask(message, ensureWritableOutput());
     },
     async promptHidden(message: string): Promise<string> {
+      const writableOutput = ensureWritableOutput() as NodeJS.WriteStream & {
+        on?: (...args: unknown[]) => unknown;
+        once?: (...args: unknown[]) => unknown;
+        off?: (...args: unknown[]) => unknown;
+        removeListener?: (...args: unknown[]) => unknown;
+      };
       let promptShown = false;
-      const hiddenOutput = {
-        isTTY: output.isTTY,
-        write(chunk: string): void {
+      const hiddenOutput = Object.create(writableOutput) as NodeJS.WriteStream & {
+        on?: (...args: unknown[]) => unknown;
+        once?: (...args: unknown[]) => unknown;
+        off?: (...args: unknown[]) => unknown;
+        removeListener?: (...args: unknown[]) => unknown;
+      };
+
+      hiddenOutput.write = ((chunk: string): boolean => {
           if (!promptShown) {
             promptShown = true;
             output.write(chunk);
-            return;
+            return true;
           }
 
           if (chunk === "\n" || chunk === "\r\n") {
             output.write(chunk);
           }
-        },
-      } as NodeJS.WriteStream;
+          return true;
+        }) as NodeJS.WriteStream["write"];
+
+      hiddenOutput.on ??= (() => hiddenOutput) as typeof hiddenOutput.on;
+      hiddenOutput.once ??= (() => hiddenOutput) as typeof hiddenOutput.once;
+      hiddenOutput.off ??= (() => hiddenOutput) as typeof hiddenOutput.off;
+      hiddenOutput.removeListener ??= (() => hiddenOutput) as typeof hiddenOutput.removeListener;
 
       return await ask(message, hiddenOutput);
     },

@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { bech32 } from "@scure/base";
 import { HDKey } from "@scure/bip32";
-import { generateMnemonic, mnemonicToSeedSync } from "@scure/bip39";
+import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
 import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english.js";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
@@ -12,6 +12,7 @@ import type { WalletMnemonicLanguage } from "./types.js";
 export const WALLET_ACCOUNT_PATH = "m/84'/0'/0'";
 export const DEFAULT_DESCRIPTOR_RANGE_END = 4095;
 export const DEFAULT_DESCRIPTOR_SAFETY_MARGIN = 128;
+const ENGLISH_WORDLIST_SET = new Set<string>(englishWordlist);
 
 export interface WalletMaterial {
   mnemonic: {
@@ -113,6 +114,14 @@ function deriveIdentityFromNode(index: number, node: HDKey): WalletDerivedIdenti
 export function generateWalletMaterial(): WalletMaterial {
   const phrase = generateMnemonic(englishWordlist, 256);
   return deriveWalletMaterialFromMnemonic(phrase);
+}
+
+export function isEnglishMnemonicWord(word: string): boolean {
+  return ENGLISH_WORDLIST_SET.has(word);
+}
+
+export function validateEnglishMnemonic(phrase: string): boolean {
+  return validateMnemonic(phrase, englishWordlist);
 }
 
 export function deriveWalletMaterialFromMnemonic(

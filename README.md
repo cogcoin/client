@@ -74,7 +74,7 @@ Managed node subpath:
 
 The installed `cogcoin` command covers the first-party local wallet and node workflow:
 
-- wallet lifecycle commands such as `init`, `unlock`, `lock`, `repair`, `export`, and `import`
+- wallet lifecycle commands such as `init`, `restore`, `unlock`, `lock`, `repair`, `export`, and `import`
 - sync and service commands such as `status`, `sync`, and `follow`
 - domain and field commands such as `register`, `anchor`, `show`, `domains`, `fields`, `buy`, `sell`, and `transfer`
 - COG and reputation commands such as `send`, `cog lock`, `claim`, `reclaim`, `rep give`, and `rep revoke`
@@ -82,6 +82,9 @@ The installed `cogcoin` command covers the first-party local wallet and node wor
 
 The CLI also supports stable `--output json` and `--output preview-json` envelopes on the commands that advertise machine-readable output.
 For provider-backed local wallets, normal reads, mutations, export, and mining setup flows auto-materialize a local unlock session when the wallet is not explicitly locked.
+`cogcoin restore` and `cogcoin wallet restore` rebuild a fresh local wallet from a 24-word English BIP39 mnemonic and recreate the managed Core wallet replica.
+Run `cogcoin sync` afterward to bootstrap the managed Bitcoin/indexer state.
+`cogcoin wallet import <path>` remains the richer encrypted-archive restore path that preserves more local continuity metadata than mnemonic-only restore.
 
 ## SQLite Store
 

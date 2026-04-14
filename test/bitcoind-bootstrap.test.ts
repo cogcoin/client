@@ -204,6 +204,7 @@ test("art templates are 80x13 and copied into the test build output", async () =
     stat(join(process.cwd(), ".test-dist", "src", "art", "train-smoke.txt")),
     stat(join(process.cwd(), ".test-dist", "src", "art", "train.txt")),
     stat(join(process.cwd(), ".test-dist", "src", "art", "train-car.txt")),
+    stat(join(process.cwd(), ".test-dist", "src", "art", "wallet.txt")),
   ]);
 });
 

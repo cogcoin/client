@@ -765,7 +765,7 @@ async function resolveResetExecutionDecision(options: {
 
   await confirmTypedAcknowledgement(options.prompter, {
     expected: "permanently reset",
-    prompt: "Type permanently reset to continue: ",
+    prompt: "Type \"permanently reset\" to continue: ",
     errorCode: "reset_typed_ack_required",
     requiresTtyErrorCode: "reset_requires_tty",
     typedAckRequiredErrorCode: "reset_typed_ack_required",
@@ -776,7 +776,7 @@ async function resolveResetExecutionDecision(options: {
 
   if (options.preflight.wallet.present) {
     const answer = (await options.prompter.prompt(
-      "Wallet reset choice ([Enter] retain base entropy, `skip`, or `delete wallet`): ",
+      "Wallet reset choice ([Enter] retain base entropy, \"skip\", or \"delete wallet\"): ",
     )).trim();
 
     if (answer !== "" && answer !== "skip" && answer !== "delete wallet") {

@@ -269,6 +269,9 @@ test("reset preserves base entropy for provider-backed wallets and clears derive
   const provider = createMemoryWalletSecretProviderForTesting();
   const state = createWalletState();
   const secretReference = createWalletSecretReference(state.walletRootId);
+  const prompter = new ScriptedPrompter({
+    visibleAnswers: ["permanently reset", ""],
+  });
 
   try {
     await provider.storeSecret(secretReference.keyId, randomBytes(32));
@@ -310,9 +313,7 @@ test("reset preserves base entropy for provider-backed wallets and clears derive
       provider,
       paths,
       nowUnixMs: 1_700_000_100_000,
-      prompter: new ScriptedPrompter({
-        visibleAnswers: ["permanently reset", ""],
-      }),
+      prompter,
     });
 
     assert.equal(result.walletAction, "reset-base-entropy");
@@ -353,6 +354,10 @@ test("reset preserves base entropy for provider-backed wallets and clears derive
     assert.deepEqual(loaded.state.proactiveFamilies, []);
     assert.deepEqual(loaded.state.pendingMutations, []);
     assert.equal(await loadWalletExplicitLock(paths.walletExplicitLockPath), null);
+    assert.deepEqual(prompter.prompts, [
+      "Type \"permanently reset\" to continue: ",
+      "Wallet reset choice ([Enter] retain base entropy, \"skip\", or \"delete wallet\"): ",
+    ]);
     await assert.rejects(
       () => loadUnlockSession(paths.walletUnlockSessionPath, { provider }),
       /ENOENT|wallet_secret_missing_/,

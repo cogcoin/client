@@ -2,6 +2,7 @@ import { parseUnlockDurationToMs } from "../../wallet/lifecycle.js";
 import {
   buildInitMutationData,
   buildResetMutationData,
+  buildRestoreMutationData,
   buildUnlockMutationData,
   buildRepairMutationData,
   buildWalletExportMutationData,
@@ -28,6 +29,7 @@ import {
   formatNextStepLines,
   getFundingQuickstartGuidance,
   getInitNextSteps,
+  getRestoreNextSteps,
 } from "../workflow-hints.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import type { WalletRepairResult, WalletResetResult } from "../../wallet/lifecycle.js";
@@ -59,7 +61,6 @@ export async function runWalletAdminCommand(
 ): Promise<number> {
   try {
     const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-    const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
     const provider = context.walletSecretProvider;
 
     if (parsed.command === "init" || parsed.command === "wallet-init") {
@@ -93,6 +94,45 @@ export async function runWalletAdminCommand(
       }
       return 0;
     }
+
+    if (parsed.command === "restore" || parsed.command === "wallet-restore") {
+      const prompter = createCommandPrompter(parsed, context);
+      const result = await context.restoreWalletFromMnemonic({
+        dataDir,
+        provider,
+        prompter,
+      });
+      const nextSteps = getRestoreNextSteps();
+      const explanations = ["Managed Bitcoin/indexer bootstrap is deferred until you run `cogcoin sync`."];
+      if (parsed.outputMode === "json") {
+        writeJsonValue(context.stdout, createMutationSuccessEnvelope(
+          resolveStableMutationJsonSchema(parsed)!,
+          describeCanonicalCommand(parsed),
+          "restored",
+          buildRestoreMutationData(result),
+          {
+            explanations,
+            nextSteps,
+            warnings: result.warnings ?? [],
+          },
+        ));
+        return 0;
+      }
+      writeLine(context.stdout, "Wallet restored from mnemonic.");
+      writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
+      writeLine(context.stdout, `Funding address: ${result.fundingAddress}`);
+      writeLine(context.stdout, `Unlocked until: ${new Date(result.unlockUntilUnixMs).toISOString()}`);
+      writeLine(context.stdout, "Note: Managed Bitcoin/indexer bootstrap is deferred until you run `cogcoin sync`.");
+      for (const warning of result.warnings ?? []) {
+        writeLine(context.stdout, `Warning: ${warning}`);
+      }
+      for (const line of formatNextStepLines(nextSteps)) {
+        writeLine(context.stdout, line);
+      }
+      return 0;
+    }
+
+    const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
 
     if (parsed.command === "unlock" || parsed.command === "wallet-unlock") {
       const durationMs = parseUnlockDurationToMs(parsed.unlockFor);

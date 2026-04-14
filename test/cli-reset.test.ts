@@ -170,6 +170,6 @@ test("reset entropy-reset-unavailable errors are presented clearly in text mode"
   assert.deepEqual(formatted, [
     "What happened: Entropy-retaining wallet reset is unavailable.",
     "Why: Cogcoin found wallet state, but it could not safely load and reconstruct it into a fresh wallet while preserving only the mnemonic-derived continuity data.",
-    "Next: Rerun `cogcoin reset` and choose `skip` to keep the wallet unchanged, or type `delete wallet` to erase it fully.",
+    "Next: Rerun `cogcoin reset` and choose \"skip\" to keep the wallet unchanged, or type \"delete wallet\" to erase it fully.",
   ]);
 });

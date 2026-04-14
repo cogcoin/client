@@ -374,6 +374,8 @@ export function classifyCliError(error: unknown): {
     || message === "wallet_export_overwrite_declined"
     || message === "wallet_prompt_value_required"
     || message === "wallet_archive_passphrase_mismatch"
+    || message === "wallet_restore_mnemonic_invalid"
+    || message === "wallet_restore_replace_confirmation_required"
     || message === "reset_wallet_choice_invalid"
     || message === "reset_wallet_passphrase_required"
     || message === "reset_wallet_access_failed"
@@ -475,7 +477,7 @@ export function createCliErrorPresentation(
   if (errorCode === "reset_wallet_choice_invalid") {
     return {
       what: "Wallet reset choice is invalid.",
-      why: "This reset path accepts only Enter for the default entropy-retaining reset, `skip`, or `delete wallet`.",
+      why: "This reset path accepts only Enter for the default entropy-retaining reset, \"skip\", or \"delete wallet\".",
       next: "Rerun `cogcoin reset` and enter one of the accepted wallet reset choices.",
     };
   }
@@ -484,7 +486,7 @@ export function createCliErrorPresentation(
     return {
       what: "Wallet-state passphrase is required.",
       why: "The current wallet is passphrase-wrapped, so the entropy-retaining reset path needs that passphrase before it can rebuild a fresh local wallet from the retained mnemonic.",
-      next: "Rerun `cogcoin reset` and enter the wallet-state passphrase, or choose `skip` or `delete wallet` instead.",
+      next: "Rerun `cogcoin reset` and enter the wallet-state passphrase, or choose \"skip\" or \"delete wallet\" instead.",
     };
   }
 
@@ -492,7 +494,7 @@ export function createCliErrorPresentation(
     return {
       what: "Wallet state could not be opened for entropy-retaining reset.",
       why: "The wallet-state passphrase was not accepted, or the passphrase-wrapped wallet state could not be decrypted cleanly.",
-      next: "Rerun `cogcoin reset`, enter the correct wallet-state passphrase, or choose `skip` or `delete wallet` instead.",
+      next: "Rerun `cogcoin reset`, enter the correct wallet-state passphrase, or choose \"skip\" or \"delete wallet\" instead.",
     };
   }
 
@@ -500,7 +502,7 @@ export function createCliErrorPresentation(
     return {
       what: "Entropy-retaining wallet reset is unavailable.",
       why: "Cogcoin found wallet state, but it could not safely load and reconstruct it into a fresh wallet while preserving only the mnemonic-derived continuity data.",
-      next: "Rerun `cogcoin reset` and choose `skip` to keep the wallet unchanged, or type `delete wallet` to erase it fully.",
+      next: "Rerun `cogcoin reset` and choose \"skip\" to keep the wallet unchanged, or type \"delete wallet\" to erase it fully.",
     };
   }
 
@@ -597,6 +599,22 @@ export function createCliErrorPresentation(
       what: "Mnemonic confirmation failed.",
       why: "The requested recovery-phrase confirmation word did not match, so wallet initialization was canceled before it could finish.",
       next: "Run `cogcoin init` again and re-enter the requested confirmation words carefully.",
+    };
+  }
+
+  if (errorCode === "wallet_restore_mnemonic_invalid") {
+    return {
+      what: "Recovery phrase is invalid.",
+      why: "Mnemonic-only restore accepts only a valid 24-word English BIP39 phrase with a matching checksum.",
+      next: "Rerun `cogcoin restore` and enter the 24 recovery words in the original order.",
+    };
+  }
+
+  if (errorCode === "wallet_restore_replace_confirmation_required") {
+    return {
+      what: "Typed replacement acknowledgement is still required.",
+      why: "Mnemonic restore will replace the existing local wallet state and managed Core wallet replica only after you type the exact replacement acknowledgement.",
+      next: "Rerun `cogcoin restore` in an interactive terminal and type \"RESTORE\" when prompted.",
     };
   }
 
@@ -1046,6 +1064,9 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
     case "init":
     case "wallet-init":
       return "cogcoin init";
+    case "restore":
+    case "wallet-restore":
+      return "cogcoin restore";
     case "unlock":
     case "wallet-unlock":
       return "cogcoin unlock";
@@ -1218,6 +1239,9 @@ export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string |
     case "init":
     case "wallet-init":
       return "cogcoin/init/v1";
+    case "restore":
+    case "wallet-restore":
+      return "cogcoin/restore/v1";
     case "unlock":
     case "wallet-unlock":
       return "cogcoin/unlock/v1";

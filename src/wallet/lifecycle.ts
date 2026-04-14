@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { access, constants, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { access, constants, mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { openClient } from "../client.js";
@@ -34,6 +34,8 @@ import {
   createMnemonicConfirmationChallenge,
   deriveWalletMaterialFromMnemonic,
   generateWalletMaterial,
+  isEnglishMnemonicWord,
+  validateEnglishMnemonic,
 } from "./material.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "./runtime.js";
 import { requestMiningGenerationPreemption, type MiningPreemptionHandle } from "./mining/coordination.js";
@@ -42,6 +44,7 @@ import { inspectMiningHookState } from "./mining/hooks.js";
 import { loadMiningRuntimeStatus, saveMiningRuntimeStatus } from "./mining/runtime-artifacts.js";
 import { normalizeMiningStateRecord } from "./mining/state.js";
 import type { MiningRuntimeStatusV1 } from "./mining/types.js";
+import { renderWalletMnemonicRevealArt } from "./mnemonic-art.js";
 import {
   clearWalletExplicitLock,
   loadWalletExplicitLock,
@@ -56,6 +59,7 @@ import {
 } from "./state/provider.js";
 import { loadWalletState, saveWalletState } from "./state/storage.js";
 import type {
+  EncryptedEnvelopeV1,
   PortableWalletArchivePayloadV1,
   UnlockSessionStateV1,
   WalletExplicitLockStateV1,
@@ -102,6 +106,14 @@ export interface WalletImportResult {
   fundingAddress: string;
   unlockUntilUnixMs: number;
   state: WalletStateV1;
+}
+
+export interface WalletRestoreResult {
+  walletRootId: string;
+  fundingAddress: string;
+  unlockUntilUnixMs: number;
+  state: WalletStateV1;
+  warnings?: string[];
 }
 
 export interface WalletRepairResult {
@@ -180,6 +192,39 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function readJsonFileOrNull<T>(path: string): Promise<T | null> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as T;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+
+    return null;
+  }
+}
+
+async function loadRawWalletEnvelope(paths: WalletRuntimePaths): Promise<EncryptedEnvelopeV1 | null> {
+  const primary = await readJsonFileOrNull<EncryptedEnvelopeV1>(paths.walletStatePath);
+
+  if (primary !== null) {
+    return primary;
+  }
+
+  return readJsonFileOrNull<EncryptedEnvelopeV1>(paths.walletStateBackupPath);
+}
+
+function extractWalletRootIdFromEnvelope(envelope: EncryptedEnvelopeV1 | null): string | null {
+  const keyId = envelope?.secretProvider?.keyId ?? null;
+  const prefix = "wallet-state:";
+
+  if (keyId === null || !keyId.startsWith(prefix)) {
+    return null;
+  }
+
+  return keyId.slice(prefix.length);
 }
 
 function createInitialWalletState(options: {
@@ -504,6 +549,17 @@ async function promptRequiredValue(
   return value;
 }
 
+async function promptHiddenValue(
+  prompter: WalletPrompter,
+  message: string,
+): Promise<string> {
+  const value = prompter.promptHidden != null
+    ? await prompter.promptHidden(message)
+    : await prompter.prompt(message);
+
+  return value.trim();
+}
+
 async function promptForArchivePassphrase(
   prompter: WalletPrompter,
   promptPrefix: string,
@@ -518,6 +574,30 @@ async function promptForArchivePassphrase(
   return first;
 }
 
+async function promptForRestoreMnemonic(
+  prompter: WalletPrompter,
+): Promise<string> {
+  const words: string[] = [];
+
+  for (let index = 0; index < 24; index += 1) {
+    const word = (await promptHiddenValue(prompter, `Word ${index + 1} of 24: `)).toLowerCase();
+
+    if (!isEnglishMnemonicWord(word)) {
+      throw new Error("wallet_restore_mnemonic_invalid");
+    }
+
+    words.push(word);
+  }
+
+  const phrase = words.join(" ");
+
+  if (!validateEnglishMnemonic(phrase)) {
+    throw new Error("wallet_restore_mnemonic_invalid");
+  }
+
+  return phrase;
+}
+
 async function confirmTypedAcknowledgement(
   prompter: WalletPrompter,
   expected: string,
@@ -527,6 +607,18 @@ async function confirmTypedAcknowledgement(
 
   if (answer !== expected) {
     throw new Error("wallet_typed_confirmation_rejected");
+  }
+}
+
+async function confirmRestoreReplacement(
+  prompter: WalletPrompter,
+): Promise<void> {
+  const answer = (await prompter.prompt(
+    "Type \"RESTORE\" to replace the existing local wallet state and managed Core wallet replica: ",
+  )).trim();
+
+  if (answer !== "RESTORE") {
+    throw new Error("wallet_restore_replace_confirmation_required");
   }
 }
 
@@ -822,6 +914,93 @@ async function clearManagedBitcoindArtifacts(
   await rm(servicePaths.bitcoindPidPath, { force: true }).catch(() => undefined);
   await rm(servicePaths.bitcoindReadyPath, { force: true }).catch(() => undefined);
   await rm(servicePaths.bitcoindWalletStatusPath, { force: true }).catch(() => undefined);
+}
+
+async function detectExistingManagedWalletReplica(dataDir: string): Promise<boolean> {
+  try {
+    const entries = await readdir(join(dataDir, "wallets"), { withFileTypes: true });
+    return entries.some((entry) => entry.isDirectory() && entry.name.startsWith("cogcoin-"));
+  } catch (error) {
+    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+async function stopRecordedManagedProcess(
+  pid: number | null,
+  errorCode: string,
+): Promise<void> {
+  if (pid === null || !await isProcessAlive(pid)) {
+    return;
+  }
+
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH")) {
+      throw error;
+    }
+  }
+
+  try {
+    await waitForProcessExit(pid, 5_000, errorCode);
+    return;
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH")) {
+        throw error;
+      }
+    }
+  }
+
+  await waitForProcessExit(pid, 5_000, errorCode);
+}
+
+async function clearPreviousManagedWalletRuntime(options: {
+  dataDir: string;
+  walletRootId: string | null;
+}): Promise<void> {
+  if (options.walletRootId === null) {
+    return;
+  }
+
+  const servicePaths = resolveManagedServicePaths(options.dataDir, options.walletRootId);
+  const bitcoindLock = await acquireFileLock(servicePaths.bitcoindLockPath, {
+    purpose: "wallet-restore-cleanup",
+    walletRootId: options.walletRootId,
+  });
+  const indexerLock = await acquireFileLock(servicePaths.indexerDaemonLockPath, {
+    purpose: "wallet-restore-cleanup",
+    walletRootId: options.walletRootId,
+  });
+
+  try {
+    const bitcoindStatus = await readJsonFileOrNull<{ processId?: number | null }>(servicePaths.bitcoindStatusPath);
+    const indexerStatus = await readJsonFileOrNull<{ processId?: number | null }>(servicePaths.indexerDaemonStatusPath);
+    await stopRecordedManagedProcess(bitcoindStatus?.processId ?? null, "managed_bitcoind_stop_timeout");
+    await stopRecordedManagedProcess(indexerStatus?.processId ?? null, "indexer_daemon_stop_timeout");
+    await clearManagedBitcoindArtifacts(servicePaths);
+    await clearIndexerDaemonArtifacts(servicePaths);
+    await rm(servicePaths.walletRuntimeRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(servicePaths.indexerServiceRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(join(options.dataDir, "wallets", sanitizeWalletName(options.walletRootId)), { recursive: true, force: true }).catch(() => undefined);
+  } finally {
+    await indexerLock.release();
+    await bitcoindLock.release();
+  }
+}
+
+function formatRestoreCleanupWarning(error: unknown): string {
+  const reason = error instanceof Error && error.message.trim().length > 0
+    ? ` (${error.message})`
+    : "";
+
+  return `Previous managed runtime cleanup did not complete${reason}. Run \`cogcoin repair\` if status shows stale or conflicting managed services.`;
 }
 
 function createSilentNonInteractivePrompter(): WalletPrompter {
@@ -1397,6 +1576,11 @@ export async function initializeWallet(options: {
     let mnemonicRevealed = false;
     options.prompter.writeLine("Cogcoin Wallet Initialization");
     options.prompter.writeLine("Write down this 24-word recovery phrase. It will only be shown once:");
+    options.prompter.writeLine("");
+    for (const line of renderWalletMnemonicRevealArt(material.mnemonic.words)) {
+      options.prompter.writeLine(line);
+    }
+    options.prompter.writeLine("Single-line copy:");
     options.prompter.writeLine(material.mnemonic.phrase);
     mnemonicRevealed = true;
     try {
@@ -1767,6 +1951,138 @@ export async function importWallet(options: {
       unlockUntilUnixMs,
       state: importedState,
     };
+  } finally {
+    await controlLock.release();
+  }
+}
+
+export async function restoreWalletFromMnemonic(options: {
+  dataDir: string;
+  provider?: WalletSecretProvider;
+  prompter: WalletPrompter;
+  nowUnixMs?: number;
+  unlockDurationMs?: number;
+  paths?: WalletRuntimePaths;
+  attachService?: typeof attachOrStartManagedBitcoindService;
+  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
+}): Promise<WalletRestoreResult> {
+  if (!options.prompter.isInteractive) {
+    throw new Error("wallet_restore_requires_tty");
+  }
+
+  const provider = options.provider ?? createDefaultWalletSecretProvider();
+  const nowUnixMs = options.nowUnixMs ?? Date.now();
+  const unlockDurationMs = options.unlockDurationMs ?? DEFAULT_UNLOCK_DURATION_MS;
+  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
+  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
+    purpose: "wallet-restore",
+    walletRootId: null,
+  });
+
+  try {
+    const rawEnvelope = await loadRawWalletEnvelope(paths);
+    const replacementStateExists = rawEnvelope !== null
+      || await pathExists(paths.walletStatePath)
+      || await pathExists(paths.walletStateBackupPath);
+    const replacementCoreWalletExists = await detectExistingManagedWalletReplica(options.dataDir);
+    const mnemonicPhrase = await promptForRestoreMnemonic(options.prompter);
+
+    if (replacementStateExists || replacementCoreWalletExists) {
+      await confirmRestoreReplacement(options.prompter);
+    }
+
+    let previousWalletRootId = extractWalletRootIdFromEnvelope(rawEnvelope);
+    try {
+      const loaded = await loadWalletState({
+        primaryPath: paths.walletStatePath,
+        backupPath: paths.walletStateBackupPath,
+      }, {
+        provider,
+      });
+      previousWalletRootId = loaded.state.walletRootId;
+    } catch {
+      previousWalletRootId = previousWalletRootId ?? null;
+    }
+
+    const miningLock = await acquireFileLock(paths.miningControlLockPath, {
+      purpose: "wallet-restore",
+      walletRootId: previousWalletRootId,
+    });
+
+    try {
+      const warnings: string[] = [];
+      const material = deriveWalletMaterialFromMnemonic(mnemonicPhrase);
+      const walletRootId = createWalletRootId();
+      const internalCoreWalletPassphrase = createInternalCoreWalletPassphrase();
+      const secretReference = createWalletSecretReference(walletRootId);
+      const secret = randomBytes(32);
+      await provider.storeSecret(secretReference.keyId, secret);
+
+      const initialState = createInitialWalletState({
+        walletRootId,
+        nowUnixMs,
+        material,
+        internalCoreWalletPassphrase,
+      });
+
+      await clearUnlockSession(paths.walletUnlockSessionPath);
+      await clearWalletExplicitLock(paths.walletExplicitLockPath);
+      await saveWalletState(
+        {
+          primaryPath: paths.walletStatePath,
+          backupPath: paths.walletStateBackupPath,
+        },
+        initialState,
+        {
+          provider,
+          secretReference,
+        },
+      );
+
+      const restoredState = await recreateManagedCoreWalletReplica(
+        initialState,
+        provider,
+        paths,
+        options.dataDir,
+        nowUnixMs,
+        {
+          attachService: options.attachService,
+          rpcFactory: options.rpcFactory,
+        },
+      );
+      const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
+      await clearWalletExplicitLock(paths.walletExplicitLockPath);
+      await saveUnlockSession(
+        paths.walletUnlockSessionPath,
+        createUnlockSession(restoredState, unlockUntilUnixMs, secretReference.keyId, nowUnixMs),
+        {
+          provider,
+          secretReference,
+        },
+      );
+
+      if (previousWalletRootId !== null && previousWalletRootId !== walletRootId) {
+        try {
+          await clearPreviousManagedWalletRuntime({
+            dataDir: options.dataDir,
+            walletRootId: previousWalletRootId,
+          });
+        } catch (error) {
+          warnings.push(formatRestoreCleanupWarning(error));
+        }
+        await provider.deleteSecret(createWalletSecretReference(previousWalletRootId).keyId).catch(() => undefined);
+      }
+
+      return {
+        walletRootId,
+        fundingAddress: restoredState.funding.address,
+        unlockUntilUnixMs,
+        state: restoredState,
+        warnings,
+      };
+    } finally {
+      await miningLock.release();
+    }
   } finally {
     await controlLock.release();
   }
