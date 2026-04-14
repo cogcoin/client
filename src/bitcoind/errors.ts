@@ -36,6 +36,27 @@ export function formatManagedSyncErrorMessage(message: string): string {
     );
   }
 
+  if (message === "snapshot_resume_requires_partial_content") {
+    return appendNextStep(
+      "Snapshot server ignored the resume request for a partial download.",
+      "Wait a moment and rerun sync. If this keeps happening, confirm the snapshot host supports HTTP range requests.",
+    );
+  }
+
+  if (message.startsWith("snapshot_chunk_sha256_mismatch_")) {
+    return appendNextStep(
+      "A downloaded snapshot chunk was corrupted and was rolled back to the last verified checkpoint.",
+      "Wait a moment and rerun sync. If this keeps happening, check local disk health and the stability of the snapshot connection.",
+    );
+  }
+
+  if (message.startsWith("snapshot_download_incomplete_")) {
+    return appendNextStep(
+      "Snapshot download ended before the expected file size was reached.",
+      "Wait a moment and rerun sync. The downloader will resume from the last verified checkpoint.",
+    );
+  }
+
   if (message === "bitcoind_cookie_timeout") {
     return appendNextStep(
       "The managed Bitcoin node did not finish starting in time.",

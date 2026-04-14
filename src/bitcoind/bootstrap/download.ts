@@ -1,19 +1,29 @@
+import { createHash } from "node:crypto";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 
 import { formatManagedSyncErrorMessage } from "../errors.js";
 import type { ManagedProgressController } from "../progress.js";
 import {
-  DEFAULT_SNAPSHOT_METADATA,
   DOWNLOAD_RETRY_BASE_MS,
   DOWNLOAD_RETRY_MAX_MS,
 } from "./constants.js";
-import { resetSnapshotFiles, statOrNull, validateSnapshotFileForTesting } from "./snapshot-file.js";
+import {
+  applyVerifiedFrontierState,
+  reconcileSnapshotDownloadArtifacts,
+} from "./chunk-recovery.js";
+import {
+  resolveBundledSnapshotChunkManifest,
+  resolveSnapshotChunkCount,
+  resolveSnapshotChunkSize,
+  resolveVerifiedChunkBytes,
+} from "./chunk-manifest.js";
+import { statOrNull, validateSnapshotFileForTesting } from "./snapshot-file.js";
 import { saveBootstrapState } from "./state.js";
 import type {
   BootstrapPersistentState,
   DownloadSnapshotOptions,
 } from "./types.js";
-import type { SnapshotMetadata } from "../types.js";
+import type { SnapshotChunkManifest, SnapshotMetadata } from "../types.js";
 
 function describeSnapshotDownloadError(error: unknown, url: string): string {
   if (!(error instanceof Error)) {
@@ -44,21 +54,65 @@ function describeSnapshotDownloadError(error: unknown, url: string): string {
     : `snapshot download failed from ${source}: fetch failed`;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+function createAbortError(signal?: AbortSignal): Error {
+  const reason = signal?.reason;
+
+  if (reason instanceof Error) {
+    return reason;
+  }
+
+  const error = new Error("managed_sync_aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) {
+    return true;
+  }
+
+  return error instanceof Error
+    && (error.name === "AbortError" || error.message === "managed_sync_aborted");
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createAbortError(signal);
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) {
+    throwIfAborted(signal);
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(createAbortError(signal));
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
 function updateDownloadProgress(
   progress: Pick<ManagedProgressController, "setPhase">,
   state: BootstrapPersistentState,
+  attemptStartBytes: number,
   downloadedBytes: number,
   resumed: boolean,
   startedAt: number,
 ): Promise<void> {
   const elapsedSeconds = Math.max(0.001, (Date.now() - startedAt) / 1000);
-  const bytesPerSecond = Math.max(0, (downloadedBytes - state.downloadedBytes) / elapsedSeconds);
+  const bytesPerSecond = Math.max(0, (downloadedBytes - attemptStartBytes) / elapsedSeconds);
   const remaining = Math.max(0, state.snapshot.sizeBytes - downloadedBytes);
 
   return progress.setPhase("snapshot_download", {
@@ -74,71 +128,139 @@ function updateDownloadProgress(
   });
 }
 
+async function persistVerifiedChunk(
+  state: BootstrapPersistentState,
+  manifest: SnapshotChunkManifest,
+  verifiedChunkCount: number,
+  options: Pick<DownloadSnapshotOptions, "paths">,
+): Promise<void> {
+  applyVerifiedFrontierState(state, manifest, verifiedChunkCount);
+  state.validated = false;
+  state.lastError = null;
+  await saveBootstrapState(options.paths, state);
+}
+
+async function finalizeSnapshotDownload(
+  metadata: SnapshotMetadata,
+  manifest: SnapshotChunkManifest,
+  state: BootstrapPersistentState,
+  options: Pick<DownloadSnapshotOptions, "paths" | "progress">,
+  resumed: boolean,
+): Promise<void> {
+  await validateSnapshotFileForTesting(options.paths.partialSnapshotPath, metadata);
+  await rename(options.paths.partialSnapshotPath, options.paths.snapshotPath);
+  applyVerifiedFrontierState(state, manifest, resolveSnapshotChunkCount(manifest));
+  state.validated = true;
+  state.lastError = null;
+  await saveBootstrapState(options.paths, state);
+  await options.progress.setPhase("snapshot_download", {
+    resumed,
+    downloadedBytes: metadata.sizeBytes,
+    totalBytes: metadata.sizeBytes,
+    percent: 100,
+    bytesPerSecond: null,
+    etaSeconds: 0,
+    lastError: null,
+  });
+}
+
+async function finalizeExistingSnapshot(
+  metadata: SnapshotMetadata,
+  manifest: SnapshotChunkManifest,
+  state: BootstrapPersistentState,
+  options: Pick<DownloadSnapshotOptions, "paths" | "progress">,
+): Promise<void> {
+  applyVerifiedFrontierState(state, manifest, resolveSnapshotChunkCount(manifest));
+  state.validated = true;
+  state.lastError = null;
+  await saveBootstrapState(options.paths, state);
+  await rm(options.paths.partialSnapshotPath, { force: true });
+  await options.progress.setPhase("snapshot_download", {
+    resumed: false,
+    downloadedBytes: metadata.sizeBytes,
+    totalBytes: metadata.sizeBytes,
+    percent: 100,
+    bytesPerSecond: null,
+    etaSeconds: 0,
+    lastError: null,
+  });
+}
+
+async function truncateToVerifiedFrontier(
+  path: string,
+  verifiedBytes: number,
+): Promise<void> {
+  const file = await open(path, "a+");
+
+  try {
+    await file.truncate(verifiedBytes);
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+}
+
 export async function downloadSnapshotFileForTesting(
   options: DownloadSnapshotOptions,
 ): Promise<void> {
-  const { metadata, paths, progress, fetchImpl = fetch } = options;
+  const {
+    metadata,
+    paths,
+    progress,
+    fetchImpl = fetch,
+    signal,
+    snapshotIdentity = "current",
+  } = options;
+  const manifest = options.manifest ?? resolveBundledSnapshotChunkManifest(metadata);
   const state = options.state;
   await mkdir(paths.directory, { recursive: true });
 
-  const existingPart = await statOrNull(paths.partialSnapshotPath);
   const existingFull = await statOrNull(paths.snapshotPath);
 
   if (state.validated && existingFull?.size === metadata.sizeBytes) {
-    await progress.setPhase("snapshot_download", {
-      resumed: false,
-      downloadedBytes: metadata.sizeBytes,
-      totalBytes: metadata.sizeBytes,
-      percent: 100,
-      bytesPerSecond: null,
-      etaSeconds: 0,
-      lastError: null,
-    });
+    await finalizeExistingSnapshot(metadata, manifest, state, { paths, progress });
     return;
   }
 
-  if (!state.validated && existingFull?.size === metadata.sizeBytes) {
+  if (existingFull?.size === metadata.sizeBytes) {
     try {
       await validateSnapshotFileForTesting(paths.snapshotPath, metadata);
-      state.validated = true;
-      state.downloadedBytes = metadata.sizeBytes;
-      state.lastError = null;
-      await saveBootstrapState(paths, state);
-      await progress.setPhase("snapshot_download", {
-        resumed: false,
-        downloadedBytes: metadata.sizeBytes,
-        totalBytes: metadata.sizeBytes,
-        percent: 100,
-        bytesPerSecond: null,
-        etaSeconds: 0,
-        lastError: null,
-      });
+      await finalizeExistingSnapshot(metadata, manifest, state, { paths, progress });
       return;
     } catch {
-      await resetSnapshotFiles(paths);
-      state.downloadedBytes = 0;
       state.validated = false;
-      await saveBootstrapState(paths, state);
     }
+  } else if (state.validated) {
+    state.validated = false;
+  }
+
+  await reconcileSnapshotDownloadArtifacts(paths, state, manifest, snapshotIdentity);
+  await saveBootstrapState(paths, state);
+  throwIfAborted(signal);
+
+  if (state.downloadedBytes >= metadata.sizeBytes) {
+    await finalizeSnapshotDownload(metadata, manifest, state, { paths, progress }, state.downloadedBytes > 0);
+    return;
   }
 
   let retryDelayMs = DOWNLOAD_RETRY_BASE_MS;
 
   while (true) {
-    let startOffset = existingPart?.size ?? (await statOrNull(paths.partialSnapshotPath))?.size ?? 0;
-
-    if (startOffset > metadata.sizeBytes) {
-      await rm(paths.partialSnapshotPath, { force: true });
-      startOffset = 0;
-    }
-
+    const startOffset = state.downloadedBytes;
     const resumed = startOffset > 0;
 
     try {
+      throwIfAborted(signal);
       const headers = resumed ? { Range: `bytes=${startOffset}-` } : undefined;
-      const response = await fetchImpl(metadata.url, { headers });
+      const response = await fetchImpl(metadata.url, { headers, signal });
 
-      if (!(response.status === 200 || response.status === 206)) {
+      if (resumed && response.status !== 206) {
+        throw new Error(response.status === 200
+          ? "snapshot_resume_requires_partial_content"
+          : `snapshot_http_${response.status}`);
+      }
+
+      if (!resumed && response.status !== 200) {
         throw new Error(`snapshot_http_${response.status}`);
       }
 
@@ -146,18 +268,14 @@ export async function downloadSnapshotFileForTesting(
         throw new Error("snapshot_response_body_missing");
       }
 
-      let writeFrom = startOffset;
-
-      if (resumed && response.status === 200) {
-        await rm(paths.partialSnapshotPath, { force: true });
-        writeFrom = 0;
-      }
-
-      const file = await open(paths.partialSnapshotPath, writeFrom === 0 ? "w" : "a");
+      const file = await open(paths.partialSnapshotPath, resumed ? "a" : "w");
       const reader = response.body.getReader();
       const startedAt = Date.now();
-      let downloadedBytes = writeFrom;
-      let lastPersistAt = 0;
+      const attemptStartBytes = startOffset;
+      let downloadedBytes = startOffset;
+      let currentChunkIndex = state.verifiedChunkCount;
+      let currentChunkBytes = 0;
+      let currentChunkHash = createHash("sha256");
 
       await progress.setPhase("snapshot_download", {
         resumed,
@@ -171,63 +289,90 @@ export async function downloadSnapshotFileForTesting(
 
       try {
         while (true) {
+          throwIfAborted(signal);
           const { done, value } = await reader.read();
 
           if (done) {
             break;
           }
 
-          if (value === undefined) {
+          if (value === undefined || value.byteLength === 0) {
             continue;
           }
 
-          await file.write(value);
-          downloadedBytes += value.byteLength;
-          const now = Date.now();
-          await updateDownloadProgress(progress, state, downloadedBytes, resumed, startedAt);
+          let offset = 0;
 
-          if (now - lastPersistAt >= 1_000) {
-            state.downloadedBytes = downloadedBytes;
-            state.lastError = null;
-            await saveBootstrapState(paths, state);
-            lastPersistAt = now;
+          while (offset < value.byteLength) {
+            if (currentChunkIndex >= manifest.chunkSha256s.length) {
+              throw new Error(`snapshot_size_mismatch_${downloadedBytes + (value.byteLength - offset)}`);
+            }
+
+            const chunkSizeBytes = resolveSnapshotChunkSize(manifest, currentChunkIndex);
+            const remainingChunkBytes = chunkSizeBytes - currentChunkBytes;
+            const writeLength = Math.min(remainingChunkBytes, value.byteLength - offset);
+            const segment = value.subarray(offset, offset + writeLength);
+
+            await file.write(segment);
+            currentChunkHash.update(segment);
+            currentChunkBytes += segment.byteLength;
+            downloadedBytes += segment.byteLength;
+            offset += writeLength;
+
+            if (currentChunkBytes === chunkSizeBytes) {
+              const actualSha256 = currentChunkHash.digest("hex");
+              const expectedSha256 = manifest.chunkSha256s[currentChunkIndex];
+
+              if (actualSha256 !== expectedSha256) {
+                const verifiedBytes = resolveVerifiedChunkBytes(manifest, currentChunkIndex);
+                await file.truncate(verifiedBytes);
+                await file.sync();
+                throw new Error(`snapshot_chunk_sha256_mismatch_${currentChunkIndex}`);
+              }
+
+              currentChunkIndex += 1;
+              currentChunkBytes = 0;
+              currentChunkHash = createHash("sha256");
+              await file.sync();
+              await persistVerifiedChunk(state, manifest, currentChunkIndex, { paths });
+            }
           }
+
+          await updateDownloadProgress(progress, state, attemptStartBytes, downloadedBytes, resumed, startedAt);
         }
+
+        if (downloadedBytes !== metadata.sizeBytes) {
+          throw new Error(`snapshot_download_incomplete_${downloadedBytes}`);
+        }
+      } catch (error) {
+        if (!isAbortError(error, signal)) {
+          await file.truncate(state.downloadedBytes);
+          await file.sync();
+        }
+
+        throw error;
       } finally {
         await file.close();
       }
 
-      state.downloadedBytes = downloadedBytes;
-      await saveBootstrapState(paths, state);
-      await validateSnapshotFileForTesting(paths.partialSnapshotPath, metadata);
-      await rename(paths.partialSnapshotPath, paths.snapshotPath);
-      state.validated = true;
-      state.downloadedBytes = metadata.sizeBytes;
-      state.lastError = null;
-      await saveBootstrapState(paths, state);
-      await progress.setPhase("snapshot_download", {
-        resumed,
-        downloadedBytes: metadata.sizeBytes,
-        totalBytes: metadata.sizeBytes,
-        percent: 100,
-        bytesPerSecond: null,
-        etaSeconds: 0,
-        lastError: null,
-      });
+      await finalizeSnapshotDownload(metadata, manifest, state, { paths, progress }, resumed);
       return;
     } catch (error) {
-      const message = formatManagedSyncErrorMessage(describeSnapshotDownloadError(error, metadata.url));
+      if (isAbortError(error, signal)) {
+        const partialInfo = await statOrNull(paths.partialSnapshotPath);
 
-      if (
-        message.startsWith("snapshot_sha256_mismatch_")
-        || message.startsWith("snapshot_size_mismatch_")
-      ) {
-        await resetSnapshotFiles(paths);
-        state.downloadedBytes = 0;
+        if (partialInfo !== null) {
+          await truncateToVerifiedFrontier(paths.partialSnapshotPath, state.downloadedBytes);
+        }
+
+        state.lastError = null;
         state.validated = false;
+        await saveBootstrapState(paths, state);
+        throw createAbortError(signal);
       }
 
+      const message = formatManagedSyncErrorMessage(describeSnapshotDownloadError(error, metadata.url));
       state.lastError = message;
+      state.validated = false;
       await saveBootstrapState(paths, state);
       await progress.setPhase("snapshot_download", {
         resumed,
@@ -238,7 +383,7 @@ export async function downloadSnapshotFileForTesting(
         etaSeconds: null,
         lastError: message,
       });
-      await sleep(retryDelayMs);
+      await sleep(retryDelayMs, signal);
       retryDelayMs = Math.min(retryDelayMs * 2, DOWNLOAD_RETRY_MAX_MS);
     }
   }

@@ -30,6 +30,7 @@ export interface SyncEngineDependencies {
   startHeight: number;
   bitcoinRateTracker: BlockRateTracker;
   cogcoinRateTracker: BlockRateTracker;
+  abortSignal?: AbortSignal;
   isFollowing(): boolean;
   loadVisibleFollowBlockTimes(tip: Awaited<ReturnType<Client["getTip"]>>): Promise<Record<number, number>>;
 }

@@ -7,9 +7,47 @@ import { estimateEtaSeconds } from "./rate-tracker.js";
 
 const DEFAULT_SYNC_CATCH_UP_POLL_MS = 2_000;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+function createAbortError(signal?: AbortSignal): Error {
+  const reason = signal?.reason;
+
+  if (reason instanceof Error) {
+    return reason;
+  }
+
+  const error = new Error("managed_sync_aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) {
+    return true;
+  }
+
+  return error instanceof Error
+    && (error.name === "AbortError" || error.message === "managed_sync_aborted");
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createAbortError(signal);
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(createAbortError(signal));
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -123,9 +161,12 @@ export async function syncToTip(
   dependencies: SyncEngineDependencies,
 ): Promise<SyncResult> {
   try {
+    throwIfAborted(dependencies.abortSignal);
     await dependencies.node.validate();
     const indexedTipBeforeBootstrap = await dependencies.client.getTip();
-    await dependencies.bootstrap.ensureReady(indexedTipBeforeBootstrap, dependencies.node.expectedChain);
+    await dependencies.bootstrap.ensureReady(indexedTipBeforeBootstrap, dependencies.node.expectedChain, {
+      signal: dependencies.abortSignal,
+    });
 
     const startTip = await dependencies.client.getTip();
     const aggregate: SyncResult = {
@@ -139,6 +180,7 @@ export async function syncToTip(
     };
 
     while (true) {
+      throwIfAborted(dependencies.abortSignal);
       const startInfo = await dependencies.rpc.getBlockchainInfo();
       await setBitcoinSyncProgress(dependencies, startInfo);
 
@@ -183,9 +225,13 @@ export async function syncToTip(
         continue;
       }
 
-      await sleep(DEFAULT_SYNC_CATCH_UP_POLL_MS);
+      await sleep(DEFAULT_SYNC_CATCH_UP_POLL_MS, dependencies.abortSignal);
     }
   } catch (error) {
+    if (isAbortError(error, dependencies.abortSignal)) {
+      throw createAbortError(dependencies.abortSignal);
+    }
+
     const message = formatManagedSyncErrorMessage(error instanceof Error ? error.message : String(error));
     await dependencies.progress.setPhase("error", {
       lastError: message,

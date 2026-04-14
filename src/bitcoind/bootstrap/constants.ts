@@ -1,6 +1,8 @@
 import type { SnapshotMetadata } from "../types.js";
 
-export const SNAPSHOT_METADATA_VERSION = 1;
+export const BOOTSTRAP_STATE_VERSION = 2;
+export const SNAPSHOT_CHUNK_MANIFEST_VERSION = 1;
+export const DEFAULT_SNAPSHOT_CHUNK_SIZE_BYTES = 4 * 1024 * 1024;
 export const DOWNLOAD_RETRY_BASE_MS = 1_000;
 export const DOWNLOAD_RETRY_MAX_MS = 30_000;
 export const HEADER_POLL_MS = 2_000;

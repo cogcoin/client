@@ -21,6 +21,16 @@ export interface SnapshotMetadata {
   sizeBytes: number;
 }
 
+export interface SnapshotChunkManifest {
+  formatVersion: number;
+  chunkSizeBytes: number;
+  snapshotFilename: string;
+  snapshotHeight: number;
+  snapshotSizeBytes: number;
+  snapshotSha256: string;
+  chunkSha256s: string[];
+}
+
 export interface WritingQuote {
   quote: string;
   author: string;

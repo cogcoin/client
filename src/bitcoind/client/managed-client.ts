@@ -39,6 +39,7 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
   #cogcoinRateTracker = createBlockRateTracker();
   #syncPromise: Promise<SyncResult> = Promise.resolve(createInitialSyncResult());
   #debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  #syncAbortControllers = new Set<AbortController>();
 
   constructor(
     client: Client,
@@ -81,19 +82,29 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     this.#assertOpen();
     await this.#progress.start();
 
-    const run = async (): Promise<SyncResult> => runManagedSync({
-      client: this.#client,
-      store: this.#store,
-      node: this.#node,
-      rpc: this.#rpc,
-      progress: this.#progress,
-      bootstrap: this.#bootstrap,
-      startHeight: this.#startHeight,
-      bitcoinRateTracker: this.#bitcoinRateTracker,
-      cogcoinRateTracker: this.#cogcoinRateTracker,
-      isFollowing: () => this.#following,
-      loadVisibleFollowBlockTimes: (tip) => this.#loadVisibleFollowBlockTimes(tip),
-    });
+    const run = async (): Promise<SyncResult> => {
+      const abortController = new AbortController();
+      this.#syncAbortControllers.add(abortController);
+
+      try {
+        return await runManagedSync({
+          client: this.#client,
+          store: this.#store,
+          node: this.#node,
+          rpc: this.#rpc,
+          progress: this.#progress,
+          bootstrap: this.#bootstrap,
+          startHeight: this.#startHeight,
+          bitcoinRateTracker: this.#bitcoinRateTracker,
+          cogcoinRateTracker: this.#cogcoinRateTracker,
+          abortSignal: abortController.signal,
+          isFollowing: () => this.#following,
+          loadVisibleFollowBlockTimes: (tip) => this.#loadVisibleFollowBlockTimes(tip),
+        });
+      } finally {
+        this.#syncAbortControllers.delete(abortController);
+      }
+    };
 
     const nextPromise = this.#syncPromise.then(run, run);
     this.#syncPromise = nextPromise;
@@ -206,6 +217,9 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     this.#subscriber = null;
     this.#followLoop = null;
     this.#pollTimer = null;
+    for (const abortController of this.#syncAbortControllers) {
+      abortController.abort(new Error("managed_sync_aborted"));
+    }
 
     await this.#syncPromise.catch(() => undefined);
     await this.#progress.close();

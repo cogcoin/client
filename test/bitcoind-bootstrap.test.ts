@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import {
   DEFAULT_SNAPSHOT_METADATA,
@@ -38,8 +40,10 @@ import {
   validateSnapshotFileForTesting,
   waitForHeadersForTesting,
 } from "../src/bitcoind/testing.js";
-import type { SnapshotMetadata, WritingQuote } from "../src/bitcoind/types.js";
+import type { SnapshotChunkManifest, SnapshotMetadata, WritingQuote } from "../src/bitcoind/types.js";
 import { createTempDirectory, removeTempDirectory } from "./bitcoind-helpers.js";
+
+const execFileAsync = promisify(execFile);
 
 function createDeterministicRandom(values: number[]): () => number {
   let index = 0;
@@ -72,6 +76,62 @@ function extractField(frame: string[], row: number): string {
 
 function createIdentityPermutation(length: number): number[] {
   return Array.from({ length }, (_value, index) => index);
+}
+
+function resolveChunkSize(manifest: SnapshotChunkManifest, chunkIndex: number): number {
+  const lastChunkIndex = manifest.chunkSha256s.length - 1;
+
+  if (chunkIndex < lastChunkIndex) {
+    return manifest.chunkSizeBytes;
+  }
+
+  const trailingBytes = manifest.snapshotSizeBytes % manifest.chunkSizeBytes;
+  return trailingBytes === 0 ? manifest.chunkSizeBytes : trailingBytes;
+}
+
+function resolveVerifiedBytes(manifest: SnapshotChunkManifest, verifiedChunkCount: number): number {
+  if (verifiedChunkCount <= 0) {
+    return 0;
+  }
+
+  if (verifiedChunkCount >= manifest.chunkSha256s.length) {
+    return manifest.snapshotSizeBytes;
+  }
+
+  return verifiedChunkCount * manifest.chunkSizeBytes;
+}
+
+function setVerifiedFrontierState(
+  state: ReturnType<typeof createBootstrapStateForTesting>,
+  manifest: SnapshotChunkManifest,
+  verifiedChunkCount: number,
+): void {
+  state.integrityVersion = manifest.formatVersion;
+  state.chunkSizeBytes = manifest.chunkSizeBytes;
+  state.verifiedChunkCount = verifiedChunkCount;
+  state.downloadedBytes = resolveVerifiedBytes(manifest, verifiedChunkCount);
+}
+
+function createChunkManifestForPayload(
+  payload: Buffer,
+  metadata: SnapshotMetadata,
+  chunkSizeBytes = 4,
+): SnapshotChunkManifest {
+  const chunkSha256s: string[] = [];
+
+  for (let offset = 0; offset < payload.length; offset += chunkSizeBytes) {
+    chunkSha256s.push(createHash("sha256").update(payload.subarray(offset, offset + chunkSizeBytes)).digest("hex"));
+  }
+
+  return {
+    formatVersion: 1,
+    chunkSizeBytes,
+    snapshotFilename: metadata.filename,
+    snapshotHeight: metadata.height,
+    snapshotSizeBytes: metadata.sizeBytes,
+    snapshotSha256: metadata.sha256,
+    chunkSha256s,
+  };
 }
 
 function makeLongWord(length: number): string {
@@ -169,6 +229,62 @@ test("snapshot metadata matches the local assumeutxo file when present", async (
   await validateSnapshotFileForTesting(localSnapshot, DEFAULT_SNAPSHOT_METADATA);
 });
 
+test("snapshot chunk manifest generator writes reproducible chunk hashes and passes check mode", async () => {
+  const rootDir = createTempDirectory("cogcoin-client-bootstrap-manifest-script");
+
+  try {
+    const payload = Buffer.from("manifest-script-payload");
+    const inputPath = join(rootDir, "tiny.dat");
+    const outputPath = join(rootDir, "manifest.ts");
+    const sha256 = createHash("sha256").update(payload).digest("hex");
+    const metadata: SnapshotMetadata = {
+      url: "https://snapshots.cogcoin.org/tiny.dat",
+      filename: "tiny.dat",
+      height: 321,
+      sha256,
+      sizeBytes: payload.length,
+    };
+    const manifest = createChunkManifestForPayload(payload, metadata, 4);
+    await writeFile(inputPath, payload);
+
+    await execFileAsync("node", [
+      "scripts/generate-default-snapshot-chunk-manifest.mjs",
+      "--input", inputPath,
+      "--output", outputPath,
+      "--snapshot-filename", metadata.filename,
+      "--snapshot-height", String(metadata.height),
+      "--snapshot-size-bytes", String(metadata.sizeBytes),
+      "--snapshot-sha256", metadata.sha256,
+      "--chunk-size-bytes", String(manifest.chunkSizeBytes),
+    ], {
+      cwd: process.cwd(),
+    });
+
+    const output = await readFile(outputPath, "utf8");
+    assert.ok(output.includes(`"snapshotFilename": "${metadata.filename}"`));
+    assert.ok(output.includes(`"snapshotSha256": "${metadata.sha256}"`));
+    assert.ok(output.includes(`"chunkSha256s": [`));
+    assert.ok(output.includes(manifest.chunkSha256s[0] ?? ""));
+    assert.ok(output.includes(manifest.chunkSha256s[manifest.chunkSha256s.length - 1] ?? ""));
+
+    await execFileAsync("node", [
+      "scripts/generate-default-snapshot-chunk-manifest.mjs",
+      "--check",
+      "--input", inputPath,
+      "--output", outputPath,
+      "--snapshot-filename", metadata.filename,
+      "--snapshot-height", String(metadata.height),
+      "--snapshot-size-bytes", String(metadata.sizeBytes),
+      "--snapshot-sha256", metadata.sha256,
+      "--chunk-size-bytes", String(manifest.chunkSizeBytes),
+    ], {
+      cwd: process.cwd(),
+    });
+  } finally {
+    await removeTempDirectory(rootDir);
+  }
+});
+
 test("art templates are 80x13 and copied into the test build output", async () => {
   const banner = loadBannerArtForTesting();
   const scroll = loadScrollArtForTesting();
@@ -208,7 +324,7 @@ test("art templates are 80x13 and copied into the test build output", async () =
   ]);
 });
 
-test("downloadSnapshotFileForTesting resumes a partial range download", async () => {
+test("downloadSnapshotFileForTesting resumes from the verified chunk frontier instead of raw file size", async () => {
   const payload = Buffer.from("assumeutxo-range-download");
   const requests: string[] = [];
   const rootDir = createTempDirectory("cogcoin-client-bootstrap-range");
@@ -252,11 +368,12 @@ test("downloadSnapshotFileForTesting resumes a partial range download", async ()
       sha256: createHash("sha256").update(payload).digest("hex"),
       sizeBytes: payload.length,
     };
+    const manifest = createChunkManifestForPayload(payload, metadata, 4);
     const paths = resolveBootstrapPathsForTesting(rootDir, metadata);
     const state = createBootstrapStateForTesting(metadata);
     await mkdir(paths.directory, { recursive: true });
-    await writeFile(paths.partialSnapshotPath, payload.subarray(0, 8));
-    state.downloadedBytes = 8;
+    await writeFile(paths.partialSnapshotPath, payload.subarray(0, 6));
+    setVerifiedFrontierState(state, manifest, 1);
     await saveBootstrapStateForTesting(paths, state);
     const progress = new ManagedProgressController({
       quoteStatePath: paths.quoteStatePath,
@@ -267,6 +384,7 @@ test("downloadSnapshotFileForTesting resumes a partial range download", async ()
     await progress.start();
     await downloadSnapshotFileForTesting({
       metadata,
+      manifest,
       paths,
       progress,
       state,
@@ -274,25 +392,27 @@ test("downloadSnapshotFileForTesting resumes a partial range download", async ()
     await progress.close();
 
     assert.deepEqual(await readFile(paths.snapshotPath), payload);
-    assert.deepEqual(requests[0], "bytes=8-");
+    assert.deepEqual(requests[0], "bytes=4-");
     const persisted = await loadBootstrapStateForTesting(paths, metadata);
     assert.equal(persisted.validated, true);
     assert.equal(persisted.downloadedBytes, payload.length);
+    assert.equal(persisted.verifiedChunkCount, manifest.chunkSha256s.length);
   } finally {
     server.close();
     await removeTempDirectory(rootDir);
   }
 });
 
-test("downloadSnapshotFileForTesting retries after a hash mismatch and resets the bad file", async () => {
+test("downloadSnapshotFileForTesting retries from the failed chunk instead of restarting at zero", async () => {
   const goodPayload = Buffer.from("correct-snapshot-payload");
-  const badPayload = Buffer.from("bad-snapshot-payload");
-  let requestCount = 0;
+  const badPayload = Buffer.from(goodPayload);
+  badPayload[5] = 0x78;
+  const requests: string[] = [];
   const rootDir = createTempDirectory("cogcoin-client-bootstrap-retry");
-  const server = createServer((_request, response) => {
-    requestCount += 1;
-    const body = requestCount === 1 ? badPayload : goodPayload;
-    response.writeHead(200, {
+  const server = createServer((request, response) => {
+    requests.push(request.headers.range ?? "none");
+    const body = requests.length === 1 ? badPayload : goodPayload.subarray(4);
+    response.writeHead(request.headers.range ? 206 : 200, {
       "content-length": String(body.length),
     });
     response.end(body);
@@ -315,6 +435,7 @@ test("downloadSnapshotFileForTesting retries after a hash mismatch and resets th
       sha256: createHash("sha256").update(goodPayload).digest("hex"),
       sizeBytes: goodPayload.length,
     };
+    const manifest = createChunkManifestForPayload(goodPayload, metadata, 4);
     const paths = resolveBootstrapPathsForTesting(rootDir, metadata);
     const state = createBootstrapStateForTesting(metadata);
     const progress = new ManagedProgressController({
@@ -326,19 +447,303 @@ test("downloadSnapshotFileForTesting retries after a hash mismatch and resets th
     await progress.start();
     await downloadSnapshotFileForTesting({
       metadata,
+      manifest,
       paths,
       progress,
       state,
     });
     await progress.close();
 
-    assert.ok(requestCount >= 2);
+    assert.deepEqual(requests.slice(0, 2), ["none", "bytes=4-"]);
     assert.deepEqual(await readFile(paths.snapshotPath), goodPayload);
     const persisted = await loadBootstrapStateForTesting(paths, metadata);
     assert.equal(persisted.lastError, null);
     assert.equal(persisted.validated, true);
+    assert.equal(persisted.verifiedChunkCount, manifest.chunkSha256s.length);
   } finally {
     server.close();
+    await removeTempDirectory(rootDir);
+  }
+});
+
+test("downloadSnapshotFileForTesting scans an untrusted partial file and preserves the last good chunk", async () => {
+  const payload = Buffer.from("0123456789ab");
+  const corrupted = Buffer.from(payload);
+  corrupted[6] = 0x78;
+  const requests: string[] = [];
+  const rootDir = createTempDirectory("cogcoin-client-bootstrap-scan");
+  const server = createServer((request, response) => {
+    requests.push(request.headers.range ?? "none");
+    const rangeHeader = request.headers.range;
+    const start = Number(/^bytes=(\d+)-$/.exec(rangeHeader ?? "")?.[1] ?? 0);
+    const body = payload.subarray(start);
+    response.writeHead(rangeHeader ? 206 : 200, {
+      "content-length": String(body.length),
+    });
+    response.end(body);
+  });
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+
+    if (!address || typeof address === "string") {
+      throw new Error("test_http_server_address_missing");
+    }
+
+    const metadata: SnapshotMetadata = {
+      url: `http://127.0.0.1:${address.port}/utxo.dat`,
+      filename: "utxo.dat",
+      height: 400,
+      sha256: createHash("sha256").update(payload).digest("hex"),
+      sizeBytes: payload.length,
+    };
+    const manifest = createChunkManifestForPayload(payload, metadata, 4);
+    const paths = resolveBootstrapPathsForTesting(rootDir, metadata);
+    const state = createBootstrapStateForTesting(metadata);
+    await mkdir(paths.directory, { recursive: true });
+    await writeFile(paths.partialSnapshotPath, corrupted);
+    state.downloadedBytes = corrupted.length;
+    await saveBootstrapStateForTesting(paths, state);
+    const progress = new ManagedProgressController({
+      quoteStatePath: paths.quoteStatePath,
+      snapshot: metadata,
+      progressOutput: "none",
+    });
+
+    await progress.start();
+    await downloadSnapshotFileForTesting({
+      metadata,
+      manifest,
+      paths,
+      progress,
+      state,
+    });
+    await progress.close();
+
+    assert.deepEqual(requests[0], "bytes=4-");
+    assert.deepEqual(await readFile(paths.snapshotPath), payload);
+    const persisted = await loadBootstrapStateForTesting(paths, metadata);
+    assert.equal(persisted.validated, true);
+    assert.equal(persisted.verifiedChunkCount, manifest.chunkSha256s.length);
+  } finally {
+    server.close();
+    await removeTempDirectory(rootDir);
+  }
+});
+
+test("downloadSnapshotFileForTesting upgrades a legacy state file by scanning verified chunks", async () => {
+  const payload = Buffer.from("legacy-upgrade");
+  const requests: string[] = [];
+  const rootDir = createTempDirectory("cogcoin-client-bootstrap-legacy");
+  const server = createServer((request, response) => {
+    requests.push(request.headers.range ?? "none");
+    const rangeHeader = request.headers.range;
+    const start = Number(/^bytes=(\d+)-$/.exec(rangeHeader ?? "")?.[1] ?? 0);
+    const body = payload.subarray(start);
+    response.writeHead(rangeHeader ? 206 : 200, {
+      "content-length": String(body.length),
+    });
+    response.end(body);
+  });
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+
+    if (!address || typeof address === "string") {
+      throw new Error("test_http_server_address_missing");
+    }
+
+    const metadata: SnapshotMetadata = {
+      url: `http://127.0.0.1:${address.port}/utxo.dat`,
+      filename: "utxo.dat",
+      height: 401,
+      sha256: createHash("sha256").update(payload).digest("hex"),
+      sizeBytes: payload.length,
+    };
+    const manifest = createChunkManifestForPayload(payload, metadata, 4);
+    const paths = resolveBootstrapPathsForTesting(rootDir, metadata);
+    await mkdir(paths.directory, { recursive: true });
+    await writeFile(paths.partialSnapshotPath, payload.subarray(0, 10));
+    await writeFile(paths.statePath, JSON.stringify({
+      metadataVersion: 1,
+      snapshot: metadata,
+      phase: "snapshot_download",
+      downloadedBytes: 10,
+      validated: false,
+      loadTxOutSetComplete: false,
+      baseHeight: null,
+      tipHashHex: null,
+      lastError: null,
+      updatedAt: Date.now(),
+    }, null, 2));
+    const state = await loadBootstrapStateForTesting(paths, metadata);
+    const progress = new ManagedProgressController({
+      quoteStatePath: paths.quoteStatePath,
+      snapshot: metadata,
+      progressOutput: "none",
+    });
+
+    await progress.start();
+    await downloadSnapshotFileForTesting({
+      metadata,
+      manifest,
+      paths,
+      progress,
+      state,
+    });
+    await progress.close();
+
+    assert.deepEqual(requests[0], "bytes=8-");
+    const persisted = await loadBootstrapStateForTesting(paths, metadata);
+    assert.equal(persisted.metadataVersion, 2);
+    assert.equal(persisted.integrityVersion, 1);
+    assert.equal(persisted.chunkSizeBytes, manifest.chunkSizeBytes);
+    assert.equal(persisted.verifiedChunkCount, manifest.chunkSha256s.length);
+    assert.equal(persisted.validated, true);
+  } finally {
+    server.close();
+    await removeTempDirectory(rootDir);
+  }
+});
+
+test("downloadSnapshotFileForTesting preserves the verified prefix when a resumed request gets HTTP 200", async () => {
+  const payload = Buffer.from("resume-http-200");
+  const requests: string[] = [];
+  const rootDir = createTempDirectory("cogcoin-client-bootstrap-http200");
+
+  try {
+    const metadata: SnapshotMetadata = {
+      url: "https://snapshots.cogcoin.org/utxo.dat",
+      filename: "utxo.dat",
+      height: 402,
+      sha256: createHash("sha256").update(payload).digest("hex"),
+      sizeBytes: payload.length,
+    };
+    const manifest = createChunkManifestForPayload(payload, metadata, 4);
+    const paths = resolveBootstrapPathsForTesting(rootDir, metadata);
+    const state = createBootstrapStateForTesting(metadata);
+    await mkdir(paths.directory, { recursive: true });
+    await writeFile(paths.partialSnapshotPath, payload.subarray(0, 4));
+    setVerifiedFrontierState(state, manifest, 1);
+    await saveBootstrapStateForTesting(paths, state);
+    const progress = new ManagedProgressController({
+      quoteStatePath: paths.quoteStatePath,
+      snapshot: metadata,
+      progressOutput: "none",
+    });
+
+    await progress.start();
+    await downloadSnapshotFileForTesting({
+      metadata,
+      manifest,
+      paths,
+      progress,
+      state,
+      fetchImpl: async (_url, init) => {
+        requests.push((init?.headers as Record<string, string> | undefined)?.Range ?? "none");
+
+        if (requests.length === 1) {
+          return new Response(payload, {
+            status: 200,
+            headers: {
+              "content-length": String(payload.length),
+            },
+          });
+        }
+
+        return new Response(payload.subarray(4), {
+          status: 206,
+          headers: {
+            "content-length": String(payload.length - 4),
+          },
+        });
+      },
+    });
+    await progress.close();
+
+    assert.deepEqual(requests.slice(0, 2), ["bytes=4-", "bytes=4-"]);
+    assert.deepEqual(await readFile(paths.snapshotPath), payload);
+    const persisted = await loadBootstrapStateForTesting(paths, metadata);
+    assert.equal(persisted.validated, true);
+    assert.equal(persisted.downloadedBytes, payload.length);
+  } finally {
+    await removeTempDirectory(rootDir);
+  }
+});
+
+test("downloadSnapshotFileForTesting aborts mid-chunk and keeps only the last verified checkpoint", async () => {
+  const payload = Buffer.from("abort-checkpoint");
+  const rootDir = createTempDirectory("cogcoin-client-bootstrap-abort");
+
+  try {
+    const metadata: SnapshotMetadata = {
+      url: "https://snapshots.cogcoin.org/utxo.dat",
+      filename: "utxo.dat",
+      height: 403,
+      sha256: createHash("sha256").update(payload).digest("hex"),
+      sizeBytes: payload.length,
+    };
+    const manifest = createChunkManifestForPayload(payload, metadata, 4);
+    const paths = resolveBootstrapPathsForTesting(rootDir, metadata);
+    const state = createBootstrapStateForTesting(metadata);
+    await mkdir(paths.directory, { recursive: true });
+    await writeFile(paths.partialSnapshotPath, payload.subarray(0, 4));
+    setVerifiedFrontierState(state, manifest, 1);
+    await saveBootstrapStateForTesting(paths, state);
+    const progress = new ManagedProgressController({
+      quoteStatePath: paths.quoteStatePath,
+      snapshot: metadata,
+      progressOutput: "none",
+    });
+    const abortController = new AbortController();
+
+    await progress.start();
+    const downloadPromise = downloadSnapshotFileForTesting({
+      metadata,
+      manifest,
+      paths,
+      progress,
+      state,
+      signal: abortController.signal,
+      fetchImpl: async (_url, init) => new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(payload.subarray(4, 6));
+          const signal = init?.signal;
+
+          if (signal instanceof AbortSignal) {
+            signal.addEventListener("abort", () => {
+              controller.error(new DOMException("Aborted", "AbortError"));
+            }, { once: true });
+          }
+        },
+      }), {
+        status: 206,
+        headers: {
+          "content-length": String(payload.length - 4),
+        },
+      }),
+    });
+
+    setTimeout(() => {
+      abortController.abort(new Error("managed_sync_aborted"));
+    }, 25);
+
+    await assert.rejects(downloadPromise, /managed_sync_aborted|AbortError/);
+    await progress.close();
+
+    const partialInfo = await stat(paths.partialSnapshotPath);
+    assert.equal(partialInfo.size, 4);
+    const persisted = await loadBootstrapStateForTesting(paths, metadata);
+    assert.equal(persisted.downloadedBytes, 4);
+    assert.equal(persisted.verifiedChunkCount, 1);
+    assert.equal(persisted.lastError, null);
+  } finally {
     await removeTempDirectory(rootDir);
   }
 });
@@ -357,6 +762,7 @@ test("downloadSnapshotFileForTesting surfaces actionable fetch errors before ret
       sha256: createHash("sha256").update(payload).digest("hex"),
       sizeBytes: payload.length,
     };
+    const manifest = createChunkManifestForPayload(payload, metadata, 4);
     const paths = resolveBootstrapPathsForTesting(rootDir, metadata);
     const state = createBootstrapStateForTesting(metadata);
     const progress = new ManagedProgressController({
@@ -373,6 +779,7 @@ test("downloadSnapshotFileForTesting surfaces actionable fetch errors before ret
     await progress.start();
     await downloadSnapshotFileForTesting({
       metadata,
+      manifest,
       paths,
       progress,
       state,
@@ -410,8 +817,18 @@ test("bootstrap state persists resume metadata", async () => {
   try {
     const paths = resolveBootstrapPathsForTesting(rootDir);
     const state = createBootstrapStateForTesting();
+    const manifest = createChunkManifestForPayload(Buffer.from("state-persist"), {
+      url: "https://snapshots.cogcoin.org/state-persist.dat",
+      filename: "state-persist.dat",
+      height: 910001,
+      sha256: createHash("sha256").update(Buffer.from("state-persist")).digest("hex"),
+      sizeBytes: Buffer.byteLength("state-persist"),
+    }, 4);
     state.phase = "load_snapshot";
-    state.downloadedBytes = 12_345;
+    state.integrityVersion = manifest.formatVersion;
+    state.chunkSizeBytes = manifest.chunkSizeBytes;
+    state.verifiedChunkCount = 2;
+    state.downloadedBytes = resolveVerifiedBytes(manifest, 2);
     state.validated = true;
     state.loadTxOutSetComplete = true;
     state.baseHeight = 910_000;
@@ -422,7 +839,10 @@ test("bootstrap state persists resume metadata", async () => {
     const reloaded = await loadBootstrapStateForTesting(paths);
 
     assert.equal(reloaded.phase, "load_snapshot");
-    assert.equal(reloaded.downloadedBytes, 12_345);
+    assert.equal(reloaded.integrityVersion, 1);
+    assert.equal(reloaded.chunkSizeBytes, 4);
+    assert.equal(reloaded.verifiedChunkCount, 2);
+    assert.equal(reloaded.downloadedBytes, resolveVerifiedBytes(manifest, 2));
     assert.equal(reloaded.validated, true);
     assert.equal(reloaded.loadTxOutSetComplete, true);
     assert.equal(reloaded.baseHeight, 910_000);

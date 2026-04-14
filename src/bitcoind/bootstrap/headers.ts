@@ -8,9 +8,38 @@ import {
 } from "./constants.js";
 import type { RpcNetworkInfo, SnapshotMetadata } from "../types.js";
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+function createAbortError(signal?: AbortSignal): Error {
+  const reason = signal?.reason;
+
+  if (reason instanceof Error) {
+    return reason;
+  }
+
+  const error = new Error("managed_sync_aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createAbortError(signal);
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(createAbortError(signal));
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -42,16 +71,19 @@ export async function waitForHeaders(
   progress: Pick<ManagedProgressController, "setPhase">,
   options: {
     now?: () => number;
-    sleep?: (ms: number) => Promise<void>;
+    sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
     noPeerTimeoutMs?: number;
+    signal?: AbortSignal;
   } = {},
 ): Promise<void> {
   const now = options.now ?? Date.now;
   const sleepImpl = options.sleep ?? sleep;
   const noPeerTimeoutMs = options.noPeerTimeoutMs ?? HEADER_NO_PEER_TIMEOUT_MS;
+  const { signal } = options;
   let noPeerSince: number | null = null;
 
   while (true) {
+    throwIfAborted(signal);
     const [info, networkInfo] = await Promise.all([
       rpc.getBlockchainInfo(),
       rpc.getNetworkInfo(),
@@ -81,7 +113,7 @@ export async function waitForHeaders(
       noPeerSince = null;
     }
 
-    await sleepImpl(HEADER_POLL_MS);
+    await sleepImpl(HEADER_POLL_MS, signal);
   }
 }
 
@@ -91,8 +123,9 @@ export async function waitForHeadersForTesting(
   progress: Pick<ManagedProgressController, "setPhase">,
   options?: {
     now?: () => number;
-    sleep?: (ms: number) => Promise<void>;
+    sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
     noPeerTimeoutMs?: number;
+    signal?: AbortSignal;
   },
 ): Promise<void> {
   await waitForHeaders(rpc, snapshot, progress, options);

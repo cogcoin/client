@@ -2,12 +2,13 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import {
+  BOOTSTRAP_STATE_VERSION,
   DEFAULT_SNAPSHOT_METADATA,
-  SNAPSHOT_METADATA_VERSION,
 } from "./constants.js";
 import type {
   BootstrapPaths,
   BootstrapPersistentState,
+  LoadedBootstrapState,
 } from "./types.js";
 import type {
   BootstrapPhase,
@@ -16,9 +17,12 @@ import type {
 
 function createInitialBootstrapState(snapshot: SnapshotMetadata): BootstrapPersistentState {
   return {
-    metadataVersion: SNAPSHOT_METADATA_VERSION,
+    metadataVersion: BOOTSTRAP_STATE_VERSION,
     snapshot,
     phase: "snapshot_download",
+    integrityVersion: 0,
+    chunkSizeBytes: 0,
+    verifiedChunkCount: 0,
     downloadedBytes: 0,
     validated: false,
     loadTxOutSetComplete: false,
@@ -36,36 +40,63 @@ async function writeJsonAtomic(path: string, payload: unknown): Promise<void> {
   await rename(tempPath, path);
 }
 
-export async function loadBootstrapState(
+function snapshotIdentityMatches(
+  parsed: Partial<BootstrapPersistentState>,
+  snapshot: SnapshotMetadata,
+): boolean {
+  return parsed.snapshot?.sha256 === snapshot.sha256
+    && parsed.snapshot?.sizeBytes === snapshot.sizeBytes
+    && parsed.snapshot?.height === snapshot.height
+    && parsed.snapshot?.filename === snapshot.filename;
+}
+
+function normalizeLoadedBootstrapState(
+  parsed: Partial<BootstrapPersistentState>,
+  snapshot: SnapshotMetadata,
+): BootstrapPersistentState | null {
+  if (
+    typeof parsed.downloadedBytes !== "number"
+    || typeof parsed.validated !== "boolean"
+    || typeof parsed.loadTxOutSetComplete !== "boolean"
+  ) {
+    return null;
+  }
+
+  return {
+    metadataVersion: BOOTSTRAP_STATE_VERSION,
+    snapshot,
+    phase: parsed.phase ?? "snapshot_download",
+    integrityVersion: typeof parsed.integrityVersion === "number" ? parsed.integrityVersion : 0,
+    chunkSizeBytes: typeof parsed.chunkSizeBytes === "number" ? parsed.chunkSizeBytes : 0,
+    verifiedChunkCount: typeof parsed.verifiedChunkCount === "number" ? parsed.verifiedChunkCount : 0,
+    downloadedBytes: parsed.downloadedBytes,
+    validated: parsed.validated,
+    loadTxOutSetComplete: parsed.loadTxOutSetComplete,
+    baseHeight: parsed.baseHeight ?? null,
+    tipHashHex: parsed.tipHashHex ?? null,
+    lastError: parsed.lastError ?? null,
+    updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : Date.now(),
+  };
+}
+
+export async function loadBootstrapStateRecord(
   paths: BootstrapPaths,
   snapshot: SnapshotMetadata,
-): Promise<BootstrapPersistentState> {
+): Promise<LoadedBootstrapState> {
   try {
     const raw = await readFile(paths.statePath, "utf8");
     const parsed = JSON.parse(raw) as Partial<BootstrapPersistentState>;
+    const snapshotIdentity = parsed.snapshot === undefined
+      ? "unknown"
+      : snapshotIdentityMatches(parsed, snapshot)
+        ? "current"
+        : "different";
+    const normalized = normalizeLoadedBootstrapState(parsed, snapshot);
 
-    if (
-      parsed.metadataVersion === SNAPSHOT_METADATA_VERSION
-      && parsed.snapshot?.url === snapshot.url
-      && parsed.snapshot?.sha256 === snapshot.sha256
-      && parsed.snapshot?.sizeBytes === snapshot.sizeBytes
-      && parsed.snapshot?.height === snapshot.height
-      && parsed.snapshot?.filename === snapshot.filename
-      && typeof parsed.downloadedBytes === "number"
-      && typeof parsed.validated === "boolean"
-      && typeof parsed.loadTxOutSetComplete === "boolean"
-    ) {
+    if (normalized !== null) {
       return {
-        metadataVersion: SNAPSHOT_METADATA_VERSION,
-        snapshot,
-        phase: parsed.phase ?? "snapshot_download",
-        downloadedBytes: parsed.downloadedBytes,
-        validated: parsed.validated,
-        loadTxOutSetComplete: parsed.loadTxOutSetComplete,
-        baseHeight: parsed.baseHeight ?? null,
-        tipHashHex: parsed.tipHashHex ?? null,
-        lastError: parsed.lastError ?? null,
-        updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : Date.now(),
+        state: normalized,
+        snapshotIdentity,
       };
     }
   } catch {
@@ -74,7 +105,17 @@ export async function loadBootstrapState(
 
   const state = createInitialBootstrapState(snapshot);
   await writeJsonAtomic(paths.statePath, state);
-  return state;
+  return {
+    state,
+    snapshotIdentity: "unknown",
+  };
+}
+
+export async function loadBootstrapState(
+  paths: BootstrapPaths,
+  snapshot: SnapshotMetadata,
+): Promise<BootstrapPersistentState> {
+  return (await loadBootstrapStateRecord(paths, snapshot)).state;
 }
 
 export async function saveBootstrapState(
@@ -91,6 +132,9 @@ export function createBootstrapStateForTesting(
   metadataVersion: number;
   snapshot: SnapshotMetadata;
   phase: BootstrapPhase;
+  integrityVersion: number;
+  chunkSizeBytes: number;
+  verifiedChunkCount: number;
   downloadedBytes: number;
   validated: boolean;
   loadTxOutSetComplete: boolean;
@@ -109,6 +153,9 @@ export async function loadBootstrapStateForTesting(
   metadataVersion: number;
   snapshot: SnapshotMetadata;
   phase: BootstrapPhase;
+  integrityVersion: number;
+  chunkSizeBytes: number;
+  verifiedChunkCount: number;
   downloadedBytes: number;
   validated: boolean;
   loadTxOutSetComplete: boolean;
@@ -126,6 +173,9 @@ export async function saveBootstrapStateForTesting(
     metadataVersion: number;
     snapshot: SnapshotMetadata;
     phase: BootstrapPhase;
+    integrityVersion: number;
+    chunkSizeBytes: number;
+    verifiedChunkCount: number;
     downloadedBytes: number;
     validated: boolean;
     loadTxOutSetComplete: boolean;

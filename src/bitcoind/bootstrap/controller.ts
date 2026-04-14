@@ -5,11 +5,12 @@ import { DEFAULT_SNAPSHOT_METADATA } from "./constants.js";
 import { downloadSnapshotFileForTesting } from "./download.js";
 import { waitForHeaders } from "./headers.js";
 import { resolveBootstrapPaths } from "./paths.js";
-import { loadBootstrapState, saveBootstrapState } from "./state.js";
+import { loadBootstrapStateRecord, saveBootstrapState } from "./state.js";
 import { isSnapshotAlreadyLoaded } from "./chainstate.js";
 import type {
   BootstrapPersistentState,
   BootstrapPaths,
+  LoadedBootstrapState,
 } from "./types.js";
 import type {
   RpcLoadTxOutSetResult,
@@ -30,7 +31,7 @@ export class AssumeUtxoBootstrapController {
   readonly #progress: ManagedProgressController;
   readonly #snapshot: SnapshotMetadata;
   readonly #fetchImpl?: typeof fetch;
-  #statePromise: Promise<BootstrapPersistentState> | null = null;
+  #stateRecordPromise: Promise<LoadedBootstrapState> | null = null;
 
   constructor(options: {
     rpc: BitcoinRpcClient;
@@ -54,7 +55,11 @@ export class AssumeUtxoBootstrapController {
     return this.#snapshot;
   }
 
-  async ensureReady(indexedTip: ClientTip | null, expectedChain: "main" | "regtest"): Promise<void> {
+  async ensureReady(
+    indexedTip: ClientTip | null,
+    expectedChain: "main" | "regtest",
+    options: { signal?: AbortSignal } = {},
+  ): Promise<void> {
     if (expectedChain !== "main") {
       await this.#progress.setPhase("paused", {
         ...createBootstrapProgressForTesting("paused", this.#snapshot),
@@ -72,7 +77,7 @@ export class AssumeUtxoBootstrapController {
       return;
     }
 
-    const state = await this.#loadState();
+    const { state, snapshotIdentity } = await this.#loadStateRecord();
 
     if (state.loadTxOutSetComplete && await isSnapshotAlreadyLoaded(this.#rpc, this.#snapshot, state)) {
       await this.#progress.setPhase("bitcoin_sync", {
@@ -92,10 +97,14 @@ export class AssumeUtxoBootstrapController {
       paths: this.#paths,
       progress: this.#progress,
       state,
+      signal: options.signal,
+      snapshotIdentity,
     });
 
     if (!await isSnapshotAlreadyLoaded(this.#rpc, this.#snapshot, state)) {
-      await waitForHeaders(this.#rpc, this.#snapshot, this.#progress);
+      await waitForHeaders(this.#rpc, this.#snapshot, this.#progress, {
+        signal: options.signal,
+      });
       await this.#progress.setPhase("load_snapshot", {
         downloadedBytes: this.#snapshot.sizeBytes,
         totalBytes: this.#snapshot.sizeBytes,
@@ -127,6 +136,9 @@ export class AssumeUtxoBootstrapController {
     metadataVersion: number;
     snapshot: SnapshotMetadata;
     phase: BootstrapPhase;
+    integrityVersion: number;
+    chunkSizeBytes: number;
+    verifiedChunkCount: number;
     downloadedBytes: number;
     validated: boolean;
     loadTxOutSetComplete: boolean;
@@ -139,7 +151,11 @@ export class AssumeUtxoBootstrapController {
   }
 
   async #loadState(): Promise<BootstrapPersistentState> {
-    this.#statePromise ??= loadBootstrapState(this.#paths, this.#snapshot);
-    return this.#statePromise;
+    return (await this.#loadStateRecord()).state;
+  }
+
+  async #loadStateRecord(): Promise<LoadedBootstrapState> {
+    this.#stateRecordPromise ??= loadBootstrapStateRecord(this.#paths, this.#snapshot);
+    return this.#stateRecordPromise;
   }
 }
