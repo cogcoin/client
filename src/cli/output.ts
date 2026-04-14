@@ -374,6 +374,9 @@ export function classifyCliError(error: unknown): {
     || message === "wallet_export_overwrite_declined"
     || message === "wallet_prompt_value_required"
     || message === "wallet_archive_passphrase_mismatch"
+    || message === "reset_wallet_choice_invalid"
+    || message === "reset_wallet_passphrase_required"
+    || message === "reset_wallet_access_failed"
   ) {
     return { exitCode: 2, errorCode: message, message };
   }
@@ -384,6 +387,15 @@ export function classifyCliError(error: unknown): {
 
   if (message === "wallet_import_archive_not_found") {
     return { exitCode: 3, errorCode: message, message };
+  }
+
+  if (
+    message === "reset_process_shutdown_failed"
+    || message === "reset_data_root_delete_failed"
+    || message === "reset_secret_cleanup_failed"
+    || message === "reset_snapshot_preserve_failed"
+  ) {
+    return { exitCode: 5, errorCode: message, message };
   }
 
   if (isBlockedError(message)) {
@@ -460,11 +472,83 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode === "reset_wallet_choice_invalid") {
+    return {
+      what: "Wallet reset choice is invalid.",
+      why: "This reset path accepts only Enter for the default entropy-retaining reset, `skip`, or `delete wallet`.",
+      next: "Rerun `cogcoin reset` and enter one of the accepted wallet reset choices.",
+    };
+  }
+
+  if (errorCode === "reset_wallet_passphrase_required") {
+    return {
+      what: "Wallet-state passphrase is required.",
+      why: "The current wallet is passphrase-wrapped, so the entropy-retaining reset path needs that passphrase before it can rebuild a fresh local wallet from the retained mnemonic.",
+      next: "Rerun `cogcoin reset` and enter the wallet-state passphrase, or choose `skip` or `delete wallet` instead.",
+    };
+  }
+
+  if (errorCode === "reset_wallet_access_failed") {
+    return {
+      what: "Wallet state could not be opened for entropy-retaining reset.",
+      why: "The wallet-state passphrase was not accepted, or the passphrase-wrapped wallet state could not be decrypted cleanly.",
+      next: "Rerun `cogcoin reset`, enter the correct wallet-state passphrase, or choose `skip` or `delete wallet` instead.",
+    };
+  }
+
+  if (errorCode === "reset_wallet_entropy_reset_unavailable") {
+    return {
+      what: "Entropy-retaining wallet reset is unavailable.",
+      why: "Cogcoin found wallet state, but it could not safely load and reconstruct it into a fresh wallet while preserving only the mnemonic-derived continuity data.",
+      next: "Rerun `cogcoin reset` and choose `skip` to keep the wallet unchanged, or type `delete wallet` to erase it fully.",
+    };
+  }
+
+  if (errorCode === "reset_process_shutdown_failed") {
+    return {
+      what: "Reset could not stop all tracked managed processes.",
+      why: "At least one Cogcoin-managed background process remained alive after the reset shutdown attempt, so the filesystem reset was aborted before deleting local state.",
+      next: "Stop the remaining managed process and rerun `cogcoin reset`.",
+    };
+  }
+
+  if (errorCode === "reset_data_root_delete_failed") {
+    return {
+      what: "Reset could not remove the local Cogcoin data roots.",
+      why: "The reset flow reached the destructive phase, but at least one local Cogcoin data root could not be deleted completely.",
+      next: "Check permissions and any open file handles under the Cogcoin data roots, then rerun `cogcoin reset`.",
+    };
+  }
+
+  if (errorCode === "reset_secret_cleanup_failed") {
+    return {
+      what: "Reset finished the filesystem wipe but could not fully clean up wallet secret-provider entries.",
+      why: "The local Cogcoin files were already removed or rewritten, but at least one discoverable OS secret-store entry could not be deleted cleanly.",
+      next: "Remove the remaining Cogcoin wallet secret from the local secret store, then rerun `cogcoin status` to confirm the new state.",
+    };
+  }
+
+  if (errorCode === "reset_snapshot_preserve_failed") {
+    return {
+      what: "Reset could not preserve the downloaded 910000 UTXO snapshot.",
+      why: "You asked reset to keep the valid snapshot, but staging or restoring that large bootstrap file did not complete successfully.",
+      next: "Rerun `cogcoin reset` and choose to delete the snapshot, or restore the snapshot file manually before retrying.",
+    };
+  }
+
   if (errorCode === "wallet_uninitialized") {
     return {
       what: "Wallet is not initialized.",
       why: "There is no local wallet root yet for this command to use.",
       next: "Run `cogcoin init` first.",
+    };
+  }
+
+  if (errorCode === "wallet_repair_indexer_reset_requires_yes") {
+    return {
+      what: "Repair needs permission to reset the local indexer database.",
+      why: "The local indexer database could not be opened as a healthy Cogcoin store, so repair would need to delete and rebuild it before continuing.",
+      next: "Rerun `cogcoin repair --yes` to allow repair to recreate the local indexer database.",
     };
   }
 
@@ -965,6 +1049,8 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
     case "unlock":
     case "wallet-unlock":
       return "cogcoin unlock";
+    case "reset":
+      return "cogcoin reset";
     case "repair":
       return "cogcoin repair";
     case "wallet-lock":
@@ -1135,6 +1221,8 @@ export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string |
     case "unlock":
     case "wallet-unlock":
       return "cogcoin/unlock/v1";
+    case "reset":
+      return "cogcoin/reset/v1";
     case "wallet-export":
       return "cogcoin/wallet-export/v1";
     case "wallet-import":
@@ -1224,6 +1312,7 @@ export function resolvePreviewJsonSchema(parsed: ParsedCliArgs): string | null {
 
   switch (parsed.command) {
     case "wallet-lock":
+    case "reset":
     case "repair":
     case "anchor":
     case "domain-anchor":

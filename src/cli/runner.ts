@@ -97,6 +97,7 @@ export async function runCli(
 
     if (
       parsed.command === "init"
+      || parsed.command === "reset"
       || parsed.command === "repair"
       || parsed.command === "unlock"
       || parsed.command === "wallet-export"

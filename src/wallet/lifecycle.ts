@@ -68,6 +68,7 @@ export interface WalletPrompter {
   readonly isInteractive: boolean;
   writeLine(message: string): void;
   prompt(message: string): Promise<string>;
+  promptHidden?(message: string): Promise<string>;
   clearSensitiveDisplay?(scope: "mnemonic-reveal"): void | Promise<void>;
 }
 
@@ -121,6 +122,13 @@ export interface WalletRepairResult {
   miningResumeError: string | null;
   note: string | null;
 }
+
+export {
+  previewResetWallet,
+  resetWallet,
+  type WalletResetPreview,
+  type WalletResetResult,
+} from "./reset.js";
 
 interface WalletLifecycleRpcClient {
   getDescriptorInfo(descriptor: string): Promise<{

@@ -11,6 +11,7 @@ Commands:
   status --output json    Emit the stable v1 machine-readable status envelope
   init                    Initialize a new local wallet root
   init --output json      Emit the stable v1 machine-readable init result envelope
+  reset                   Factory-reset local Cogcoin state with interactive retention prompts
   repair                  Recover bounded wallet/indexer/runtime state
   unlock                  Clear an explicit wallet lock and unlock for a limited duration
   wallet address          Alias for address
@@ -827,6 +828,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
       if (
         token === "init"
+        || token === "reset"
         || token === "repair"
         || token === "sync"
         || token === "status"
@@ -862,6 +864,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   if (
     (command === "status"
       || command === "init"
+      || command === "reset"
       || command === "unlock"
       || command === "wallet-init"
       || command === "wallet-lock"

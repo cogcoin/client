@@ -12,6 +12,7 @@ import type {
   WalletExportResult,
   WalletImportResult,
   WalletRepairResult,
+  WalletResetResult,
   WalletUnlockResult,
 } from "../wallet/lifecycle.js";
 import {
@@ -230,6 +231,36 @@ export function buildAnchorMutationData(
       domainName: result.domainName,
       dedicatedIndex: result.dedicatedIndex,
       foundingMessageIncluded: options.foundingMessageText !== null,
+    },
+  });
+}
+
+export function buildResetMutationData(result: WalletResetResult) {
+  return buildOperationData({
+    kind: "reset",
+    state: {
+      dataRoot: result.dataRoot,
+      factoryResetReady: result.factoryResetReady,
+      walletAction: result.walletAction,
+      walletOldRootId: result.walletOldRootId,
+      walletNewRootId: result.walletNewRootId,
+      bootstrapSnapshot: result.bootstrapSnapshot,
+      stoppedProcesses: result.stoppedProcesses,
+      secretCleanupStatus: result.secretCleanupStatus,
+    },
+    operation: {
+      dataRoot: result.dataRoot,
+      factoryResetReady: result.factoryResetReady,
+      stoppedProcesses: result.stoppedProcesses,
+      secretCleanupStatus: result.secretCleanupStatus,
+      deletedSecretRefs: result.deletedSecretRefs,
+      failedSecretRefs: result.failedSecretRefs,
+      preservedSecretRefs: result.preservedSecretRefs,
+      walletAction: result.walletAction,
+      walletOldRootId: result.walletOldRootId,
+      walletNewRootId: result.walletNewRootId,
+      bootstrapSnapshot: result.bootstrapSnapshot,
+      removedPaths: result.removedPaths,
     },
   });
 }

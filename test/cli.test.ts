@@ -4947,6 +4947,28 @@ test("secure-admin json failures map to stable schemas and exit codes", async ()
   assert.match(unlockEnvelope.error.message, /Wallet is locked/);
   assert.ok(unlockEnvelope.nextSteps.some((step) => step.includes("cogcoin unlock")));
 
+  const repairBlockedStdout = new MemoryStream();
+  const repairBlockedCode = await runCli(["repair", "--output", "json"], {
+    stdout: repairBlockedStdout,
+    stderr: new MemoryStream(),
+    walletSecretProvider: {} as never,
+    repairWallet: async () => {
+      throw new Error("wallet_repair_indexer_reset_requires_yes");
+    },
+  });
+  assert.equal(repairBlockedCode, 4);
+  const repairBlockedEnvelope = parseJsonEnvelope(repairBlockedStdout) as {
+    schema: string;
+    ok: boolean;
+    error: { code: string; message: string };
+    nextSteps: string[];
+  };
+  assert.equal(repairBlockedEnvelope.schema, "cogcoin/repair/v1");
+  assert.equal(repairBlockedEnvelope.ok, false);
+  assert.equal(repairBlockedEnvelope.error.code, "wallet_repair_indexer_reset_requires_yes");
+  assert.match(repairBlockedEnvelope.error.message, /Repair needs permission to reset the local indexer database/);
+  assert.ok(repairBlockedEnvelope.nextSteps.some((step) => step.includes("cogcoin repair --yes")));
+
   const exportStdout = new MemoryStream();
   const exportCode = await runCli(["wallet", "export", "/tmp/archive.cogwallet", "--output", "json"], {
     stdout: exportStdout,
@@ -5679,6 +5701,24 @@ test("wallet mutation commands pass through --yes and blocked errors use shared 
   assert.match(stderr.toString(), /What happened: Wallet is locked\./);
   assert.match(stderr.toString(), /Why: This command needs access to the unlocked local wallet state/);
   assert.match(stderr.toString(), /Next: Run `cogcoin unlock --for 15m` and retry\./);
+});
+
+test("repair indexer reset requirements are presented clearly in text mode", async () => {
+  const stderr = new MemoryStream();
+
+  const code = await runCli(["repair"], {
+    stdout: new MemoryStream(),
+    stderr,
+    walletSecretProvider: {} as never,
+    repairWallet: async () => {
+      throw new Error("wallet_repair_indexer_reset_requires_yes");
+    },
+  });
+
+  assert.equal(code, 4);
+  assert.match(stderr.toString(), /What happened: Repair needs permission to reset the local indexer database\./);
+  assert.match(stderr.toString(), /Why: The local indexer database could not be opened as a healthy Cogcoin store/);
+  assert.match(stderr.toString(), /Next: Rerun `cogcoin repair --yes` to allow repair to recreate the local indexer database\./);
 });
 
 test("show missing domain returns not-found json with exit code 3", async () => {

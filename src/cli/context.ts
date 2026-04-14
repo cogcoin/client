@@ -12,7 +12,9 @@ import {
   importWallet,
   initializeWallet,
   lockWallet,
+  previewResetWallet,
   repairWallet,
+  resetWallet,
   unlockWallet,
 } from "../wallet/lifecycle.js";
 import { openWalletReadContext } from "../wallet/read/index.js";
@@ -74,6 +76,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     inspectPassiveClientStatus: overrides.inspectPassiveClientStatus ?? inspectPassiveClientStatus,
     openWalletReadContext: overrides.openWalletReadContext ?? openWalletReadContext,
     initializeWallet: overrides.initializeWallet ?? initializeWallet,
+    previewResetWallet: overrides.previewResetWallet ?? previewResetWallet,
     exportWallet: overrides.exportWallet ?? exportWallet,
     importWallet: overrides.importWallet ?? importWallet,
     unlockWallet: overrides.unlockWallet ?? unlockWallet,
@@ -109,6 +112,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     readMiningLog: overrides.readMiningLog ?? readMiningLog,
     followMiningLog: overrides.followMiningLog ?? followMiningLog,
     repairWallet: overrides.repairWallet ?? repairWallet,
+    resetWallet: overrides.resetWallet ?? resetWallet,
     walletSecretProvider: overrides.walletSecretProvider ?? createLazyDefaultWalletSecretProvider(),
     createPrompter: overrides.createPrompter ?? (() => createTerminalPrompter(
       overrides.stdin ?? process.stdin,

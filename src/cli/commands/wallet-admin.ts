@@ -1,6 +1,7 @@
 import { parseUnlockDurationToMs } from "../../wallet/lifecycle.js";
 import {
   buildInitMutationData,
+  buildResetMutationData,
   buildUnlockMutationData,
   buildRepairMutationData,
   buildWalletExportMutationData,
@@ -8,6 +9,7 @@ import {
   buildWalletLockMutationData,
 } from "../mutation-json.js";
 import {
+  buildResetPreviewData,
   buildRepairPreviewData,
   buildWalletLockPreviewData,
 } from "../preview-json.js";
@@ -28,7 +30,7 @@ import {
   getInitNextSteps,
 } from "../workflow-hints.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
-import type { WalletRepairResult } from "../../wallet/lifecycle.js";
+import type { WalletRepairResult, WalletResetResult } from "../../wallet/lifecycle.js";
 
 function createCommandPrompter(
   parsed: ParsedCliArgs,
@@ -42,6 +44,12 @@ function createCommandPrompter(
 function getRepairWarnings(result: WalletRepairResult): string[] {
   return result.miningResumeAction === "resume-failed"
     ? [`Wallet repair succeeded, but background mining did not resume automatically: ${result.miningResumeError ?? "unknown error"}`]
+    : [];
+}
+
+function getResetWarnings(result: WalletResetResult): string[] {
+  return result.secretCleanupStatus === "unknown"
+    ? ["Some existing Cogcoin secret-provider entries could not be discovered from the remaining local wallet artifacts and may need manual cleanup."]
     : [];
 }
 
@@ -104,6 +112,64 @@ export async function runWalletAdminCommand(
       writeLine(context.stdout, `Wallet unlocked.`);
       writeLine(context.stdout, `Wallet root: ${result.state.walletRootId}`);
       writeLine(context.stdout, `Unlocked until: ${new Date(result.unlockUntilUnixMs).toISOString()}`);
+      return 0;
+    }
+
+    if (parsed.command === "reset") {
+      if (parsed.outputMode === "preview-json") {
+        const preview = await context.previewResetWallet({
+          dataDir,
+          provider,
+        });
+        writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
+          resolvePreviewJsonSchema(parsed)!,
+          describeCanonicalCommand(parsed),
+          "planned",
+          buildResetPreviewData(preview),
+        ));
+        return 0;
+      }
+
+      const prompter = createCommandPrompter(parsed, context);
+      const result = await context.resetWallet({
+        dataDir,
+        provider,
+        prompter,
+      });
+
+      if (parsed.outputMode === "json") {
+        writeJsonValue(context.stdout, createMutationSuccessEnvelope(
+          resolveStableMutationJsonSchema(parsed)!,
+          describeCanonicalCommand(parsed),
+          "completed",
+          buildResetMutationData(result),
+          {
+            warnings: getResetWarnings(result),
+            nextSteps: result.walletAction === "deleted" || result.walletAction === "not-present"
+              ? ["Run `cogcoin init` to create a new wallet."]
+              : ["Run `cogcoin status` to inspect the reset local state."],
+          },
+        ));
+        return 0;
+      }
+
+      writeLine(context.stdout, "Cogcoin reset completed.");
+      writeLine(context.stdout, `Data root: ${result.dataRoot}`);
+      writeLine(context.stdout, `Wallet action: ${result.walletAction}`);
+      writeLine(context.stdout, `Snapshot: ${result.bootstrapSnapshot.status}`);
+      writeLine(context.stdout, `Secret cleanup: ${result.secretCleanupStatus}`);
+      writeLine(context.stdout, `Managed bitcoind processes stopped: ${result.stoppedProcesses.managedBitcoind}`);
+      writeLine(context.stdout, `Indexer daemons stopped: ${result.stoppedProcesses.indexerDaemon}`);
+      writeLine(context.stdout, `Background miners stopped: ${result.stoppedProcesses.backgroundMining}`);
+      if (result.walletOldRootId !== null) {
+        writeLine(context.stdout, `Previous wallet root: ${result.walletOldRootId}`);
+      }
+      if (result.walletNewRootId !== null) {
+        writeLine(context.stdout, `New wallet root: ${result.walletNewRootId}`);
+      }
+      for (const warning of getResetWarnings(result)) {
+        writeLine(context.stdout, `Warning: ${warning}`);
+      }
       return 0;
     }
 

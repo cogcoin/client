@@ -9,26 +9,58 @@ export function createTerminalPrompter(
   input: NodeJS.ReadStream | ReadableLike,
   output: NodeJS.WriteStream | WritableLike,
 ): WalletPrompter {
+  const ensureReadableInput = (): NodeJS.ReadStream => {
+    if (!("on" in input) || !("off" in input)) {
+      throw new Error("wallet_prompt_input_unavailable");
+    }
+
+    return input as NodeJS.ReadStream;
+  };
+
+  const ensureWritableOutput = (): NodeJS.WriteStream => output as NodeJS.WriteStream;
+
+  const ask = async (
+    message: string,
+    questionOutput: NodeJS.WriteStream,
+  ): Promise<string> => {
+    const readline = createInterface({
+      input: ensureReadableInput(),
+      output: questionOutput,
+    });
+
+    try {
+      return await readline.question(message);
+    } finally {
+      readline.close();
+    }
+  };
+
   return {
     isInteractive: Boolean(input.isTTY && output.isTTY),
     writeLine(message: string): void {
       output.write(`${message}\n`);
     },
     async prompt(message: string): Promise<string> {
-      if (!("on" in input) || !("off" in input)) {
-        throw new Error("wallet_prompt_input_unavailable");
-      }
+      return await ask(message, ensureWritableOutput());
+    },
+    async promptHidden(message: string): Promise<string> {
+      let promptShown = false;
+      const hiddenOutput = {
+        isTTY: output.isTTY,
+        write(chunk: string): void {
+          if (!promptShown) {
+            promptShown = true;
+            output.write(chunk);
+            return;
+          }
 
-      const readline = createInterface({
-        input: input as NodeJS.ReadStream,
-        output: output as NodeJS.WriteStream,
-      });
+          if (chunk === "\n" || chunk === "\r\n") {
+            output.write(chunk);
+          }
+        },
+      } as NodeJS.WriteStream;
 
-      try {
-        return await readline.question(message);
-      } finally {
-        readline.close();
-      }
+      return await ask(message, hiddenOutput);
     },
     clearSensitiveDisplay(scope: "mnemonic-reveal"): void {
       if (!input.isTTY || !output.isTTY) {

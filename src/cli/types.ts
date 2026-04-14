@@ -8,7 +8,9 @@ import type {
   importWallet,
   initializeWallet,
   lockWallet,
+  previewResetWallet,
   repairWallet,
+  resetWallet,
   unlockWallet,
 } from "../wallet/lifecycle.js";
 import type { openWalletReadContext } from "../wallet/read/index.js";
@@ -52,6 +54,7 @@ export type ProgressOutput = "auto" | "tty" | "none";
 export type OutputMode = "text" | "json" | "preview-json";
 export type CommandName =
   | "init"
+  | "reset"
   | "repair"
   | "sync"
   | "status"
@@ -207,6 +210,7 @@ export interface CliRunnerContext {
   inspectPassiveClientStatus?: typeof inspectPassiveClientStatus;
   openWalletReadContext?: typeof openWalletReadContext;
   initializeWallet?: typeof initializeWallet;
+  previewResetWallet?: typeof previewResetWallet;
   exportWallet?: typeof exportWallet;
   importWallet?: typeof importWallet;
   unlockWallet?: typeof unlockWallet;
@@ -242,6 +246,7 @@ export interface CliRunnerContext {
   readMiningLog?: typeof readMiningLog;
   followMiningLog?: typeof followMiningLog;
   repairWallet?: typeof repairWallet;
+  resetWallet?: typeof resetWallet;
   walletSecretProvider?: WalletSecretProvider;
   createPrompter?: () => WalletPrompter;
   ensureDirectory?: (path: string) => Promise<void>;

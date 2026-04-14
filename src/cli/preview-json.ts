@@ -7,7 +7,7 @@ import type {
   RegisterDomainResult,
   ReputationMutationResult,
 } from "../wallet/tx/index.js";
-import type { WalletRepairResult } from "../wallet/lifecycle.js";
+import type { WalletRepairResult, WalletResetPreview } from "../wallet/lifecycle.js";
 import type { MiningControlPlaneView, MiningRuntimeStatusV1 } from "../wallet/mining/index.js";
 import {
   buildCogResolvedJson,
@@ -93,6 +93,21 @@ export function buildStateChangePreviewData(options: {
       after: options.after ?? null,
     },
     state: options.state,
+  };
+}
+
+export function buildOperationPreviewData(options: {
+  kind: string;
+  state?: Record<string, unknown> | null;
+  operation: Record<string, unknown>;
+}) {
+  return {
+    resultType: "operation" as const,
+    operation: {
+      kind: options.kind,
+      ...options.operation,
+    },
+    state: options.state ?? null,
   };
 }
 
@@ -315,6 +330,28 @@ export function buildWalletLockPreviewData(result: { walletRootId: string | null
     state: {
       walletRootId: result.walletRootId,
       locked: true,
+    },
+  });
+}
+
+export function buildResetPreviewData(result: WalletResetPreview) {
+  return buildOperationPreviewData({
+    kind: "reset",
+    state: {
+      dataRoot: result.dataRoot,
+      trackedProcessKinds: result.trackedProcessKinds,
+      willDeleteOsSecrets: result.willDeleteOsSecrets,
+      bootstrapSnapshot: result.bootstrapSnapshot,
+      walletPrompt: result.walletPrompt,
+    },
+    operation: {
+      dataRoot: result.dataRoot,
+      confirmationPhrase: result.confirmationPhrase,
+      walletPrompt: result.walletPrompt,
+      bootstrapSnapshot: result.bootstrapSnapshot,
+      trackedProcessKinds: result.trackedProcessKinds,
+      willDeleteOsSecrets: result.willDeleteOsSecrets,
+      removedPaths: result.removedPaths,
     },
   });
 }
