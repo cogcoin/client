@@ -25,10 +25,12 @@ import {
 } from "../src/bitcoind/types.js";
 import { inspectPassiveClientStatus } from "../src/passive-status.js";
 import { openSqliteStore } from "../src/sqlite/index.js";
+import { acquireFileLock } from "../src/wallet/fs/lock.js";
 import type { MiningControlPlaneView } from "../src/wallet/mining/index.js";
 import { createWalletReadModel } from "../src/wallet/read/index.js";
 import type { WalletReadContext } from "../src/wallet/read/index.js";
 import type { WalletLockView } from "../src/wallet/read/index.js";
+import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import type { WalletStateV1 } from "../src/wallet/types.js";
 import { createTempDatabasePath, loadHistoryVector, materializeBlock } from "./helpers.js";
 import { createTempDirectory, removeTempDirectory, replayBlocks } from "./bitcoind-helpers.js";
@@ -58,6 +60,54 @@ class FakeSignalSource extends EventEmitter {
   override off(event: "SIGINT" | "SIGTERM", listener: () => void): this {
     return super.off(event, listener);
   }
+}
+
+function createTempWalletPaths(root: string) {
+  return resolveWalletRuntimePathsForTesting({
+    platform: "linux",
+    homeDirectory: root,
+    env: {
+      XDG_DATA_HOME: join(root, "data"),
+      XDG_CONFIG_HOME: join(root, "config"),
+      XDG_STATE_HOME: join(root, "state"),
+      XDG_RUNTIME_DIR: join(root, "runtime"),
+    },
+  });
+}
+
+async function waitForMissingPath(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+
+  while (Date.now() < deadline) {
+    try {
+      await stat(path);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        return;
+      }
+
+      throw error;
+    }
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 25);
+    });
+  }
+
+  throw new Error(`timed_out_waiting_for_missing_path:${path}`);
+}
+
+function createInteractivePrompter() {
+  return {
+    isInteractive: true,
+    writeLine() {},
+    async prompt() {
+      return "";
+    },
+    async promptHidden() {
+      return "";
+    },
+  };
 }
 
 function parseJsonEnvelope(stream: MemoryStream): unknown {
@@ -6902,6 +6952,89 @@ test("sync shuts down the managed bitcoind client on SIGTERM", async () => {
   assert.equal(code, 0);
   assert.equal(closed, true);
   assert.match(stderr.toString(), /Stopping managed Cogcoin client/);
+});
+
+test("restore clears wallet-control.lock on SIGINT", async () => {
+  const root = createTempDirectory("cogcoin-cli-restore-lock");
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream();
+  const signals = new FakeSignalSource();
+  const runtimePaths = createTempWalletPaths(root);
+  let releaseLockReady!: () => void;
+  const lockReady = new Promise<void>((resolve) => {
+    releaseLockReady = resolve;
+  });
+
+  try {
+    const restorePromise = runCli(["restore"], {
+      stdout,
+      stderr,
+      signalSource: signals,
+      forceExit: () => undefined,
+      walletSecretProvider: {} as never,
+      createPrompter: createInteractivePrompter,
+      resolveWalletRuntimePaths: () => runtimePaths,
+      resolveDefaultBitcoindDataDir: () => runtimePaths.bitcoinDataDir,
+      restoreWalletFromMnemonic: async () => {
+        await acquireFileLock(runtimePaths.walletControlLockPath, {
+          purpose: "wallet-restore",
+        });
+        releaseLockReady();
+        return await new Promise<never>(() => {});
+      },
+    });
+
+    await lockReady;
+    signals.emit("SIGINT");
+
+    const code = await restorePromise;
+    assert.equal(code, 130);
+    await waitForMissingPath(runtimePaths.walletControlLockPath);
+  } finally {
+    await removeTempDirectory(root);
+  }
+});
+
+test("register clears wallet-control.lock on SIGTERM", async () => {
+  const root = createTempDirectory("cogcoin-cli-register-lock");
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream();
+  const signals = new FakeSignalSource();
+  const runtimePaths = createTempWalletPaths(root);
+  let releaseLockReady!: () => void;
+  const lockReady = new Promise<void>((resolve) => {
+    releaseLockReady = resolve;
+  });
+
+  try {
+    const registerPromise = runCli(["register", "weatherbot"], {
+      stdout,
+      stderr,
+      signalSource: signals,
+      forceExit: () => undefined,
+      walletSecretProvider: {} as never,
+      createPrompter: createInteractivePrompter,
+      resolveWalletRuntimePaths: () => runtimePaths,
+      resolveDefaultBitcoindDataDir: () => runtimePaths.bitcoinDataDir,
+      resolveDefaultClientDatabasePath: () => join(root, "client.sqlite"),
+      registerDomain: async () => {
+        await acquireFileLock(runtimePaths.walletControlLockPath, {
+          purpose: "wallet-mutation",
+        });
+        releaseLockReady();
+        return await new Promise<never>(() => {});
+      },
+    });
+
+    await lockReady;
+    signals.emit("SIGTERM");
+
+    const code = await registerPromise;
+    assert.equal(code, 130);
+    await waitForMissingPath(runtimePaths.walletControlLockPath);
+  } finally {
+    await removeTempDirectory(root);
+  }
 });
 
 test("follow stays active until signal and shuts down cleanly", async () => {

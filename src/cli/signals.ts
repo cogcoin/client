@@ -6,6 +6,7 @@ import type {
   WritableLike,
 } from "./types.js";
 import { writeLine } from "./io.js";
+import { clearLockIfOwnedByCurrentProcess } from "../wallet/fs/lock.js";
 
 export function createStopSignalWatcher(
   signalSource: SignalSource,
@@ -63,6 +64,64 @@ export function createStopSignalWatcher(
   return {
     cleanup,
     isStopping: () => closing,
+    promise,
+  };
+}
+
+export function createOwnedLockCleanupSignalWatcher(
+  signalSource: SignalSource,
+  forceExit: (code: number) => never | void,
+  lockPaths: readonly string[],
+): StopSignalWatcher {
+  let stopping = false;
+  let resolved = false;
+  let onSignal = (): void => {};
+
+  const cleanup = (): void => {
+    signalSource.off("SIGINT", onSignal);
+    signalSource.off("SIGTERM", onSignal);
+  };
+
+  const promise = new Promise<number>((resolve) => {
+    const settle = (code: number): void => {
+      if (resolved) {
+        return;
+      }
+
+      resolved = true;
+      cleanup();
+      resolve(code);
+    };
+
+    const releaseOwnedLocks = async (): Promise<void> => {
+      await Promise.allSettled(
+        [...new Set(lockPaths)].map(async (lockPath) => {
+          await clearLockIfOwnedByCurrentProcess(lockPath);
+        }),
+      );
+    };
+
+    onSignal = (): void => {
+      if (stopping) {
+        settle(130);
+        forceExit(130);
+        return;
+      }
+
+      stopping = true;
+      settle(130);
+      void releaseOwnedLocks().finally(() => {
+        forceExit(130);
+      });
+    };
+  });
+
+  signalSource.on("SIGINT", onSignal);
+  signalSource.on("SIGTERM", onSignal);
+
+  return {
+    cleanup,
+    isStopping: () => stopping,
     promise,
   };
 }

@@ -18,6 +18,7 @@ import {
   restoreWalletFromMnemonic,
   unlockWallet,
 } from "../wallet/lifecycle.js";
+import { resolveWalletRuntimePathsForTesting } from "../wallet/runtime.js";
 import { openWalletReadContext } from "../wallet/read/index.js";
 import {
   disableMiningHooks,
@@ -126,5 +127,6 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     readPackageVersion: overrides.readPackageVersion ?? readPackageVersionFromDisk,
     resolveDefaultBitcoindDataDir: overrides.resolveDefaultBitcoindDataDir ?? resolveDefaultBitcoindDataDirForTesting,
     resolveDefaultClientDatabasePath: overrides.resolveDefaultClientDatabasePath ?? resolveDefaultClientDatabasePathForTesting,
+    resolveWalletRuntimePaths: overrides.resolveWalletRuntimePaths ?? resolveWalletRuntimePathsForTesting,
   };
 }

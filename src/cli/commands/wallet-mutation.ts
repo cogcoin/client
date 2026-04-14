@@ -69,6 +69,10 @@ import {
   getAnchorNextSteps,
   getRegisterNextSteps,
 } from "../workflow-hints.js";
+import {
+  createOwnedLockCleanupSignalWatcher,
+  waitForCompletionOrStop,
+} from "../signals.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 
 function createFieldValueSource(parsed: ParsedCliArgs): FieldValueInputSource {
@@ -104,48 +108,57 @@ export async function runWalletMutationCommand(
   parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
 ): Promise<number> {
+  const runtimePaths = context.resolveWalletRuntimePaths();
+  const stopWatcher = createOwnedLockCleanupSignalWatcher(context.signalSource, context.forceExit, [
+    runtimePaths.walletControlLockPath,
+    runtimePaths.miningControlLockPath,
+    runtimePaths.bitcoindLockPath,
+    runtimePaths.indexerDaemonLockPath,
+  ]);
+
   try {
-    if (!isWalletMutationCommand(parsed.command)) {
-      writeLine(context.stderr, `wallet mutation command not implemented: ${parsed.command}`);
-      return 1;
-    }
+    const outcome = await waitForCompletionOrStop((async () => {
+      if (!isWalletMutationCommand(parsed.command)) {
+        writeLine(context.stderr, `wallet mutation command not implemented: ${parsed.command}`);
+        return 1;
+      }
 
-    const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-    const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
-    const prompter = createCommandPrompter(parsed, context);
+      const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+      const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
+      const prompter = createCommandPrompter(parsed, context);
 
-    if (isAnchorMutationCommand(parsed.command)) {
-      const result = await context.anchorDomain({
-        domainName: parsed.args[0]!,
-        foundingMessageText: parsed.anchorMessage,
-        dataDir,
-        databasePath: dbPath,
-        provider: context.walletSecretProvider,
-        prompter,
-      });
-      const nextSteps = getAnchorNextSteps(result.domainName);
-      return writeMutationCommandSuccess(parsed, context, {
-        data: buildAnchorMutationData(result, {
+      if (isAnchorMutationCommand(parsed.command)) {
+        const result = await context.anchorDomain({
+          domainName: parsed.args[0]!,
           foundingMessageText: parsed.anchorMessage,
-        }),
-        previewData: buildAnchorPreviewData(result, {
-          foundingMessageText: parsed.anchorMessage,
-        }),
-        reusedExisting: result.reusedExisting,
-        reusedMessage: "The existing anchor family was reconciled instead of creating a duplicate.",
-        nextSteps: workflowMutationNextSteps(nextSteps),
-        text: {
-          heading: "Anchor family submitted.",
-          fields: [
-            { label: "Domain", value: result.domainName },
-            { label: "Dedicated index", value: String(result.dedicatedIndex) },
-            { label: "Status", value: result.status },
-            { label: "Tx1", value: result.tx1Txid },
-            { label: "Tx2", value: result.tx2Txid },
-          ],
-        },
-      });
-    }
+          dataDir,
+          databasePath: dbPath,
+          provider: context.walletSecretProvider,
+          prompter,
+        });
+        const nextSteps = getAnchorNextSteps(result.domainName);
+        return writeMutationCommandSuccess(parsed, context, {
+          data: buildAnchorMutationData(result, {
+            foundingMessageText: parsed.anchorMessage,
+          }),
+          previewData: buildAnchorPreviewData(result, {
+            foundingMessageText: parsed.anchorMessage,
+          }),
+          reusedExisting: result.reusedExisting,
+          reusedMessage: "The existing anchor family was reconciled instead of creating a duplicate.",
+          nextSteps: workflowMutationNextSteps(nextSteps),
+          text: {
+            heading: "Anchor family submitted.",
+            fields: [
+              { label: "Domain", value: result.domainName },
+              { label: "Dedicated index", value: String(result.dedicatedIndex) },
+              { label: "Status", value: result.status },
+              { label: "Tx1", value: result.tx1Txid },
+              { label: "Tx2", value: result.tx2Txid },
+            ],
+          },
+        });
+      }
 
     if (isRegisterMutationCommand(parsed.command)) {
       const result = await context.registerDomain({
@@ -760,8 +773,15 @@ export async function runWalletMutationCommand(
       });
     }
 
-    writeLine(context.stderr, `wallet mutation command not implemented: ${parsed.command}`);
-    return 1;
+      writeLine(context.stderr, `wallet mutation command not implemented: ${parsed.command}`);
+      return 1;
+    })(), stopWatcher);
+
+    if (outcome.kind === "stopped") {
+      return outcome.code;
+    }
+
+    return outcome.value;
   } catch (error) {
     return writeHandledCliError({
       parsed,
@@ -769,5 +789,7 @@ export async function runWalletMutationCommand(
       stderr: context.stderr,
       error,
     });
+  } finally {
+    stopWatcher.cleanup();
   }
 }

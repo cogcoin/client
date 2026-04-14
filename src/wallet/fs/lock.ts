@@ -42,6 +42,19 @@ export async function readLockMetadata(
   }
 }
 
+export async function clearLockIfOwnedByCurrentProcess(
+  lockPath: string,
+): Promise<boolean> {
+  const metadata = await readLockMetadata(lockPath);
+
+  if (metadata === null || metadata.processId !== (process.pid ?? null)) {
+    return false;
+  }
+
+  await rm(lockPath, { force: true });
+  return true;
+}
+
 export async function acquireFileLock(
   lockPath: string,
   metadata: Partial<FileLockMetadata> = {},

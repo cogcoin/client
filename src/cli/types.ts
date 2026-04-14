@@ -2,6 +2,7 @@ import type { inspectPassiveClientStatus } from "../passive-status.js";
 import { openManagedBitcoindClient } from "../bitcoind/index.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import type { ClientStoreAdapter } from "../types.js";
+import type { WalletRuntimePaths } from "../wallet/runtime.js";
 import type {
   exportWallet,
   WalletPrompter,
@@ -257,6 +258,7 @@ export interface CliRunnerContext {
   readPackageVersion?: () => Promise<string>;
   resolveDefaultBitcoindDataDir?: () => string;
   resolveDefaultClientDatabasePath?: () => string;
+  resolveWalletRuntimePaths?: () => WalletRuntimePaths;
 }
 
 export interface StopSignalWatcher {
