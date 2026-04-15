@@ -94,7 +94,11 @@ type ManagedBitcoindServiceOptions = Pick<
   | "startupTimeoutMs"
   | "shutdownTimeoutMs"
   | "managedWalletPassphrase"
->;
+> & {
+  getblockArchivePath?: string | null;
+  getblockArchiveEndHeight?: number | null;
+  getblockArchiveSha256?: string | null;
+};
 
 export type ManagedBitcoindServiceCompatibility =
   | "compatible"
@@ -416,6 +420,8 @@ function createBitcoindServiceStatus(options: {
   rpc: BitcoindRpcConfig;
   zmq: BitcoindZmqConfig;
   p2pPort: number;
+  getblockArchiveEndHeight: number | null;
+  getblockArchiveSha256: string | null;
   walletReplica: ManagedCoreWalletReplicaStatus | null;
   startedAtUnixMs: number;
   heartbeatAtUnixMs: number;
@@ -436,6 +442,8 @@ function createBitcoindServiceStatus(options: {
     rpc: options.rpc,
     zmq: options.zmq,
     p2pPort: options.p2pPort,
+    getblockArchiveEndHeight: options.getblockArchiveEndHeight,
+    getblockArchiveSha256: options.getblockArchiveSha256,
     walletReplica: options.walletReplica,
     startedAtUnixMs: options.startedAtUnixMs,
     heartbeatAtUnixMs: options.heartbeatAtUnixMs,
@@ -546,6 +554,8 @@ async function resolveRuntimeConfig(
     zmqPort,
     p2pPort,
     dbcacheMiB: detectManagedBitcoindDbcacheMiB(),
+    getblockArchiveEndHeight: options.getblockArchiveEndHeight ?? null,
+    getblockArchiveSha256: options.getblockArchiveSha256 ?? null,
   };
 }
 
@@ -598,6 +608,10 @@ function buildManagedServiceArgs(
 
   if (options.chain === "regtest") {
     args.push("-chain=regtest");
+  }
+
+  if (options.getblockArchivePath !== undefined && options.getblockArchivePath !== null) {
+    args.push(`-loadblock=${options.getblockArchivePath}`);
   }
 
   return args;
@@ -783,6 +797,8 @@ async function writeBitcoindStatus(
     rpc: status.rpc,
     zmqPort: status.zmq.port,
     p2pPort: status.p2pPort,
+    getblockArchiveEndHeight: status.getblockArchiveEndHeight,
+    getblockArchiveSha256: status.getblockArchiveSha256,
   });
 }
 
@@ -956,6 +972,8 @@ function createNodeHandle(
     expectedChain: currentStatus.chain,
     startHeight: currentStatus.startHeight,
     dataDir: currentStatus.dataDir,
+    getblockArchiveEndHeight: currentStatus.getblockArchiveEndHeight ?? null,
+    getblockArchiveSha256: currentStatus.getblockArchiveSha256 ?? null,
     walletRootId: currentStatus.walletRootId,
     runtimeRoot: paths.walletRuntimeRoot,
     async validate(): Promise<void> {
@@ -963,6 +981,8 @@ function createNodeHandle(
     },
     async refreshServiceStatus() {
       currentStatus = await refreshManagedBitcoindStatus(currentStatus, paths, options);
+      this.getblockArchiveEndHeight = currentStatus.getblockArchiveEndHeight ?? null;
+      this.getblockArchiveSha256 = currentStatus.getblockArchiveSha256 ?? null;
       return currentStatus;
     },
     async stop(): Promise<void> {
@@ -1101,67 +1121,92 @@ export async function attachOrStartManagedBitcoindService(
         await verifyBitcoindVersion(bitcoindPath);
         const binaryVersion = SUPPORTED_BITCOIND_VERSION;
         await mkdir(resolvedOptions.dataDir ?? "", { recursive: true });
-        const runtimeConfig = await resolveRuntimeConfig(
-          paths.bitcoindStatusPath,
-          paths.bitcoindRuntimeConfigPath,
-          resolvedOptions,
-        );
-        await writeBitcoinConf(paths.bitcoinConfPath, resolvedOptions, runtimeConfig);
+        const startManagedProcess = async (
+          startOptions: ManagedBitcoindServiceOptions,
+        ): Promise<ManagedBitcoindServiceStatus> => {
+          const runtimeConfig = await resolveRuntimeConfig(
+            paths.bitcoindStatusPath,
+            paths.bitcoindRuntimeConfigPath,
+            startOptions,
+          );
+          await writeBitcoinConf(paths.bitcoinConfPath, startOptions, runtimeConfig);
 
-        const rpcConfig: BitcoindRpcConfig = runtimeConfig.rpc;
-        const zmqConfig: BitcoindZmqConfig = {
-          endpoint: `tcp://${LOCAL_HOST}:${runtimeConfig.zmqPort}`,
-          topic: "hashblock",
-          port: runtimeConfig.zmqPort,
-          pollIntervalMs: resolvedOptions.pollIntervalMs ?? 15_000,
+          const rpcConfig: BitcoindRpcConfig = runtimeConfig.rpc;
+          const zmqConfig: BitcoindZmqConfig = {
+            endpoint: `tcp://${LOCAL_HOST}:${runtimeConfig.zmqPort}`,
+            topic: "hashblock",
+            port: runtimeConfig.zmqPort,
+            pollIntervalMs: startOptions.pollIntervalMs ?? 15_000,
+          };
+          const child = spawn(bitcoindPath, buildManagedServiceArgs(startOptions, runtimeConfig), {
+            detached: true,
+            stdio: "ignore",
+          });
+          child.unref();
+
+          const rpc = createRpcClient(rpcConfig);
+
+          try {
+            await waitForRpcReady(rpc, rpcConfig.cookieFile, startOptions.chain, startupTimeoutMs);
+            await validateNodeConfigForTesting(rpc, startOptions.chain, zmqConfig.endpoint);
+          } catch (error) {
+            if (child.pid !== undefined) {
+              try {
+                process.kill(child.pid, "SIGTERM");
+              } catch {
+                // ignore kill failures during startup cleanup
+              }
+            }
+            throw error;
+          }
+
+          const nowUnixMs = Date.now();
+          const walletRootId = startOptions.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
+          const walletReplica = await loadManagedWalletReplicaIfPresent(
+            rpc,
+            walletRootId,
+            startOptions.dataDir ?? "",
+          );
+
+          return createBitcoindServiceStatus({
+            binaryVersion,
+            serviceInstanceId: randomBytes(16).toString("hex"),
+            state: "ready",
+            processId: child.pid ?? null,
+            walletRootId,
+            chain: startOptions.chain,
+            dataDir: startOptions.dataDir ?? "",
+            runtimeRoot: paths.walletRuntimeRoot,
+            startHeight: startOptions.startHeight,
+            rpc: rpcConfig,
+            zmq: zmqConfig,
+            p2pPort: runtimeConfig.p2pPort,
+            getblockArchiveEndHeight: runtimeConfig.getblockArchiveEndHeight ?? null,
+            getblockArchiveSha256: runtimeConfig.getblockArchiveSha256 ?? null,
+            walletReplica,
+            startedAtUnixMs: nowUnixMs,
+            heartbeatAtUnixMs: nowUnixMs,
+            lastError: walletReplica.message ?? null,
+          });
         };
-        const child = spawn(bitcoindPath, buildManagedServiceArgs(resolvedOptions, runtimeConfig), {
-          detached: true,
-          stdio: "ignore",
-        });
-        child.unref();
 
-        const rpc = createRpcClient(rpcConfig);
+        let status: ManagedBitcoindServiceStatus;
 
         try {
-          await waitForRpcReady(rpc, rpcConfig.cookieFile, resolvedOptions.chain, startupTimeoutMs);
-          await validateNodeConfigForTesting(rpc, resolvedOptions.chain, zmqConfig.endpoint);
+          status = await startManagedProcess(resolvedOptions);
         } catch (error) {
-          if (child.pid !== undefined) {
-            try {
-              process.kill(child.pid, "SIGTERM");
-            } catch {
-              // ignore kill failures during startup cleanup
-            }
+          if (resolvedOptions.getblockArchivePath === undefined || resolvedOptions.getblockArchivePath === null) {
+            throw error;
           }
-          throw error;
+
+          status = await startManagedProcess({
+            ...resolvedOptions,
+            getblockArchivePath: null,
+            getblockArchiveEndHeight: null,
+            getblockArchiveSha256: null,
+          });
         }
 
-        const nowUnixMs = Date.now();
-        const walletRootId = resolvedOptions.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
-        const walletReplica = await loadManagedWalletReplicaIfPresent(
-          rpc,
-          walletRootId,
-          resolvedOptions.dataDir ?? "",
-        );
-        const status = createBitcoindServiceStatus({
-          binaryVersion,
-          serviceInstanceId: randomBytes(16).toString("hex"),
-          state: "ready",
-          processId: child.pid ?? null,
-          walletRootId,
-          chain: resolvedOptions.chain,
-          dataDir: resolvedOptions.dataDir ?? "",
-          runtimeRoot: paths.walletRuntimeRoot,
-          startHeight: resolvedOptions.startHeight,
-          rpc: rpcConfig,
-          zmq: zmqConfig,
-          p2pPort: runtimeConfig.p2pPort,
-          walletReplica,
-          startedAtUnixMs: nowUnixMs,
-          heartbeatAtUnixMs: nowUnixMs,
-          lastError: walletReplica.message ?? null,
-        });
         await writeBitcoindStatus(paths, status);
 
         return createNodeHandle(status, paths, resolvedOptions);

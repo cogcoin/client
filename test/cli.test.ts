@@ -233,6 +233,8 @@ function createBitcoindServiceStatus(walletRootId: string, overrides: Partial<{
       pollIntervalMs: 15_000,
     },
     p2pPort: 8333,
+    getblockArchiveEndHeight: null,
+    getblockArchiveSha256: null,
     walletReplica: {
       walletRootId,
       walletName: `cogcoin-${walletRootId}`,
@@ -1020,6 +1022,14 @@ test("parseCliArgs handles wallet status and field inspection commands", () => {
   assert.equal(mineLog.command, "mine-log");
   assert.equal(mineLog.follow, false);
   assert.equal(mineLog.listAll, true);
+
+  const syncYes = parseCliArgs(["sync", "--yes"]);
+  assert.equal(syncYes.command, "sync");
+  assert.equal(syncYes.assumeYes, true);
+
+  const followYes = parseCliArgs(["follow", "--yes"]);
+  assert.equal(followYes.command, "follow");
+  assert.equal(followYes.assumeYes, true);
 
   assert.throws(() => parseCliArgs(["mine", "log", "--follow", "--all"]), /cli_follow_limit_not_supported/);
   assert.throws(() => parseCliArgs(["mine", "log", "--follow", "--output", "json"]), /cli_follow_json_not_supported/);
@@ -1876,6 +1886,8 @@ test("bitcoin start only starts bitcoind and does not resolve the client db path
         expectedChain: "main",
         startHeight: 0,
         dataDir: "/tmp/cogcoin-bitcoin",
+        getblockArchiveEndHeight: null,
+        getblockArchiveSha256: null,
         walletRootId: "wallet-root-services",
         runtimeRoot: "/tmp/runtime/wallet-root-services",
         async validate() {},
@@ -1927,6 +1939,8 @@ test("indexer start resolves the client db path and auto-starts bitcoind", async
         expectedChain: "main",
         startHeight: 0,
         dataDir: "/tmp/cogcoin-bitcoin",
+        getblockArchiveEndHeight: null,
+        getblockArchiveSha256: null,
         walletRootId: "wallet-root-services",
         runtimeRoot: "/tmp/runtime/wallet-root-services",
         async validate() {},

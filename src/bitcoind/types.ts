@@ -1,6 +1,8 @@
 import type { BitcoinBlock, Client, ClientOptions, ClientTip } from "../types.js";
 
 export type BootstrapPhase =
+  | "getblock_archive_download"
+  | "getblock_archive_import"
   | "snapshot_download"
   | "wait_headers_for_snapshot"
   | "load_snapshot"
@@ -29,6 +31,30 @@ export interface SnapshotChunkManifest {
   snapshotSizeBytes: number;
   snapshotSha256: string;
   chunkSha256s: string[];
+}
+
+export interface GetblockArchiveManifestBlockRecord {
+  height: number;
+  blockHash: string;
+  previousBlockHash: string;
+  recordOffset: number;
+  recordLength: number;
+  rawBlockSizeBytes: number;
+}
+
+export interface GetblockArchiveManifest {
+  formatVersion: number;
+  chain: "main";
+  baseSnapshotHeight: number;
+  firstBlockHeight: number;
+  endHeight: number;
+  blockCount: number;
+  artifactFilename: string;
+  artifactSizeBytes: number;
+  artifactSha256: string;
+  chunkSizeBytes: number;
+  chunkSha256s: string[];
+  blocks: GetblockArchiveManifestBlockRecord[];
 }
 
 export interface WritingQuote {
@@ -82,6 +108,8 @@ export interface ManagedBitcoindRuntimeConfig {
   zmqPort: number;
   p2pPort: number;
   dbcacheMiB: number;
+  getblockArchiveEndHeight?: number | null;
+  getblockArchiveSha256?: string | null;
 }
 
 export const MANAGED_BITCOIND_SERVICE_API_VERSION = "cogcoin/bitcoind-service/v1";
@@ -107,6 +135,8 @@ export interface ManagedBitcoindServiceStatus {
   rpc: BitcoindRpcConfig;
   zmq: BitcoindZmqConfig;
   p2pPort: number;
+  getblockArchiveEndHeight: number | null;
+  getblockArchiveSha256: string | null;
   walletReplica: ManagedCoreWalletReplicaStatus | null;
   startedAtUnixMs: number;
   heartbeatAtUnixMs: number;
@@ -163,6 +193,11 @@ export interface ManagedBitcoindStatus {
   indexerDaemon?: ManagedIndexerDaemonObservedStatus | null;
 }
 
+export interface ManagedGetblockArchiveRestartRequest {
+  currentArchiveEndHeight: number | null;
+  nextArchiveEndHeight: number;
+}
+
 export interface ManagedBitcoindOptions extends ClientOptions {
   dataDir?: string;
   databasePath?: string;
@@ -177,6 +212,10 @@ export interface ManagedBitcoindOptions extends ClientOptions {
   managedWalletPassphrase?: string;
   onProgress?: (event: ManagedBitcoindProgressEvent) => void;
   progressOutput?: ProgressOutputMode;
+  fetchImpl?: typeof fetch;
+  confirmGetblockArchiveRestart?: (
+    request: ManagedGetblockArchiveRestartRequest,
+  ) => Promise<boolean>;
 }
 
 export interface ManagedBitcoindClient extends Client {
@@ -486,6 +525,8 @@ export interface ManagedBitcoindNodeHandle {
   expectedChain: "main" | "regtest";
   startHeight: number;
   dataDir: string;
+  getblockArchiveEndHeight: number | null;
+  getblockArchiveSha256: string | null;
   walletRootId?: string;
   runtimeRoot?: string;
   validate(): Promise<void>;

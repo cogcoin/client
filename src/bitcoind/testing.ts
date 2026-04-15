@@ -22,9 +22,13 @@ export {
   createBootstrapStateForTesting,
   downloadSnapshotFileForTesting,
   loadBootstrapStateForTesting,
+  prepareLatestGetblockArchiveForTesting,
   resolveBootstrapPathsForTesting,
+  resolveGetblockArchivePathsForTesting,
+  resolveReadyGetblockArchiveForTesting,
   saveBootstrapStateForTesting,
   validateSnapshotFileForTesting,
+  waitForGetblockArchiveImportForTesting,
   waitForHeadersForTesting,
 } from "./bootstrap.js";
 export {

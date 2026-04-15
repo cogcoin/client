@@ -6,6 +6,7 @@ import { writeLine } from "../io.js";
 import { classifyCliError } from "../output.js";
 import { createStopSignalWatcher, waitForCompletionOrStop } from "../signals.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
+import { confirmGetblockArchiveRestart } from "./getblock-archive-restart.js";
 
 export async function runSyncCommand(
   parsed: ParsedCliArgs,
@@ -31,6 +32,7 @@ export async function runSyncCommand(
       dataDir,
       walletRootId: walletRoot.walletRootId,
       progressOutput: parsed.progressOutput,
+      confirmGetblockArchiveRestart: async (options) => confirmGetblockArchiveRestart(parsed, context, options),
     });
     storeOwned = false;
     const stopWatcher = createStopSignalWatcher(context.signalSource, context.stderr, client, context.forceExit);

@@ -12,6 +12,10 @@ import {
 
 export function createDefaultMessage(phase: BootstrapPhase): string {
   switch (phase) {
+    case "getblock_archive_download":
+      return "Downloading getblock archive.";
+    case "getblock_archive_import":
+      return "Bitcoin Core is importing getblock archive blocks.";
     case "snapshot_download":
       return "Downloading UTXO snapshot.";
     case "wait_headers_for_snapshot":
@@ -162,6 +166,10 @@ export function resolveStatusFieldText(
   now = 0,
 ): string {
   switch (progress.phase) {
+    case "getblock_archive_download":
+      return `Downloading getblock archive${animateStatusEllipsis(now)}`;
+    case "getblock_archive_import":
+      return `Importing getblock archive${animateStatusEllipsis(now)}`;
     case "paused":
     case "snapshot_download":
       return `Downloading snapshot to ${snapshotHeight}${animateStatusEllipsis(now)}`;
@@ -225,6 +233,16 @@ export function formatProgressLine(
   let line: string;
 
   switch (progress.phase) {
+    case "getblock_archive_download": {
+      const current = progress.downloadedBytes ?? 0;
+      const total = progress.totalBytes ?? 0;
+      const bar = renderBar(current, total, 20);
+      const percent = progress.percent ?? (total > 0 ? (current / total) * 100 : 0);
+      const speed = progress.bytesPerSecond === null ? "--" : `${formatBytes(progress.bytesPerSecond)}/s`;
+      const resumed = progress.resumed ? " resumed" : "";
+      line = `${bar} ${percent.toFixed(2)}% ${formatBytes(current)} / ${formatBytes(total)} ${speed} ETA ${formatDuration(progress.etaSeconds)}${resumed}`;
+      break;
+    }
     case "snapshot_download": {
       const current = progress.downloadedBytes ?? 0;
       const total = progress.totalBytes ?? 0;
@@ -247,6 +265,13 @@ export function formatProgressLine(
       const target = progress.targetHeight ?? progress.headers ?? blocks;
       const bar = renderBar(blocks, target, 20);
       line = `${bar} Bitcoin ${blocks.toLocaleString()} / ${target.toLocaleString()} ETA ${formatDuration(progress.etaSeconds)} ${progress.message}`;
+      break;
+    }
+    case "getblock_archive_import": {
+      const blocks = progress.blocks ?? 0;
+      const target = progress.targetHeight ?? blocks;
+      const bar = renderBar(blocks, target, 20);
+      line = `${bar} Bitcoin ${blocks.toLocaleString()} / ${target.toLocaleString()} ${progress.message}`;
       break;
     }
     case "cogcoin_sync": {

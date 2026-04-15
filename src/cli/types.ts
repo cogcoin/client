@@ -237,6 +237,10 @@ export interface CliRunnerContext {
     dataDir?: string;
     walletRootId?: string;
     progressOutput?: ProgressOutput;
+    confirmGetblockArchiveRestart?: (options: {
+      currentArchiveEndHeight: number | null;
+      nextArchiveEndHeight: number;
+    }) => Promise<boolean>;
   }) => Promise<ManagedClientLike>;
   attachManagedBitcoindService?: typeof attachOrStartManagedBitcoindService;
   probeManagedBitcoindService?: typeof probeManagedBitcoindService;

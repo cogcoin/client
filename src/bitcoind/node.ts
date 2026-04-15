@@ -247,6 +247,8 @@ export async function launchManagedBitcoindNode(
     expectedChain: resolvedOptions.chain,
     startHeight: resolvedOptions.startHeight,
     dataDir: resolvedOptions.dataDir,
+    getblockArchiveEndHeight: null,
+    getblockArchiveSha256: null,
     async validate(): Promise<void> {
       await validateNodeConfigForTesting(rpcClient, resolvedOptions.chain, zmqEndpoint);
     },

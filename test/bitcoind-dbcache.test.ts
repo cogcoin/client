@@ -22,6 +22,8 @@ function createRuntimeConfig(dbcacheMiB: number): ManagedBitcoindRuntimeConfig {
     zmqPort: 28332,
     p2pPort: 18444,
     dbcacheMiB,
+    getblockArchiveEndHeight: null,
+    getblockArchiveSha256: null,
   };
 }
 
@@ -60,4 +62,21 @@ test("buildManagedServiceArgsForTesting includes dbcache in the managed bitcoind
   }, createRuntimeConfig(768));
 
   assert.ok(args.includes("-dbcache=768"));
+});
+
+test("buildManagedServiceArgsForTesting includes loadblock when a getblock archive is ready", () => {
+  const args = buildManagedServiceArgsForTesting({
+    dataDir: "/tmp/cogcoin-bitcoind",
+    chain: "main",
+    startHeight: 937_337,
+    getblockArchivePath: "/tmp/cogcoin-bitcoind/bootstrap/getblock/getblock-910000-latest.dat",
+    getblockArchiveEndHeight: 945_188,
+    getblockArchiveSha256: "ab".repeat(32),
+  }, {
+    ...createRuntimeConfig(768),
+    getblockArchiveEndHeight: 945_188,
+    getblockArchiveSha256: "ab".repeat(32),
+  });
+
+  assert.ok(args.includes("-loadblock=/tmp/cogcoin-bitcoind/bootstrap/getblock/getblock-910000-latest.dat"));
 });

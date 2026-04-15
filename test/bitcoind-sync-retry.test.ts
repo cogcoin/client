@@ -136,6 +136,7 @@ function createProgressRecorder(initialPhase: BootstrapPhase = "paused"): {
 function createSyncDependencies(options: {
   startHeight: number;
   progressPhase?: BootstrapPhase;
+  getblockArchiveEndHeight?: number | null;
   validate?: () => Promise<void>;
   ensureReady?: () => Promise<void>;
   getBlockchainInfo: () => Promise<RpcBlockchainInfo>;
@@ -195,6 +196,10 @@ function createSyncDependencies(options: {
       },
       node: {
         expectedChain: "main",
+        getblockArchiveEndHeight: options.getblockArchiveEndHeight ?? null,
+        getblockArchiveSha256: options.getblockArchiveEndHeight === undefined || options.getblockArchiveEndHeight === null
+          ? null
+          : "ab".repeat(32),
         async validate() {
           await (options.validate?.() ?? Promise.resolve());
         },
@@ -301,6 +306,30 @@ test("syncToTip begins Cogcoin processing exactly at the bundled genesis height"
   assert.equal(result.appliedBlocks, 1);
   assert.deepEqual(appliedHeights, [genesis.genesisBlock]);
   assert.equal(phases.includes("cogcoin_sync"), true);
+});
+
+test("syncToTip waits for getblock archive import before normal bitcoin sync", async () => {
+  let blockchainInfoCalls = 0;
+  const { dependencies, phases, messages } = createSyncDependencies({
+    startHeight: 950_000,
+    getblockArchiveEndHeight: 945_188,
+    async getBlockchainInfo() {
+      blockchainInfoCalls += 1;
+
+      if (blockchainInfoCalls === 1) {
+        return createBlockchainInfo(945_180, 945_188);
+      }
+
+      return createBlockchainInfo(945_188, 945_188);
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.equal(result.appliedBlocks, 0);
+  assert.ok(phases.includes("getblock_archive_import"));
+  assert.ok(phases.includes("bitcoin_sync"));
+  assert.ok(messages.includes("Bitcoin Core is importing getblock archive blocks."));
 });
 
 test("syncToTip retries a transient getblock timeout without duplicating applied work", async () => {

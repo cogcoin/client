@@ -146,6 +146,8 @@ Examples:
 
 function supportsYesFlag(command: CommandName | null): boolean {
   switch (command) {
+    case "sync":
+    case "follow":
     case "repair":
     case "anchor-clear":
     case "domain-anchor-clear":

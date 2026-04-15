@@ -1,4 +1,5 @@
 import type { BitcoinBlock, Client } from "../../types.js";
+import { waitForGetblockArchiveImport } from "../bootstrap.js";
 import { formatManagedSyncErrorMessage } from "../errors.js";
 import { normalizeRpcBlock } from "../normalize.js";
 import {
@@ -225,6 +226,20 @@ export async function syncToTip(
       signal: dependencies.abortSignal,
       retryState,
     }));
+
+    if (
+      dependencies.node.expectedChain === "main"
+      && dependencies.node.getblockArchiveEndHeight !== null
+    ) {
+      await waitForGetblockArchiveImport(
+        {
+          getBlockchainInfo: () => runRpc(() => dependencies.rpc.getBlockchainInfo()),
+        },
+        dependencies.progress,
+        dependencies.node.getblockArchiveEndHeight,
+        dependencies.abortSignal,
+      );
+    }
 
     const startTip = await dependencies.client.getTip();
     const aggregate: SyncResult = {

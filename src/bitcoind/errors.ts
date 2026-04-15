@@ -7,6 +7,48 @@ function appendNextStep(message: string, nextStep: string): string {
 }
 
 export function formatManagedSyncErrorMessage(message: string): string {
+  if (message.startsWith("managed_getblock_archive_manifest_http_")) {
+    return appendNextStep(
+      `Getblock archive manifest request failed (${message.replace("managed_getblock_archive_manifest_http_", "HTTP ")}).`,
+      "Wait a moment, confirm the snapshot host is reachable, then rerun sync.",
+    );
+  }
+
+  if (message.startsWith("managed_getblock_archive_http_")) {
+    return appendNextStep(
+      `Getblock archive request failed (${message.replace("managed_getblock_archive_http_", "HTTP ")}).`,
+      "Wait a moment, confirm the snapshot host is reachable, then rerun sync.",
+    );
+  }
+
+  if (message === "managed_getblock_archive_response_body_missing") {
+    return appendNextStep(
+      "Getblock archive server returned an empty response body.",
+      "Wait a moment, confirm the snapshot host is reachable, then rerun sync.",
+    );
+  }
+
+  if (message === "managed_getblock_archive_resume_requires_partial_content") {
+    return appendNextStep(
+      "Getblock archive server ignored the resume request for a partial download.",
+      "Wait a moment and rerun sync. If this keeps happening, confirm the snapshot host supports HTTP range requests.",
+    );
+  }
+
+  if (message.startsWith("managed_getblock_archive_chunk_sha256_mismatch_")) {
+    return appendNextStep(
+      "A downloaded getblock archive chunk was corrupted and was rolled back to the last verified checkpoint.",
+      "Wait a moment and rerun sync. If this keeps happening, check local disk health and the stability of the archive download.",
+    );
+  }
+
+  if (message === "managed_getblock_archive_sha256_mismatch" || message === "managed_getblock_archive_truncated") {
+    return appendNextStep(
+      "The downloaded getblock archive did not match the published manifest.",
+      "Rerun sync so the archive can be downloaded again. If this keeps happening, check local disk health and the snapshot host.",
+    );
+  }
+
   if (message === "bitcoind_no_peers_for_header_sync_check_internet_or_firewall") {
     return appendNextStep(
       "No Bitcoin peers were available for header sync.",

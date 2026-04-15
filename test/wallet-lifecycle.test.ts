@@ -754,6 +754,8 @@ test("initializeWallet claims and replaces a live uninitialized managed runtime"
         pollIntervalMs: 15_000,
       },
       p2pPort: 18_444,
+      getblockArchiveEndHeight: null,
+      getblockArchiveSha256: null,
       walletReplica: null,
       startedAtUnixMs: 1_700_000_000_000,
       heartbeatAtUnixMs: 1_700_000_000_000,

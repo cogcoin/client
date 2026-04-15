@@ -3,6 +3,14 @@ import type { BootstrapPhase, SnapshotMetadata } from "./types.js";
 export { DEFAULT_SNAPSHOT_METADATA } from "./bootstrap/constants.js";
 export { AssumeUtxoBootstrapController } from "./bootstrap/controller.js";
 export { downloadSnapshotFileForTesting } from "./bootstrap/download.js";
+export {
+  prepareLatestGetblockArchive,
+  prepareLatestGetblockArchiveForTesting,
+  resolveGetblockArchivePathsForTesting,
+  resolveReadyGetblockArchiveForTesting,
+  waitForGetblockArchiveImport,
+  waitForGetblockArchiveImportForTesting,
+} from "./bootstrap/getblock-archive.js";
 export { waitForHeadersForTesting } from "./bootstrap/headers.js";
 export { resolveBootstrapPathsForTesting } from "./bootstrap/paths.js";
 export {
