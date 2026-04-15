@@ -2,7 +2,9 @@ import type { CommandName } from "./types.js";
 
 export const walletMutationCommands = [
   "anchor",
+  "anchor-clear",
   "domain-anchor",
+  "domain-anchor-clear",
   "register",
   "domain-register",
   "transfer",
@@ -51,6 +53,12 @@ export function isAnchorMutationCommand(
   command: CommandName | null,
 ): command is "anchor" | "domain-anchor" {
   return command === "anchor" || command === "domain-anchor";
+}
+
+export function isAnchorClearMutationCommand(
+  command: CommandName | null,
+): command is "anchor-clear" | "domain-anchor-clear" {
+  return command === "anchor-clear" || command === "domain-anchor-clear";
 }
 
 export function isRegisterMutationCommand(

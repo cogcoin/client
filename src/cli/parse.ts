@@ -35,6 +35,7 @@ Commands:
   mine status             Show mining control-plane health and readiness
   mine log                Show recent mining control-plane events
   anchor <domain>         Anchor an owned unanchored domain with the Tx1/Tx2 family
+  anchor clear <domain>   Clear a local-only pending anchor reservation before broadcast
   register <domain> [--from <identity>]
                          Register a root domain or subdomain
   transfer <domain> --to <btc-target>
@@ -146,6 +147,8 @@ Examples:
 function supportsYesFlag(command: CommandName | null): boolean {
   switch (command) {
     case "repair":
+    case "anchor-clear":
+    case "domain-anchor-clear":
     case "register":
     case "domain-register":
     case "transfer":
@@ -708,6 +711,14 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
         }
 
         if (subcommand === "anchor") {
+          const action = argv[index + 2] ?? null;
+
+          if (action === "clear") {
+            command = "domain-anchor-clear";
+            index += 2;
+            continue;
+          }
+
           command = "domain-anchor";
           index += 1;
           continue;
@@ -923,6 +934,11 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
         || token === "show"
         || token === "fields"
       ) {
+        if (token === "anchor" && argv[index + 1] === "clear") {
+          command = "anchor-clear";
+          index += 1;
+          continue;
+        }
         command = token as CommandName;
         continue;
       }
@@ -981,7 +997,13 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_missing_domain_argument");
   }
 
-  if ((command === "anchor" || command === "domain-anchor") && args.length !== 1) {
+  if (
+    (command === "anchor"
+      || command === "domain-anchor"
+      || command === "anchor-clear"
+      || command === "domain-anchor-clear")
+    && args.length !== 1
+  ) {
     throw new Error("cli_missing_domain_argument");
   }
 

@@ -54,6 +54,7 @@ export function writeMutationCommandSuccess(
     reusedExisting: boolean;
     reusedMessage: string;
     nextSteps: MutationSuccessNextSteps;
+    outcome?: string;
     text: {
       heading: string;
       fields: MutationTextField[];
@@ -65,7 +66,7 @@ export function writeMutationCommandSuccess(
     writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
       resolvePreviewJsonSchema(parsed)!,
       describeCanonicalCommand(parsed),
-      mutationOutcome(options.reusedExisting),
+      options.outcome ?? mutationOutcome(options.reusedExisting),
       options.previewData ?? options.data,
       {
         explanations: reuseExplanation(
@@ -83,7 +84,7 @@ export function writeMutationCommandSuccess(
     writeJsonValue(context.stdout, createMutationSuccessEnvelope(
       resolveStableMutationJsonSchema(parsed)!,
       describeCanonicalCommand(parsed),
-      mutationOutcome(options.reusedExisting),
+      options.outcome ?? mutationOutcome(options.reusedExisting),
       options.data,
       {
         explanations: reuseExplanation(

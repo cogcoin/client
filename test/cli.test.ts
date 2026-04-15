@@ -846,9 +846,18 @@ test("parseCliArgs handles wallet status and field inspection commands", () => {
   assert.deepEqual(anchor.args, ["weatherbot"]);
   assert.equal(anchor.anchorMessage, "hello");
 
+  const anchorClear = parseCliArgs(["anchor", "clear", "weatherbot", "--yes"]);
+  assert.equal(anchorClear.command, "anchor-clear");
+  assert.deepEqual(anchorClear.args, ["weatherbot"]);
+  assert.equal(anchorClear.assumeYes, true);
+
   const domainAnchor = parseCliArgs(["domain", "anchor", "alpha-child"]);
   assert.equal(domainAnchor.command, "domain-anchor");
   assert.deepEqual(domainAnchor.args, ["alpha-child"]);
+
+  const domainAnchorClear = parseCliArgs(["domain", "anchor", "clear", "alpha-child"]);
+  assert.equal(domainAnchorClear.command, "domain-anchor-clear");
+  assert.deepEqual(domainAnchorClear.args, ["alpha-child"]);
 
   const transfer = parseCliArgs(["transfer", "alpha", "--to", "spk:00141111111111111111111111111111111111111111"]);
   assert.equal(transfer.command, "transfer");
@@ -1094,6 +1103,7 @@ test("parseCliArgs allows json on covered action commands and rejects excluded c
     ["indexer", "stop", "--output", "json"],
     ["indexer", "status", "--output", "json"],
     ["register", "alpha-child", "--output", "json"],
+    ["anchor", "clear", "alpha", "--output", "json"],
     ["domain", "buy", "alpha", "--output", "json"],
     ["send", "1", "--to", "spk:00141111111111111111111111111111111111111111", "--output", "json"],
     ["cog", "lock", "2", "--to-domain", "alpha", "--until-height", "500", "--condition", "22".repeat(32), "--output", "json"],
@@ -1165,6 +1175,7 @@ test("wallet show-mnemonic dispatches through wallet admin without resolving db 
 test("parseCliArgs allows preview-json on covered preview commands and rejects unsupported commands", () => {
   const supportedArgv = [
     ["register", "alpha-child", "--output", "preview-json"],
+    ["anchor", "clear", "alpha", "--output", "preview-json"],
     ["domain", "buy", "alpha", "--output", "preview-json"],
     ["wallet", "lock", "--output", "preview-json"],
     ["repair", "--output", "preview-json"],
@@ -2540,6 +2551,100 @@ test("anchor dispatches through the wallet mutation hook", async () => {
   assert.match(stdout.toString(), /Next step: cogcoin show weatherbot/);
   assert.match(stdout.toString(), /Next step: cogcoin mine$/m);
   assert.match(stdout.toString(), /Next step: cogcoin mine start/);
+});
+
+test("anchor clear dispatches through the wallet mutation hook", async () => {
+  const stdout = new MemoryStream();
+  const code = await runCli(["anchor", "clear", "weatherbot", "--yes"], {
+    stdout,
+    stderr: new MemoryStream(),
+    walletSecretProvider: {} as never,
+    createPrompter: () => ({
+      isInteractive: true,
+      writeLine() {},
+      async prompt() {
+        return "y";
+      },
+    }),
+    clearPendingAnchor: async (options) => {
+      assert.equal(options.domainName, "weatherbot");
+      assert.equal(options.assumeYes, true);
+      return {
+        domainName: options.domainName,
+        cleared: true,
+        previousFamilyStatus: "draft",
+        previousFamilyStep: "reserved",
+        releasedDedicatedIndex: 2,
+      };
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.toString(), /Pending anchor cleared/);
+  assert.match(stdout.toString(), /Released dedicated index: 2/);
+  assert.match(stdout.toString(), /Next step: cogcoin anchor weatherbot/);
+});
+
+test("anchor clear json output reports noop results cleanly", async () => {
+  const stdout = new MemoryStream();
+  const code = await runCli(["anchor", "clear", "weatherbot", "--yes", "--output", "json"], {
+    stdout,
+    stderr: new MemoryStream(),
+    walletSecretProvider: {} as never,
+    createPrompter: () => ({
+      isInteractive: true,
+      writeLine() {},
+      async prompt() {
+        return "y";
+      },
+    }),
+    clearPendingAnchor: async () => ({
+      domainName: "weatherbot",
+      cleared: false,
+      previousFamilyStatus: null,
+      previousFamilyStep: null,
+      releasedDedicatedIndex: null,
+    }),
+  });
+
+  assert.equal(code, 0);
+  const envelope = JSON.parse(stdout.toString()) as {
+    outcome: string;
+    data: {
+      resultType: string;
+      state: {
+        domainName: string;
+        cleared: boolean;
+      };
+    };
+  };
+  assert.equal(envelope.outcome, "noop");
+  assert.equal(envelope.data.resultType, "state-change");
+  assert.equal(envelope.data.state.domainName, "weatherbot");
+  assert.equal(envelope.data.state.cleared, false);
+});
+
+test("anchor clear surfaces repair guidance for inconsistent local state", async () => {
+  const stderr = new MemoryStream();
+  const code = await runCli(["anchor", "clear", "weatherbot", "--yes"], {
+    stdout: new MemoryStream(),
+    stderr,
+    walletSecretProvider: {} as never,
+    createPrompter: () => ({
+      isInteractive: true,
+      writeLine() {},
+      async prompt() {
+        return "y";
+      },
+    }),
+    clearPendingAnchor: async () => {
+      throw new Error("wallet_anchor_clear_inconsistent_state");
+    },
+  });
+
+  assert.equal(code, 5);
+  assert.match(stderr.toString(), /Pending anchor state is inconsistent/);
+  assert.match(stderr.toString(), /cogcoin repair/);
 });
 
 test("subdomain anchors keep the show hint without mining follow-through", async () => {

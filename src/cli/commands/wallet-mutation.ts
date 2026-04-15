@@ -5,6 +5,7 @@ import {
 } from "../../wallet/tx/index.js";
 import {
   buildAnchorMutationData,
+  buildAnchorClearMutationData,
   buildCogMutationData,
   buildDomainAdminMutationData,
   buildDomainMarketMutationData,
@@ -14,6 +15,7 @@ import {
 } from "../mutation-json.js";
 import {
   buildAnchorPreviewData,
+  buildAnchorClearPreviewData,
   buildCogPreviewData,
   buildDomainAdminPreviewData,
   buildDomainMarketPreviewData,
@@ -22,6 +24,7 @@ import {
   buildReputationPreviewData,
 } from "../preview-json.js";
 import {
+  isAnchorClearMutationCommand,
   isAnchorMutationCommand,
   isBuyMutationCommand,
   isClaimMutationCommand,
@@ -126,6 +129,38 @@ export async function runWalletMutationCommand(
       const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
       const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
       const prompter = createCommandPrompter(parsed, context);
+
+      if (isAnchorClearMutationCommand(parsed.command)) {
+        const result = await context.clearPendingAnchor({
+          domainName: parsed.args[0]!,
+          dataDir,
+          databasePath: dbPath,
+          provider: context.walletSecretProvider,
+          prompter,
+          assumeYes: parsed.assumeYes,
+        });
+        const nextSteps = result.cleared
+          ? workflowMutationNextSteps([`cogcoin show ${result.domainName}`, `cogcoin anchor ${result.domainName}`])
+          : commandMutationNextSteps(`cogcoin show ${result.domainName}`);
+        return writeMutationCommandSuccess(parsed, context, {
+          data: buildAnchorClearMutationData(result),
+          previewData: buildAnchorClearPreviewData(result),
+          reusedExisting: false,
+          reusedMessage: "",
+          outcome: result.cleared ? "cleared" : "noop",
+          nextSteps,
+          text: {
+            heading: result.cleared ? "Pending anchor cleared." : "No pending anchor to clear.",
+            fields: [
+              { label: "Domain", value: result.domainName },
+              { label: "Cleared", value: result.cleared ? "yes" : "no" },
+              { label: "Previous status", value: result.previousFamilyStatus ?? "", when: result.previousFamilyStatus !== null },
+              { label: "Previous step", value: result.previousFamilyStep ?? "", when: result.previousFamilyStep !== null },
+              { label: "Released dedicated index", value: String(result.releasedDedicatedIndex), when: result.releasedDedicatedIndex !== null },
+            ],
+          },
+        });
+      }
 
       if (isAnchorMutationCommand(parsed.command)) {
         const result = await context.anchorDomain({

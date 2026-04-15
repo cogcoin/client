@@ -46,6 +46,7 @@ import type {
 } from "../wallet/mining/index.js";
 import type {
   anchorDomain,
+  clearPendingAnchor,
   buyDomain,
   claimCogLock,
   clearDomainDelegate,
@@ -86,7 +87,9 @@ export type CommandName =
   | "indexer-status"
   | "unlock"
   | "anchor"
+  | "anchor-clear"
   | "domain-anchor"
+  | "domain-anchor-clear"
   | "register"
   | "domain-register"
   | "transfer"
@@ -259,6 +262,7 @@ export interface CliRunnerContext {
   lockWallet?: typeof lockWallet;
   registerDomain?: typeof registerDomain;
   anchorDomain?: typeof anchorDomain;
+  clearPendingAnchor?: typeof clearPendingAnchor;
   transferDomain?: typeof transferDomain;
   sellDomain?: typeof sellDomain;
   buyDomain?: typeof buyDomain;

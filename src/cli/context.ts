@@ -50,6 +50,7 @@ import {
 import { createLazyDefaultWalletSecretProvider } from "../wallet/state/provider.js";
 import {
   anchorDomain,
+  clearPendingAnchor,
   buyDomain,
   claimCogLock,
   clearDomainDelegate,
@@ -103,6 +104,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     lockWallet: overrides.lockWallet ?? lockWallet,
     registerDomain: overrides.registerDomain ?? registerDomain,
     anchorDomain: overrides.anchorDomain ?? anchorDomain,
+    clearPendingAnchor: overrides.clearPendingAnchor ?? clearPendingAnchor,
     transferDomain: overrides.transferDomain ?? transferDomain,
     sellDomain: overrides.sellDomain ?? sellDomain,
     buyDomain: overrides.buyDomain ?? buyDomain,

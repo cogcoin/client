@@ -618,6 +618,22 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode === "wallet_anchor_clear_inconsistent_state") {
+    return {
+      what: "Pending anchor state is inconsistent.",
+      why: "The domain still shows local pending anchor state, but the wallet could not find a matching clearable reserved anchor family.",
+      next: "Run `cogcoin repair`, then inspect the domain again before retrying `cogcoin anchor clear`.",
+    };
+  }
+
+  if (errorCode.startsWith("wallet_anchor_clear_not_clearable_")) {
+    return {
+      what: "Pending anchor cannot be cleared safely.",
+      why: "This command only clears a local pre-broadcast reservation. The anchor family is already beyond that safe stage or may have been observed by the wallet.",
+      next: "Rerun `cogcoin anchor <domain>` to reconcile the family, or run `cogcoin repair` if it remains unresolved.",
+    };
+  }
+
   if (errorCode === "mining_hooks_enable_trust_acknowledgement_required") {
     return {
       what: "Trust acknowledgement is still required.",
@@ -1081,6 +1097,9 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
     case "anchor":
     case "domain-anchor":
       return `cogcoin anchor ${args[0] ?? "<domain>"}`;
+    case "anchor-clear":
+    case "domain-anchor-clear":
+      return `cogcoin anchor clear ${args[0] ?? "<domain>"}`;
     case "register":
     case "domain-register":
       return `cogcoin register ${args[0] ?? "<domain>"}`;
@@ -1272,6 +1291,9 @@ export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string |
     case "anchor":
     case "domain-anchor":
       return "cogcoin/anchor/v1";
+    case "anchor-clear":
+    case "domain-anchor-clear":
+      return "cogcoin/anchor-clear/v1";
     case "register":
     case "domain-register":
       return "cogcoin/register/v1";
@@ -1353,7 +1375,9 @@ export function resolvePreviewJsonSchema(parsed: ParsedCliArgs): string | null {
     case "reset":
     case "repair":
     case "anchor":
+    case "anchor-clear":
     case "domain-anchor":
+    case "domain-anchor-clear":
     case "register":
     case "domain-register":
     case "transfer":

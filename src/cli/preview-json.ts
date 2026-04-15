@@ -1,5 +1,6 @@
 import type {
   AnchorDomainResult,
+  ClearPendingAnchorResult,
   CogMutationResult,
   DomainAdminMutationResult,
   DomainMarketMutationResult,
@@ -226,6 +227,40 @@ export function buildAnchorPreviewData(
       dedicatedIndex: result.dedicatedIndex,
       foundingMessageIncluded: options.foundingMessageText !== null,
     },
+  });
+}
+
+export function buildAnchorClearPreviewData(
+  result: ClearPendingAnchorResult,
+) {
+  const before = result.cleared
+    ? {
+      localAnchorIntent: "reserved",
+      dedicatedIndex: result.releasedDedicatedIndex,
+      familyStatus: result.previousFamilyStatus,
+      familyStep: result.previousFamilyStep,
+    }
+    : null;
+  const after = result.cleared
+    ? {
+      localAnchorIntent: "none",
+      dedicatedIndex: null,
+      familyStatus: "canceled",
+      familyStep: result.previousFamilyStep,
+    }
+    : null;
+
+  return buildStateChangePreviewData({
+    kind: "anchor-clear",
+    state: {
+      domainName: result.domainName,
+      cleared: result.cleared,
+      previousFamilyStatus: result.previousFamilyStatus,
+      previousFamilyStep: result.previousFamilyStep,
+      releasedDedicatedIndex: result.releasedDedicatedIndex,
+    },
+    before,
+    after,
   });
 }
 

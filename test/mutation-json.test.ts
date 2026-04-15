@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildAnchorClearMutationData,
   buildCogMutationData,
   buildDomainAdminMutationData,
   buildDomainMarketMutationData,
@@ -10,6 +11,7 @@ import {
   buildReputationMutationData,
 } from "../src/cli/mutation-json.js";
 import {
+  buildAnchorClearPreviewData,
   buildCogPreviewData,
   buildDomainAdminPreviewData,
   buildDomainMarketPreviewData,
@@ -19,6 +21,42 @@ import {
 } from "../src/cli/preview-json.js";
 
 test("mutation and preview builders keep register and domain-market resolved blocks in sync", () => {
+  const anchorClearResult = {
+    domainName: "weatherbot",
+    cleared: true,
+    previousFamilyStatus: "draft" as const,
+    previousFamilyStep: "reserved" as const,
+    releasedDedicatedIndex: 2,
+  };
+  const anchorClearMutation = buildAnchorClearMutationData(anchorClearResult);
+  const anchorClearPreview = buildAnchorClearPreviewData(anchorClearResult);
+  assert.deepEqual(anchorClearMutation, anchorClearPreview);
+  assert.deepEqual(anchorClearMutation, {
+    resultType: "state-change",
+    stateChange: {
+      kind: "anchor-clear",
+      before: {
+        localAnchorIntent: "reserved",
+        dedicatedIndex: 2,
+        familyStatus: "draft",
+        familyStep: "reserved",
+      },
+      after: {
+        localAnchorIntent: "none",
+        dedicatedIndex: null,
+        familyStatus: "canceled",
+        familyStep: "reserved",
+      },
+    },
+    state: {
+      domainName: "weatherbot",
+      cleared: true,
+      previousFamilyStatus: "draft",
+      previousFamilyStep: "reserved",
+      releasedDedicatedIndex: 2,
+    },
+  });
+
   const registerResult = {
     domainName: "weatherbot",
     registerKind: "root" as const,

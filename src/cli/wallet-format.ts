@@ -149,6 +149,16 @@ export function getRepairRecommendation(context: WalletReadContext): string | nu
 }
 
 export function getMutationRecommendation(context: WalletReadContext): string | null {
+  const clearableAnchorFamily = (context.localState.state?.proactiveFamilies ?? []).find((family) =>
+    family.type === "anchor"
+    && family.status === "draft"
+    && family.currentStep === "reserved"
+  );
+
+  if (clearableAnchorFamily?.domainName != null) {
+    return `Run \`cogcoin anchor clear ${clearableAnchorFamily.domainName}\` to cancel the local pending anchor reservation, or rerun \`cogcoin anchor ${clearableAnchorFamily.domainName}\` to continue anchoring.`;
+  }
+
   const unresolvedFamily = (context.localState.state?.proactiveFamilies ?? []).find((family) =>
     (family.type === "anchor" || family.type === "field")
     && (family.status === "broadcast-unknown" || family.status === "repair-required")
