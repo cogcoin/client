@@ -582,7 +582,18 @@ function releaseClearedAnchorReservationState(options: {
 
   return upsertProactiveFamily(nextState, {
     ...family,
+    status: "canceled",
     lastUpdatedAtUnixMs: options.nowUnixMs,
+    tx1: family.tx1 == null ? family.tx1 : {
+      ...family.tx1,
+      status: "canceled",
+      temporaryBuilderLockedOutpoints: [],
+    },
+    tx2: family.tx2 == null ? family.tx2 : {
+      ...family.tx2,
+      status: "canceled",
+      temporaryBuilderLockedOutpoints: [],
+    },
   });
 }
 
@@ -1795,17 +1806,20 @@ export async function clearPendingAnchor(
 
     try {
       assertWalletMutationContextReady(readContext, "wallet_anchor_clear");
+      const family = findActiveAnchorFamilyByDomain(readContext.localState.state, normalizedDomainName);
       const domain = readContext.localState.state.domains.find((entry) =>
         entry.name === normalizedDomainName
       ) ?? null;
 
-      if (domain === null) {
+      if (domain === null && family === null) {
         throw new Error("wallet_anchor_clear_domain_not_found");
       }
 
-      const family = findActiveAnchorFamilyByDomain(readContext.localState.state, normalizedDomainName);
-
       if (family === null) {
+        if (domain === null) {
+          throw new Error("wallet_anchor_clear_domain_not_found");
+        }
+
         if (domain.localAnchorIntent !== "none") {
           throw new Error("wallet_anchor_clear_inconsistent_state");
         }
@@ -1827,13 +1841,20 @@ export async function clearPendingAnchor(
         throw new Error(`wallet_anchor_clear_not_clearable_${family.status}`);
       }
 
+      const reservedDedicatedIndex = family.reservedDedicatedIndex ?? null;
+
       if (
-        domain.localAnchorIntent !== "reserved"
-        || domain.dedicatedIndex === null
-        || family.reservedDedicatedIndex === null
-        || domain.dedicatedIndex !== family.reservedDedicatedIndex
+        reservedDedicatedIndex === null
         || family.tx1?.attemptedTxid !== null
         || family.tx2?.attemptedTxid !== null
+        || (
+          domain !== null
+          && (
+            domain.localAnchorIntent !== "reserved"
+            || domain.dedicatedIndex === null
+            || domain.dedicatedIndex !== reservedDedicatedIndex
+          )
+        )
       ) {
         throw new Error("wallet_anchor_clear_inconsistent_state");
       }
@@ -1841,54 +1862,11 @@ export async function clearPendingAnchor(
       await confirmAnchorClear(
         options.prompter,
         normalizedDomainName,
-        family.reservedDedicatedIndex,
+        reservedDedicatedIndex,
         options.assumeYes ?? false,
       );
-
-      const operation = resolveAnchorOperation(
-        readContext,
-        normalizedDomainName,
-        family.foundingMessageText ?? null,
-        family.foundingMessagePayloadHex ?? null,
-      );
-      const targetIdentity = deriveAnchorTargetIdentityForIndex(
-        readContext.localState.state,
-        family.reservedDedicatedIndex,
-      );
-      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-        dataDir: options.dataDir,
-        chain: "main",
-        startHeight: 0,
-        walletRootId: readContext.localState.state.walletRootId,
-      });
-      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-      const walletName = readContext.localState.state.managedCoreWallet.walletName;
-      const reconciled = await reconcileAnchorFamily({
-        state: readContext.localState.state,
-        family,
-        operation: {
-          ...operation,
-          targetIdentity,
-        },
-        provider,
-        nowUnixMs,
-        paths,
-        unlockUntilUnixMs: readContext.localState.unlockUntilUnixMs,
-        rpc,
-        walletName,
-      });
-
-      if (reconciled.resolution !== "not-seen") {
-        throw new Error(
-          reconciled.resolution === "repair-required"
-            ? "wallet_anchor_clear_not_clearable_repair_required"
-            : `wallet_anchor_clear_not_clearable_${reconciled.resolution}`,
-        );
-      }
-
-      const releasedDedicatedIndex = family.reservedDedicatedIndex;
       const releasedState = releaseClearedAnchorReservationState({
-        state: reconciled.state,
+        state: readContext.localState.state,
         familyId: family.familyId,
         domainName: normalizedDomainName,
         nowUnixMs,
@@ -1910,7 +1888,7 @@ export async function clearPendingAnchor(
         cleared: true,
         previousFamilyStatus: family.status,
         previousFamilyStep: family.currentStep ?? null,
-        releasedDedicatedIndex,
+        releasedDedicatedIndex: reservedDedicatedIndex,
       };
     } finally {
       await readContext.close();

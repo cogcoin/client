@@ -36,7 +36,7 @@ export function createStopSignalWatcher(
 
     const onFirstSignal = (): void => {
       closing = true;
-      writeLine(stderr, "Stopping managed Cogcoin client...");
+      writeLine(stderr, "Detaching from managed Cogcoin client...");
       void client.close().then(
         () => {
           settle(0);

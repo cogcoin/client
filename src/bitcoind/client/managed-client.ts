@@ -27,7 +27,8 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
   readonly #rpc: BitcoinRpcClient;
   readonly #progress: ManagedProgressController;
   readonly #bootstrap: AssumeUtxoBootstrapController;
-  readonly #indexerDaemon: IndexerDaemonClient | null;
+  #indexerDaemon: IndexerDaemonClient | null;
+  readonly #reattachIndexerDaemon: (() => Promise<IndexerDaemonClient | null>) | null;
   readonly #startHeight: number;
   readonly #syncDebounceMs: number;
   #following = false;
@@ -49,6 +50,7 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     progress: ManagedProgressController,
     bootstrap: AssumeUtxoBootstrapController,
     indexerDaemon: IndexerDaemonClient | null,
+    reattachIndexerDaemon: (() => Promise<IndexerDaemonClient | null>) | null,
     startHeight: number,
     syncDebounceMs: number,
   ) {
@@ -59,6 +61,7 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     this.#progress = progress;
     this.#bootstrap = bootstrap;
     this.#indexerDaemon = indexerDaemon;
+    this.#reattachIndexerDaemon = reattachIndexerDaemon;
     this.#startHeight = startHeight;
     this.#syncDebounceMs = syncDebounceMs;
   }
@@ -226,7 +229,7 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     await this.#progress.close();
     await this.#node.stop();
     await this.#client.close();
-    await this.#indexerDaemon?.resumeBackgroundFollow().catch(() => undefined);
+    await this.#resumeIndexerBackgroundFollow();
     await this.#indexerDaemon?.close();
   }
 
@@ -263,5 +266,24 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     if (this.#closed) {
       throw new Error("managed_bitcoind_client_closed");
     }
+  }
+
+  async #resumeIndexerBackgroundFollow(): Promise<void> {
+    if (this.#indexerDaemon === null) {
+      return;
+    }
+
+    try {
+      await this.#indexerDaemon.resumeBackgroundFollow();
+      return;
+    } catch (error) {
+      if (this.#reattachIndexerDaemon === null) {
+        throw error;
+      }
+    }
+
+    const replacementDaemon = await this.#reattachIndexerDaemon();
+    this.#indexerDaemon = replacementDaemon;
+    await replacementDaemon?.resumeBackgroundFollow();
   }
 }

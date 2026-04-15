@@ -8097,7 +8097,7 @@ test("sync shuts down the managed bitcoind client on SIGTERM", async () => {
 
   assert.equal(code, 0);
   assert.equal(closed, true);
-  assert.match(stderr.toString(), /Stopping managed Cogcoin client/);
+  assert.match(stderr.toString(), /Detaching from managed Cogcoin client/);
 });
 
 test("restore clears wallet-control.lock on SIGINT", async () => {
@@ -8257,7 +8257,7 @@ test("follow stays active until signal and shuts down cleanly", async () => {
   assert.equal(closed, true);
   assert.equal(walletRootId, "wallet-root-follow");
   assert.match(stdout.toString(), /Following managed Cogcoin tip/);
-  assert.match(stderr.toString(), /Stopping managed Cogcoin client/);
+  assert.match(stderr.toString(), /Detaching from managed Cogcoin client/);
 });
 
 test("follow does not print a startup line when tty progress is active", async () => {
@@ -8305,7 +8305,7 @@ test("follow does not print a startup line when tty progress is active", async (
 
   assert.equal(code, 0);
   assert.equal(stdout.toString(), "");
-  assert.match(stderr.toString(), /Stopping managed Cogcoin client/);
+  assert.match(stderr.toString(), /Detaching from managed Cogcoin client/);
 });
 
 test("formatStatusReport keeps live node claims passive", async () => {

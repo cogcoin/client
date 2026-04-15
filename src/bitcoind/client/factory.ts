@@ -127,6 +127,8 @@ async function createManagedBitcoindClient(
     // The persistent service may already exist from a non-processing attach path
     // that used startHeight 0. Cogcoin replay still begins at the requested
     // processing boundary for this managed client.
+    const databasePath = options.databasePath ?? null;
+
     return new DefaultManagedBitcoindClient(
       client,
       options.store,
@@ -135,6 +137,14 @@ async function createManagedBitcoindClient(
       progress,
       bootstrap,
       indexerDaemon,
+      databasePath
+        ? async () => attachOrStartIndexerDaemon({
+          dataDir,
+          databasePath,
+          walletRootId: options.walletRootId,
+          startupTimeoutMs: options.startupTimeoutMs,
+        })
+        : null,
       options.startHeight,
       options.syncDebounceMs ?? DEFAULT_SYNC_DEBOUNCE_MS,
     );

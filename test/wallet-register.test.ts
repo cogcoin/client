@@ -4677,6 +4677,107 @@ test("clearPendingAnchor cancels a reserved draft family and releases its dedica
   assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.currentOwnerLocalIndex, 3);
 });
 
+test("clearPendingAnchor cancels a reserved draft family even when the local domain record is missing", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-clear-missing-domain-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const reservedIdentity = deriveWalletIdentityMaterial(baseState.keys.accountXprv, 3);
+  const state = {
+    ...baseState,
+    nextDedicatedIndex: 4,
+    identities: [
+      ...baseState.identities,
+      {
+        index: 3,
+        scriptPubKeyHex: reservedIdentity.scriptPubKeyHex,
+        address: reservedIdentity.address,
+        status: "dedicated" as const,
+        assignedDomainNames: [],
+      },
+    ],
+    domains: [],
+    proactiveFamilies: [
+      {
+        familyId: "anchor-family-clear-missing-domain",
+        type: "anchor",
+        status: "draft" as const,
+        intentFingerprintHex: "cd".repeat(32),
+        createdAtUnixMs: 1_700_000_000_000,
+        lastUpdatedAtUnixMs: 1_700_000_000_000,
+        domainName: "weatherbot",
+        domainId: 10,
+        sourceSenderLocalIndex: 0,
+        sourceSenderScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        reservedDedicatedIndex: 3,
+        reservedScriptPubKeyHex: reservedIdentity.scriptPubKeyHex,
+        foundingMessageText: null,
+        foundingMessagePayloadHex: null,
+        listingCancelCommitted: false,
+        currentStep: "reserved",
+        tx1: {
+          status: "draft",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+        tx2: {
+          status: "draft",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+      },
+    ],
+  } satisfies WalletStateV1;
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
+  });
+
+  const clearPrompter = new ScriptedPrompter(["y"]);
+
+  const cleared = await clearPendingAnchor({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: clearPrompter,
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => {
+      throw new Error("should_not_attach_service_for_reserved_clear");
+    },
+    rpcFactory: () => {
+      throw new Error("should_not_create_rpc_for_reserved_clear");
+    },
+    nowUnixMs: 1_700_000_485_000,
+  });
+
+  const saved = await loadWalletState({
+    primaryPath: paths.walletStatePath,
+    backupPath: paths.walletStateBackupPath,
+  }, {
+    provider,
+  });
+
+  assert.deepEqual(cleared, {
+    domainName: "weatherbot",
+    cleared: true,
+    previousFamilyStatus: "draft",
+    previousFamilyStep: "reserved",
+    releasedDedicatedIndex: 3,
+  });
+  assert.deepEqual(clearPrompter.prompts, ['Clear pending anchor for "weatherbot"? [y/N]: ']);
+  assert.equal(saved.state.proactiveFamilies[0]?.status, "canceled");
+  assert.deepEqual(saved.state.domains, []);
+  assert.equal(saved.state.nextDedicatedIndex, 4);
+});
+
 test("clearPendingAnchor returns a no-op result when the domain has no pending anchor family", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-clear-noop-"));
   const paths = createTempWalletPaths(tempRoot);
