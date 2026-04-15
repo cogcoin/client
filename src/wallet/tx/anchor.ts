@@ -271,26 +271,85 @@ function findAnchorFamilyById(
   return state.proactiveFamilies.find((family) => family.familyId === familyId) ?? null;
 }
 
-function selectNextDedicatedIdentityTarget(
+function collectActivelyReservedDedicatedIndices(
   state: WalletStateV1,
-): AnchorIdentityTarget {
+): Set<number> {
   const reservedIndices = new Set<number>();
 
   for (const domain of state.domains) {
-    if (domain.dedicatedIndex !== null) {
+    if (domain.dedicatedIndex !== null && domain.localAnchorIntent !== "none") {
       reservedIndices.add(domain.dedicatedIndex);
     }
   }
 
   for (const family of state.proactiveFamilies) {
-    if (family.type === "anchor" && family.reservedDedicatedIndex !== null && family.reservedDedicatedIndex !== undefined) {
+    if (
+      family.type === "anchor"
+      && ACTIVE_FAMILY_STATUSES.has(family.status)
+      && family.reservedDedicatedIndex !== null
+      && family.reservedDedicatedIndex !== undefined
+    ) {
       reservedIndices.add(family.reservedDedicatedIndex);
     }
   }
 
+  return reservedIndices;
+}
+
+function selectReusableDedicatedIdentityTarget(
+  state: WalletStateV1,
+) : AnchorIdentityTarget | null {
+  const reservedIndices = collectActivelyReservedDedicatedIndices(state);
+  const reusableIdentity = state.identities
+    .filter((identity) =>
+      identity.status === "dedicated"
+      && identity.address !== null
+      && identity.assignedDomainNames.length === 0
+      && !reservedIndices.has(identity.index)
+    )
+    .sort((left, right) => left.index - right.index)[0];
+
+  if (reusableIdentity == null) {
+    return null;
+  }
+
+  const material = deriveWalletIdentityMaterial(state.keys.accountXprv, reusableIdentity.index);
+  const reusableAddress = reusableIdentity.address;
+
+  if (reusableAddress === null) {
+    return null;
+  }
+
+  return {
+    ...material,
+    localIndex: reusableIdentity.index,
+    address: reusableAddress,
+    scriptPubKeyHex: reusableIdentity.scriptPubKeyHex,
+  };
+}
+
+function selectFreshDedicatedIdentityTarget(
+  state: WalletStateV1,
+): AnchorIdentityTarget {
+  const unavailableIndices = new Set<number>();
+
+  for (const identity of state.identities) {
+    unavailableIndices.add(identity.index);
+  }
+
+  for (const domain of state.domains) {
+    if (domain.dedicatedIndex !== null) {
+      unavailableIndices.add(domain.dedicatedIndex);
+    }
+  }
+
+  for (const index of collectActivelyReservedDedicatedIndices(state)) {
+    unavailableIndices.add(index);
+  }
+
   const startIndex = Math.max(1, state.nextDedicatedIndex);
   for (let index = startIndex; index <= state.descriptor.rangeEnd; index += 1) {
-    if (reservedIndices.has(index)) {
+    if (unavailableIndices.has(index)) {
       continue;
     }
 
@@ -302,6 +361,12 @@ function selectNextDedicatedIdentityTarget(
   }
 
   throw new Error("wallet_anchor_no_fresh_dedicated_index");
+}
+
+function selectNextDedicatedIdentityTarget(
+  state: WalletStateV1,
+): AnchorIdentityTarget {
+  return selectReusableDedicatedIdentityTarget(state) ?? selectFreshDedicatedIdentityTarget(state);
 }
 
 function encodeFoundingMessage(

@@ -4146,6 +4146,361 @@ test("anchorDomain builds Case A from funding identity zero and persists a live 
   assert.notEqual(saved.state.proactiveFamilies[0]?.foundingMessagePayloadHex, null);
   assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.localAnchorIntent, "tx2-live");
   assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.currentOwnerLocalIndex, 3);
+  assert.equal(saved.state.nextDedicatedIndex, 4);
+});
+
+test("anchorDomain reuses the lowest empty dedicated identity before allocating a fresh one", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-reuse-empty-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const reusableIdentity = deriveWalletIdentityMaterial(baseState.keys.accountXprv, 1);
+  const state = {
+    ...baseState,
+    nextDedicatedIndex: 3,
+    identities: [
+      baseState.identities[0]!,
+      {
+        index: 1,
+        scriptPubKeyHex: reusableIdentity.scriptPubKeyHex,
+        address: reusableIdentity.address,
+        status: "dedicated" as const,
+        assignedDomainNames: [],
+      },
+      baseState.identities[2]!,
+    ],
+    domains: [
+      {
+        name: "beta",
+        domainId: 2,
+        dedicatedIndex: 2,
+        currentOwnerScriptPubKeyHex: baseState.identities[2]!.scriptPubKeyHex,
+        currentOwnerLocalIndex: 2,
+        canonicalChainStatus: "anchored" as const,
+        localAnchorIntent: "none" as const,
+        currentCanonicalAnchorOutpoint: {
+          txid: "bb".repeat(32),
+          vout: 1,
+          valueSats: 2_000,
+        },
+        foundingMessageText: "beta founded",
+        birthTime: 1_700_000_001,
+      },
+      {
+        name: "weatherbot",
+        domainId: 10,
+        dedicatedIndex: 0,
+        currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        currentOwnerLocalIndex: 0,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "none" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+    ],
+  } satisfies WalletStateV1;
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "weatherbot",
+    ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
+  });
+
+  const harness = createAnchorRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    fundingAddress: state.funding.address,
+    senderScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    senderAddress: state.funding.address,
+    targetScriptPubKeyHex: reusableIdentity.scriptPubKeyHex,
+    targetAddress: reusableIdentity.address,
+  });
+
+  const result = await anchorDomain({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["weatherbot"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_450_000,
+  });
+
+  const saved = await loadWalletState({
+    primaryPath: paths.walletStatePath,
+    backupPath: paths.walletStateBackupPath,
+  }, {
+    provider,
+  });
+
+  assert.equal(result.dedicatedIndex, 1);
+  assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.currentOwnerLocalIndex, 1);
+  assert.equal(saved.state.nextDedicatedIndex, 3);
+  assert.equal(
+    (harness.captured.calls[0]?.outputs[1] as Record<string, number>)[reusableIdentity.address],
+    0.00002,
+  );
+});
+
+test("anchorDomain skips dedicated identities that already own domains and falls back to the next empty one", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-skip-owned-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const reusableIdentity = deriveWalletIdentityMaterial(baseState.keys.accountXprv, 2);
+  const occupiedIdentity = deriveWalletIdentityMaterial(baseState.keys.accountXprv, 1);
+  const state = {
+    ...baseState,
+    nextDedicatedIndex: 3,
+    identities: [
+      baseState.identities[0]!,
+      {
+        index: 1,
+        scriptPubKeyHex: occupiedIdentity.scriptPubKeyHex,
+        address: occupiedIdentity.address,
+        status: "dedicated" as const,
+        assignedDomainNames: ["holding"],
+      },
+      {
+        index: 2,
+        scriptPubKeyHex: reusableIdentity.scriptPubKeyHex,
+        address: reusableIdentity.address,
+        status: "dedicated" as const,
+        assignedDomainNames: [],
+      },
+    ],
+    domains: [
+      {
+        name: "holding",
+        domainId: 2,
+        dedicatedIndex: 1,
+        currentOwnerScriptPubKeyHex: occupiedIdentity.scriptPubKeyHex,
+        currentOwnerLocalIndex: 1,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "none" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+      {
+        name: "weatherbot",
+        domainId: 10,
+        dedicatedIndex: 0,
+        currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        currentOwnerLocalIndex: 0,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "none" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+    ],
+  } satisfies WalletStateV1;
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 2,
+    domainName: "holding",
+    ownerScriptPubKeyHex: occupiedIdentity.scriptPubKeyHex,
+  });
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "weatherbot",
+    ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
+  });
+
+  const harness = createAnchorRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    fundingAddress: state.funding.address,
+    senderScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    senderAddress: state.funding.address,
+    targetScriptPubKeyHex: reusableIdentity.scriptPubKeyHex,
+    targetAddress: reusableIdentity.address,
+  });
+
+  const result = await anchorDomain({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["weatherbot"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_460_000,
+  });
+
+  assert.equal(result.dedicatedIndex, 2);
+});
+
+test("anchorDomain does not reuse an empty dedicated identity that is still locally reserved", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-skip-reserved-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const reservedIdentity = deriveWalletIdentityMaterial(baseState.keys.accountXprv, 1);
+  const freshIdentity = deriveWalletIdentityMaterial(baseState.keys.accountXprv, 3);
+  const state = {
+    ...baseState,
+    nextDedicatedIndex: 3,
+    identities: [
+      baseState.identities[0]!,
+      {
+        index: 1,
+        scriptPubKeyHex: reservedIdentity.scriptPubKeyHex,
+        address: reservedIdentity.address,
+        status: "dedicated" as const,
+        assignedDomainNames: [],
+      },
+    ],
+    domains: [
+      {
+        name: "reserved-target",
+        domainId: 2,
+        dedicatedIndex: 1,
+        currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        currentOwnerLocalIndex: 0,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "reserved" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+      {
+        name: "weatherbot",
+        domainId: 10,
+        dedicatedIndex: 0,
+        currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        currentOwnerLocalIndex: 0,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "none" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+    ],
+    proactiveFamilies: [
+      {
+        familyId: "anchor-family-reserved",
+        type: "anchor",
+        status: "broadcasting" as const,
+        intentFingerprintHex: "cc".repeat(32),
+        createdAtUnixMs: 1_700_000_000_000,
+        lastUpdatedAtUnixMs: 1_700_000_000_000,
+        domainName: "reserved-target",
+        domainId: 2,
+        sourceSenderLocalIndex: 0,
+        sourceSenderScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        reservedDedicatedIndex: 1,
+        reservedScriptPubKeyHex: reservedIdentity.scriptPubKeyHex,
+        foundingMessageText: null,
+        foundingMessagePayloadHex: null,
+        listingCancelCommitted: false,
+        currentStep: "tx1",
+        tx1: {
+          status: "broadcasting",
+          attemptedTxid: "44".repeat(32),
+          attemptedWtxid: "55".repeat(32),
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: "deadbeef",
+        },
+        tx2: {
+          status: "draft",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+      },
+    ],
+  } satisfies WalletStateV1;
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 2,
+    domainName: "reserved-target",
+    ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
+  });
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "weatherbot",
+    ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
+  });
+
+  const harness = createAnchorRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    fundingAddress: state.funding.address,
+    senderScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    senderAddress: state.funding.address,
+    targetScriptPubKeyHex: freshIdentity.scriptPubKeyHex,
+    targetAddress: freshIdentity.address,
+  });
+
+  const result = await anchorDomain({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["weatherbot"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_470_000,
+  });
+
+  const saved = await loadWalletState({
+    primaryPath: paths.walletStatePath,
+    backupPath: paths.walletStateBackupPath,
+  }, {
+    provider,
+  });
+
+  assert.equal(result.dedicatedIndex, 3);
+  assert.equal(saved.state.nextDedicatedIndex, 4);
 });
 
 test("anchorDomain builds Case B from an anchored local owner and relocks both replacement anchors", async () => {
@@ -4375,6 +4730,7 @@ test("anchorDomain continues into Tx2 when a prior Tx1 becomes visible on retry"
 
   assert.equal(retried.reusedExisting, true);
   assert.equal(retried.status, "live");
+  assert.equal(retried.dedicatedIndex, saved.state.proactiveFamilies[0]?.reservedDedicatedIndex);
   assert.equal(retryHarness.sendCount, 1);
   assert.equal(retryHarness.captured.calls.length, 1);
   assert.equal(retryHarness.captured.calls[0]?.inputs[0]?.txid, retryHarness.tx1Txid);
