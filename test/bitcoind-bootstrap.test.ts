@@ -1098,6 +1098,107 @@ test("waitForHeaders turns a no-peer stall into an actionable error", async () =
   );
 });
 
+test("waitForHeaders uses debug.log header progress when RPC headers lag", async () => {
+  const messages: string[] = [];
+  const headersSeen: Array<number | null | undefined> = [];
+  let infoCalls = 0;
+
+  await waitForHeadersForTesting(
+    {
+      async getBlockchainInfo() {
+        infoCalls += 1;
+
+        return {
+          chain: "main",
+          blocks: infoCalls === 1 ? 0 : DEFAULT_SNAPSHOT_METADATA.height,
+          headers: infoCalls === 1 ? 0 : DEFAULT_SNAPSHOT_METADATA.height,
+          bestblockhash: "22".repeat(32),
+          pruned: false,
+        };
+      },
+      async getNetworkInfo() {
+        return {
+          networkactive: true,
+          connections: 8,
+          connections_in: 0,
+          connections_out: 8,
+        };
+      },
+    },
+    DEFAULT_SNAPSHOT_METADATA,
+    {
+      async setPhase(_phase, patch = {}) {
+        messages.push(patch.message ?? "");
+        headersSeen.push(patch.headers);
+      },
+    },
+    {
+      sleep: async () => {},
+      debugLogPath: "/tmp/cogcoin-debug.log",
+      async readDebugLogProgress() {
+        return {
+          height: 88_000,
+          message: "Pre-synchronizing blockheaders, height: 88,000 (~9.67%)",
+        };
+      },
+    },
+  );
+
+  assert.equal(headersSeen[0], 88_000);
+  assert.equal(messages[0], "Pre-synchronizing blockheaders, height: 88,000 (~9.67%)");
+  assert.equal(messages.at(-1), "Waiting for Bitcoin headers to reach the snapshot height.");
+});
+
+test("waitForHeaders ignores debug.log progress as soon as RPC headers become positive", async () => {
+  const messages: string[] = [];
+  const headersSeen: Array<number | null | undefined> = [];
+  let debugLogReads = 0;
+
+  await waitForHeadersForTesting(
+    {
+      async getBlockchainInfo() {
+        return {
+          chain: "main",
+          blocks: DEFAULT_SNAPSHOT_METADATA.height,
+          headers: DEFAULT_SNAPSHOT_METADATA.height,
+          bestblockhash: "33".repeat(32),
+          pruned: false,
+        };
+      },
+      async getNetworkInfo() {
+        return {
+          networkactive: true,
+          connections: 8,
+          connections_in: 0,
+          connections_out: 8,
+        };
+      },
+    },
+    DEFAULT_SNAPSHOT_METADATA,
+    {
+      async setPhase(_phase, patch = {}) {
+        messages.push(patch.message ?? "");
+        headersSeen.push(patch.headers);
+      },
+    },
+    {
+      sleep: async () => {},
+      debugLogPath: "/tmp/cogcoin-debug.log",
+      async readDebugLogProgress() {
+        debugLogReads += 1;
+        return {
+          height: 88_000,
+          message: "Pre-synchronizing blockheaders, height: 88,000 (~9.67%)",
+        };
+      },
+    },
+  );
+
+  assert.equal(debugLogReads, 0);
+  assert.equal(headersSeen[0], DEFAULT_SNAPSHOT_METADATA.height);
+  assert.equal(messages[0], "Waiting for Bitcoin headers to reach the snapshot height.");
+});
+
 test("waitForHeaders retries transient managed RPC outages and resumes polling", async () => {
   const messages: string[] = [];
   const lastErrors: Array<string | null | undefined> = [];
@@ -1864,6 +1965,20 @@ test("status field text maps bootstrap phases to the requested copy", () => {
     DEFAULT_SNAPSHOT_METADATA.height,
     1_500,
   );
+  const waitHeaders = resolveStatusFieldTextForTesting(
+    createBootstrapProgressForTesting("wait_headers_for_snapshot", DEFAULT_SNAPSHOT_METADATA),
+    DEFAULT_SNAPSHOT_METADATA.height,
+    1_500,
+  );
+  const waitHeadersRpc = resolveStatusFieldTextForTesting(
+    {
+      ...createBootstrapProgressForTesting("wait_headers_for_snapshot", DEFAULT_SNAPSHOT_METADATA),
+      headers: 1,
+      message: "Waiting for Bitcoin headers to reach the snapshot height.",
+    },
+    DEFAULT_SNAPSHOT_METADATA.height,
+    1_500,
+  );
   const bitcoin = resolveStatusFieldTextForTesting(
     createBootstrapProgressForTesting("bitcoin_sync", DEFAULT_SNAPSHOT_METADATA),
     DEFAULT_SNAPSHOT_METADATA.height,
@@ -1879,6 +1994,8 @@ test("status field text maps bootstrap phases to the requested copy", () => {
   assert.equal(downloadMid, "Downloading snapshot to 910000.  ");
   assert.equal(downloadFull, "Downloading snapshot to 910000.. ");
   assert.equal(downloadOverflow, "Downloading snapshot to 910000...");
+  assert.equal(waitHeaders, "Pre-synchronizing blockheaders...");
+  assert.equal(waitHeadersRpc, "Waiting for Bitcoin headers to reach the snapshot height...");
   assert.equal(bitcoin, "Syncing Bitcoin Blocks...");
   assert.equal(cogcoin, "Waiting for next block to be mined...");
 });
@@ -1933,7 +2050,7 @@ test("follow_tip progress formatting shows the live indeterminate bar without he
   assert.notEqual(first, second);
 });
 
-test("wait_headers_for_snapshot progress formatting shows a live indeterminate bar before headers arrive", () => {
+test("wait_headers_for_snapshot progress formatting shows a determinate empty bar before headers arrive", () => {
   const progress = createBootstrapProgressForTesting("wait_headers_for_snapshot", DEFAULT_SNAPSHOT_METADATA);
   progress.headers = 0;
   progress.targetHeight = 910_000;
@@ -1941,15 +2058,26 @@ test("wait_headers_for_snapshot progress formatting shows a live indeterminate b
   const first = formatProgressLineForTesting(progress, null, null, 120, 0);
   const second = formatProgressLineForTesting(progress, null, null, 120, 1_000);
 
-  assert.match(first, /^\[[█░]{20}\] Headers 0 \/ 910,000 Waiting for Bitcoin headers to reach the snapshot height\./);
-  assert.match(second, /^\[[█░]{20}\] Headers 0 \/ 910,000 Waiting for Bitcoin headers to reach the snapshot height\./);
-  assert.notEqual(first, second);
+  assert.equal(first, "[░░░░░░░░░░░░░░░░░░░░] Headers 0 / 910,000 Pre-synchronizing blockheaders.");
+  assert.equal(second, first);
+});
+
+test("wait_headers_for_snapshot progress formatting shows the debug.log message while RPC headers lag", () => {
+  const progress = createBootstrapProgressForTesting("wait_headers_for_snapshot", DEFAULT_SNAPSHOT_METADATA);
+  progress.headers = 88_000;
+  progress.targetHeight = 910_000;
+  progress.message = "Pre-synchronizing blockheaders, height: 88,000 (~9.67%)";
+
+  const line = formatProgressLineForTesting(progress, null, null, 120, 0);
+
+  assert.equal(line, "[██░░░░░░░░░░░░░░░░░░] Headers 88,000 / 910,000 Pre-synchronizing blockheaders, height: 88,000 (~9.67%)");
 });
 
 test("wait_headers_for_snapshot progress formatting switches to a ratio bar after headers start moving", () => {
   const progress = createBootstrapProgressForTesting("wait_headers_for_snapshot", DEFAULT_SNAPSHOT_METADATA);
   progress.headers = 455_000;
   progress.targetHeight = 910_000;
+  progress.message = "Waiting for Bitcoin headers to reach the snapshot height.";
 
   const line = formatProgressLineForTesting(progress, null, null, 120, 0);
 

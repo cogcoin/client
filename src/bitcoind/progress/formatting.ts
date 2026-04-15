@@ -15,7 +15,7 @@ export function createDefaultMessage(phase: BootstrapPhase): string {
     case "snapshot_download":
       return "Downloading UTXO snapshot.";
     case "wait_headers_for_snapshot":
-      return "Waiting for Bitcoin headers to reach the snapshot height.";
+      return "Pre-synchronizing blockheaders.";
     case "load_snapshot":
       return "Loading the UTXO snapshot into bitcoind.";
     case "bitcoin_sync":
@@ -166,6 +166,9 @@ export function resolveStatusFieldText(
     case "snapshot_download":
       return `Downloading snapshot to ${snapshotHeight}${animateStatusEllipsis(now)}`;
     case "wait_headers_for_snapshot":
+      return progress.message === "Waiting for Bitcoin headers to reach the snapshot height."
+        ? `Waiting for Bitcoin headers to reach the snapshot height${animateStatusEllipsis(now)}`
+        : `Pre-synchronizing blockheaders${animateStatusEllipsis(now)}`;
     case "load_snapshot":
     case "bitcoin_sync":
       return `Syncing Bitcoin Blocks${animateStatusEllipsis(now)}`;
@@ -235,9 +238,7 @@ export function formatProgressLine(
     case "wait_headers_for_snapshot": {
       const headers = progress.headers ?? 0;
       const target = progress.targetHeight ?? headers;
-      const bar = headers > 0
-        ? renderBar(headers, target, 20)
-        : renderIndeterminateBar(20, now);
+      const bar = renderBar(headers, target, 20);
       line = `${bar} Headers ${headers.toLocaleString()} / ${target.toLocaleString()} ${progress.message}`;
       break;
     }

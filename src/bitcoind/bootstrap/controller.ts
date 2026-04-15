@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import type { ClientTip } from "../../types.js";
 import { createBootstrapProgressForTesting, ManagedProgressController } from "../progress.js";
 import { BitcoinRpcClient } from "../rpc.js";
@@ -36,6 +38,7 @@ export class AssumeUtxoBootstrapController {
   readonly #paths: BootstrapPaths;
   readonly #progress: ManagedProgressController;
   readonly #snapshot: SnapshotMetadata;
+  readonly #debugLogPath: string;
   readonly #manifest: SnapshotChunkManifest | undefined;
   readonly #fetchImpl?: typeof fetch;
   #stateRecordPromise: Promise<LoadedBootstrapState> | null = null;
@@ -53,6 +56,7 @@ export class AssumeUtxoBootstrapController {
     this.#snapshot = options.snapshot ?? DEFAULT_SNAPSHOT_METADATA;
     this.#manifest = options.manifest;
     this.#paths = resolveBootstrapPaths(options.dataDir, this.#snapshot);
+    this.#debugLogPath = join(options.dataDir, "debug.log");
     this.#fetchImpl = options.fetchImpl;
   }
 
@@ -120,6 +124,7 @@ export class AssumeUtxoBootstrapController {
       await waitForHeaders(this.#rpc, this.#snapshot, this.#progress, {
         signal: options.signal,
         retryState: options.retryState,
+        debugLogPath: this.#debugLogPath,
       });
       await this.#progress.setPhase("load_snapshot", {
         downloadedBytes: this.#snapshot.sizeBytes,
