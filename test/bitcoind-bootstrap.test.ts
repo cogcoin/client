@@ -1795,6 +1795,30 @@ test("follow_tip progress formatting shows the live indeterminate bar without he
   assert.notEqual(first, second);
 });
 
+test("wait_headers_for_snapshot progress formatting shows a live indeterminate bar before headers arrive", () => {
+  const progress = createBootstrapProgressForTesting("wait_headers_for_snapshot", DEFAULT_SNAPSHOT_METADATA);
+  progress.headers = 0;
+  progress.targetHeight = 910_000;
+
+  const first = formatProgressLineForTesting(progress, null, null, 120, 0);
+  const second = formatProgressLineForTesting(progress, null, null, 120, 1_000);
+
+  assert.match(first, /^\[[█░]{20}\] Headers 0 \/ 910,000 Waiting for Bitcoin headers to reach the snapshot height\./);
+  assert.match(second, /^\[[█░]{20}\] Headers 0 \/ 910,000 Waiting for Bitcoin headers to reach the snapshot height\./);
+  assert.notEqual(first, second);
+});
+
+test("wait_headers_for_snapshot progress formatting switches to a ratio bar after headers start moving", () => {
+  const progress = createBootstrapProgressForTesting("wait_headers_for_snapshot", DEFAULT_SNAPSHOT_METADATA);
+  progress.headers = 455_000;
+  progress.targetHeight = 910_000;
+
+  const line = formatProgressLineForTesting(progress, null, null, 120, 0);
+
+  assert.match(line, /^\[[█░]{20}\] Headers 455,000 \/ 910,000 Waiting for Bitcoin headers to reach the snapshot height\./);
+  assert.ok(!line.includes("Headers 0 / 910,000"));
+});
+
 test("progress formatting reports bitcoin and cogcoin height progress", () => {
   const bitcoinProgress = createBootstrapProgressForTesting("bitcoin_sync", DEFAULT_SNAPSHOT_METADATA);
   bitcoinProgress.blocks = 910_500;

@@ -235,7 +235,9 @@ export function formatProgressLine(
     case "wait_headers_for_snapshot": {
       const headers = progress.headers ?? 0;
       const target = progress.targetHeight ?? headers;
-      const bar = renderBar(headers, target, 20);
+      const bar = headers > 0
+        ? renderBar(headers, target, 20)
+        : renderIndeterminateBar(20, now);
       line = `${bar} Headers ${headers.toLocaleString()} / ${target.toLocaleString()} ${progress.message}`;
       break;
     }
