@@ -722,7 +722,7 @@ test("inspectWalletLocalState respects explicit locks for provider-backed wallet
   assert.match(inspected.message ?? "", /explicitly locked/i);
 });
 
-test("inspectWalletLocalState keeps passphrase-backed wallets locked until a passphrase is supplied", async () => {
+test("inspectWalletLocalState keeps passphrase-backed wallets locked while exposing the wallet root hint", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-passphrase-locked-"));
   const paths = createTempWalletPaths(tempRoot);
   const state = createWalletState();
@@ -743,7 +743,7 @@ test("inspectWalletLocalState keeps passphrase-backed wallets locked until a pas
   });
 
   assert.equal(inspected.availability, "locked");
-  assert.equal(inspected.walletRootId, null);
+  assert.equal(inspected.walletRootId, state.walletRootId);
   assert.equal(inspected.unlockUntilUnixMs, null);
   assert.equal(inspected.hasUnlockSessionFile, false);
   assert.match(inspected.message ?? "", /wallet-state passphrase/i);

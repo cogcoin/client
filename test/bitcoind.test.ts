@@ -23,6 +23,7 @@ import {
 } from "../src/bitcoind/testing.js";
 import { openWalletReadContext } from "../src/wallet/read/index.js";
 import { resolveManagedServicePaths } from "../src/bitcoind/service-paths.js";
+import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
   INDEXER_DAEMON_SCHEMA_VERSION,
   INDEXER_DAEMON_SERVICE_API_VERSION,
@@ -77,6 +78,19 @@ function createFixture(prefix: string): RegtestFixture {
     dataDir: join(rootDir, "bitcoind"),
     databasePath: join(rootDir, "client.sqlite"),
   };
+}
+
+function createTempWalletPaths(root: string) {
+  return resolveWalletRuntimePathsForTesting({
+    platform: "linux",
+    homeDirectory: root,
+    env: {
+      XDG_DATA_HOME: join(root, "data"),
+      XDG_CONFIG_HOME: join(root, "config"),
+      XDG_STATE_HOME: join(root, "state"),
+      XDG_RUNTIME_DIR: join(root, "runtime"),
+    },
+  });
 }
 
 async function cleanupManagedFixture(fixture: RegtestFixture, ...extraDataDirs: string[]): Promise<void> {
@@ -577,13 +591,16 @@ test("managed client close detaches without stopping the managed services", asyn
 test("wallet read context close detaches without stopping managed services", async (t) => {
   await ensureBitcoinBinaries(t);
   const fixture = createFixture("cogcoin-client-read-context-detach");
+  const runtimePaths = createTempWalletPaths(join(fixture.rootDir, "wallet-home"));
   let readContext: Awaited<ReturnType<typeof openWalletReadContext>> | null = null;
 
   try {
     readContext = await openWalletReadContext({
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
+      paths: runtimePaths,
     });
+    assert.equal(readContext.localState.availability, "uninitialized");
 
     const bitcoindPidBeforeClose = readContext.nodeStatus?.pid ?? null;
     const daemonInstanceIdBeforeClose = readContext.indexer.status?.daemonInstanceId ?? null;
