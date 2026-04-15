@@ -24,7 +24,15 @@ export async function isSnapshotAlreadyLoaded(
   snapshot: SnapshotMetadata,
   state: BootstrapPersistentState,
 ): Promise<boolean> {
+  return (await findLoadedSnapshotChainState(rpc, snapshot, state)) !== null;
+}
+
+export async function findLoadedSnapshotChainState(
+  rpc: Pick<BitcoinRpcClient, "getChainStates">,
+  snapshot: SnapshotMetadata,
+  state: BootstrapPersistentState,
+): Promise<RpcChainState | null> {
   const chainStates = await rpc.getChainStates();
-  return chainStates.chainstates.some((chainState) =>
-    chainStateMatches(chainState, snapshot, state.baseHeight, state.tipHashHex));
+  return chainStates.chainstates.find((chainState) =>
+    chainStateMatches(chainState, snapshot, state.baseHeight, state.tipHashHex)) ?? null;
 }

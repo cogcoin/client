@@ -8,6 +8,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import {
+  AssumeUtxoBootstrapController,
   DEFAULT_SNAPSHOT_METADATA,
   ManagedProgressController,
   TtyProgressRenderer,
@@ -40,6 +41,7 @@ import {
   validateSnapshotFileForTesting,
   waitForHeadersForTesting,
 } from "../src/bitcoind/testing.js";
+import { MANAGED_RPC_RETRY_MESSAGE } from "../src/bitcoind/retryable-rpc.js";
 import type { SnapshotChunkManifest, SnapshotMetadata, WritingQuote } from "../src/bitcoind/types.js";
 import { createTempDirectory, removeTempDirectory } from "./bitcoind-helpers.js";
 
@@ -1094,6 +1096,142 @@ test("waitForHeaders turns a no-peer stall into an actionable error", async () =
     messages.at(-1),
     "Waiting for Bitcoin peers before downloading headers (0 peers; check internet/firewall).",
   );
+});
+
+test("waitForHeaders retries transient managed RPC outages and resumes polling", async () => {
+  const messages: string[] = [];
+  const lastErrors: Array<string | null | undefined> = [];
+  let infoCalls = 0;
+
+  await waitForHeadersForTesting(
+    {
+      async getBlockchainInfo() {
+        infoCalls += 1;
+
+        if (infoCalls === 1) {
+          throw new Error(
+            "The managed Bitcoin RPC request to 127.0.0.1:8332 for getblockchaininfo failed: The operation was aborted due to timeout.",
+          );
+        }
+
+        return {
+          chain: "main",
+          blocks: DEFAULT_SNAPSHOT_METADATA.height,
+          headers: DEFAULT_SNAPSHOT_METADATA.height,
+          bestblockhash: "11".repeat(32),
+          pruned: false,
+        };
+      },
+      async getNetworkInfo() {
+        return {
+          networkactive: true,
+          connections: 8,
+          connections_in: 0,
+          connections_out: 8,
+        };
+      },
+    },
+    DEFAULT_SNAPSHOT_METADATA,
+    {
+      async setPhase(_phase, patch = {}) {
+        messages.push(patch.message ?? "");
+        lastErrors.push(patch.lastError);
+      },
+    },
+    {
+      sleep: async () => {},
+    },
+  );
+
+  assert.equal(messages[0], MANAGED_RPC_RETRY_MESSAGE);
+  assert.match(lastErrors[0] ?? "", /getblockchaininfo failed/);
+  assert.equal(messages.at(-1), "Waiting for Bitcoin headers to reach the snapshot height.");
+  assert.equal(lastErrors.at(-1), null);
+});
+
+test("bootstrap recovers when loadtxoutset times out after the snapshot finished loading", async () => {
+  const rootDir = createTempDirectory("cogcoin-client-bootstrap-loadtxoutset-retry");
+
+  try {
+    const payload = Buffer.from("bootstrap-loadtxoutset-timeout");
+    const metadata: SnapshotMetadata = {
+      url: "https://snapshots.cogcoin.org/bootstrap-loadtxoutset-timeout.dat",
+      filename: "bootstrap-loadtxoutset-timeout.dat",
+      height: 12,
+      sha256: createHash("sha256").update(payload).digest("hex"),
+      sizeBytes: payload.length,
+    };
+    const manifest = createChunkManifestForPayload(payload, metadata);
+    const paths = resolveBootstrapPathsForTesting(rootDir, metadata);
+    const initialState = createBootstrapStateForTesting(metadata);
+    initialState.validated = true;
+    initialState.downloadedBytes = payload.length;
+    await mkdir(paths.directory, { recursive: true });
+    await writeFile(paths.snapshotPath, payload);
+    await saveBootstrapStateForTesting(paths, initialState);
+
+    let chainStateProbeCount = 0;
+    let loadCalls = 0;
+    const controller = new AssumeUtxoBootstrapController({
+      rpc: {
+        async getChainStates() {
+          chainStateProbeCount += 1;
+
+          if (chainStateProbeCount === 1) {
+            return { chainstates: [] };
+          }
+
+          return {
+            chainstates: [{
+              blocks: metadata.height,
+              validated: false,
+              snapshot_blockhash: "ab".repeat(32),
+            }],
+          };
+        },
+        async getBlockchainInfo() {
+          return {
+            chain: "main",
+            blocks: metadata.height,
+            headers: metadata.height,
+            bestblockhash: "cd".repeat(32),
+            pruned: false,
+          };
+        },
+        async getNetworkInfo() {
+          return {
+            networkactive: true,
+            connections: 8,
+            connections_in: 0,
+            connections_out: 8,
+          };
+        },
+        async loadTxOutSet() {
+          loadCalls += 1;
+          throw new Error(
+            "The managed Bitcoin RPC request to 127.0.0.1:8332 for loadtxoutset failed: The operation was aborted due to timeout.",
+          );
+        },
+      } as unknown as ConstructorParameters<typeof AssumeUtxoBootstrapController>[0]["rpc"],
+      dataDir: rootDir,
+      progress: {
+        async setPhase() {},
+      } as unknown as ConstructorParameters<typeof AssumeUtxoBootstrapController>[0]["progress"],
+      snapshot: metadata,
+      manifest,
+    });
+
+    await controller.ensureReady(null, "main");
+    const recoveredState = await controller.getStateForTesting();
+
+    assert.equal(loadCalls, 1);
+    assert.equal(recoveredState.loadTxOutSetComplete, true);
+    assert.equal(recoveredState.baseHeight, metadata.height);
+    assert.equal(recoveredState.tipHashHex, "ab".repeat(32));
+    assert.equal(recoveredState.lastError, null);
+  } finally {
+    await removeTempDirectory(rootDir);
+  }
 });
 
 test("intro scene starts as an empty scroll frame before the train enters", () => {

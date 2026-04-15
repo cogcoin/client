@@ -1,6 +1,15 @@
 import type { BitcoinBlock, Client } from "../../types.js";
 import { formatManagedSyncErrorMessage } from "../errors.js";
 import { normalizeRpcBlock } from "../normalize.js";
+import {
+  MANAGED_RPC_RETRY_MESSAGE,
+  consumeManagedRpcRetryDelayMs,
+  createManagedRpcRetryState,
+  describeManagedRpcRetryError,
+  isRetryableManagedRpcError,
+  resetManagedRpcRetryState,
+  type ManagedRpcRetryState,
+} from "../retryable-rpc.js";
 import type { RpcBlockchainInfo, SyncResult } from "../types.js";
 import type { BitcoinSyncProgressDependencies, SyncEngineDependencies, SyncPassResult } from "./internal-types.js";
 import { estimateEtaSeconds } from "./rate-tracker.js";
@@ -62,16 +71,59 @@ async function setBitcoinSyncProgress(
     headers: info.headers,
     targetHeight: info.headers,
     etaSeconds,
+    lastError: null,
     message: dependencies.node.expectedChain === "main"
       ? "Bitcoin Core is syncing blocks after assumeutxo bootstrap."
       : "Reading blocks from the managed Bitcoin node.",
   });
 }
 
+async function setRetryingProgress(
+  dependencies: Pick<SyncEngineDependencies, "progress">,
+  error: unknown,
+): Promise<void> {
+  const status = dependencies.progress.getStatusSnapshot();
+  const { phase: _phase, updatedAt: _updatedAt, ...progress } = status.bootstrapProgress;
+
+  await dependencies.progress.setPhase(status.bootstrapPhase, {
+    ...progress,
+    lastError: describeManagedRpcRetryError(error),
+    message: MANAGED_RPC_RETRY_MESSAGE,
+  });
+}
+
+async function runWithManagedRpcRetry<T>(
+  dependencies: Pick<SyncEngineDependencies, "abortSignal" | "progress">,
+  retryState: ManagedRpcRetryState,
+  operation: () => Promise<T>,
+): Promise<T> {
+  while (true) {
+    throwIfAborted(dependencies.abortSignal);
+
+    try {
+      const result = await operation();
+      resetManagedRpcRetryState(retryState);
+      return result;
+    } catch (error) {
+      if (isAbortError(error, dependencies.abortSignal)) {
+        throw createAbortError(dependencies.abortSignal);
+      }
+
+      if (!isRetryableManagedRpcError(error)) {
+        throw error;
+      }
+
+      await setRetryingProgress(dependencies, error);
+      await sleep(consumeManagedRpcRetryDelayMs(retryState), dependencies.abortSignal);
+    }
+  }
+}
+
 async function findCommonAncestor(
   dependencies: Pick<SyncEngineDependencies, "rpc" | "store" | "startHeight">,
   tip: NonNullable<Awaited<ReturnType<Client["getTip"]>>>,
   bestHeight: number,
+  runRpc: <T>(operation: () => Promise<T>) => Promise<T>,
 ): Promise<number> {
   const startHeight = Math.min(tip.height, bestHeight);
 
@@ -84,7 +136,7 @@ async function findCommonAncestor(
       continue;
     }
 
-    const chainHashHex = await dependencies.rpc.getBlockHash(height);
+    const chainHashHex = await runRpc(() => dependencies.rpc.getBlockHash(height));
 
     if (chainHashHex === localHashHex) {
       return height;
@@ -97,6 +149,7 @@ async function findCommonAncestor(
 async function syncAgainstBestHeight(
   dependencies: SyncEngineDependencies,
   bestHeight: number,
+  runRpc: <T>(operation: () => Promise<T>) => Promise<T>,
 ): Promise<SyncPassResult> {
   if (bestHeight < dependencies.startHeight) {
     return {
@@ -111,7 +164,7 @@ async function syncAgainstBestHeight(
   let commonAncestorHeight: number | null = null;
 
   if (startTip !== null) {
-    const rewindTarget = await findCommonAncestor(dependencies, startTip, bestHeight);
+    const rewindTarget = await findCommonAncestor(dependencies, startTip, bestHeight, runRpc);
 
     if (rewindTarget < startTip.height) {
       commonAncestorHeight = rewindTarget < dependencies.startHeight ? null : rewindTarget;
@@ -135,8 +188,8 @@ async function syncAgainstBestHeight(
   }
 
   for (let height = nextHeight; height <= bestHeight; height += 1) {
-    const blockHashHex = await dependencies.rpc.getBlockHash(height);
-    const rpcBlock = await dependencies.rpc.getBlock(blockHashHex);
+    const blockHashHex = await runRpc(() => dependencies.rpc.getBlockHash(height));
+    const rpcBlock = await runRpc(() => dependencies.rpc.getBlock(blockHashHex));
     const normalizedBlock: BitcoinBlock = normalizeRpcBlock(rpcBlock);
     await dependencies.client.applyBlock(normalizedBlock);
     if (typeof rpcBlock.time === "number") {
@@ -161,12 +214,17 @@ export async function syncToTip(
   dependencies: SyncEngineDependencies,
 ): Promise<SyncResult> {
   try {
+    const retryState = createManagedRpcRetryState();
+    const runRpc = <T>(operation: () => Promise<T>) =>
+      runWithManagedRpcRetry(dependencies, retryState, operation);
+
     throwIfAborted(dependencies.abortSignal);
-    await dependencies.node.validate();
+    await runRpc(() => dependencies.node.validate());
     const indexedTipBeforeBootstrap = await dependencies.client.getTip();
-    await dependencies.bootstrap.ensureReady(indexedTipBeforeBootstrap, dependencies.node.expectedChain, {
+    await runRpc(() => dependencies.bootstrap.ensureReady(indexedTipBeforeBootstrap, dependencies.node.expectedChain, {
       signal: dependencies.abortSignal,
-    });
+      retryState,
+    }));
 
     const startTip = await dependencies.client.getTip();
     const aggregate: SyncResult = {
@@ -181,10 +239,10 @@ export async function syncToTip(
 
     while (true) {
       throwIfAborted(dependencies.abortSignal);
-      const startInfo = await dependencies.rpc.getBlockchainInfo();
+      const startInfo = await runRpc(() => dependencies.rpc.getBlockchainInfo());
       await setBitcoinSyncProgress(dependencies, startInfo);
 
-      const pass = await syncAgainstBestHeight(dependencies, startInfo.blocks);
+      const pass = await syncAgainstBestHeight(dependencies, startInfo.blocks, runRpc);
       aggregate.appliedBlocks += pass.appliedBlocks;
       aggregate.rewoundBlocks += pass.rewoundBlocks;
 
@@ -195,7 +253,7 @@ export async function syncToTip(
       }
 
       const finalTip = await dependencies.client.getTip();
-      const endInfo = await dependencies.rpc.getBlockchainInfo();
+      const endInfo = await runRpc(() => dependencies.rpc.getBlockchainInfo());
       const caughtUpCogcoin = endInfo.blocks < dependencies.startHeight || finalTip?.height === endInfo.blocks;
 
       aggregate.endingHeight = finalTip?.height ?? null;
@@ -204,13 +262,15 @@ export async function syncToTip(
 
       if (endInfo.blocks === endInfo.headers && caughtUpCogcoin) {
         if (dependencies.isFollowing()) {
-          dependencies.progress.replaceFollowBlockTimes(await dependencies.loadVisibleFollowBlockTimes(finalTip));
+          dependencies.progress.replaceFollowBlockTimes(await runRpc(() =>
+            dependencies.loadVisibleFollowBlockTimes(finalTip)));
         }
 
         await dependencies.progress.setPhase(dependencies.isFollowing() ? "follow_tip" : "complete", {
           blocks: endInfo.blocks,
           headers: endInfo.headers,
           targetHeight: endInfo.headers,
+          lastError: null,
           message: dependencies.isFollowing()
             ? "Following the live Bitcoin tip."
             : "Managed sync fully caught up to the live tip.",

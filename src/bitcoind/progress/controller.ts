@@ -185,6 +185,7 @@ export class ManagedProgressController {
       phase: "cogcoin_sync",
       message: createDefaultMessage("cogcoin_sync"),
       etaSeconds,
+      lastError: null,
       updatedAt: Date.now(),
     };
 

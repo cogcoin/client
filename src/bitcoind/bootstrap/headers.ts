@@ -1,4 +1,13 @@
 import { formatManagedSyncErrorMessage } from "../errors.js";
+import {
+  MANAGED_RPC_RETRY_MESSAGE,
+  consumeManagedRpcRetryDelayMs,
+  createManagedRpcRetryState,
+  describeManagedRpcRetryError,
+  type ManagedRpcRetryState,
+  resetManagedRpcRetryState,
+  isRetryableManagedRpcError,
+} from "../retryable-rpc.js";
 import type { BitcoinRpcClient } from "../rpc.js";
 import type { ManagedProgressController } from "../progress.js";
 import {
@@ -74,20 +83,48 @@ export async function waitForHeaders(
     sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
     noPeerTimeoutMs?: number;
     signal?: AbortSignal;
+    retryState?: ManagedRpcRetryState;
   } = {},
 ): Promise<void> {
   const now = options.now ?? Date.now;
   const sleepImpl = options.sleep ?? sleep;
   const noPeerTimeoutMs = options.noPeerTimeoutMs ?? HEADER_NO_PEER_TIMEOUT_MS;
   const { signal } = options;
+  const retryState = options.retryState ?? createManagedRpcRetryState();
   let noPeerSince: number | null = null;
+  let lastBlocks = 0;
+  let lastHeaders = 0;
 
   while (true) {
     throwIfAborted(signal);
-    const [info, networkInfo] = await Promise.all([
-      rpc.getBlockchainInfo(),
-      rpc.getNetworkInfo(),
-    ]);
+    let info: Awaited<ReturnType<typeof rpc.getBlockchainInfo>>;
+    let networkInfo: Awaited<ReturnType<typeof rpc.getNetworkInfo>>;
+
+    try {
+      [info, networkInfo] = await Promise.all([
+        rpc.getBlockchainInfo(),
+        rpc.getNetworkInfo(),
+      ]);
+      resetManagedRpcRetryState(retryState);
+    } catch (error) {
+      if (!isRetryableManagedRpcError(error)) {
+        throw error;
+      }
+
+      await progress.setPhase("wait_headers_for_snapshot", {
+        headers: lastHeaders,
+        targetHeight: snapshot.height,
+        blocks: lastBlocks,
+        percent: (Math.min(lastHeaders, snapshot.height) / snapshot.height) * 100,
+        lastError: describeManagedRpcRetryError(error),
+        message: MANAGED_RPC_RETRY_MESSAGE,
+      });
+      await sleepImpl(consumeManagedRpcRetryDelayMs(retryState), signal);
+      continue;
+    }
+
+    lastBlocks = info.blocks;
+    lastHeaders = info.headers;
     const peerCount = resolvePeerCount(networkInfo);
     const message = resolveHeaderWaitMessage(info.headers, peerCount, networkInfo.networkactive);
 
@@ -96,6 +133,7 @@ export async function waitForHeaders(
       targetHeight: snapshot.height,
       blocks: info.blocks,
       percent: (Math.min(info.headers, snapshot.height) / snapshot.height) * 100,
+      lastError: null,
       message,
     });
 
