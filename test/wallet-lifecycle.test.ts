@@ -803,6 +803,7 @@ test("initializeWallet works with the Linux default secret-provider testing seam
   const paths = createTempWalletPaths(tempRoot);
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
+    stateRoot: paths.stateRoot,
     linuxSecretToolRunner: createInMemoryLinuxSecretToolRunner(),
   });
   const prompter = new CapturingPrompter();
@@ -832,6 +833,51 @@ test("initializeWallet works with the Linux default secret-provider testing seam
 
   assert.equal(result.walletRootId.startsWith("wallet-"), true);
   assert.equal(unlocked?.state.walletRootId, result.walletRootId);
+  assert.equal(harness.walletLocked, true);
+  assert.deepEqual(prompter.clearedScopes, ["mnemonic-reveal"]);
+});
+
+test("initializeWallet falls back to local Linux secret files when Secret Service is unavailable", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-init-linux-fallback-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "linux",
+    stateRoot: paths.stateRoot,
+    linuxSecretToolRunner: async () => ({
+      stdout: "",
+      stderr: "Cannot autolaunch D-Bus without X11 $DISPLAY",
+      exitCode: 1,
+      signal: null,
+    }),
+  });
+  const prompter = new CapturingPrompter();
+  const harness = createRpcHarness();
+
+  const result = await initializeWallet({
+    dataDir: paths.bitcoinDataDir,
+    provider,
+    paths,
+    prompter,
+    nowUnixMs: 1_700_000_000_000,
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+  });
+
+  await clearUnlockSession(paths.walletUnlockSessionPath);
+  const unlocked = await unlockWallet({
+    provider,
+    paths,
+    nowUnixMs: 1_700_000_000_500,
+  });
+
+  assert.equal(result.walletRootId.startsWith("wallet-"), true);
+  assert.equal(unlocked.state.walletRootId, result.walletRootId);
   assert.equal(harness.walletLocked, true);
   assert.deepEqual(prompter.clearedScopes, ["mnemonic-reveal"]);
 });

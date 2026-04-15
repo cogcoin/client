@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -81,9 +84,15 @@ function createInMemoryLinuxSecretToolRunner(): LinuxSecretToolRunner {
   };
 }
 
+async function createTempStateRoot(prefix: string): Promise<string> {
+  return await mkdtemp(join(tmpdir(), prefix));
+}
+
 test("Linux default secret provider stores, loads, and deletes secrets through the secret-tool contract", async () => {
+  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-secret-service-");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
+    stateRoot,
     linuxSecretToolRunner: createInMemoryLinuxSecretToolRunner(),
   });
   const keyId = createWalletSecretReference("wallet-root-test").keyId;
@@ -98,9 +107,89 @@ test("Linux default secret provider stores, loads, and deletes secrets through t
   await assert.rejects(() => provider.loadSecret(keyId), /wallet_secret_missing_wallet-state:wallet-root-test/);
 });
 
-test("Linux default secret provider surfaces a missing secret-tool binary clearly", async () => {
+test("Linux default secret provider falls back to a local secret file when secret-tool is missing", async () => {
+  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-missing-tool-");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
+    stateRoot,
+    linuxSecretToolRunner: async () => {
+      const error = new Error("spawn secret-tool ENOENT") as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      throw error;
+    },
+  });
+  const keyId = createWalletSecretReference("wallet-root-test").keyId;
+  const secret = Buffer.alloc(32, 9);
+
+  await provider.storeSecret(keyId, secret);
+  const loaded = await provider.loadSecret(keyId);
+
+  assert.deepEqual(loaded, new Uint8Array(secret));
+});
+
+test("Linux default secret provider falls back to a local secret file when Secret Service is unavailable", async () => {
+  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-unavailable-service-");
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "linux",
+    stateRoot,
+    linuxSecretToolRunner: async () => ({
+      stdout: "",
+      stderr: "Cannot autolaunch D-Bus without X11 $DISPLAY",
+      exitCode: 1,
+      signal: null,
+    }),
+  });
+  const keyId = createWalletSecretReference("wallet-root-test").keyId;
+  const secret = Buffer.alloc(32, 5);
+
+  await provider.storeSecret(keyId, secret);
+  const loaded = await provider.loadSecret(keyId);
+
+  assert.deepEqual(loaded, new Uint8Array(secret));
+});
+
+test("Linux default secret provider loads a local fallback secret when Secret Service has no matching item", async () => {
+  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-missing-item-");
+  const keyId = createWalletSecretReference("wallet-root-test").keyId;
+  const secret = Buffer.alloc(32, 11);
+  const fallbackProvider = createDefaultWalletSecretProviderForTesting({
+    platform: "linux",
+    stateRoot,
+    linuxSecretToolRunner: async () => {
+      const error = new Error("spawn secret-tool ENOENT") as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      throw error;
+    },
+  });
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "linux",
+    stateRoot,
+    linuxSecretToolRunner: createInMemoryLinuxSecretToolRunner(),
+  });
+
+  await fallbackProvider.storeSecret(keyId, secret);
+  const loaded = await provider.loadSecret(keyId);
+
+  assert.deepEqual(loaded, new Uint8Array(secret));
+});
+
+test("Linux default secret provider only falls back on generic runtime load failures when a local secret already exists", async () => {
+  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-generic-runtime-");
+  const keyId = createWalletSecretReference("wallet-root-test").keyId;
+  const secret = Buffer.alloc(32, 13);
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "linux",
+    stateRoot,
+    linuxSecretToolRunner: async () => ({
+      stdout: "",
+      stderr: "unexpected libsecret failure",
+      exitCode: 1,
+      signal: null,
+    }),
+  });
+  const fallbackProvider = createDefaultWalletSecretProviderForTesting({
+    platform: "linux",
+    stateRoot,
     linuxSecretToolRunner: async () => {
       const error = new Error("spawn secret-tool ENOENT") as NodeJS.ErrnoException;
       error.code = "ENOENT";
@@ -109,41 +198,44 @@ test("Linux default secret provider surfaces a missing secret-tool binary clearl
   });
 
   await assert.rejects(
-    () => provider.storeSecret("wallet-state:wallet-root-test", Buffer.alloc(32, 9)),
-    /wallet_secret_provider_linux_secret_tool_missing/,
-  );
-});
-
-test("Linux default secret provider surfaces an unavailable Secret Service session clearly", async () => {
-  const provider = createDefaultWalletSecretProviderForTesting({
-    platform: "linux",
-    linuxSecretToolRunner: async () => ({
-      stdout: "",
-      stderr: "Cannot autolaunch D-Bus without X11 $DISPLAY",
-      exitCode: 1,
-      signal: null,
-    }),
-  });
-
-  await assert.rejects(
-    () => provider.loadSecret("wallet-state:wallet-root-test"),
-    /wallet_secret_provider_linux_secret_service_unavailable/,
-  );
-});
-
-test("Linux default secret provider surfaces generic secret-tool runtime failures clearly", async () => {
-  const provider = createDefaultWalletSecretProviderForTesting({
-    platform: "linux",
-    linuxSecretToolRunner: async () => ({
-      stdout: "",
-      stderr: "unexpected libsecret failure",
-      exitCode: 1,
-      signal: null,
-    }),
-  });
-
-  await assert.rejects(
-    () => provider.storeSecret("wallet-state:wallet-root-test", Buffer.alloc(32, 5)),
+    () => provider.loadSecret(keyId),
     /wallet_secret_provider_linux_runtime_error/,
+  );
+
+  await fallbackProvider.storeSecret(keyId, secret);
+  const loaded = await provider.loadSecret(keyId);
+
+  assert.deepEqual(loaded, new Uint8Array(secret));
+});
+
+test("Linux default secret provider deletes both Secret Service and local fallback copies best-effort", async () => {
+  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-delete-both-");
+  const keyId = createWalletSecretReference("wallet-root-test").keyId;
+  const fallbackSecret = Buffer.alloc(32, 17);
+  const secretServiceSecret = Buffer.alloc(32, 19);
+  const fallbackProvider = createDefaultWalletSecretProviderForTesting({
+    platform: "linux",
+    stateRoot,
+    linuxSecretToolRunner: async () => {
+      const error = new Error("spawn secret-tool ENOENT") as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      throw error;
+    },
+  });
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "linux",
+    stateRoot,
+    linuxSecretToolRunner: createInMemoryLinuxSecretToolRunner(),
+  });
+
+  await fallbackProvider.storeSecret(keyId, fallbackSecret);
+  await provider.storeSecret(keyId, secretServiceSecret);
+  assert.deepEqual(await provider.loadSecret(keyId), new Uint8Array(secretServiceSecret));
+
+  await provider.deleteSecret(keyId);
+
+  await assert.rejects(
+    () => provider.loadSecret(keyId),
+    /wallet_secret_missing_wallet-state:wallet-root-test/,
   );
 });
