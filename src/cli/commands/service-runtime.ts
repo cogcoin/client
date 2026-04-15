@@ -58,6 +58,11 @@ interface IndexerStatusPayload {
   }) | null;
 }
 
+interface ServiceStatusEntry {
+  text: string;
+  ok: boolean;
+}
+
 function formatBool(value: boolean | null): string {
   return value === null ? "unknown" : (value ? "yes" : "no");
 }
@@ -68,6 +73,37 @@ function formatMaybe(value: number | string | null | undefined): string {
 
 function formatCompatibility(value: string): string {
   return value.replaceAll("-", " ");
+}
+
+function serviceStatusEntry(label: string, value: string, ok: boolean): ServiceStatusEntry {
+  return {
+    text: `${label}: ${value}`,
+    ok,
+  };
+}
+
+function formatServiceStatusSection(header: string, entries: readonly ServiceStatusEntry[]): string {
+  return [header, ...entries.map((entry) => `${entry.ok ? "✓" : "✗"} ${entry.text}`)].join("\n");
+}
+
+function formatSectionedServiceStatusReport(options: {
+  title: string;
+  sections: Array<{
+    header: string;
+    entries: ServiceStatusEntry[];
+  }>;
+  nextStep: string | null;
+}): string {
+  const parts = [
+    `\n⛭ ${options.title} ⛭`,
+    ...options.sections.map((section) => formatServiceStatusSection(section.header, section.entries)),
+  ];
+
+  if (options.nextStep !== null) {
+    parts.push(`Next step: ${options.nextStep}`);
+  }
+
+  return parts.join("\n\n");
 }
 
 async function resolveEffectiveWalletRootId(
@@ -172,102 +208,147 @@ async function inspectManagedIndexerStatus(
 }
 
 function formatBitcoinStatusReport(payload: BitcoinStatusPayload): string {
-  const lines = [
-    "Managed Bitcoind Status",
-    `Bitcoin datadir: ${payload.dataDir}`,
-    `Wallet root: ${payload.walletRootId}`,
-    `Wallet root source: ${payload.walletRootSource}`,
-    `Compatibility: ${formatCompatibility(payload.compatibility)}`,
+  const compatibilityOk = payload.compatibility === "compatible";
+  const serviceStateOk = payload.service?.state === "ready";
+  const nodeOk = payload.node !== null && payload.nodeError === null;
+  const managedServiceEntries = [
+    serviceStatusEntry("Compatibility", formatCompatibility(payload.compatibility), compatibilityOk),
   ];
 
   if (payload.service !== null) {
-    lines.push(`Service state: ${payload.service.state}`);
-    lines.push(`Process id: ${formatMaybe(payload.service.processId)}`);
-    lines.push(`Service instance: ${payload.service.serviceInstanceId}`);
-    lines.push(`Runtime root: ${payload.service.runtimeRoot}`);
-    lines.push(`Chain: ${payload.service.chain}`);
-    lines.push(`RPC: ${payload.service.rpc.url}`);
-    lines.push(`RPC cookie: ${payload.service.rpc.cookieFile}`);
-    lines.push(`ZMQ: ${payload.service.zmq.endpoint}`);
-    lines.push(`P2P port: ${payload.service.p2pPort}`);
-    lines.push(`Started at: ${payload.service.startedAtUnixMs}`);
-    lines.push(`Heartbeat at: ${payload.service.heartbeatAtUnixMs}`);
-    lines.push(`Updated at: ${payload.service.updatedAtUnixMs}`);
-    lines.push(`Managed Core wallet: ${payload.service.walletReplica?.proofStatus ?? "unavailable"}`);
+    managedServiceEntries.push(serviceStatusEntry("Service state", payload.service.state, serviceStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Process id", formatMaybe(payload.service.processId), serviceStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Service instance", payload.service.serviceInstanceId, serviceStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Runtime root", payload.service.runtimeRoot, serviceStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Chain", payload.service.chain, serviceStateOk));
+    managedServiceEntries.push(serviceStatusEntry("RPC", payload.service.rpc.url, serviceStateOk));
+    managedServiceEntries.push(serviceStatusEntry("RPC cookie", payload.service.rpc.cookieFile, serviceStateOk));
+    managedServiceEntries.push(serviceStatusEntry("ZMQ", payload.service.zmq.endpoint, serviceStateOk));
+    managedServiceEntries.push(serviceStatusEntry("P2P port", String(payload.service.p2pPort), serviceStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Started at", String(payload.service.startedAtUnixMs), serviceStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Heartbeat at", String(payload.service.heartbeatAtUnixMs), serviceStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Updated at", String(payload.service.updatedAtUnixMs), serviceStateOk));
+    managedServiceEntries.push(serviceStatusEntry(
+      "Managed Core wallet",
+      payload.service.walletReplica?.proofStatus ?? "unavailable",
+      payload.service.walletReplica?.proofStatus === "ready",
+    ));
     if (payload.service.lastError !== null) {
-      lines.push(`Service error: ${payload.service.lastError}`);
+      managedServiceEntries.push(serviceStatusEntry("Service error", payload.service.lastError, false));
     }
   } else {
-    lines.push("Service state: unavailable");
+    managedServiceEntries.push(serviceStatusEntry("Service state", "unavailable", false));
   }
 
-  if (payload.node !== null) {
-    lines.push(`Bitcoin best height: ${payload.node.bestHeight}`);
-    lines.push(`Bitcoin headers: ${payload.node.headerHeight}`);
-    lines.push(`Bitcoin best hash: ${payload.node.bestHash}`);
-    lines.push(`Verification progress: ${formatMaybe(payload.node.verificationProgress)}`);
-    lines.push(`Initial block download: ${formatBool(payload.node.initialBlockDownload)}`);
-    lines.push(`Network active: ${formatBool(payload.node.networkActive)}`);
-    lines.push(`Connections: ${payload.node.connections}`);
-    lines.push(`Inbound connections: ${formatMaybe(payload.node.inboundConnections)}`);
-    lines.push(`Outbound connections: ${formatMaybe(payload.node.outboundConnections)}`);
-  } else {
-    lines.push("Bitcoin node: unavailable");
-  }
+  const bitcoinNodeEntries = payload.node !== null
+    ? [
+      serviceStatusEntry("Best height", String(payload.node.bestHeight), nodeOk),
+      serviceStatusEntry("Headers", String(payload.node.headerHeight), nodeOk),
+      serviceStatusEntry("Best hash", payload.node.bestHash, nodeOk),
+      serviceStatusEntry("Verification progress", formatMaybe(payload.node.verificationProgress), nodeOk),
+      serviceStatusEntry("Initial block download", formatBool(payload.node.initialBlockDownload), nodeOk),
+      serviceStatusEntry("Network active", formatBool(payload.node.networkActive), nodeOk),
+      serviceStatusEntry("Connections", String(payload.node.connections), nodeOk),
+      serviceStatusEntry("Inbound connections", formatMaybe(payload.node.inboundConnections), nodeOk),
+      serviceStatusEntry("Outbound connections", formatMaybe(payload.node.outboundConnections), nodeOk),
+    ]
+    : [serviceStatusEntry("Node state", "unavailable", false)];
 
   if (payload.nodeError !== null) {
-    lines.push(`Node error: ${payload.nodeError}`);
+    bitcoinNodeEntries.push(serviceStatusEntry("Node error", payload.nodeError, false));
   }
 
-  if (payload.compatibility === "unreachable") {
-    lines.push("Recommended next step: Run `cogcoin bitcoin start` to start the managed Bitcoin service.");
-  }
-
-  return `${lines.join("\n")}\n`;
+  return formatSectionedServiceStatusReport({
+    title: "Bitcoin Status",
+    sections: [
+      {
+        header: "Paths",
+        entries: [
+          serviceStatusEntry("Bitcoin datadir", payload.dataDir, true),
+          serviceStatusEntry("Wallet root", payload.walletRootId, true),
+          serviceStatusEntry("Wallet root source", payload.walletRootSource, true),
+        ],
+      },
+      {
+        header: "Managed Service",
+        entries: managedServiceEntries,
+      },
+      {
+        header: "Bitcoin Node",
+        entries: bitcoinNodeEntries,
+      },
+    ],
+    nextStep: payload.compatibility === "unreachable"
+      ? "Run `cogcoin bitcoin start` to start the managed Bitcoin service."
+      : null,
+  });
 }
 
 function formatIndexerStatusReport(payload: IndexerStatusPayload): string {
-  const lines = [
-    "Managed Indexer Status",
-    `Bitcoin datadir: ${payload.dataDir}`,
-    `Wallet root: ${payload.walletRootId}`,
-    `Wallet root source: ${payload.walletRootSource}`,
-    `Compatibility: ${formatCompatibility(payload.compatibility)}`,
-    `Observed source: ${payload.source}`,
+  const compatibilityOk = payload.compatibility === "compatible";
+  const observedSourceOk = payload.source === "probe";
+  const daemonStateOk = payload.daemon?.state === "synced";
+  const managedServiceEntries = [
+    serviceStatusEntry("Compatibility", formatCompatibility(payload.compatibility), compatibilityOk),
+    serviceStatusEntry("Observed source", payload.source, observedSourceOk),
   ];
 
   if (payload.daemon !== null) {
-    lines.push(`Daemon state: ${payload.daemon.state}`);
-    lines.push(`Process id: ${formatMaybe(payload.daemon.processId)}`);
-    lines.push(`Daemon instance: ${payload.daemon.daemonInstanceId}`);
-    lines.push(`Runtime root: ${payload.daemon.runtimeRoot}`);
-    lines.push(`Schema version: ${payload.daemon.schemaVersion}`);
-    lines.push(`Started at: ${payload.daemon.startedAtUnixMs}`);
-    lines.push(`Heartbeat at: ${payload.daemon.heartbeatAtUnixMs}`);
-    lines.push(`Updated at: ${payload.daemon.updatedAtUnixMs}`);
-    lines.push(`IPC ready: ${formatBool(payload.daemon.ipcReady)}`);
-    lines.push(`RPC reachable: ${formatBool(payload.daemon.rpcReachable)}`);
-    lines.push(`Core best height: ${formatMaybe(payload.daemon.coreBestHeight)}`);
-    lines.push(`Core best hash: ${formatMaybe(payload.daemon.coreBestHash)}`);
-    lines.push(`Applied tip height: ${formatMaybe(payload.daemon.appliedTipHeight)}`);
-    lines.push(`Applied tip hash: ${formatMaybe(payload.daemon.appliedTipHash)}`);
-    lines.push(`Snapshot sequence: ${formatMaybe(payload.daemon.snapshotSeq)}`);
-    lines.push(`Backlog blocks: ${formatMaybe(payload.daemon.backlogBlocks)}`);
-    lines.push(`Reorg depth: ${formatMaybe(payload.daemon.reorgDepth)}`);
-    lines.push(`Active snapshots: ${payload.daemon.activeSnapshotCount}`);
-    lines.push(`Last applied at: ${formatMaybe(payload.daemon.lastAppliedAtUnixMs)}`);
+    managedServiceEntries.push(serviceStatusEntry("Daemon state", payload.daemon.state, daemonStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Process id", formatMaybe(payload.daemon.processId), daemonStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Daemon instance", payload.daemon.daemonInstanceId, daemonStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Runtime root", payload.daemon.runtimeRoot, daemonStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Schema version", payload.daemon.schemaVersion, daemonStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Started at", String(payload.daemon.startedAtUnixMs), daemonStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Heartbeat at", String(payload.daemon.heartbeatAtUnixMs), daemonStateOk));
+    managedServiceEntries.push(serviceStatusEntry("Updated at", String(payload.daemon.updatedAtUnixMs), daemonStateOk));
+    managedServiceEntries.push(serviceStatusEntry("IPC ready", formatBool(payload.daemon.ipcReady), payload.daemon.ipcReady));
+    managedServiceEntries.push(serviceStatusEntry("RPC reachable", formatBool(payload.daemon.rpcReachable), payload.daemon.rpcReachable));
     if (payload.daemon.lastError !== null) {
-      lines.push(`Daemon error: ${payload.daemon.lastError}`);
+      managedServiceEntries.push(serviceStatusEntry("Daemon error", payload.daemon.lastError, false));
     }
   } else {
-    lines.push("Daemon state: unavailable");
+    managedServiceEntries.push(serviceStatusEntry("Daemon state", "unavailable", false));
   }
 
-  if (payload.compatibility === "unreachable") {
-    lines.push("Recommended next step: Run `cogcoin indexer start` to start the managed Cogcoin indexer.");
-  }
+  const indexerStateEntries = payload.daemon !== null
+    ? [
+      serviceStatusEntry("Core best height", formatMaybe(payload.daemon.coreBestHeight), daemonStateOk),
+      serviceStatusEntry("Core best hash", formatMaybe(payload.daemon.coreBestHash), daemonStateOk),
+      serviceStatusEntry("Applied tip height", formatMaybe(payload.daemon.appliedTipHeight), daemonStateOk),
+      serviceStatusEntry("Applied tip hash", formatMaybe(payload.daemon.appliedTipHash), daemonStateOk),
+      serviceStatusEntry("Snapshot sequence", formatMaybe(payload.daemon.snapshotSeq), daemonStateOk),
+      serviceStatusEntry("Backlog blocks", formatMaybe(payload.daemon.backlogBlocks), daemonStateOk),
+      serviceStatusEntry("Reorg depth", formatMaybe(payload.daemon.reorgDepth), daemonStateOk),
+      serviceStatusEntry("Active snapshots", String(payload.daemon.activeSnapshotCount), daemonStateOk),
+      serviceStatusEntry("Last applied at", formatMaybe(payload.daemon.lastAppliedAtUnixMs), daemonStateOk),
+    ]
+    : [serviceStatusEntry("Daemon state", "unavailable", false)];
 
-  return `${lines.join("\n")}\n`;
+  return formatSectionedServiceStatusReport({
+    title: "Indexer Status",
+    sections: [
+      {
+        header: "Paths",
+        entries: [
+          serviceStatusEntry("Bitcoin datadir", payload.dataDir, true),
+          serviceStatusEntry("Wallet root", payload.walletRootId, true),
+          serviceStatusEntry("Wallet root source", payload.walletRootSource, true),
+        ],
+      },
+      {
+        header: "Managed Service",
+        entries: managedServiceEntries,
+      },
+      {
+        header: "Indexer State",
+        entries: indexerStateEntries,
+      },
+    ],
+    nextStep: payload.compatibility === "unreachable"
+      ? "Run `cogcoin indexer start` to start the managed Cogcoin indexer."
+      : null,
+  });
 }
 
 function buildStatusMessages(payload: BitcoinStatusPayload | IndexerStatusPayload): {

@@ -1674,6 +1674,89 @@ test("bitcoin status json reports live node data without resolving the client db
   assert.equal(envelope.data.node.connections, 8);
 });
 
+test("bitcoin status renders sectioned healthy text output without a next step", async () => {
+  const stdout = new MemoryStream();
+  const walletRootId = "wallet-root-services";
+
+  const code = await runCli(["bitcoin", "status"], {
+    stdout,
+    stderr: new MemoryStream(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveDefaultClientDatabasePath: () => {
+      throw new Error("client db path should not be resolved");
+    },
+    resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
+    loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub(walletRootId),
+    probeManagedBitcoindService: async () => ({
+      compatibility: "compatible",
+      status: createBitcoindServiceStatus(walletRootId, {
+        dataDir: "/tmp/cogcoin-bitcoin",
+      }),
+      error: null,
+    }),
+    createBitcoinRpcClient: () => ({
+      async getBlockchainInfo() {
+        return {
+          chain: "main",
+          blocks: 910_000,
+          headers: 910_005,
+          bestblockhash: "aa".repeat(32),
+          pruned: false,
+          verificationprogress: 0.9999,
+          initialblockdownload: false,
+        };
+      },
+      async getNetworkInfo() {
+        return {
+          networkactive: true,
+          connections: 8,
+          connections_in: 3,
+          connections_out: 5,
+        };
+      },
+    }) as never,
+  });
+
+  assert.equal(code, 0);
+  const output = stdout.toString();
+  assert.match(output, /^\n⛭ Bitcoin Status ⛭\n\nPaths\n✓ Bitcoin datadir: \/tmp\/cogcoin-bitcoin\n✓ Wallet root: wallet-root-services\n✓ Wallet root source: wallet-state/u);
+  assert.match(output, /\n\nManaged Service\n✓ Compatibility: compatible\n✓ Service state: ready/u);
+  assert.match(output, /\n\nBitcoin Node\n✓ Best height: 910000\n✓ Headers: 910005\n✓ Best hash: a{64}/u);
+  assert.doesNotMatch(output, /\n\nNext step:/u);
+  assert.doesNotMatch(output, /Recommended next step:/u);
+});
+
+test("bitcoin status places unreachable recommendation only at the bottom", async () => {
+  const stdout = new MemoryStream();
+
+  const code = await runCli(["bitcoin", "status"], {
+    stdout,
+    stderr: new MemoryStream(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveDefaultClientDatabasePath: () => {
+      throw new Error("client db path should not be resolved");
+    },
+    resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
+    loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub("wallet-root-services"),
+    probeManagedBitcoindService: async () => ({
+      compatibility: "unreachable",
+      status: null,
+      error: null,
+    }),
+    createBitcoinRpcClient: () => {
+      throw new Error("rpc should not be created when the service is unreachable");
+    },
+  });
+
+  assert.equal(code, 0);
+  const output = stdout.toString();
+  assert.match(output, /^\n⛭ Bitcoin Status ⛭/u);
+  assert.match(output, /\n\nManaged Service\n✗ Compatibility: unreachable\n✗ Service state: unavailable/u);
+  assert.match(output, /\n\nBitcoin Node\n✗ Node state: unavailable/u);
+  assert.match(output, /\n\nNext step: Run `cogcoin bitcoin start` to start the managed Bitcoin service\.$/u);
+  assert.doesNotMatch(output, /Recommended next step:/u);
+});
+
 test("indexer status reads stale status files without resolving the client db path", async () => {
   const stdout = new MemoryStream();
 
@@ -1710,10 +1793,49 @@ test("indexer status reads stale status files without resolving the client db pa
   });
 
   assert.equal(code, 0);
-  assert.match(stdout.toString(), /Managed Indexer Status/);
-  assert.match(stdout.toString(), /Observed source: status-file/);
-  assert.match(stdout.toString(), /Daemon state: failed/);
-  assert.match(stdout.toString(), /Recommended next step: Run `cogcoin indexer start`/);
+  const output = stdout.toString();
+  assert.match(output, /^\n⛭ Indexer Status ⛭\n\nPaths\n✓ Bitcoin datadir: \/tmp\/cogcoin-bitcoin\n✓ Wallet root: wallet-root-uninitialized\n✓ Wallet root source: default-uninitialized/u);
+  assert.match(output, /\n\nManaged Service\n✗ Compatibility: unreachable\n✗ Observed source: status-file\n✗ Daemon state: failed/u);
+  assert.match(output, /\n\nIndexer State\n✗ Core best height: 123\n✗ Core best hash: (?:03){32}\n✗ Applied tip height: 123/u);
+  assert.match(output, /\n\nNext step: Run `cogcoin indexer start` to start the managed Cogcoin indexer\.$/u);
+  assert.doesNotMatch(output, /Recommended next step:/u);
+});
+
+test("indexer status renders sectioned healthy text output without a next step", async () => {
+  const stdout = new MemoryStream();
+  const walletRootId = "wallet-root-services";
+
+  const code = await runCli(["indexer", "status"], {
+    stdout,
+    stderr: new MemoryStream(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveDefaultClientDatabasePath: () => {
+      throw new Error("client db path should not be resolved");
+    },
+    resolveWalletRuntimePaths: () => createTempWalletPaths("/tmp/cogcoin-cli-service"),
+    loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub(walletRootId),
+    probeIndexerDaemon: async () => ({
+      compatibility: "compatible",
+      status: createIndexerDaemonStatus(walletRootId, {
+        coreBestHeight: 910_000,
+        appliedTipHeight: 910_000,
+        snapshotSeq: "77",
+      }),
+      client: null,
+      error: null,
+    }),
+    readObservedIndexerDaemonStatus: async () => {
+      throw new Error("stale status file should not be consulted when probe succeeds");
+    },
+  });
+
+  assert.equal(code, 0);
+  const output = stdout.toString();
+  assert.match(output, /^\n⛭ Indexer Status ⛭\n\nPaths\n✓ Bitcoin datadir: \/tmp\/cogcoin-bitcoin\n✓ Wallet root: wallet-root-services\n✓ Wallet root source: wallet-state/u);
+  assert.match(output, /\n\nManaged Service\n✓ Compatibility: compatible\n✓ Observed source: probe\n✓ Daemon state: synced/u);
+  assert.match(output, /\n\nIndexer State\n✓ Core best height: 910000\n✓ Core best hash: (?:03){32}\n✓ Applied tip height: 910000/u);
+  assert.doesNotMatch(output, /\n\nNext step:/u);
+  assert.doesNotMatch(output, /Recommended next step:/u);
 });
 
 test("bitcoin start only starts bitcoind and does not resolve the client db path", async () => {
