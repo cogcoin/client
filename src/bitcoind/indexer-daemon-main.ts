@@ -4,6 +4,7 @@ import { access, constants, mkdir, readFile, rm } from "node:fs/promises";
 
 import { serializeIndexerState } from "@cogcoin/indexer";
 
+import { openManagedBitcoindClientInternal } from "./client.js";
 import { openClient } from "../client.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import { writeRuntimeStatusFile } from "../wallet/fs/status-file.js";
@@ -13,6 +14,8 @@ import type { ClientTip } from "../types.js";
 import {
   INDEXER_DAEMON_SCHEMA_VERSION,
   INDEXER_DAEMON_SERVICE_API_VERSION,
+  type ManagedBitcoindObservedStatus,
+  type ManagedBitcoindClient,
   type ManagedBitcoindRuntimeConfig,
   type ManagedIndexerSnapshotIdentity,
   type ManagedIndexerDaemonState,
@@ -67,6 +70,12 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
 
     throw error;
   }
+}
+
+async function readManagedBitcoindStatus(
+  paths: ReturnType<typeof resolveManagedServicePaths>,
+): Promise<ManagedBitcoindObservedStatus | null> {
+  return readJsonFile<ManagedBitcoindObservedStatus>(paths.bitcoindStatusPath);
 }
 
 async function readPackageVersionFromDisk(): Promise<string> {
@@ -213,6 +222,9 @@ async function main(): Promise<void> {
   let lastAppliedAtUnixMs: number | null = null;
   let lastError: string | null = null;
   let hasSuccessfulCoreTipRefresh = false;
+  let backgroundStore: Awaited<ReturnType<typeof openSqliteStore>> | null = null;
+  let backgroundClient: ManagedBitcoindClient | null = null;
+  let backgroundResumePromise: Promise<void> | null = null;
 
   await mkdir(paths.indexerServiceRoot, { recursive: true });
   await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
@@ -329,6 +341,64 @@ async function main(): Promise<void> {
     lastError = leaseState.lastError;
 
     return writeStatus();
+  };
+
+  const pauseBackgroundFollow = async (): Promise<void> => {
+    const pendingResume = backgroundResumePromise;
+    backgroundResumePromise = null;
+    await pendingResume?.catch(() => undefined);
+
+    const client = backgroundClient;
+    const store = backgroundStore;
+    backgroundClient = null;
+    backgroundStore = null;
+
+    await client?.close().catch(() => undefined);
+    await store?.close().catch(() => undefined);
+  };
+
+  const resumeBackgroundFollow = async (): Promise<void> => {
+    if (backgroundClient !== null) {
+      return;
+    }
+
+    if (backgroundResumePromise !== null) {
+      return backgroundResumePromise;
+    }
+
+    backgroundResumePromise = (async () => {
+      const bitcoindStatus = await readManagedBitcoindStatus(paths);
+      const store = await openSqliteStore({ filename: databasePath });
+
+      try {
+        const client = await openManagedBitcoindClientInternal({
+          store,
+          dataDir,
+          chain: bitcoindStatus?.chain ?? "main",
+          startHeight: bitcoindStatus?.startHeight ?? 0,
+          walletRootId,
+          progressOutput: "none",
+        });
+
+        try {
+          await client.startFollowingTip();
+          backgroundStore = store;
+          backgroundClient = client;
+        } catch (error) {
+          await client.close().catch(() => undefined);
+          throw error;
+        }
+      } catch (error) {
+        await store.close().catch(() => undefined);
+        throw error;
+      }
+    })();
+
+    try {
+      await backgroundResumePromise;
+    } finally {
+      backgroundResumePromise = null;
+    }
   };
 
   const heartbeat = setInterval(() => {
@@ -509,6 +579,26 @@ async function main(): Promise<void> {
               return;
             }
 
+            if (request.method === "PauseBackgroundFollow") {
+              await pauseBackgroundFollow();
+              writeResponse({
+                id: request.id,
+                ok: true,
+                result: null,
+              });
+              return;
+            }
+
+            if (request.method === "ResumeBackgroundFollow") {
+              await resumeBackgroundFollow();
+              writeResponse({
+                id: request.id,
+                ok: true,
+                result: null,
+              });
+              return;
+            }
+
             throw new Error(`indexer_daemon_unknown_method_${request.method}`);
           } catch (error) {
             writeResponse({
@@ -526,6 +616,7 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     clearInterval(heartbeat);
+    await pauseBackgroundFollow().catch(() => undefined);
     state = "stopping";
     heartbeatAtUnixMs = Date.now();
     updatedAtUnixMs = heartbeatAtUnixMs;

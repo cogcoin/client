@@ -225,8 +225,9 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     await this.#syncPromise.catch(() => undefined);
     await this.#progress.close();
     await this.#node.stop();
-    await this.#indexerDaemon?.close();
     await this.#client.close();
+    await this.#indexerDaemon?.resumeBackgroundFollow().catch(() => undefined);
+    await this.#indexerDaemon?.close();
   }
 
   async playSyncCompletionScene(): Promise<void> {

@@ -19,7 +19,13 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 
 interface DaemonRequest {
   id: string;
-  method: "GetStatus" | "OpenSnapshot" | "ReadSnapshot" | "CloseSnapshot";
+  method:
+    | "GetStatus"
+    | "OpenSnapshot"
+    | "ReadSnapshot"
+    | "CloseSnapshot"
+    | "PauseBackgroundFollow"
+    | "ResumeBackgroundFollow";
   token?: string;
 }
 
@@ -86,6 +92,8 @@ export interface IndexerDaemonClient {
   openSnapshot(): Promise<IndexerSnapshotHandle>;
   readSnapshot(token: string): Promise<IndexerSnapshotPayload>;
   closeSnapshot(token: string): Promise<void>;
+  pauseBackgroundFollow(): Promise<void>;
+  resumeBackgroundFollow(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -319,6 +327,18 @@ function createIndexerDaemonClient(socketPath: string): IndexerDaemonClient {
         id: randomUUID(),
         method: "CloseSnapshot",
         token,
+      });
+    },
+    async pauseBackgroundFollow() {
+      await sendRequest<null>({
+        id: randomUUID(),
+        method: "PauseBackgroundFollow",
+      });
+    },
+    async resumeBackgroundFollow() {
+      await sendRequest<null>({
+        id: randomUUID(),
+        method: "ResumeBackgroundFollow",
       });
     },
     async close() {

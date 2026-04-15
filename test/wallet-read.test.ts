@@ -549,6 +549,8 @@ test("stale snapshot tokens are retried by reopening a fresh coherent snapshot",
     async closeSnapshot(token: string) {
       closed.push(token);
     },
+    async pauseBackgroundFollow() {},
+    async resumeBackgroundFollow() {},
     async close() {},
   };
 
@@ -588,6 +590,8 @@ test("snapshot retries are not attempted through compatibility mismatches", asyn
     async closeSnapshot(token: string) {
       closed.push(token);
     },
+    async pauseBackgroundFollow() {},
+    async resumeBackgroundFollow() {},
     async close() {},
   };
 

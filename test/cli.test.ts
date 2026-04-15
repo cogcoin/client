@@ -1945,6 +1945,8 @@ test("indexer start resolves the client db path and auto-starts bitcoind", async
           throw new Error("not used");
         },
         async closeSnapshot() {},
+        async pauseBackgroundFollow() {},
+        async resumeBackgroundFollow() {},
         async close() {},
       };
     },

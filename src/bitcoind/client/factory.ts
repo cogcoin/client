@@ -60,6 +60,8 @@ async function createManagedBitcoindClient(
     })
     : null;
 
+  await indexerDaemon?.pauseBackgroundFollow();
+
   // The persistent service may already exist from a non-processing attach path
   // that used startHeight 0. Cogcoin replay still begins at the requested
   // processing boundary for this managed client.

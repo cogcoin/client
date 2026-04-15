@@ -588,6 +588,57 @@ test("managed client close detaches without stopping the managed services", asyn
   }
 });
 
+test("indexer daemon keeps following in the background after sync client close", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-client-indexer-daemon-background-follow");
+  let client: Awaited<ReturnType<typeof openManagedBitcoindClientInternal>> | null = null;
+
+  try {
+    const store = await openSqliteStore({ filename: fixture.databasePath });
+    client = await openManagedBitcoindClientInternal({
+      store,
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      chain: "regtest",
+      startHeight: 0,
+      snapshotInterval: 2,
+      pollIntervalMs: 250,
+      syncDebounceMs: 50,
+    });
+
+    const startupStatus = await client.getNodeStatus();
+    const descriptor = await getMiningDescriptor(fixture.dataDir, startupStatus.rpc.port);
+    await generateBlocks(fixture.dataDir, startupStatus.rpc.port, 1, descriptor);
+    await client.syncToTip();
+    await client.close();
+    client = null;
+
+    const daemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+    });
+
+    try {
+      await generateBlocks(fixture.dataDir, startupStatus.rpc.port, 1, descriptor);
+
+      await waitForCondition(async () => {
+        const status = await daemon.getStatus();
+        return status.appliedTipHeight === 2 && status.coreBestHeight === 2 && status.state === "synced";
+      }, 15_000, 100);
+
+      const status = await daemon.getStatus();
+      assert.equal(status.appliedTipHeight, 2);
+      assert.equal(status.coreBestHeight, 2);
+      assert.equal(status.state, "synced");
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    await client?.close().catch(() => undefined);
+    await cleanupManagedFixture(fixture);
+  }
+});
+
 test("wallet read context close detaches without stopping managed services", async (t) => {
   await ensureBitcoinBinaries(t);
   const fixture = createFixture("cogcoin-client-read-context-detach");
