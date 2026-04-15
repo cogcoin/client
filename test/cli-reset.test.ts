@@ -72,9 +72,18 @@ test("reset preview-json dispatches through previewResetWallet", async () => {
           path: "/tmp/cogcoin/bitcoin/bootstrap/utxo-910000.dat",
           defaultAction: "preserve" as const,
         },
+        bitcoinDataDir: {
+          status: "within-reset-scope" as const,
+          path: "/tmp/cogcoin/bitcoin",
+          conditionalPrompt: {
+            prompt: "Delete managed Bitcoin datadir too? [y/N]: " as const,
+            defaultAction: "preserve" as const,
+            acceptedInputs: ["", "n", "no", "y", "yes"] as const,
+          },
+        },
         trackedProcessKinds: ["managed-bitcoind"] as const,
         willDeleteOsSecrets: true,
-        removedPaths: ["/tmp/cogcoin"],
+        removedPaths: ["/tmp/cogcoin/client", "/tmp/cogcoin/indexer"],
       };
     },
   });
@@ -90,6 +99,9 @@ test("reset preview-json dispatches through previewResetWallet", async () => {
       operation: {
         kind: string;
         confirmationPhrase: string;
+        bitcoinDataDir: {
+          status: string;
+        };
       };
     };
   };
@@ -99,6 +111,7 @@ test("reset preview-json dispatches through previewResetWallet", async () => {
   assert.equal(envelope.data.resultType, "operation");
   assert.equal(envelope.data.operation.kind, "reset");
   assert.equal(envelope.data.operation.confirmationPhrase, "permanently reset");
+  assert.equal(envelope.data.operation.bitcoinDataDir.status, "within-reset-scope");
   assert.equal(stderr.toString(), "");
 });
 
@@ -132,6 +145,10 @@ test("reset json emits the stable reset mutation envelope", async () => {
         bootstrapSnapshot: {
           status: "deleted" as const,
           path: "/tmp/cogcoin/bitcoin/bootstrap/utxo-910000.dat",
+        },
+        bitcoinDataDir: {
+          status: "deleted" as const,
+          path: "/tmp/cogcoin/bitcoin",
         },
         removedPaths: ["/tmp/cogcoin"],
       };
@@ -193,7 +210,11 @@ test("reset json recommends sync when the mnemonic is retained", async () => {
         status: "preserved" as const,
         path: "/tmp/cogcoin/bitcoin/bootstrap/utxo-910000.dat",
       },
-      removedPaths: ["/tmp/cogcoin"],
+      bitcoinDataDir: {
+        status: "preserved" as const,
+        path: "/tmp/cogcoin/bitcoin",
+      },
+      removedPaths: ["/tmp/cogcoin/client", "/tmp/cogcoin/indexer"],
     }),
   });
 
@@ -203,11 +224,15 @@ test("reset json recommends sync when the mnemonic is retained", async () => {
     data: {
       operation: {
         walletAction: string;
+        bitcoinDataDir: {
+          status: string;
+        };
       };
     };
   };
   assert.deepEqual(envelope.nextSteps, ["Run `cogcoin sync` to bootstrap assumeutxo and the managed Bitcoin/indexer state."]);
   assert.equal(envelope.data.operation.walletAction, "retain-mnemonic");
+  assert.equal(envelope.data.operation.bitcoinDataDir.status, "preserved");
   assert.equal(stderr.toString(), "");
 });
 
@@ -239,14 +264,18 @@ test("reset text renders sectioned output and omits wallet root lines when the m
         status: "preserved" as const,
         path: "/tmp/cogcoin/bitcoin/bootstrap/utxo-910000.dat",
       },
-      removedPaths: ["/tmp/cogcoin"],
+      bitcoinDataDir: {
+        status: "preserved" as const,
+        path: "/tmp/cogcoin/bitcoin",
+      },
+      removedPaths: ["/tmp/cogcoin/client", "/tmp/cogcoin/indexer"],
     }),
   });
 
   assert.equal(code, 0);
   const output = stdout.toString();
   assert.match(output, /^\n⛭ Cogcoin Reset ⛭\n\nPaths\n✓ Data root: \/tmp\/cogcoin/u);
-  assert.match(output, /\n\nReset Outcome\n✓ Wallet action: retain-mnemonic\n✓ Snapshot: preserved\n✓ Secret cleanup: deleted/u);
+  assert.match(output, /\n\nReset Outcome\n✓ Wallet action: retain-mnemonic\n✓ Snapshot: preserved\n✓ Bitcoin datadir: preserved\n✓ Secret cleanup: deleted/u);
   assert.match(output, /\n\nManaged Cleanup\n✓ Managed bitcoind processes stopped: 1\n✓ Indexer daemons stopped: 1\n✓ Background miners stopped: 0/u);
   assert.match(output, /\n\nNext step: Run `cogcoin sync` to bootstrap assumeutxo and the managed Bitcoin\/indexer state\.\n$/u);
   assert.doesNotMatch(output, /Previous wallet root:/);
@@ -283,6 +312,10 @@ test("reset text renders warnings in a separate section and keeps the next step 
         status: "deleted" as const,
         path: "/tmp/cogcoin/bitcoin/bootstrap/utxo-910000.dat",
       },
+      bitcoinDataDir: {
+        status: "deleted" as const,
+        path: "/tmp/cogcoin/bitcoin",
+      },
       removedPaths: ["/tmp/cogcoin"],
     }),
   });
@@ -290,7 +323,7 @@ test("reset text renders warnings in a separate section and keeps the next step 
   assert.equal(code, 0);
   const output = stdout.toString();
   assert.match(output, /^\n⛭ Cogcoin Reset ⛭/u);
-  assert.match(output, /\n\nReset Outcome\n✓ Wallet action: deleted\n✓ Snapshot: deleted\n✗ Secret cleanup: unknown\n✓ Previous wallet root: wallet-root-old/u);
+  assert.match(output, /\n\nReset Outcome\n✓ Wallet action: deleted\n✓ Snapshot: deleted\n✓ Bitcoin datadir: deleted\n✗ Secret cleanup: unknown\n✓ Previous wallet root: wallet-root-old/u);
   assert.match(output, /\n\nWarnings\n✗ Warning: Some existing Cogcoin secret-provider entries could not be discovered from the remaining local wallet artifacts and may need manual cleanup\./u);
   assert.match(output, /\n\nNext step: Run `cogcoin init` to create a new wallet\.\n$/u);
   assert.equal(stderr.toString(), "");

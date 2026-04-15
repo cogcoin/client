@@ -416,6 +416,7 @@ test("reset preserves base entropy for provider-backed wallets and clears derive
     assert.equal(result.walletOldRootId, state.walletRootId);
     assert.notEqual(result.walletNewRootId, state.walletRootId);
     assert.equal(result.bootstrapSnapshot.status, "not-present");
+    assert.equal(result.bitcoinDataDir.status, "not-present");
 
     const loaded = await loadWalletState(
       {
@@ -515,6 +516,7 @@ test("reset uses hidden passphrase input for passphrase-wrapped entropy-retainin
     });
 
     assert.equal(result.walletAction, "retain-mnemonic");
+    assert.equal(result.bitcoinDataDir.status, "not-present");
     assert.deepEqual(prompter.hiddenPrompts, ["Wallet-state passphrase: "]);
 
     const loaded = await loadWalletState(
@@ -534,6 +536,74 @@ test("reset uses hidden passphrase input for passphrase-wrapped entropy-retainin
   }
 });
 
+test("reset can retain the mnemonic while preserving the managed Bitcoin datadir in place", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogcoin-reset-retain-bitcoind-"));
+  const paths = createTempWalletPaths(root);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const state = createWalletState();
+  const harness = createResetRpcHarness(state);
+  const secretReference = createWalletSecretReference(state.walletRootId);
+  const snapshotPaths = resolveBootstrapPathsForTesting(paths.bitcoinDataDir);
+  const bitcoinSentinelPath = join(paths.bitcoinDataDir, "sentinel.txt");
+  const clientSentinelPath = join(paths.clientDataDir, "client.sqlite");
+  const prompter = new ScriptedPrompter({
+    visibleAnswers: ["permanently reset", "", "", ""],
+  });
+
+  try {
+    await provider.storeSecret(secretReference.keyId, randomBytes(32));
+    await saveWalletState(
+      {
+        primaryPath: paths.walletStatePath,
+        backupPath: paths.walletStateBackupPath,
+      },
+      state,
+      {
+        provider,
+        secretReference,
+      },
+    );
+    await mkdir(snapshotPaths.directory, { recursive: true });
+    await writeFile(snapshotPaths.snapshotPath, "snapshot", "utf8");
+    await writeFile(bitcoinSentinelPath, "keep", "utf8");
+    await mkdir(paths.clientDataDir, { recursive: true });
+    await writeFile(clientSentinelPath, "client-state", "utf8");
+
+    const result = await resetWallet({
+      dataDir: paths.bitcoinDataDir,
+      provider,
+      paths,
+      nowUnixMs: 1_700_000_250_000,
+      validateSnapshotFile: async () => {},
+      prompter,
+      attachService: async () => ({
+        rpc: {
+          url: "http://127.0.0.1:8332",
+          cookieFile: "/tmp/does-not-matter",
+          port: 8_332,
+        },
+      } as never),
+      rpcFactory: harness.rpcFactory,
+    });
+
+    assert.equal(result.walletAction, "retain-mnemonic");
+    assert.equal(result.bootstrapSnapshot.status, "preserved");
+    assert.equal(result.bitcoinDataDir.status, "preserved");
+    assert.ok(!result.removedPaths.includes(paths.dataRoot));
+    assert.ok(result.removedPaths.includes(paths.clientDataDir));
+    assert.equal(await readFile(bitcoinSentinelPath, "utf8"), "keep");
+    await assert.rejects(() => readFile(clientSentinelPath, "utf8"), /ENOENT/);
+    assert.deepEqual(prompter.prompts, [
+      "Type \"permanently reset\" to continue: ",
+      "Wallet reset choice ([Enter] retain base entropy, \"skip\", or \"delete wallet\"): ",
+      "Delete downloaded 910000 UTXO snapshot too? [y/N]: ",
+      "Delete managed Bitcoin datadir too? [y/N]: ",
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("reset can keep the wallet unchanged, preserve a valid snapshot, and kill only tracked managed processes", async () => {
   const root = await mkdtemp(join(tmpdir(), "cogcoin-reset-skip-"));
   const paths = createTempWalletPaths(root);
@@ -541,6 +611,7 @@ test("reset can keep the wallet unchanged, preserve a valid snapshot, and kill o
   const state = createWalletState();
   const secretReference = createWalletSecretReference(state.walletRootId);
   const snapshotPaths = resolveBootstrapPathsForTesting(paths.bitcoinDataDir);
+  const bitcoinSentinelPath = join(paths.bitcoinDataDir, "sentinel.txt");
   const tracked = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000);"], {
     stdio: "ignore",
   });
@@ -576,6 +647,7 @@ test("reset can keep the wallet unchanged, preserve a valid snapshot, and kill o
     );
     await mkdir(snapshotPaths.directory, { recursive: true });
     await writeFile(snapshotPaths.snapshotPath, "snapshot", "utf8");
+    await writeFile(bitcoinSentinelPath, "keep", "utf8");
 
     const result = await resetWallet({
       dataDir: paths.bitcoinDataDir,
@@ -584,15 +656,18 @@ test("reset can keep the wallet unchanged, preserve a valid snapshot, and kill o
       nowUnixMs: 1_700_000_300_000,
       validateSnapshotFile: async () => {},
       prompter: new ScriptedPrompter({
-        visibleAnswers: ["permanently reset", "skip", ""],
+        visibleAnswers: ["permanently reset", "skip", "", ""],
       }),
     });
 
     assert.equal(result.walletAction, "kept-unchanged");
     assert.equal(result.bootstrapSnapshot.status, "preserved");
+    assert.equal(result.bitcoinDataDir.status, "preserved");
     assert.equal(result.stoppedProcesses.managedBitcoind, 1);
     assert.equal(await isAlive(tracked.pid), false);
     assert.equal(await isAlive(unrelated.pid), true);
+    assert.ok(!result.removedPaths.includes(paths.dataRoot));
+    assert.ok(result.removedPaths.includes(paths.clientDataDir));
 
     const loaded = await loadWalletState(
       {
@@ -611,6 +686,7 @@ test("reset can keep the wallet unchanged, preserve a valid snapshot, and kill o
     );
     assert.equal(await pathExists(snapshotPaths.snapshotPath), true);
     assert.equal(await pathExists(snapshotPaths.statePath), false);
+    assert.equal(await readFile(bitcoinSentinelPath, "utf8"), "keep");
   } finally {
     if (await isAlive(tracked.pid)) {
       tracked.kill("SIGKILL");
@@ -619,6 +695,111 @@ test("reset can keep the wallet unchanged, preserve a valid snapshot, and kill o
       unrelated.kill("SIGKILL");
     }
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reset can preserve the snapshot while explicitly deleting the managed Bitcoin datadir", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogcoin-reset-delete-bitcoind-"));
+  const paths = createTempWalletPaths(root);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const state = createWalletState();
+  const secretReference = createWalletSecretReference(state.walletRootId);
+  const snapshotPaths = resolveBootstrapPathsForTesting(paths.bitcoinDataDir);
+  const bitcoinSentinelPath = join(paths.bitcoinDataDir, "sentinel.txt");
+
+  try {
+    await provider.storeSecret(secretReference.keyId, randomBytes(32));
+    await saveWalletState(
+      {
+        primaryPath: paths.walletStatePath,
+        backupPath: paths.walletStateBackupPath,
+      },
+      state,
+      {
+        provider,
+        secretReference,
+      },
+    );
+    await mkdir(snapshotPaths.directory, { recursive: true });
+    await writeFile(snapshotPaths.snapshotPath, "snapshot", "utf8");
+    await writeFile(bitcoinSentinelPath, "delete-me", "utf8");
+
+    const result = await resetWallet({
+      dataDir: paths.bitcoinDataDir,
+      provider,
+      paths,
+      nowUnixMs: 1_700_000_310_000,
+      validateSnapshotFile: async () => {},
+      prompter: new ScriptedPrompter({
+        visibleAnswers: ["permanently reset", "skip", "", "yes"],
+      }),
+    });
+
+    assert.equal(result.walletAction, "kept-unchanged");
+    assert.equal(result.bootstrapSnapshot.status, "preserved");
+    assert.equal(result.bitcoinDataDir.status, "deleted");
+    assert.ok(result.removedPaths.includes(paths.dataRoot));
+    assert.equal(await pathExists(snapshotPaths.snapshotPath), true);
+    await assert.rejects(() => readFile(bitcoinSentinelPath, "utf8"), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reset leaves an external managed Bitcoin datadir alone without asking for datadir deletion", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogcoin-reset-external-bitcoind-"));
+  const externalRoot = await mkdtemp(join(tmpdir(), "cogcoin-reset-external-bitcoind-data-"));
+  const paths = createTempWalletPaths(root);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const state = createWalletState();
+  const secretReference = createWalletSecretReference(state.walletRootId);
+  const externalDataDir = join(externalRoot, "bitcoin");
+  const snapshotPaths = resolveBootstrapPathsForTesting(externalDataDir);
+  const sentinelPath = join(externalDataDir, "sentinel.txt");
+
+  try {
+    await provider.storeSecret(secretReference.keyId, randomBytes(32));
+    await saveWalletState(
+      {
+        primaryPath: paths.walletStatePath,
+        backupPath: paths.walletStateBackupPath,
+      },
+      state,
+      {
+        provider,
+        secretReference,
+      },
+    );
+    await mkdir(snapshotPaths.directory, { recursive: true });
+    await writeFile(snapshotPaths.snapshotPath, "snapshot", "utf8");
+    await writeFile(sentinelPath, "keep", "utf8");
+
+    const prompter = new ScriptedPrompter({
+      visibleAnswers: ["permanently reset", "skip", ""],
+    });
+
+    const result = await resetWallet({
+      dataDir: externalDataDir,
+      provider,
+      paths,
+      nowUnixMs: 1_700_000_320_000,
+      validateSnapshotFile: async () => {},
+      prompter,
+    });
+
+    assert.equal(result.walletAction, "kept-unchanged");
+    assert.equal(result.bootstrapSnapshot.status, "preserved");
+    assert.equal(result.bitcoinDataDir.status, "outside-reset-scope");
+    assert.deepEqual(prompter.prompts, [
+      "Type \"permanently reset\" to continue: ",
+      "Wallet reset choice ([Enter] retain base entropy, \"skip\", or \"delete wallet\"): ",
+      "Delete downloaded 910000 UTXO snapshot too? [y/N]: ",
+    ]);
+    assert.equal(await readFile(sentinelPath, "utf8"), "keep");
+    assert.equal(await pathExists(snapshotPaths.snapshotPath), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(externalRoot, { recursive: true, force: true });
   }
 });
 
@@ -657,8 +838,12 @@ test("reset preview exposes wallet, snapshot, and managed-process preflight info
     assert.equal(preview.walletPrompt?.requiresPassphrase, false);
     assert.equal(preview.bootstrapSnapshot.status, "valid");
     assert.equal(preview.bootstrapSnapshot.defaultAction, "preserve");
+    assert.equal(preview.bitcoinDataDir.status, "within-reset-scope");
+    assert.equal(preview.bitcoinDataDir.path, paths.bitcoinDataDir);
+    assert.equal(preview.bitcoinDataDir.conditionalPrompt?.defaultAction, "preserve");
     assert.equal(preview.willDeleteOsSecrets, true);
-    assert.ok(preview.removedPaths.includes(paths.dataRoot));
+    assert.ok(!preview.removedPaths.includes(paths.dataRoot));
+    assert.ok(preview.removedPaths.includes(paths.clientDataDir));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

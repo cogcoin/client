@@ -342,6 +342,7 @@ export function buildResetPreviewData(result: WalletResetPreview) {
       trackedProcessKinds: result.trackedProcessKinds,
       willDeleteOsSecrets: result.willDeleteOsSecrets,
       bootstrapSnapshot: result.bootstrapSnapshot,
+      bitcoinDataDir: result.bitcoinDataDir,
       walletPrompt: result.walletPrompt,
     },
     operation: {
@@ -349,6 +350,7 @@ export function buildResetPreviewData(result: WalletResetPreview) {
       confirmationPhrase: result.confirmationPhrase,
       walletPrompt: result.walletPrompt,
       bootstrapSnapshot: result.bootstrapSnapshot,
+      bitcoinDataDir: result.bitcoinDataDir,
       trackedProcessKinds: result.trackedProcessKinds,
       willDeleteOsSecrets: result.willDeleteOsSecrets,
       removedPaths: result.removedPaths,

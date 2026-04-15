@@ -60,6 +60,12 @@ export type WalletResetSnapshotResultStatus =
   | "deleted"
   | "preserved";
 
+export type WalletResetBitcoinDataDirResultStatus =
+  | "not-present"
+  | "preserved"
+  | "deleted"
+  | "outside-reset-scope";
+
 export interface WalletResetResult {
   dataRoot: string;
   factoryResetReady: true;
@@ -80,6 +86,10 @@ export interface WalletResetResult {
     status: WalletResetSnapshotResultStatus;
     path: string;
   };
+  bitcoinDataDir: {
+    status: WalletResetBitcoinDataDirResultStatus;
+    path: string;
+  };
   removedPaths: string[];
 }
 
@@ -97,6 +107,15 @@ export interface WalletResetPreview {
     status: "not-present" | "invalid" | "valid";
     path: string;
     defaultAction: "preserve" | "delete";
+  };
+  bitcoinDataDir: {
+    status: "not-present" | "within-reset-scope" | "outside-reset-scope";
+    path: string;
+    conditionalPrompt: null | {
+      prompt: "Delete managed Bitcoin datadir too? [y/N]: ";
+      defaultAction: "preserve";
+      acceptedInputs: ["", "n", "no", "y", "yes"];
+    };
   };
   trackedProcessKinds: Array<"managed-bitcoind" | "indexer-daemon" | "background-mining">;
   willDeleteOsSecrets: boolean;
@@ -120,7 +139,12 @@ interface WalletResetPreflight {
     status: "not-present" | "invalid" | "valid";
     path: string;
     shouldPrompt: boolean;
-    shouldStageForPreserve: boolean;
+    withinResetScope: boolean;
+  };
+  bitcoinDataDir: {
+    status: "not-present" | "within-reset-scope" | "outside-reset-scope";
+    path: string;
+    shouldPrompt: boolean;
   };
   trackedProcesses: TrackedManagedProcess[];
   trackedProcessKinds: Array<TrackedManagedProcess["kind"]>;
@@ -185,6 +209,7 @@ interface ResetWalletRpcClient {
 interface ResetExecutionDecision {
   walletChoice: "" | "skip" | "delete wallet";
   deleteSnapshot: boolean;
+  deleteBitcoinDataDir: boolean;
   loadedWalletForEntropyReset: WalletAccessForReset | null;
 }
 
@@ -731,14 +756,47 @@ async function collectTrackedManagedProcesses(
   };
 }
 
-function resolveRemovedRoots(paths: WalletRuntimePaths): string[] {
+function dedupeSortedPaths(candidates: readonly string[]): string[] {
+  return [...new Set(candidates)].sort((left, right) => right.length - left.length);
+}
+
+function resolveDefaultRemovedRoots(paths: WalletRuntimePaths): string[] {
   const configRoot = dirname(paths.clientConfigPath);
-  return [...new Set([
+  return dedupeSortedPaths([
     paths.dataRoot,
     paths.stateRoot,
     paths.runtimeRoot,
     configRoot,
-  ])].sort((left, right) => right.length - left.length);
+  ]);
+}
+
+function resolveBitcoindPreservingRemovedRoots(paths: WalletRuntimePaths): string[] {
+  const configRoot = dirname(paths.clientConfigPath);
+  return dedupeSortedPaths([
+    paths.clientDataDir,
+    paths.indexerRoot,
+    paths.stateRoot,
+    paths.runtimeRoot,
+    configRoot,
+    paths.hooksRoot,
+  ]);
+}
+
+function resolveRemovedRoots(
+  paths: WalletRuntimePaths,
+  options: {
+    preserveBitcoinDataDir: boolean;
+  } = {
+    preserveBitcoinDataDir: false,
+  },
+): string[] {
+  return options.preserveBitcoinDataDir
+    ? resolveBitcoindPreservingRemovedRoots(paths)
+    : resolveDefaultRemovedRoots(paths);
+}
+
+function isDeletedByRemovalPlan(removedRoots: readonly string[], targetPath: string): boolean {
+  return removedRoots.some((root) => isPathWithin(root, targetPath));
 }
 
 async function preflightReset(options: {
@@ -747,6 +805,7 @@ async function preflightReset(options: {
   paths: WalletRuntimePaths;
   validateSnapshotFile?: (path: string) => Promise<void>;
 }): Promise<WalletResetPreflight> {
+  const removedRoots = resolveRemovedRoots(options.paths);
   const rawEnvelope = await loadRawWalletStateEnvelope({
     primaryPath: options.paths.walletStatePath,
     backupPath: options.paths.walletStateBackupPath,
@@ -756,6 +815,9 @@ async function preflightReset(options: {
   const validateSnapshot = options.validateSnapshotFile
     ?? ((path: string) => validateSnapshotFileForTesting(path, DEFAULT_SNAPSHOT_METADATA));
   const hasWalletState = await pathExists(options.paths.walletStatePath) || await pathExists(options.paths.walletStateBackupPath);
+  const hasBitcoinDataDir = await pathExists(options.dataDir);
+  const bitcoinDataDirWithinResetScope = hasBitcoinDataDir
+    && isDeletedByRemovalPlan(removedRoots, options.dataDir);
   const hasSnapshot = await pathExists(snapshotPaths.snapshotPath);
   const hasPartialSnapshot = await pathExists(snapshotPaths.partialSnapshotPath);
 
@@ -776,7 +838,7 @@ async function preflightReset(options: {
 
   return {
     dataRoot: options.paths.dataRoot,
-    removedRoots: resolveRemovedRoots(options.paths),
+    removedRoots,
     wallet: {
       present: hasWalletState,
       mode: rawEnvelope == null
@@ -793,8 +855,16 @@ async function preflightReset(options: {
       status: snapshotStatus,
       path: snapshotPaths.snapshotPath,
       shouldPrompt: snapshotStatus === "valid",
-      shouldStageForPreserve: snapshotStatus === "valid"
-        && resolveRemovedRoots(options.paths).some((root) => isPathWithin(root, snapshotPaths.snapshotPath)),
+      withinResetScope: isDeletedByRemovalPlan(removedRoots, snapshotPaths.snapshotPath),
+    },
+    bitcoinDataDir: {
+      status: !hasBitcoinDataDir
+        ? "not-present"
+        : bitcoinDataDirWithinResetScope
+          ? "within-reset-scope"
+          : "outside-reset-scope",
+      path: options.dataDir,
+      shouldPrompt: bitcoinDataDirWithinResetScope,
     },
     trackedProcesses: tracked.trackedProcesses,
     trackedProcessKinds: tracked.trackedProcessKinds,
@@ -840,6 +910,19 @@ async function deleteRemovedRoots(roots: readonly string[]): Promise<void> {
   }
 }
 
+async function deleteBootstrapSnapshotArtifacts(dataDir: string): Promise<void> {
+  const snapshotPaths = resolveBootstrapPathsForTesting(dataDir, DEFAULT_SNAPSHOT_METADATA);
+  await Promise.all([
+    snapshotPaths.snapshotPath,
+    snapshotPaths.partialSnapshotPath,
+    snapshotPaths.statePath,
+    snapshotPaths.quoteStatePath,
+  ].map(async (path) => rm(path, {
+    recursive: false,
+    force: true,
+  })));
+}
+
 async function resolveResetExecutionDecision(options: {
   preflight: WalletResetPreflight;
   provider: WalletSecretProvider;
@@ -883,16 +966,25 @@ async function resolveResetExecutionDecision(options: {
   }
 
   let deleteSnapshot = false;
+  let deleteBitcoinDataDir = false;
   if (options.preflight.snapshot.shouldPrompt) {
     const answer = (await options.prompter.prompt(
       "Delete downloaded 910000 UTXO snapshot too? [y/N]: ",
     )).trim().toLowerCase();
     deleteSnapshot = answer === "y" || answer === "yes";
+
+    if (!deleteSnapshot && options.preflight.bitcoinDataDir.shouldPrompt) {
+      const bitcoindAnswer = (await options.prompter.prompt(
+        "Delete managed Bitcoin datadir too? [y/N]: ",
+      )).trim().toLowerCase();
+      deleteBitcoinDataDir = bitcoindAnswer === "y" || bitcoindAnswer === "yes";
+    }
   }
 
   return {
     walletChoice,
     deleteSnapshot,
+    deleteBitcoinDataDir,
     loadedWalletForEntropyReset,
   };
 }
@@ -931,6 +1023,26 @@ function determineSnapshotResultStatus(options: {
   return options.deleteSnapshot ? "deleted" : "preserved";
 }
 
+function determineBitcoinDataDirResultStatus(options: {
+  bitcoinDataDirStatus: WalletResetPreflight["bitcoinDataDir"]["status"];
+  deleteSnapshot: boolean;
+  deleteBitcoinDataDir: boolean;
+}): WalletResetBitcoinDataDirResultStatus {
+  if (options.bitcoinDataDirStatus === "not-present") {
+    return "not-present";
+  }
+
+  if (options.bitcoinDataDirStatus === "outside-reset-scope") {
+    return "outside-reset-scope";
+  }
+
+  if (options.deleteSnapshot || options.deleteBitcoinDataDir) {
+    return "deleted";
+  }
+
+  return "preserved";
+}
+
 export async function previewResetWallet(options: {
   dataDir: string;
   provider?: WalletSecretProvider;
@@ -944,6 +1056,9 @@ export async function previewResetWallet(options: {
     provider,
     paths,
     validateSnapshotFile: options.validateSnapshotFile,
+  });
+  const removedPaths = resolveRemovedRoots(paths, {
+    preserveBitcoinDataDir: preflight.snapshot.status === "valid" && preflight.bitcoinDataDir.shouldPrompt,
   });
 
   return {
@@ -963,9 +1078,20 @@ export async function previewResetWallet(options: {
       path: preflight.snapshot.path,
       defaultAction: preflight.snapshot.status === "valid" ? "preserve" : "delete",
     },
+    bitcoinDataDir: {
+      status: preflight.bitcoinDataDir.status,
+      path: preflight.bitcoinDataDir.path,
+      conditionalPrompt: preflight.bitcoinDataDir.shouldPrompt
+        ? {
+          prompt: "Delete managed Bitcoin datadir too? [y/N]: ",
+          defaultAction: "preserve",
+          acceptedInputs: ["", "n", "no", "y", "yes"],
+        }
+        : null,
+    },
     trackedProcessKinds: preflight.trackedProcessKinds,
     willDeleteOsSecrets: preflight.wallet.secretProviderKeyId !== null,
-    removedPaths: preflight.removedRoots,
+    removedPaths,
   };
 }
 
@@ -998,6 +1124,14 @@ export async function resetWallet(options: {
   const snapshotResultStatus = determineSnapshotResultStatus({
     snapshotStatus: preflight.snapshot.status,
     deleteSnapshot: decision.deleteSnapshot,
+  });
+  const bitcoinDataDirResultStatus = determineBitcoinDataDirResultStatus({
+    bitcoinDataDirStatus: preflight.bitcoinDataDir.status,
+    deleteSnapshot: decision.deleteSnapshot,
+    deleteBitcoinDataDir: decision.deleteBitcoinDataDir,
+  });
+  const removedPaths = resolveRemovedRoots(paths, {
+    preserveBitcoinDataDir: bitcoinDataDirResultStatus === "preserved",
   });
   const locks = await acquireResetLocks(paths, preflight.serviceLockPaths);
   await mkdir(dirname(paths.dataRoot), { recursive: true });
@@ -1055,7 +1189,7 @@ export async function resetWallet(options: {
       }
     }
 
-    if (snapshotResultStatus === "preserved" && preflight.snapshot.shouldStageForPreserve) {
+    if (snapshotResultStatus === "preserved" && isDeletedByRemovalPlan(removedPaths, preflight.snapshot.path)) {
       const stagedSnapshot = await stageArtifact(
         preflight.snapshot.path,
         stagingRoot,
@@ -1066,8 +1200,15 @@ export async function resetWallet(options: {
       }
     }
 
-    await deleteRemovedRoots(preflight.removedRoots);
+    await deleteRemovedRoots(removedPaths);
     rootsDeleted = true;
+
+    if (
+      (snapshotResultStatus === "deleted" || snapshotResultStatus === "invalid-removed")
+      && !isDeletedByRemovalPlan(removedPaths, preflight.snapshot.path)
+    ) {
+      await deleteBootstrapSnapshotArtifacts(options.dataDir);
+    }
 
     if (walletAction === "kept-unchanged") {
       await restoreStagedArtifacts(stagedWalletArtifacts);
@@ -1179,7 +1320,11 @@ export async function resetWallet(options: {
         status: snapshotResultStatus,
         path: preflight.snapshot.path,
       },
-      removedPaths: preflight.removedRoots,
+      bitcoinDataDir: {
+        status: bitcoinDataDirResultStatus,
+        path: preflight.bitcoinDataDir.path,
+      },
+      removedPaths,
     };
   } catch (error) {
     if (!committed && rootsDeleted) {

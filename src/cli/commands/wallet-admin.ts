@@ -65,6 +65,14 @@ function getResetNextSteps(result: WalletResetResult): string[] {
     : ["Run `cogcoin sync` to bootstrap assumeutxo and the managed Bitcoin/indexer state."];
 }
 
+function formatResetBitcoinDataDirStatus(result: WalletResetResult): string {
+  if (result.bitcoinDataDir.status === "outside-reset-scope") {
+    return "preserved (outside reset scope)";
+  }
+
+  return result.bitcoinDataDir.status;
+}
+
 interface ResetTextEntry {
   text: string;
   ok: boolean;
@@ -89,6 +97,7 @@ function formatResetResultText(result: WalletResetResult): string {
   const outcomeEntries: ResetTextEntry[] = [
     resetTextEntry("Wallet action", result.walletAction, true),
     resetTextEntry("Snapshot", result.bootstrapSnapshot.status, true),
+    resetTextEntry("Bitcoin datadir", formatResetBitcoinDataDirStatus(result), true),
     resetTextEntry("Secret cleanup", result.secretCleanupStatus, secretCleanupOk),
   ];
 

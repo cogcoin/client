@@ -3,6 +3,7 @@ import { resolveCogcoinPathsForTesting } from "../app-paths.js";
 
 export interface WalletRuntimePaths {
   dataRoot: string;
+  clientDataDir: string;
   clientConfigPath: string;
   runtimeRoot: string;
   hooksRoot: string;
@@ -36,6 +37,7 @@ export function resolveWalletRuntimePathsForTesting(
 
   return {
     dataRoot: paths.dataRoot,
+    clientDataDir: paths.clientDataDir,
     clientConfigPath: paths.clientConfigPath,
     runtimeRoot: paths.runtimeRoot,
     hooksRoot: paths.hooksRoot,

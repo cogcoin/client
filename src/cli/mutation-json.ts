@@ -246,6 +246,7 @@ export function buildResetMutationData(result: WalletResetResult) {
       walletOldRootId: result.walletOldRootId,
       walletNewRootId: result.walletNewRootId,
       bootstrapSnapshot: result.bootstrapSnapshot,
+      bitcoinDataDir: result.bitcoinDataDir,
       stoppedProcesses: result.stoppedProcesses,
       secretCleanupStatus: result.secretCleanupStatus,
     },
@@ -261,6 +262,7 @@ export function buildResetMutationData(result: WalletResetResult) {
       walletOldRootId: result.walletOldRootId,
       walletNewRootId: result.walletNewRootId,
       bootstrapSnapshot: result.bootstrapSnapshot,
+      bitcoinDataDir: result.bitcoinDataDir,
       removedPaths: result.removedPaths,
     },
   });
