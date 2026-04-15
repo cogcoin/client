@@ -38,7 +38,7 @@ import type { WalletPrompter } from "./lifecycle.js";
 export type WalletResetAction =
   | "not-present"
   | "kept-unchanged"
-  | "reset-base-entropy"
+  | "retain-mnemonic"
   | "deleted";
 
 export type WalletResetSecretCleanupStatus =
@@ -80,7 +80,7 @@ export interface WalletResetPreview {
   dataRoot: string;
   confirmationPhrase: "permanently reset";
   walletPrompt: null | {
-    defaultAction: "reset-base-entropy";
+    defaultAction: "retain-mnemonic";
     acceptedInputs: ["", "skip", "delete wallet"];
     entropyRetainingResetAvailable: boolean;
     requiresPassphrase: boolean;
@@ -785,7 +785,7 @@ function determineWalletAction(
     return "deleted";
   }
 
-  return "reset-base-entropy";
+  return "retain-mnemonic";
 }
 
 function determineSnapshotResultStatus(options: {
@@ -823,7 +823,7 @@ export async function previewResetWallet(options: {
     confirmationPhrase: "permanently reset",
     walletPrompt: preflight.wallet.present
       ? {
-        defaultAction: "reset-base-entropy",
+        defaultAction: "retain-mnemonic",
         acceptedInputs: ["", "skip", "delete wallet"],
         entropyRetainingResetAvailable: preflight.wallet.mode !== "unknown",
         requiresPassphrase: preflight.wallet.mode === "passphrase-wrapped",
@@ -897,7 +897,7 @@ export async function resetWallet(options: {
   try {
     stoppedProcesses = await terminateTrackedProcesses(preflight.trackedProcesses);
 
-    if (walletAction === "kept-unchanged" || walletAction === "reset-base-entropy") {
+    if (walletAction === "kept-unchanged" || walletAction === "retain-mnemonic") {
       const stagedPrimary = await stageArtifact(
         paths.walletStatePath,
         stagingRoot,
@@ -941,7 +941,7 @@ export async function resetWallet(options: {
 
     if (walletAction === "kept-unchanged") {
       await restoreStagedArtifacts(stagedWalletArtifacts);
-    } else if (walletAction === "reset-base-entropy") {
+    } else if (walletAction === "retain-mnemonic") {
       if (decision.loadedWalletForEntropyReset === null) {
         throw new Error("reset_wallet_entropy_reset_unavailable");
       }
@@ -999,7 +999,7 @@ export async function resetWallet(options: {
           throw new Error("reset_secret_cleanup_failed");
         }
       }
-    } else if (walletAction === "reset-base-entropy" && preflight.wallet.secretProviderKeyId !== null) {
+    } else if (walletAction === "retain-mnemonic" && preflight.wallet.secretProviderKeyId !== null) {
       try {
         if (preflight.wallet.secretProviderKeyId !== newProviderKeyId) {
           await provider.deleteSecret(preflight.wallet.secretProviderKeyId);

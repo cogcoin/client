@@ -61,7 +61,7 @@ test("reset preview-json dispatches through previewResetWallet", async () => {
         dataRoot: "/tmp/cogcoin",
         confirmationPhrase: "permanently reset" as const,
         walletPrompt: {
-          defaultAction: "reset-base-entropy" as const,
+          defaultAction: "retain-mnemonic" as const,
           acceptedInputs: ["", "skip", "delete wallet"] as const,
           entropyRetainingResetAvailable: true,
           requiresPassphrase: false,
@@ -162,6 +162,47 @@ test("reset json emits the stable reset mutation envelope", async () => {
   assert.equal(envelope.data.operation.kind, "reset");
   assert.equal(envelope.data.operation.walletAction, "deleted");
   assert.equal(envelope.data.operation.secretCleanupStatus, "deleted");
+  assert.equal(stderr.toString(), "");
+});
+
+test("reset text omits wallet root lines when the mnemonic is retained", async () => {
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream();
+
+  const code = await runCli(["reset"], {
+    stdout,
+    stderr,
+    stdin: new FakeInput(true) as never,
+    resetWallet: async () => ({
+      dataRoot: "/tmp/cogcoin",
+      factoryResetReady: true as const,
+      stoppedProcesses: {
+        managedBitcoind: 1,
+        indexerDaemon: 1,
+        backgroundMining: 0,
+        survivors: 0,
+      },
+      secretCleanupStatus: "deleted" as const,
+      deletedSecretRefs: ["wallet-state:wallet-root-old"],
+      failedSecretRefs: [],
+      preservedSecretRefs: [],
+      walletAction: "retain-mnemonic" as const,
+      walletOldRootId: "wallet-root-old",
+      walletNewRootId: "wallet-root-new",
+      bootstrapSnapshot: {
+        status: "preserved" as const,
+        path: "/tmp/cogcoin/bitcoin/bootstrap/utxo-910000.dat",
+      },
+      removedPaths: ["/tmp/cogcoin"],
+    }),
+  });
+
+  assert.equal(code, 0);
+  const output = stdout.toString();
+  assert.match(output, /Cogcoin reset completed\./);
+  assert.match(output, /Wallet action: retain-mnemonic/);
+  assert.doesNotMatch(output, /Previous wallet root:/);
+  assert.doesNotMatch(output, /New wallet root:/);
   assert.equal(stderr.toString(), "");
 });
 

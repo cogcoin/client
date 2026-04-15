@@ -225,10 +225,10 @@ export async function runWalletAdminCommand(
         writeLine(context.stdout, `Managed bitcoind processes stopped: ${result.stoppedProcesses.managedBitcoind}`);
         writeLine(context.stdout, `Indexer daemons stopped: ${result.stoppedProcesses.indexerDaemon}`);
         writeLine(context.stdout, `Background miners stopped: ${result.stoppedProcesses.backgroundMining}`);
-        if (result.walletOldRootId !== null) {
+        if (result.walletAction !== "retain-mnemonic" && result.walletOldRootId !== null) {
           writeLine(context.stdout, `Previous wallet root: ${result.walletOldRootId}`);
         }
-        if (result.walletNewRootId !== null) {
+        if (result.walletAction !== "retain-mnemonic" && result.walletNewRootId !== null) {
           writeLine(context.stdout, `New wallet root: ${result.walletNewRootId}`);
         }
         for (const warning of getResetWarnings(result)) {

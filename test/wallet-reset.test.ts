@@ -316,7 +316,7 @@ test("reset preserves base entropy for provider-backed wallets and clears derive
       prompter,
     });
 
-    assert.equal(result.walletAction, "reset-base-entropy");
+    assert.equal(result.walletAction, "retain-mnemonic");
     assert.equal(result.walletOldRootId, state.walletRootId);
     assert.notEqual(result.walletNewRootId, state.walletRootId);
     assert.equal(result.bootstrapSnapshot.status, "not-present");
@@ -401,7 +401,7 @@ test("reset uses hidden passphrase input for passphrase-wrapped entropy-retainin
       prompter,
     });
 
-    assert.equal(result.walletAction, "reset-base-entropy");
+    assert.equal(result.walletAction, "retain-mnemonic");
     assert.deepEqual(prompter.hiddenPrompts, ["Wallet-state passphrase: "]);
 
     const loaded = await loadWalletState(
@@ -537,7 +537,7 @@ test("reset preview exposes wallet, snapshot, and managed-process preflight info
       validateSnapshotFile: async () => {},
     });
 
-    assert.equal(preview.walletPrompt?.defaultAction, "reset-base-entropy");
+    assert.equal(preview.walletPrompt?.defaultAction, "retain-mnemonic");
     assert.equal(preview.walletPrompt?.requiresPassphrase, false);
     assert.equal(preview.bootstrapSnapshot.status, "valid");
     assert.equal(preview.bootstrapSnapshot.defaultAction, "preserve");
