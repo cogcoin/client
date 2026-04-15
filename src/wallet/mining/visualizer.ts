@@ -1,16 +1,28 @@
-import type { ProgressOutputMode } from "../../bitcoind/types.js";
+import type { BootstrapProgress, ProgressOutputMode } from "../../bitcoind/types.js";
 import { createBootstrapProgress } from "../../bitcoind/progress/formatting.js";
 import {
   createFollowSceneState,
   syncFollowSceneState,
 } from "../../bitcoind/progress/follow-scene.js";
+import {
+  DEFAULT_RENDER_CLOCK,
+  resolveTtyRenderPolicy,
+  TtyRenderThrottle,
+  type RenderClock,
+  type TtyRenderStream,
+} from "../../bitcoind/progress/render-policy.js";
 import { TtyProgressRenderer } from "../../bitcoind/progress/tty-renderer.js";
 import type { MiningRuntimeStatusV1 } from "./types.js";
 
-interface RenderStream {
-  isTTY?: boolean;
-  columns?: number;
-  write(chunk: string): boolean | void;
+interface VisualizerRendererLike {
+  renderFollowScene(
+    progress: BootstrapProgress,
+    cogcoinSyncHeight: number | null,
+    cogcoinSyncTargetHeight: number | null,
+    followScene: ReturnType<typeof createFollowSceneState>,
+    statusFieldText?: string,
+  ): void;
+  close(): void;
 }
 
 const VISUALIZER_PROGRESS_SNAPSHOT = {
@@ -20,21 +32,6 @@ const VISUALIZER_PROGRESS_SNAPSHOT = {
   sha256: "",
   sizeBytes: 1,
 } as const;
-
-function shouldRenderToTty(
-  progressOutput: ProgressOutputMode,
-  stream: RenderStream,
-): boolean {
-  if (progressOutput === "none") {
-    return false;
-  }
-
-  if (progressOutput === "tty") {
-    return true;
-  }
-
-  return stream.isTTY === true;
-}
 
 export function describeMiningVisualizerStatus(
   snapshot: MiningRuntimeStatusV1,
@@ -131,20 +128,44 @@ export function describeMiningVisualizerProgress(
 }
 
 export class MiningFollowVisualizer {
-  readonly #renderer: TtyProgressRenderer | null;
+  readonly #renderer: VisualizerRendererLike | null;
+  readonly #clock: RenderClock;
+  readonly #renderThrottle: TtyRenderThrottle;
   readonly #progress = createBootstrapProgress("follow_tip", VISUALIZER_PROGRESS_SNAPSHOT);
   readonly #scene = createFollowSceneState();
+  #latestSnapshot: MiningRuntimeStatusV1 | null = null;
 
   constructor(options: {
     progressOutput?: ProgressOutputMode;
-    stream?: RenderStream;
+    stream?: TtyRenderStream;
+    platform?: NodeJS.Platform;
+    env?: NodeJS.ProcessEnv;
+    clock?: RenderClock;
+    rendererFactory?: (stream: TtyRenderStream) => VisualizerRendererLike;
   } = {}) {
     const stream = options.stream ?? process.stderr;
     const progressOutput = options.progressOutput ?? "auto";
+    const renderPolicy = resolveTtyRenderPolicy(
+      progressOutput,
+      stream,
+      {
+        platform: options.platform,
+        env: options.env,
+      },
+    );
+    this.#clock = options.clock ?? DEFAULT_RENDER_CLOCK;
 
-    this.#renderer = shouldRenderToTty(progressOutput, stream)
-      ? new TtyProgressRenderer(stream)
+    this.#renderer = renderPolicy.enabled
+      ? options.rendererFactory?.(stream) ?? new TtyProgressRenderer(stream)
       : null;
+    this.#renderThrottle = new TtyRenderThrottle({
+      clock: this.#clock,
+      intervalMs: renderPolicy.repaintIntervalMs,
+      onRender: () => {
+        this.#renderLatestSnapshot();
+      },
+      throttled: renderPolicy.linuxHeadlessThrottle,
+    });
   }
 
   update(snapshot: MiningRuntimeStatusV1): void {
@@ -152,12 +173,27 @@ export class MiningFollowVisualizer {
       return;
     }
 
+    this.#latestSnapshot = snapshot;
+    this.#renderThrottle.request();
+  }
+
+  close(): void {
+    this.#renderThrottle.flush();
+    this.#renderer?.close();
+  }
+
+  #renderLatestSnapshot(): void {
+    if (this.#renderer === null || this.#latestSnapshot === null) {
+      return;
+    }
+
+    const snapshot = this.#latestSnapshot;
     const indexedHeight = snapshot.indexerTipHeight ?? snapshot.coreBestHeight ?? null;
     const nodeHeight = snapshot.coreBestHeight ?? indexedHeight;
 
     this.#progress.phase = "follow_tip";
     this.#progress.message = describeMiningVisualizerProgress(snapshot);
-    this.#progress.updatedAt = Date.now();
+    this.#progress.updatedAt = this.#clock.now();
     this.#progress.blocks = nodeHeight;
     this.#progress.targetHeight = nodeHeight;
     this.#progress.etaSeconds = null;
@@ -176,9 +212,5 @@ export class MiningFollowVisualizer {
       this.#scene,
       describeMiningVisualizerStatus(snapshot),
     );
-  }
-
-  close(): void {
-    this.#renderer?.close();
   }
 }

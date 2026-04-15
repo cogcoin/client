@@ -1,4 +1,5 @@
 export const PROGRESS_TICK_MS = 250;
+export const HEADLESS_PROGRESS_TICK_MS = 1_000;
 export const PREPARING_SYNC_LINE = "Preparing managed Cogcoin sync...";
 export const ART_WIDTH = 80;
 export const ART_HEIGHT = 13;

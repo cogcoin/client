@@ -1,4 +1,4 @@
-import type { QuoteDisplayPhase, WritingQuoteRotator } from "../quotes.js";
+import type { QuoteDisplayPhase } from "../quotes.js";
 import { WritingQuoteRotator as QuoteRotator } from "../quotes.js";
 import type {
   BootstrapPhase,
@@ -8,7 +8,7 @@ import type {
   SnapshotMetadata,
   WritingQuote,
 } from "../types.js";
-import { INTRO_TOTAL_MS, PROGRESS_TICK_MS } from "./constants.js";
+import { INTRO_TOTAL_MS } from "./constants.js";
 import {
   advanceFollowSceneState,
   createFollowSceneState,
@@ -22,21 +22,74 @@ import {
   createDefaultMessage,
   resolveStatusFieldText,
 } from "./formatting.js";
+import {
+  DEFAULT_RENDER_CLOCK,
+  resolveTtyRenderPolicy,
+  TtyRenderThrottle,
+  type RenderClock,
+  type TtyRenderStream,
+} from "./render-policy.js";
 import { TtyProgressRenderer } from "./tty-renderer.js";
+
+interface QuoteRotatorLike {
+  current(now?: number): Promise<{
+    displayPhase: QuoteDisplayPhase;
+    currentQuote: WritingQuote | null;
+    displayStartedAt: number;
+  }>;
+}
+
+interface ProgressRendererLike {
+  render(
+    displayPhase: QuoteDisplayPhase,
+    quote: WritingQuote | null,
+    progress: BootstrapProgress,
+    cogcoinSyncHeight: number | null,
+    cogcoinSyncTargetHeight: number | null,
+    introElapsedMs?: number,
+    statusFieldText?: string,
+  ): void;
+  renderTrainScene(
+    kind: "intro" | "completion",
+    progress: BootstrapProgress,
+    cogcoinSyncHeight: number | null,
+    cogcoinSyncTargetHeight: number | null,
+    elapsedMs: number,
+    statusFieldText?: string,
+  ): void;
+  renderFollowScene(
+    progress: BootstrapProgress,
+    cogcoinSyncHeight: number | null,
+    cogcoinSyncTargetHeight: number | null,
+    followScene: FollowSceneStateForTesting,
+    statusFieldText?: string,
+  ): void;
+  close(): void;
+}
 
 interface ProgressControllerOptions {
   onProgress?: (event: ManagedBitcoindProgressEvent) => void;
   progressOutput?: ProgressOutputMode;
   quoteStatePath: string;
   snapshot: SnapshotMetadata;
+  quoteRotator?: QuoteRotatorLike;
+  rendererFactory?: (stream: TtyRenderStream) => ProgressRendererLike;
+  stream?: TtyRenderStream;
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  clock?: RenderClock;
 }
 
 export class ManagedProgressController {
   readonly #options: ProgressControllerOptions;
   readonly #snapshot: SnapshotMetadata;
   readonly #outputMode: ProgressOutputMode;
-  #quoteRotator: WritingQuoteRotator | null = null;
-  #renderer: TtyProgressRenderer | null = null;
+  readonly #clock: RenderClock;
+  readonly #renderStream: TtyRenderStream;
+  readonly #renderThrottle: TtyRenderThrottle;
+  readonly #renderIntervalMs: number;
+  #quoteRotator: QuoteRotatorLike | null = null;
+  #renderer: ProgressRendererLike | null = null;
   #ticker: ReturnType<typeof setInterval> | null = null;
   #currentQuote: WritingQuote | null = null;
   #currentDisplayPhase: QuoteDisplayPhase = "banner";
@@ -53,6 +106,25 @@ export class ManagedProgressController {
     this.#snapshot = options.snapshot;
     this.#outputMode = options.progressOutput ?? "auto";
     this.#progress = createBootstrapProgress("paused", options.snapshot);
+    this.#clock = options.clock ?? DEFAULT_RENDER_CLOCK;
+    this.#renderStream = options.stream ?? process.stderr;
+    const renderPolicy = resolveTtyRenderPolicy(
+      this.#outputMode,
+      this.#renderStream,
+      {
+        platform: options.platform,
+        env: options.env,
+      },
+    );
+    this.#renderIntervalMs = renderPolicy.repaintIntervalMs;
+    this.#renderThrottle = new TtyRenderThrottle({
+      clock: this.#clock,
+      intervalMs: this.#renderIntervalMs,
+      onRender: () => {
+        this.#renderToTty();
+      },
+      throttled: renderPolicy.linuxHeadlessThrottle,
+    });
   }
 
   async start(): Promise<void> {
@@ -61,24 +133,34 @@ export class ManagedProgressController {
     }
 
     this.#started = true;
-    this.#quoteRotator = await QuoteRotator.create(this.#options.quoteStatePath);
+    this.#quoteRotator = this.#options.quoteRotator
+      ?? await QuoteRotator.create(this.#options.quoteStatePath);
 
-    if (this.#shouldRenderToTty()) {
-      this.#renderer = new TtyProgressRenderer();
+    if (resolveTtyRenderPolicy(
+      this.#outputMode,
+      this.#renderStream,
+      {
+        platform: this.#options.platform,
+        env: this.#options.env,
+      },
+    ).enabled) {
+      this.#renderer = this.#options.rendererFactory?.(this.#renderStream)
+        ?? new TtyProgressRenderer(this.#renderStream);
     }
 
     await this.#refresh();
-    this.#ticker = setInterval(() => {
+    this.#ticker = this.#clock.setInterval(() => {
       void this.#refresh();
-    }, PROGRESS_TICK_MS);
+    }, this.#renderIntervalMs);
   }
 
   async close(): Promise<void> {
     if (this.#ticker !== null) {
-      clearInterval(this.#ticker);
+      this.#clock.clearInterval(this.#ticker);
       this.#ticker = null;
     }
 
+    this.#renderThrottle.flush();
     this.#renderer?.close();
     this.#renderer = null;
     this.#started = false;
@@ -118,15 +200,17 @@ export class ManagedProgressController {
       return;
     }
 
+    this.#renderThrottle.flush();
+
     if (this.#ticker !== null) {
-      clearInterval(this.#ticker);
+      this.#clock.clearInterval(this.#ticker);
       this.#ticker = null;
     }
 
-    const startedAt = Date.now();
+    const startedAt = this.#clock.now();
 
     while (true) {
-      const elapsedMs = Math.min(INTRO_TOTAL_MS, Date.now() - startedAt);
+      const elapsedMs = Math.min(INTRO_TOTAL_MS, this.#clock.now() - startedAt);
       this.#renderer.renderTrainScene(
         "completion",
         this.#progress,
@@ -140,7 +224,7 @@ export class ManagedProgressController {
       }
 
       await new Promise((resolve) => {
-        setTimeout(resolve, PROGRESS_TICK_MS);
+        this.#clock.setTimeout(resolve, this.#renderIntervalMs);
       });
     }
   }
@@ -223,7 +307,7 @@ export class ManagedProgressController {
       return;
     }
 
-    const now = Date.now();
+    const now = this.#clock.now();
 
     if (this.#followVisualMode) {
       advanceFollowSceneState(this.#followScene, now);
@@ -252,10 +336,19 @@ export class ManagedProgressController {
       // User progress callbacks should never break managed sync.
     }
 
+    this.#renderThrottle.request();
+  }
+
+  #renderToTty(): void {
+    if (!this.#started || this.#renderer === null) {
+      return;
+    }
+
+    const now = this.#clock.now();
     const statusFieldText = resolveStatusFieldText(this.#progress, this.#snapshot.height, now);
 
     if (this.#followVisualMode) {
-      this.#renderer?.renderFollowScene(
+      this.#renderer.renderFollowScene(
         this.#progress,
         this.#cogcoinSyncHeight,
         this.#cogcoinSyncTargetHeight,
@@ -265,7 +358,7 @@ export class ManagedProgressController {
       return;
     }
 
-    this.#renderer?.render(
+    this.#renderer.render(
       this.#currentDisplayPhase,
       this.#currentQuote,
       this.#progress,
@@ -274,17 +367,5 @@ export class ManagedProgressController {
       Math.max(0, now - this.#currentDisplayStartedAt),
       statusFieldText,
     );
-  }
-
-  #shouldRenderToTty(): boolean {
-    if (this.#outputMode === "none") {
-      return false;
-    }
-
-    if (this.#outputMode === "tty") {
-      return true;
-    }
-
-    return process.stderr.isTTY === true;
   }
 }
