@@ -2,6 +2,7 @@ import { dirname } from "node:path";
 
 import { loadBundledGenesisParameters } from "@cogcoin/indexer";
 
+import { resolveCogcoinProcessingStartHeight } from "../../bitcoind/processing-start-height.js";
 import type { ManagedBitcoindServiceCompatibility } from "../../bitcoind/service.js";
 import { UNINITIALIZED_WALLET_ROOT_ID, resolveManagedServicePaths } from "../../bitcoind/service-paths.js";
 import type { IndexerDaemonCompatibility } from "../../bitcoind/indexer-daemon.js";
@@ -442,7 +443,7 @@ export async function runServiceRuntimeCommand(
       await context.attachManagedBitcoindService({
         dataDir,
         chain: "main",
-        startHeight: genesis.genesisBlock,
+        startHeight: resolveCogcoinProcessingStartHeight(genesis),
         walletRootId: resolution.walletRootId,
       });
       const bitcoindStatus = probe.compatibility === "compatible" ? "already-running" : "started";
@@ -530,7 +531,7 @@ export async function runServiceRuntimeCommand(
       await context.attachManagedBitcoindService({
         dataDir,
         chain: "main",
-        startHeight: genesis.genesisBlock,
+        startHeight: resolveCogcoinProcessingStartHeight(genesis),
         walletRootId: resolution.walletRootId,
       });
       const indexerProbe = await context.probeIndexerDaemon({

@@ -93,3 +93,36 @@ test("rewinding below genesis clears the tip and restores the initial state", as
 
   await client.close();
 });
+
+test("client keeps blocks below genesis inactive and activates exactly at genesis", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-client-genesis-boundary");
+  const historyVector = loadHistoryVector();
+  const genesisBlock = materializeBlock(historyVector.setupBlocks[0]);
+  const genesis = await loadBundledGenesisParameters();
+  const preGenesisBlock = {
+    ...genesisBlock,
+    height: genesis.genesisBlock - 1,
+    hash: new Uint8Array(32).fill(0xaa),
+    previousHash: new Uint8Array(32).fill(0x55),
+  };
+  const activatedGenesisBlock = {
+    ...genesisBlock,
+    previousHash: preGenesisBlock.hash,
+  };
+
+  const store = await openSqliteStore({ filename: databasePath });
+  const client = await openClient({
+    store,
+    genesisParameters: genesis,
+  });
+
+  const preGenesisResult = await client.applyBlock(preGenesisBlock);
+  assert.equal(preGenesisResult.applied.state.consensus.activationBlock, null);
+  assert.equal((await client.getState()).consensus.activationBlock, null);
+
+  const genesisResult = await client.applyBlock(activatedGenesisBlock);
+  assert.equal(genesisResult.applied.state.consensus.activationBlock, genesis.genesisBlock);
+  assert.equal((await client.getState()).consensus.activationBlock, genesis.genesisBlock);
+
+  await client.close();
+});

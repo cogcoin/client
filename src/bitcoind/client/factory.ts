@@ -5,6 +5,10 @@ import { openClient } from "../../client.js";
 import { AssumeUtxoBootstrapController, DEFAULT_SNAPSHOT_METADATA, resolveBootstrapPathsForTesting } from "../bootstrap.js";
 import { attachOrStartIndexerDaemon } from "../indexer-daemon.js";
 import { createRpcClient } from "../node.js";
+import {
+  assertCogcoinProcessingStartHeight,
+  resolveCogcoinProcessingStartHeight,
+} from "../processing-start-height.js";
 import { ManagedProgressController } from "../progress.js";
 import { attachOrStartManagedBitcoindService } from "../service.js";
 import type {
@@ -19,6 +23,11 @@ async function createManagedBitcoindClient(
   options: InternalManagedBitcoindOptions,
 ): Promise<ManagedBitcoindClient> {
   const genesisParameters = options.genesisParameters ?? await loadBundledGenesisParameters();
+  assertCogcoinProcessingStartHeight({
+    chain: options.chain,
+    startHeight: options.startHeight,
+    genesisParameters,
+  });
   const dataDir = options.dataDir ?? resolveDefaultBitcoindDataDirForTesting();
   const node = await attachOrStartManagedBitcoindService({
     ...options,
@@ -51,6 +60,9 @@ async function createManagedBitcoindClient(
     })
     : null;
 
+  // The persistent service may already exist from a non-processing attach path
+  // that used startHeight 0. Cogcoin replay still begins at the requested
+  // processing boundary for this managed client.
   return new DefaultManagedBitcoindClient(
     client,
     options.store,
@@ -59,6 +71,7 @@ async function createManagedBitcoindClient(
     progress,
     bootstrap,
     indexerDaemon,
+    options.startHeight,
     options.syncDebounceMs ?? DEFAULT_SYNC_DEBOUNCE_MS,
   );
 }
@@ -72,7 +85,7 @@ export async function openManagedBitcoindClient(
     ...options,
     genesisParameters,
     chain: "main",
-    startHeight: genesisParameters.genesisBlock,
+    startHeight: resolveCogcoinProcessingStartHeight(genesisParameters),
   });
 }
 

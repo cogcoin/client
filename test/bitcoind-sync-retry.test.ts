@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { loadBundledGenesisParameters } from "@cogcoin/indexer";
+
 import type { BitcoinBlock, ClientTip } from "../src/types.js";
 import { syncToTip } from "../src/bitcoind/client/sync-engine.js";
 import { createBlockRateTracker } from "../src/bitcoind/client/internal-types.js";
@@ -256,6 +258,49 @@ test("syncToTip retries a transient managed RPC timeout during bitcoin sync poll
   assert.ok(messages.includes("Managed Bitcoin RPC temporarily unavailable; retrying until canceled."));
   assert.match(lastErrors[0] ?? "", /getblockchaininfo failed/);
   assert.equal(phases.includes("error"), false);
+});
+
+test("syncToTip stays idle while Bitcoin Core remains below the Cogcoin genesis height", async () => {
+  const genesis = await loadBundledGenesisParameters();
+  const { dependencies, appliedHeights, phases } = createSyncDependencies({
+    startHeight: genesis.genesisBlock,
+    async getBlockchainInfo() {
+      return createBlockchainInfo(genesis.genesisBlock - 1);
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.equal(result.appliedBlocks, 0);
+  assert.equal(result.bestHeight, genesis.genesisBlock - 1);
+  assert.deepEqual(appliedHeights, []);
+  assert.equal(phases.includes("cogcoin_sync"), false);
+});
+
+test("syncToTip begins Cogcoin processing exactly at the bundled genesis height", async () => {
+  const genesis = await loadBundledGenesisParameters();
+  const genesisHash = "33".repeat(32);
+  const previousHash = "22".repeat(32);
+  const { dependencies, appliedHeights, phases } = createSyncDependencies({
+    startHeight: genesis.genesisBlock,
+    async getBlockchainInfo() {
+      return createBlockchainInfo(genesis.genesisBlock);
+    },
+    async getBlockHash(height: number) {
+      assert.equal(height, genesis.genesisBlock);
+      return genesisHash;
+    },
+    async getBlock(hash: string) {
+      assert.equal(hash, genesisHash);
+      return createRpcBlock(genesis.genesisBlock, genesisHash, previousHash);
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.equal(result.appliedBlocks, 1);
+  assert.deepEqual(appliedHeights, [genesis.genesisBlock]);
+  assert.equal(phases.includes("cogcoin_sync"), true);
 });
 
 test("syncToTip retries a transient getblock timeout without duplicating applied work", async () => {

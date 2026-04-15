@@ -15,6 +15,7 @@ import {
   attachOrStartManagedBitcoindService,
   probeManagedBitcoindService,
 } from "../../bitcoind/service.js";
+import { resolveCogcoinProcessingStartHeight } from "../../bitcoind/processing-start-height.js";
 import {
   type ManagedBitcoindObservedStatus,
   type ManagedBitcoindNodeHandle,
@@ -595,7 +596,7 @@ async function attachNodeStatus(options: {
     const handle = await attachOrStartManagedBitcoindService({
       dataDir: options.dataDir,
       chain: "main",
-      startHeight: genesis.genesisBlock,
+      startHeight: resolveCogcoinProcessingStartHeight(genesis),
       walletRootId: options.walletRootId,
       startupTimeoutMs: options.startupTimeoutMs,
     });

@@ -49,6 +49,7 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     progress: ManagedProgressController,
     bootstrap: AssumeUtxoBootstrapController,
     indexerDaemon: IndexerDaemonClient | null,
+    startHeight: number,
     syncDebounceMs: number,
   ) {
     this.#client = client;
@@ -58,7 +59,7 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     this.#progress = progress;
     this.#bootstrap = bootstrap;
     this.#indexerDaemon = indexerDaemon;
-    this.#startHeight = node.startHeight;
+    this.#startHeight = startHeight;
     this.#syncDebounceMs = syncDebounceMs;
   }
 
