@@ -3,12 +3,18 @@ import { access, constants, copyFile, mkdir, mkdtemp, readFile, readdir, rename,
 import { dirname, join, relative } from "node:path";
 
 import { DEFAULT_SNAPSHOT_METADATA } from "../bitcoind/bootstrap/constants.js";
+import { createRpcClient } from "../bitcoind/node.js";
 import { resolveBootstrapPathsForTesting } from "../bitcoind/bootstrap/paths.js";
 import { validateSnapshotFileForTesting } from "../bitcoind/bootstrap/snapshot-file.js";
+import {
+  attachOrStartManagedBitcoindService,
+  createManagedWalletReplica,
+} from "../bitcoind/service.js";
 import type {
   ManagedBitcoindObservedStatus,
   ManagedIndexerDaemonObservedStatus,
 } from "../bitcoind/types.js";
+import { resolveNormalizedWalletDescriptorState } from "./descriptor-normalization.js";
 import { acquireFileLock, type FileLockHandle } from "./fs/lock.js";
 import {
   createInternalCoreWalletPassphrase,
@@ -30,6 +36,7 @@ import {
   loadWalletState,
   saveWalletState,
   type RawWalletStateEnvelope,
+  type WalletStateSaveAccess,
 } from "./state/storage.js";
 import { confirmTypedAcknowledgement } from "./tx/confirm.js";
 import type { WalletExplicitLockStateV1, WalletStateV1 } from "./types.js";
@@ -139,6 +146,40 @@ interface WalletAccessForReset {
   access:
     | { kind: "provider"; provider: WalletSecretProvider }
     | { kind: "passphrase"; passphrase: string };
+}
+
+interface ResetWalletRpcClient {
+  getDescriptorInfo(descriptor: string): Promise<{
+    descriptor: string;
+    checksum: string;
+  }>;
+  createWallet(walletName: string, options: {
+    blank: boolean;
+    descriptors: boolean;
+    disablePrivateKeys: boolean;
+    loadOnStartup: boolean;
+    passphrase: string;
+  }): Promise<unknown>;
+  walletPassphrase(walletName: string, passphrase: string, timeoutSeconds: number): Promise<null>;
+  importDescriptors(walletName: string, requests: Array<{
+    desc: string;
+    timestamp: string | number;
+    active?: boolean;
+    internal?: boolean;
+    range?: number | [number, number];
+  }>): Promise<Array<{ success: boolean }>>;
+  walletLock(walletName: string): Promise<null>;
+  deriveAddresses(descriptor: string, range?: number | [number, number]): Promise<string[]>;
+  listDescriptors(walletName: string, privateOnly?: boolean): Promise<{
+    descriptors: Array<{ desc: string }>;
+  }>;
+  getWalletInfo(walletName: string): Promise<{
+    walletname: string;
+    private_keys_enabled: boolean;
+    descriptors: boolean;
+  }>;
+  loadWallet(walletName: string, loadOnStartup?: boolean): Promise<{ name: string; warning: string }>;
+  listWallets(): Promise<string[]>;
 }
 
 interface ResetExecutionDecision {
@@ -436,6 +477,93 @@ function createEntropyRetainedWalletState(
     proactiveFamilies: [],
     pendingMutations: [],
   };
+}
+
+async function recreateManagedCoreWalletReplicaForReset(options: {
+  state: WalletStateV1;
+  access: WalletStateSaveAccess;
+  paths: WalletRuntimePaths;
+  dataDir: string;
+  nowUnixMs: number;
+  attachService?: typeof attachOrStartManagedBitcoindService;
+  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => ResetWalletRpcClient;
+}): Promise<WalletStateV1> {
+  const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
+    dataDir: options.dataDir,
+    chain: "main",
+    startHeight: 0,
+    walletRootId: options.state.walletRootId,
+    managedWalletPassphrase: options.state.managedCoreWallet.internalPassphrase,
+  });
+  const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
+  await createManagedWalletReplica(rpc, options.state.walletRootId, {
+    managedWalletPassphrase: options.state.managedCoreWallet.internalPassphrase,
+  });
+  const normalizedDescriptors = await resolveNormalizedWalletDescriptorState(options.state, rpc);
+  const walletName = sanitizeWalletName(options.state.walletRootId);
+
+  await rpc.walletPassphrase(walletName, options.state.managedCoreWallet.internalPassphrase, 10);
+  try {
+    const importResults = await rpc.importDescriptors(walletName, [{
+      desc: normalizedDescriptors.privateExternal,
+      timestamp: options.state.walletBirthTime,
+      active: false,
+      internal: false,
+      range: [0, options.state.descriptor.rangeEnd],
+    }]);
+
+    if (!importResults.every((result) => result.success)) {
+      throw new Error(`wallet_descriptor_import_failed_${JSON.stringify(importResults)}`);
+    }
+  } finally {
+    await rpc.walletLock(walletName).catch(() => undefined);
+  }
+
+  const derivedFunding = await rpc.deriveAddresses(normalizedDescriptors.publicExternal, [0, 0]);
+
+  if (derivedFunding[0] !== options.state.funding.address) {
+    throw new Error("wallet_funding_address_verification_failed");
+  }
+
+  const descriptors = await rpc.listDescriptors(walletName);
+  const importedDescriptor = descriptors.descriptors.find((entry) => entry.desc === normalizedDescriptors.publicExternal);
+
+  if (importedDescriptor == null) {
+    throw new Error("wallet_descriptor_not_present_after_import");
+  }
+
+  const nextState: WalletStateV1 = {
+    ...options.state,
+    stateRevision: options.state.stateRevision + 1,
+    lastWrittenAtUnixMs: options.nowUnixMs,
+    descriptor: {
+      ...options.state.descriptor,
+      privateExternal: normalizedDescriptors.privateExternal,
+      publicExternal: normalizedDescriptors.publicExternal,
+      checksum: normalizedDescriptors.checksum,
+    },
+    managedCoreWallet: {
+      ...options.state.managedCoreWallet,
+      walletName,
+      descriptorChecksum: normalizedDescriptors.checksum,
+      fundingAddress0: options.state.funding.address,
+      fundingScriptPubKeyHex0: options.state.funding.scriptPubKeyHex,
+      proofStatus: "ready",
+      lastImportedAtUnixMs: options.nowUnixMs,
+      lastVerifiedAtUnixMs: options.nowUnixMs,
+    },
+  };
+
+  await saveWalletState(
+    {
+      primaryPath: options.paths.walletStatePath,
+      backupPath: options.paths.walletStateBackupPath,
+    },
+    nextState,
+    options.access,
+  );
+
+  return nextState;
 }
 
 async function promptHiddenOrVisible(
@@ -848,6 +976,8 @@ export async function resetWallet(options: {
   nowUnixMs?: number;
   paths?: WalletRuntimePaths;
   validateSnapshotFile?: (path: string) => Promise<void>;
+  attachService?: typeof attachOrStartManagedBitcoindService;
+  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => ResetWalletRpcClient;
 }): Promise<WalletResetResult> {
   const provider = options.provider ?? createDefaultWalletSecretProvider();
   const nowUnixMs = options.nowUnixMs ?? Date.now();
@@ -946,39 +1076,52 @@ export async function resetWallet(options: {
         throw new Error("reset_wallet_entropy_reset_unavailable");
       }
 
-      const nextState = createEntropyRetainedWalletState(
+      let nextState = createEntropyRetainedWalletState(
         decision.loadedWalletForEntropyReset.loaded.state,
         nowUnixMs,
       );
       walletOldRootId = decision.loadedWalletForEntropyReset.loaded.state.walletRootId;
       walletNewRootId = nextState.walletRootId;
+      let nextAccess: WalletStateSaveAccess;
 
       if (decision.loadedWalletForEntropyReset.access.kind === "provider") {
         const secretReference = createWalletSecretReference(nextState.walletRootId);
         newProviderKeyId = secretReference.keyId;
         await provider.storeSecret(secretReference.keyId, randomBytes(32));
+        nextAccess = {
+          provider,
+          secretReference,
+        };
         await saveWalletState(
           {
             primaryPath: paths.walletStatePath,
             backupPath: paths.walletStateBackupPath,
           },
           nextState,
-          {
-            provider,
-            secretReference,
-          },
+          nextAccess,
         );
         preservedSecretRefs.push(secretReference.keyId);
       } else {
+        nextAccess = decision.loadedWalletForEntropyReset.access.passphrase;
         await saveWalletState(
           {
             primaryPath: paths.walletStatePath,
             backupPath: paths.walletStateBackupPath,
           },
           nextState,
-          decision.loadedWalletForEntropyReset.access.passphrase,
+          nextAccess,
         );
       }
+
+      nextState = await recreateManagedCoreWalletReplicaForReset({
+        state: nextState,
+        access: nextAccess,
+        paths,
+        dataDir: options.dataDir,
+        nowUnixMs,
+        attachService: options.attachService,
+        rpcFactory: options.rpcFactory,
+      });
     }
 
     if (snapshotResultStatus === "preserved") {

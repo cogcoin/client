@@ -59,6 +59,90 @@ function getResetWarnings(result: WalletResetResult): string[] {
     : [];
 }
 
+function getResetNextSteps(result: WalletResetResult): string[] {
+  return result.walletAction === "deleted" || result.walletAction === "not-present"
+    ? ["Run `cogcoin init` to create a new wallet."]
+    : ["Run `cogcoin sync` to bootstrap assumeutxo and the managed Bitcoin/indexer state."];
+}
+
+interface ResetTextEntry {
+  text: string;
+  ok: boolean;
+}
+
+function resetTextEntry(label: string, value: string, ok: boolean): ResetTextEntry {
+  return {
+    text: `${label}: ${value}`,
+    ok,
+  };
+}
+
+function formatResetSection(header: string, entries: readonly ResetTextEntry[]): string {
+  return [header, ...entries.map((entry) => `${entry.ok ? "✓" : "✗"} ${entry.text}`)].join("\n");
+}
+
+function formatResetResultText(result: WalletResetResult): string {
+  const warnings = getResetWarnings(result);
+  const nextStep = getResetNextSteps(result)[0] ?? null;
+  const secretCleanupOk = result.secretCleanupStatus !== "unknown" && result.secretCleanupStatus !== "failed";
+  const managedCleanupOk = result.stoppedProcesses.survivors === 0;
+  const outcomeEntries: ResetTextEntry[] = [
+    resetTextEntry("Wallet action", result.walletAction, true),
+    resetTextEntry("Snapshot", result.bootstrapSnapshot.status, true),
+    resetTextEntry("Secret cleanup", result.secretCleanupStatus, secretCleanupOk),
+  ];
+
+  if (result.walletAction !== "retain-mnemonic" && result.walletOldRootId !== null) {
+    outcomeEntries.push(resetTextEntry("Previous wallet root", result.walletOldRootId, true));
+  }
+
+  if (result.walletAction !== "retain-mnemonic" && result.walletNewRootId !== null) {
+    outcomeEntries.push(resetTextEntry("New wallet root", result.walletNewRootId, true));
+  }
+
+  const sections = [
+    formatResetSection("Paths", [
+      resetTextEntry("Data root", result.dataRoot, true),
+    ]),
+    formatResetSection("Reset Outcome", outcomeEntries),
+    formatResetSection("Managed Cleanup", [
+      resetTextEntry(
+        "Managed bitcoind processes stopped",
+        String(result.stoppedProcesses.managedBitcoind),
+        managedCleanupOk,
+      ),
+      resetTextEntry(
+        "Indexer daemons stopped",
+        String(result.stoppedProcesses.indexerDaemon),
+        managedCleanupOk,
+      ),
+      resetTextEntry(
+        "Background miners stopped",
+        String(result.stoppedProcesses.backgroundMining),
+        managedCleanupOk,
+      ),
+    ]),
+  ];
+
+  if (warnings.length > 0) {
+    sections.push(formatResetSection(
+      "Warnings",
+      warnings.map((warning) => resetTextEntry("Warning", warning, false)),
+    ));
+  }
+
+  const parts = [
+    "\n⛭ Cogcoin Reset ⛭",
+    ...sections,
+  ];
+
+  if (nextStep !== null) {
+    parts.push(`Next step: ${nextStep}`);
+  }
+
+  return parts.join("\n\n");
+}
+
 export async function runWalletAdminCommand(
   parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
@@ -209,31 +293,13 @@ export async function runWalletAdminCommand(
             buildResetMutationData(result),
             {
               warnings: getResetWarnings(result),
-              nextSteps: result.walletAction === "deleted" || result.walletAction === "not-present"
-                ? ["Run `cogcoin init` to create a new wallet."]
-                : ["Run `cogcoin status` to inspect the reset local state."],
+              nextSteps: getResetNextSteps(result),
             },
           ));
           return 0;
         }
 
-        writeLine(context.stdout, "Cogcoin reset completed.");
-        writeLine(context.stdout, `Data root: ${result.dataRoot}`);
-        writeLine(context.stdout, `Wallet action: ${result.walletAction}`);
-        writeLine(context.stdout, `Snapshot: ${result.bootstrapSnapshot.status}`);
-        writeLine(context.stdout, `Secret cleanup: ${result.secretCleanupStatus}`);
-        writeLine(context.stdout, `Managed bitcoind processes stopped: ${result.stoppedProcesses.managedBitcoind}`);
-        writeLine(context.stdout, `Indexer daemons stopped: ${result.stoppedProcesses.indexerDaemon}`);
-        writeLine(context.stdout, `Background miners stopped: ${result.stoppedProcesses.backgroundMining}`);
-        if (result.walletAction !== "retain-mnemonic" && result.walletOldRootId !== null) {
-          writeLine(context.stdout, `Previous wallet root: ${result.walletOldRootId}`);
-        }
-        if (result.walletAction !== "retain-mnemonic" && result.walletNewRootId !== null) {
-          writeLine(context.stdout, `New wallet root: ${result.walletNewRootId}`);
-        }
-        for (const warning of getResetWarnings(result)) {
-          writeLine(context.stdout, `Warning: ${warning}`);
-        }
+        writeLine(context.stdout, formatResetResultText(result));
         return 0;
       }
 

@@ -21,6 +21,93 @@ import type { WalletStateV1 } from "../src/wallet/types.js";
 
 const TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
 
+function stripDescriptorChecksum(descriptor: string): string {
+  return descriptor.replace(/#[A-Za-z0-9]+$/, "");
+}
+
+function createResetRpcHarness(state: WalletStateV1) {
+  const importedDescriptors: string[] = [];
+  const listedDescriptors: string[] = [];
+  const wallets = new Set<string>();
+  let walletLocked = false;
+  const checksum = "resetchk";
+  const normalizedPublicDescriptor = `${stripDescriptorChecksum(
+    deriveWalletMaterialFromMnemonic(state.mnemonic.phrase).descriptor.publicExternal,
+  )}#${checksum}`;
+
+  return {
+    rpcFactory() {
+      return {
+        async getDescriptorInfo(descriptor: string) {
+          return {
+            descriptor: stripDescriptorChecksum(descriptor),
+            checksum,
+          };
+        },
+        async walletPassphrase() {
+          walletLocked = false;
+          return null;
+        },
+        async createWallet(walletName: string) {
+          wallets.add(walletName);
+          return {
+            name: walletName,
+            warning: "",
+          };
+        },
+        async importDescriptors(_walletName: string, requests: Array<{ desc: string }>) {
+          importedDescriptors.push(...requests.map((request) => request.desc));
+          if (!listedDescriptors.includes(normalizedPublicDescriptor)) {
+            listedDescriptors.push(normalizedPublicDescriptor);
+          }
+          return requests.map(() => ({ success: true }));
+        },
+        async walletLock() {
+          walletLocked = true;
+          return null;
+        },
+        async loadWallet(walletName: string) {
+          if (!wallets.has(walletName)) {
+            throw new Error("bitcoind_rpc_loadwallet_-18_wallet_not_found");
+          }
+
+          return {
+            name: walletName,
+            warning: "",
+          };
+        },
+        async listWallets() {
+          return [...wallets];
+        },
+        async deriveAddresses() {
+          return [state.funding.address];
+        },
+        async listDescriptors() {
+          return {
+            descriptors: listedDescriptors.map((desc) => ({ desc })),
+          };
+        },
+        async getWalletInfo(walletName: string) {
+          return {
+            walletname: walletName,
+            private_keys_enabled: true,
+            descriptors: true,
+          };
+        },
+      };
+    },
+    get importedDescriptors() {
+      return importedDescriptors.slice();
+    },
+    get walletLocked() {
+      return walletLocked;
+    },
+    get checksum() {
+      return checksum;
+    },
+  };
+}
+
 function createTempWalletPaths(root: string) {
   return resolveWalletRuntimePathsForTesting({
     platform: "linux",
@@ -268,6 +355,7 @@ test("reset preserves base entropy for provider-backed wallets and clears derive
   const paths = createTempWalletPaths(root);
   const provider = createMemoryWalletSecretProviderForTesting();
   const state = createWalletState();
+  const harness = createResetRpcHarness(state);
   const secretReference = createWalletSecretReference(state.walletRootId);
   const prompter = new ScriptedPrompter({
     visibleAnswers: ["permanently reset", ""],
@@ -314,6 +402,14 @@ test("reset preserves base entropy for provider-backed wallets and clears derive
       paths,
       nowUnixMs: 1_700_000_100_000,
       prompter,
+      attachService: async () => ({
+        rpc: {
+          url: "http://127.0.0.1:8332",
+          cookieFile: "/tmp/does-not-matter",
+          port: 8_332,
+        },
+      } as never),
+      rpcFactory: harness.rpcFactory,
     });
 
     assert.equal(result.walletAction, "retain-mnemonic");
@@ -337,7 +433,13 @@ test("reset preserves base entropy for provider-backed wallets and clears derive
     assert.equal(loaded.state.descriptor.rangeEnd, state.descriptor.rangeEnd);
     assert.equal(loaded.state.descriptor.safetyMargin, state.descriptor.safetyMargin);
     assert.equal(loaded.state.walletRootId, result.walletNewRootId);
-    assert.equal(loaded.state.managedCoreWallet.proofStatus, "not-proven");
+    assert.equal(loaded.state.descriptor.checksum, harness.checksum);
+    assert.equal(loaded.state.managedCoreWallet.proofStatus, "ready");
+    assert.equal(loaded.state.managedCoreWallet.descriptorChecksum, harness.checksum);
+    assert.equal(loaded.state.managedCoreWallet.fundingAddress0, loaded.state.funding.address);
+    assert.equal(loaded.state.managedCoreWallet.fundingScriptPubKeyHex0, loaded.state.funding.scriptPubKeyHex);
+    assert.equal(loaded.state.managedCoreWallet.lastImportedAtUnixMs, 1_700_000_100_000);
+    assert.equal(loaded.state.managedCoreWallet.lastVerifiedAtUnixMs, 1_700_000_100_000);
     assert.deepEqual(
       loaded.state.identities.map((identity) => ({
         index: identity.index,
@@ -358,6 +460,8 @@ test("reset preserves base entropy for provider-backed wallets and clears derive
       "Type \"permanently reset\" to continue: ",
       "Wallet reset choice ([Enter] retain base entropy, \"skip\", or \"delete wallet\"): ",
     ]);
+    assert.equal(harness.importedDescriptors.length, 1);
+    assert.equal(harness.walletLocked, true);
     await assert.rejects(
       () => loadUnlockSession(paths.walletUnlockSessionPath, { provider }),
       /ENOENT|wallet_secret_missing_/,
@@ -377,6 +481,7 @@ test("reset uses hidden passphrase input for passphrase-wrapped entropy-retainin
   const paths = createTempWalletPaths(root);
   const provider = createMemoryWalletSecretProviderForTesting();
   const state = createWalletState();
+  const harness = createResetRpcHarness(state);
   const passphrase = "wallet-passphrase";
   const prompter = new ScriptedPrompter({
     visibleAnswers: ["permanently reset", ""],
@@ -399,6 +504,14 @@ test("reset uses hidden passphrase input for passphrase-wrapped entropy-retainin
       paths,
       nowUnixMs: 1_700_000_200_000,
       prompter,
+      attachService: async () => ({
+        rpc: {
+          url: "http://127.0.0.1:8332",
+          cookieFile: "/tmp/does-not-matter",
+          port: 8_332,
+        },
+      } as never),
+      rpcFactory: harness.rpcFactory,
     });
 
     assert.equal(result.walletAction, "retain-mnemonic");
@@ -413,6 +526,9 @@ test("reset uses hidden passphrase input for passphrase-wrapped entropy-retainin
     );
     assert.equal(loaded.state.walletRootId, result.walletNewRootId);
     assert.equal(loaded.state.mnemonic.phrase, state.mnemonic.phrase);
+    assert.equal(loaded.state.managedCoreWallet.proofStatus, "ready");
+    assert.equal(loaded.state.managedCoreWallet.descriptorChecksum, harness.checksum);
+    assert.equal(harness.importedDescriptors.length, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
