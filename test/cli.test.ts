@@ -7665,6 +7665,10 @@ test("sync shuts down the managed bitcoind client on SIGTERM", async () => {
   const stderr = new MemoryStream();
   const signals = new FakeSignalSource();
   let closed = false;
+  let releaseSyncReady!: () => void;
+  const syncReady = new Promise<void>((resolve) => {
+    releaseSyncReady = resolve;
+  });
 
   const syncPromise = runCli(["sync"], {
     stdout,
@@ -7676,6 +7680,7 @@ test("sync shuts down the managed bitcoind client on SIGTERM", async () => {
     openSqliteStore: async () => createNoopStore(),
     openManagedBitcoindClient: async () => ({
       async syncToTip() {
+        releaseSyncReady();
         return await new Promise<{
           appliedBlocks: number;
           rewoundBlocks: number;
@@ -7695,7 +7700,7 @@ test("sync shuts down the managed bitcoind client on SIGTERM", async () => {
     }),
   });
 
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await syncReady;
   signals.emit("SIGTERM");
   const code = await syncPromise;
 
@@ -7795,6 +7800,10 @@ test("follow stays active until signal and shuts down cleanly", async () => {
   let started = false;
   let closed = false;
   let walletRootId: string | undefined;
+  let releaseFollowReady!: () => void;
+  const followReady = new Promise<void>((resolve) => {
+    releaseFollowReady = resolve;
+  });
 
   const followPromise = runCli(["follow"], {
     stdout,
@@ -7834,6 +7843,7 @@ test("follow stays active until signal and shuts down cleanly", async () => {
       async startFollowingTip() {
         walletRootId = resolvedWalletRootId;
         started = true;
+        releaseFollowReady();
       },
       async getNodeStatus() {
         return {
@@ -7847,7 +7857,7 @@ test("follow stays active until signal and shuts down cleanly", async () => {
     }),
   });
 
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await followReady;
   signals.emit("SIGINT");
   const code = await followPromise;
 
@@ -7863,6 +7873,10 @@ test("follow does not print a startup line when tty progress is active", async (
   const stdout = new MemoryStream();
   const stderr = new MemoryStream(true);
   const signals = new FakeSignalSource();
+  let releaseFollowReady!: () => void;
+  const followReady = new Promise<void>((resolve) => {
+    releaseFollowReady = resolve;
+  });
 
   const followPromise = runCli(["follow"], {
     stdout,
@@ -7881,7 +7895,9 @@ test("follow does not print a startup line when tty progress is active", async (
           bestHeight: 0,
         };
       },
-      async startFollowingTip() {},
+      async startFollowingTip() {
+        releaseFollowReady();
+      },
       async getNodeStatus() {
         return {
           indexedTip: null,
@@ -7892,7 +7908,7 @@ test("follow does not print a startup line when tty progress is active", async (
     }),
   });
 
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await followReady;
   signals.emit("SIGINT");
   const code = await followPromise;
 
