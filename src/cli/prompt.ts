@@ -78,12 +78,12 @@ export function createTerminalPrompter(
 
       return await ask(message, hiddenOutput);
     },
-    clearSensitiveDisplay(scope: "mnemonic-reveal"): void {
+    clearSensitiveDisplay(scope: "mnemonic-reveal" | "restore-mnemonic-entry"): void {
       if (!input.isTTY || !output.isTTY) {
         return;
       }
 
-      if (scope === "mnemonic-reveal") {
+      if (scope === "mnemonic-reveal" || scope === "restore-mnemonic-entry") {
         output.write(CLEAR_SENSITIVE_DISPLAY_SEQUENCE);
       }
     },

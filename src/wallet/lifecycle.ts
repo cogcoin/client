@@ -85,7 +85,7 @@ export interface WalletPrompter {
   writeLine(message: string): void;
   prompt(message: string): Promise<string>;
   promptHidden?(message: string): Promise<string>;
-  clearSensitiveDisplay?(scope: "mnemonic-reveal"): void | Promise<void>;
+  clearSensitiveDisplay?(scope: "mnemonic-reveal" | "restore-mnemonic-entry"): void | Promise<void>;
 }
 
 export interface WalletInitializationResult {
@@ -643,7 +643,7 @@ async function promptForRestoreMnemonic(
   const words: string[] = [];
 
   for (let index = 0; index < 24; index += 1) {
-    const word = (await promptHiddenValue(prompter, `Word ${index + 1} of 24: `)).toLowerCase();
+    const word = (await promptRequiredValue(prompter, `Word ${index + 1} of 24: `)).toLowerCase();
 
     if (!isEnglishMnemonicWord(word)) {
       throw new Error("wallet_restore_mnemonic_invalid");
@@ -2180,12 +2180,23 @@ export async function restoreWalletFromMnemonic(options: {
       || await pathExists(paths.walletStatePath)
       || await pathExists(paths.walletStateBackupPath);
     const replacementCoreWalletExists = await detectExistingManagedWalletReplica(options.dataDir);
-    const mnemonicPhrase = await promptForRestoreMnemonic(options.prompter);
-    await clearPendingInitialization(paths, provider);
+    let promptPhaseStarted = false;
+    let mnemonicPhrase: string;
 
-    if (replacementStateExists || replacementCoreWalletExists) {
-      await confirmRestoreReplacement(options.prompter);
+    try {
+      promptPhaseStarted = true;
+      mnemonicPhrase = await promptForRestoreMnemonic(options.prompter);
+
+      if (replacementStateExists || replacementCoreWalletExists) {
+        await confirmRestoreReplacement(options.prompter);
+      }
+    } finally {
+      if (promptPhaseStarted) {
+        await options.prompter.clearSensitiveDisplay?.("restore-mnemonic-entry");
+      }
     }
+
+    await clearPendingInitialization(paths, provider);
 
     let previousWalletRootId = extractWalletRootIdHintFromWalletStateEnvelope(rawEnvelope?.envelope ?? null);
     try {

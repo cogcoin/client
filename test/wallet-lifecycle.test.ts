@@ -187,10 +187,11 @@ class CapturingPrompter implements WalletPrompter {
   readonly isInteractive = true;
   readonly lines: string[] = [];
   readonly prompts: string[] = [];
-  readonly clearedScopes: Array<"mnemonic-reveal"> = [];
+  readonly clearedScopes: Array<"mnemonic-reveal" | "restore-mnemonic-entry"> = [];
   mnemonicWords: string[] = [];
   mode: "correct" | "wrong" = "correct";
   extraPrompts: string[] = [];
+  promptReplies: string[] = [];
   hiddenPrompts: string[] = [];
   clearError: Error | null = null;
 
@@ -207,6 +208,12 @@ class CapturingPrompter implements WalletPrompter {
     this.prompts.push(message);
 
     if (!message.includes("Confirm word #")) {
+      const visibleReply = this.promptReplies.shift();
+
+      if (visibleReply !== undefined) {
+        return visibleReply;
+      }
+
       const next = this.extraPrompts.shift();
 
       if (next === undefined) {
@@ -235,7 +242,7 @@ class CapturingPrompter implements WalletPrompter {
     return next;
   }
 
-  clearSensitiveDisplay(scope: "mnemonic-reveal"): void {
+  clearSensitiveDisplay(scope: "mnemonic-reveal" | "restore-mnemonic-entry"): void {
     this.clearedScopes.push(scope);
 
     if (this.clearError !== null) {
@@ -1774,7 +1781,7 @@ test("restoreWalletFromMnemonic rebuilds fresh local state from a valid mnemonic
   const expectedMaterial = deriveWalletMaterialFromMnemonic(TEST_MNEMONIC);
   const databasePath = join(tempRoot, "client.sqlite");
 
-  prompter.hiddenPrompts.push(...TEST_MNEMONIC.split(" "));
+  prompter.promptReplies.push(...TEST_MNEMONIC.split(" "));
 
   const restored = await restoreWalletFromMnemonic({
     dataDir: paths.bitcoinDataDir,
@@ -1816,6 +1823,9 @@ test("restoreWalletFromMnemonic rebuilds fresh local state from a valid mnemonic
   assert.equal(unlocked?.state.walletRootId, restored.walletRootId);
   assert.equal(harness.importedDescriptors.length, 1);
   assert.deepEqual(restored.warnings, []);
+  assert.equal(prompter.prompts[0], "Word 1 of 24: ");
+  assert.equal(prompter.prompts[23], "Word 24 of 24: ");
+  assert.deepEqual(prompter.clearedScopes, ["restore-mnemonic-entry"]);
 });
 
 test("restoreWalletFromMnemonic clears pending init state without requiring replacement acknowledgement when no wallet exists", async () => {
@@ -1830,7 +1840,7 @@ test("restoreWalletFromMnemonic clears pending init state without requiring repl
     provider,
     phrase: TEST_MNEMONIC,
   });
-  prompter.hiddenPrompts.push(...TEST_MNEMONIC.split(" "));
+  prompter.promptReplies.push(...TEST_MNEMONIC.split(" "));
 
   const restored = await restoreWalletFromMnemonic({
     dataDir: paths.bitcoinDataDir,
@@ -1852,6 +1862,7 @@ test("restoreWalletFromMnemonic clears pending init state without requiring repl
   await assert.rejects(() => access(paths.walletInitPendingPath, constants.F_OK));
   await assert.rejects(() => access(paths.walletInitPendingBackupPath, constants.F_OK));
   await assert.rejects(() => provider.loadSecret(createWalletPendingInitSecretReference(paths.stateRoot).keyId));
+  assert.deepEqual(prompter.clearedScopes, ["restore-mnemonic-entry"]);
 });
 
 test("restoreWalletFromMnemonic rejects non-interactive execution before collecting mnemonic words", async () => {
@@ -1876,7 +1887,7 @@ test("restoreWalletFromMnemonic rejects invalid mnemonic words and invalid check
   const invalidWordRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-restore-invalid-word-"));
   const invalidWordPaths = createTempWalletPaths(invalidWordRoot);
   const invalidWordPrompter = new CapturingPrompter();
-  invalidWordPrompter.hiddenPrompts.push("notaword");
+  invalidWordPrompter.promptReplies.push("notaword");
 
   await assert.rejects(() => restoreWalletFromMnemonic({
     dataDir: invalidWordPaths.bitcoinDataDir,
@@ -1885,13 +1896,14 @@ test("restoreWalletFromMnemonic rejects invalid mnemonic words and invalid check
     prompter: invalidWordPrompter,
   }), /wallet_restore_mnemonic_invalid/);
   await assert.rejects(() => access(invalidWordPaths.walletStatePath, constants.F_OK));
+  assert.deepEqual(invalidWordPrompter.clearedScopes, ["restore-mnemonic-entry"]);
 
   const invalidChecksumRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-restore-invalid-checksum-"));
   const invalidChecksumPaths = createTempWalletPaths(invalidChecksumRoot);
   const invalidChecksumPrompter = new CapturingPrompter();
   const invalidChecksumWords = TEST_MNEMONIC.split(" ");
   invalidChecksumWords[23] = "abandon";
-  invalidChecksumPrompter.hiddenPrompts.push(...invalidChecksumWords);
+  invalidChecksumPrompter.promptReplies.push(...invalidChecksumWords);
 
   await assert.rejects(() => restoreWalletFromMnemonic({
     dataDir: invalidChecksumPaths.bitcoinDataDir,
@@ -1900,6 +1912,7 @@ test("restoreWalletFromMnemonic rejects invalid mnemonic words and invalid check
     prompter: invalidChecksumPrompter,
   }), /wallet_restore_mnemonic_invalid/);
   await assert.rejects(() => access(invalidChecksumPaths.walletStatePath, constants.F_OK));
+  assert.deepEqual(invalidChecksumPrompter.clearedScopes, ["restore-mnemonic-entry"]);
 });
 
 test("restoreWalletFromMnemonic requires explicit replacement acknowledgement and leaves the existing wallet untouched on mismatch", async () => {
@@ -1926,7 +1939,7 @@ test("restoreWalletFromMnemonic requires explicit replacement acknowledgement an
     rpcFactory: harness.rpcFactory,
   });
 
-  restorePrompter.hiddenPrompts.push(...TEST_MNEMONIC.split(" "));
+  restorePrompter.promptReplies.push(...TEST_MNEMONIC.split(" "));
   restorePrompter.extraPrompts.push("WRONG");
 
   await assert.rejects(() => restoreWalletFromMnemonic({
@@ -1945,6 +1958,7 @@ test("restoreWalletFromMnemonic requires explicit replacement acknowledgement an
 
   assert.equal(loaded.state.walletRootId, initialized.walletRootId);
   assert.equal(loaded.state.mnemonic.phrase, initialized.state.mnemonic.phrase);
+  assert.deepEqual(restorePrompter.clearedScopes, ["restore-mnemonic-entry"]);
 });
 
 test("restoreWalletFromMnemonic replaces the previous wallet, removes old runtime artifacts, and deletes the previous provider secret", async () => {
@@ -1988,7 +2002,7 @@ test("restoreWalletFromMnemonic replaces the previous wallet, removes old runtim
       processId: oldIndexer.pid ?? null,
     }), "utf8");
 
-    restorePrompter.hiddenPrompts.push(...TEST_MNEMONIC.split(" "));
+    restorePrompter.promptReplies.push(...TEST_MNEMONIC.split(" "));
     restorePrompter.extraPrompts.push("RESTORE");
 
     const restored = await restoreWalletFromMnemonic({
@@ -2015,6 +2029,7 @@ test("restoreWalletFromMnemonic replaces the previous wallet, removes old runtim
     await assert.rejects(() => access(oldWalletDir, constants.F_OK));
     assert.equal(isPidRunning(oldBitcoind.pid), false);
     assert.equal(isPidRunning(oldIndexer.pid), false);
+    assert.deepEqual(restorePrompter.clearedScopes, ["restore-mnemonic-entry"]);
   } finally {
     if (isPidRunning(oldBitcoind.pid)) {
       oldBitcoind.kill("SIGKILL");
@@ -2061,7 +2076,7 @@ test("restoreWalletFromMnemonic warns instead of failing when previous managed r
   });
 
   try {
-    restorePrompter.hiddenPrompts.push(...TEST_MNEMONIC.split(" "));
+    restorePrompter.promptReplies.push(...TEST_MNEMONIC.split(" "));
     restorePrompter.extraPrompts.push("RESTORE");
 
     const restored = await restoreWalletFromMnemonic({
@@ -2083,6 +2098,7 @@ test("restoreWalletFromMnemonic warns instead of failing when previous managed r
     assert.notEqual(restored.walletRootId, initialized.walletRootId);
     assert.equal(restored.warnings?.length, 1);
     assert.match(restored.warnings?.[0] ?? "", /Previous managed runtime cleanup did not complete/);
+    assert.deepEqual(restorePrompter.clearedScopes, ["restore-mnemonic-entry"]);
   } finally {
     await heldLock?.release();
   }

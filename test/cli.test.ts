@@ -5001,6 +5001,7 @@ test("terminal prompter clears sensitive displays only on interactive ttys", () 
   const ttyOutput = new MemoryStream(true);
   const ttyPrompter = createTerminalPrompter(ttyInput, ttyOutput as never);
   ttyPrompter.clearSensitiveDisplay?.("mnemonic-reveal");
+  ttyPrompter.clearSensitiveDisplay?.("restore-mnemonic-entry");
 
   assert.match(ttyOutput.toString(), /\u001b\[2J/);
   assert.match(ttyOutput.toString(), /\u001b\[3J/);
@@ -5010,6 +5011,7 @@ test("terminal prompter clears sensitive displays only on interactive ttys", () 
   const nonTtyOutput = new MemoryStream(false);
   const nonTtyPrompter = createTerminalPrompter(nonTtyInput, nonTtyOutput as never);
   nonTtyPrompter.clearSensitiveDisplay?.("mnemonic-reveal");
+  nonTtyPrompter.clearSensitiveDisplay?.("restore-mnemonic-entry");
 
   assert.equal(nonTtyOutput.toString(), "");
 });
