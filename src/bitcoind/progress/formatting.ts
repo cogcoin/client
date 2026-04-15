@@ -13,9 +13,9 @@ import {
 export function createDefaultMessage(phase: BootstrapPhase): string {
   switch (phase) {
     case "getblock_archive_download":
-      return "Downloading getblock archive.";
+      return "Downloading getblock range.";
     case "getblock_archive_import":
-      return "Bitcoin Core is importing getblock archive blocks.";
+      return "Bitcoin Core is importing getblock range blocks.";
     case "snapshot_download":
       return "Downloading UTXO snapshot.";
     case "wait_headers_for_snapshot":
@@ -167,9 +167,9 @@ export function resolveStatusFieldText(
 ): string {
   switch (progress.phase) {
     case "getblock_archive_download":
-      return `Downloading getblock archive${animateStatusEllipsis(now)}`;
+      return `Downloading getblock range${animateStatusEllipsis(now)}`;
     case "getblock_archive_import":
-      return `Importing getblock archive${animateStatusEllipsis(now)}`;
+      return `Importing getblock range${animateStatusEllipsis(now)}`;
     case "paused":
     case "snapshot_download":
       return `Downloading snapshot to ${snapshotHeight}${animateStatusEllipsis(now)}`;

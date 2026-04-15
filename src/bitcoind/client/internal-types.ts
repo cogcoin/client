@@ -28,6 +28,7 @@ export interface SyncEngineDependencies {
   progress: ManagedProgressController;
   bootstrap: AssumeUtxoBootstrapController;
   startHeight: number;
+  targetHeightCap?: number | null;
   bitcoinRateTracker: BlockRateTracker;
   cogcoinRateTracker: BlockRateTracker;
   abortSignal?: AbortSignal;

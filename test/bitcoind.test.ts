@@ -742,6 +742,11 @@ test("managed client close reattaches the indexer daemon when background follow 
     },
     0,
     50,
+    "/tmp/cogcoin-managed-client-reattach",
+    "wallet-root-test",
+    undefined,
+    undefined,
+    undefined,
   );
 
   await managedClient.close();

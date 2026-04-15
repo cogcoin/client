@@ -84,7 +84,7 @@ export function scheduleSync(dependencies: ScheduleSyncDependencies): void {
 
   const timer = setTimeout(() => {
     dependencies.setDebounceTimer(null);
-    void dependencies.syncToTip();
+    void dependencies.syncToTip().catch(() => undefined);
   }, dependencies.syncDebounceMs);
 
   dependencies.setDebounceTimer(timer);

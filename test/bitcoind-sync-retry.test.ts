@@ -329,7 +329,7 @@ test("syncToTip waits for getblock archive import before normal bitcoin sync", a
   assert.equal(result.appliedBlocks, 0);
   assert.ok(phases.includes("getblock_archive_import"));
   assert.ok(phases.includes("bitcoin_sync"));
-  assert.ok(messages.includes("Bitcoin Core is importing getblock archive blocks."));
+  assert.ok(messages.includes("Bitcoin Core is importing getblock range blocks."));
 });
 
 test("syncToTip retries a transient getblock timeout without duplicating applied work", async () => {

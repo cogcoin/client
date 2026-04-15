@@ -3,15 +3,15 @@ import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/prom
 import { dirname, join } from "node:path";
 
 import type { ManagedProgressController } from "../progress.js";
-import type { GetblockArchiveManifest } from "../types.js";
+import type { GetblockArchiveManifest, GetblockRangeManifest } from "../types.js";
 import { DOWNLOAD_RETRY_BASE_MS, DOWNLOAD_RETRY_MAX_MS } from "./constants.js";
 
 const GETBLOCK_ARCHIVE_STATE_VERSION = 1;
 const GETBLOCK_ARCHIVE_BASE_HEIGHT = 910_000;
-const GETBLOCK_ARCHIVE_FILENAME = "getblock-910000-latest.dat";
-const GETBLOCK_ARCHIVE_MANIFEST_FILENAME = "getblock-910000-latest.json";
-const GETBLOCK_ARCHIVE_REMOTE_DATA_URL = "https://snapshots.cogcoin.org/getblock-910000-latest.dat";
-const GETBLOCK_ARCHIVE_REMOTE_MANIFEST_URL = "https://snapshots.cogcoin.org/getblock-910000-latest.json";
+const GETBLOCK_ARCHIVE_RANGE_SIZE = 500;
+const GETBLOCK_ARCHIVE_FIRST_HEIGHT = GETBLOCK_ARCHIVE_BASE_HEIGHT + 1;
+const GETBLOCK_ARCHIVE_REMOTE_BASE_URL = "https://snapshots.cogcoin.org/";
+const GETBLOCK_ARCHIVE_REMOTE_MANIFEST_URL = `${GETBLOCK_ARCHIVE_REMOTE_BASE_URL}getblock-manifest.json`;
 const TRUSTED_FRONTIER_REVERIFY_CHUNKS = 2;
 const HASH_READ_BUFFER_BYTES = 1024 * 1024;
 const IMPORT_POLL_MS = 2_000;
@@ -20,15 +20,14 @@ interface GetblockArchivePaths {
   directory: string;
   artifactPath: string;
   partialArtifactPath: string;
-  manifestPath: string;
-  partialManifestPath: string;
   statePath: string;
 }
 
 interface GetblockArchiveDownloadState {
   metadataVersion: number;
   formatVersion: number;
-  endHeight: number | null;
+  firstBlockHeight: number | null;
+  lastBlockHeight: number | null;
   artifactSizeBytes: number;
   artifactSha256: string | null;
   chunkSizeBytes: number;
@@ -42,14 +41,18 @@ interface GetblockArchiveDownloadState {
 export interface ReadyGetblockArchive {
   manifest: GetblockArchiveManifest;
   artifactPath: string;
-  manifestPath: string;
+}
+
+function buildRangeFilename(firstBlockHeight: number, lastBlockHeight: number): string {
+  return `getblock-${firstBlockHeight}-${lastBlockHeight}.dat`;
 }
 
 function createInitialState(): GetblockArchiveDownloadState {
   return {
     metadataVersion: GETBLOCK_ARCHIVE_STATE_VERSION,
     formatVersion: 0,
-    endHeight: null,
+    firstBlockHeight: null,
+    lastBlockHeight: null,
     artifactSizeBytes: 0,
     artifactSha256: null,
     chunkSizeBytes: 0,
@@ -61,7 +64,7 @@ function createInitialState(): GetblockArchiveDownloadState {
   };
 }
 
-function assertManifestShape(parsed: unknown): GetblockArchiveManifest {
+function assertRangeManifestShape(parsed: unknown): GetblockArchiveManifest {
   if (typeof parsed !== "object" || parsed === null) {
     throw new Error("managed_getblock_archive_manifest_invalid");
   }
@@ -69,17 +72,24 @@ function assertManifestShape(parsed: unknown): GetblockArchiveManifest {
   const manifest = parsed as Partial<GetblockArchiveManifest>;
 
   if (
-    manifest.chain !== "main"
+    manifest.formatVersion !== 1
+    || manifest.chain !== "main"
     || manifest.baseSnapshotHeight !== GETBLOCK_ARCHIVE_BASE_HEIGHT
-    || manifest.artifactFilename !== GETBLOCK_ARCHIVE_FILENAME
     || typeof manifest.firstBlockHeight !== "number"
-    || typeof manifest.endHeight !== "number"
-    || typeof manifest.blockCount !== "number"
+    || typeof manifest.lastBlockHeight !== "number"
+    || typeof manifest.artifactFilename !== "string"
     || typeof manifest.artifactSizeBytes !== "number"
     || typeof manifest.artifactSha256 !== "string"
     || typeof manifest.chunkSizeBytes !== "number"
     || !Array.isArray(manifest.chunkSha256s)
-    || !Array.isArray(manifest.blocks)
+    || manifest.chunkSha256s.some((hash) => typeof hash !== "string")
+  ) {
+    throw new Error("managed_getblock_archive_manifest_invalid");
+  }
+
+  if (
+    manifest.lastBlockHeight - manifest.firstBlockHeight + 1 !== GETBLOCK_ARCHIVE_RANGE_SIZE
+    || manifest.artifactFilename !== buildRangeFilename(manifest.firstBlockHeight, manifest.lastBlockHeight)
   ) {
     throw new Error("managed_getblock_archive_manifest_invalid");
   }
@@ -87,15 +97,66 @@ function assertManifestShape(parsed: unknown): GetblockArchiveManifest {
   return manifest as GetblockArchiveManifest;
 }
 
-function resolvePaths(dataDir: string): GetblockArchivePaths {
+function assertAggregateManifestShape(parsed: unknown): GetblockRangeManifest {
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("managed_getblock_archive_manifest_invalid");
+  }
+
+  const manifest = parsed as Partial<GetblockRangeManifest>;
+
+  if (
+    manifest.formatVersion !== 1
+    || manifest.chain !== "main"
+    || manifest.baseSnapshotHeight !== GETBLOCK_ARCHIVE_BASE_HEIGHT
+    || manifest.rangeSizeBlocks !== GETBLOCK_ARCHIVE_RANGE_SIZE
+    || typeof manifest.publishedThroughHeight !== "number"
+    || !Array.isArray(manifest.ranges)
+  ) {
+    throw new Error("managed_getblock_archive_manifest_invalid");
+  }
+
+  const ranges = manifest.ranges.map((entry) => assertRangeManifestShape(entry));
+  let expectedFirstBlockHeight = GETBLOCK_ARCHIVE_FIRST_HEIGHT;
+
+  for (const range of ranges) {
+    if (range.firstBlockHeight !== expectedFirstBlockHeight) {
+      throw new Error("managed_getblock_archive_manifest_invalid");
+    }
+
+    expectedFirstBlockHeight = range.lastBlockHeight + 1;
+  }
+
+  const expectedPublishedThrough = ranges.length === 0
+    ? GETBLOCK_ARCHIVE_BASE_HEIGHT
+    : ranges[ranges.length - 1]!.lastBlockHeight;
+
+  if (manifest.publishedThroughHeight !== expectedPublishedThrough) {
+    throw new Error("managed_getblock_archive_manifest_invalid");
+  }
+
+  return {
+    formatVersion: manifest.formatVersion,
+    chain: manifest.chain,
+    baseSnapshotHeight: manifest.baseSnapshotHeight,
+    rangeSizeBlocks: manifest.rangeSizeBlocks,
+    publishedThroughHeight: manifest.publishedThroughHeight,
+    ranges,
+  };
+}
+
+function resolvePaths(
+  dataDir: string,
+  firstBlockHeight: number,
+  lastBlockHeight: number,
+): GetblockArchivePaths {
   const directory = join(dataDir, "bootstrap", "getblock");
+  const artifactFilename = buildRangeFilename(firstBlockHeight, lastBlockHeight);
+
   return {
     directory,
-    artifactPath: join(directory, GETBLOCK_ARCHIVE_FILENAME),
-    partialArtifactPath: join(directory, `${GETBLOCK_ARCHIVE_FILENAME}.part`),
-    manifestPath: join(directory, GETBLOCK_ARCHIVE_MANIFEST_FILENAME),
-    partialManifestPath: join(directory, `${GETBLOCK_ARCHIVE_MANIFEST_FILENAME}.part`),
-    statePath: join(directory, "state.json"),
+    artifactPath: join(directory, artifactFilename),
+    partialArtifactPath: join(directory, `${artifactFilename}.part`),
+    statePath: join(directory, `getblock-${firstBlockHeight}-${lastBlockHeight}.state.json`),
   };
 }
 
@@ -117,17 +178,6 @@ async function writeJsonAtomic(path: string, payload: unknown): Promise<void> {
   await rename(tempPath, path);
 }
 
-async function readManifest(path: string): Promise<GetblockArchiveManifest | null> {
-  try {
-    return assertManifestShape(JSON.parse(await readFile(path, "utf8")));
-  } catch (error) {
-    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-      return null;
-    }
-    throw error;
-  }
-}
-
 async function loadState(paths: GetblockArchivePaths): Promise<GetblockArchiveDownloadState> {
   try {
     const parsed = JSON.parse(await readFile(paths.statePath, "utf8")) as Partial<GetblockArchiveDownloadState>;
@@ -139,7 +189,8 @@ async function loadState(paths: GetblockArchivePaths): Promise<GetblockArchiveDo
     return {
       metadataVersion: GETBLOCK_ARCHIVE_STATE_VERSION,
       formatVersion: typeof parsed.formatVersion === "number" ? parsed.formatVersion : 0,
-      endHeight: typeof parsed.endHeight === "number" ? parsed.endHeight : null,
+      firstBlockHeight: typeof parsed.firstBlockHeight === "number" ? parsed.firstBlockHeight : null,
+      lastBlockHeight: typeof parsed.lastBlockHeight === "number" ? parsed.lastBlockHeight : null,
       artifactSizeBytes: typeof parsed.artifactSizeBytes === "number" ? parsed.artifactSizeBytes : 0,
       artifactSha256: typeof parsed.artifactSha256 === "string" ? parsed.artifactSha256 : null,
       chunkSizeBytes: typeof parsed.chunkSizeBytes === "number" ? parsed.chunkSizeBytes : 0,
@@ -153,6 +204,7 @@ async function loadState(paths: GetblockArchivePaths): Promise<GetblockArchiveDo
     if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code !== "ENOENT") {
       // Ignore corrupt state and start cleanly.
     }
+
     const state = createInitialState();
     await saveState(paths, state);
     return state;
@@ -202,7 +254,8 @@ function resolveVerifiedChunkCountFromBytes(manifest: GetblockArchiveManifest, b
 }
 
 function stateMatchesManifest(state: GetblockArchiveDownloadState, manifest: GetblockArchiveManifest): boolean {
-  return state.endHeight === manifest.endHeight
+  return state.firstBlockHeight === manifest.firstBlockHeight
+    && state.lastBlockHeight === manifest.lastBlockHeight
     && state.artifactSha256 === manifest.artifactSha256
     && state.artifactSizeBytes === manifest.artifactSizeBytes
     && state.chunkSizeBytes === manifest.chunkSizeBytes
@@ -295,28 +348,16 @@ async function reconcilePartialDownloadArtifacts(
   manifest: GetblockArchiveManifest,
   state: GetblockArchiveDownloadState,
 ): Promise<void> {
-  const partialManifest = await readManifest(paths.partialManifestPath).catch(() => null);
+  const partialInfo = await statOrNull(paths.partialArtifactPath);
 
-  if (partialManifest === null || partialManifest.endHeight !== manifest.endHeight || partialManifest.artifactSha256 !== manifest.artifactSha256) {
+  if (partialInfo === null || !stateMatchesManifest(state, manifest)) {
     await rm(paths.partialArtifactPath, { force: true }).catch(() => undefined);
-    await rm(paths.partialManifestPath, { force: true }).catch(() => undefined);
     state.formatVersion = manifest.formatVersion;
-    state.endHeight = manifest.endHeight;
+    state.firstBlockHeight = manifest.firstBlockHeight;
+    state.lastBlockHeight = manifest.lastBlockHeight;
     state.artifactSizeBytes = manifest.artifactSizeBytes;
     state.artifactSha256 = manifest.artifactSha256;
     state.chunkSizeBytes = manifest.chunkSizeBytes;
-    state.verifiedChunkCount = 0;
-    state.downloadedBytes = 0;
-    state.validated = false;
-    state.lastError = null;
-    await writeJsonAtomic(paths.partialManifestPath, manifest);
-    await saveState(paths, state);
-    return;
-  }
-
-  const partialInfo = await statOrNull(paths.partialArtifactPath);
-
-  if (partialInfo === null) {
     state.verifiedChunkCount = 0;
     state.downloadedBytes = 0;
     state.validated = false;
@@ -336,7 +377,8 @@ async function reconcilePartialDownloadArtifacts(
   }
 
   state.formatVersion = manifest.formatVersion;
-  state.endHeight = manifest.endHeight;
+  state.firstBlockHeight = manifest.firstBlockHeight;
+  state.lastBlockHeight = manifest.lastBlockHeight;
   state.artifactSizeBytes = manifest.artifactSizeBytes;
   state.artifactSha256 = manifest.artifactSha256;
   state.chunkSizeBytes = manifest.chunkSizeBytes;
@@ -412,14 +454,14 @@ async function updateDownloadProgress(
   const remaining = Math.max(0, manifest.artifactSizeBytes - downloadedBytes);
 
   await progress.setPhase("getblock_archive_download", {
-    message: "Downloading getblock archive.",
+    message: "Downloading getblock range.",
     resumed: downloadedBytes > 0,
     downloadedBytes,
     totalBytes: manifest.artifactSizeBytes,
     percent: manifest.artifactSizeBytes > 0 ? (downloadedBytes / manifest.artifactSizeBytes) * 100 : 0,
     bytesPerSecond,
     etaSeconds: bytesPerSecond > 0 ? remaining / bytesPerSecond : null,
-    targetHeight: manifest.endHeight,
+    targetHeight: manifest.lastBlockHeight,
     lastError: state.lastError,
   });
 }
@@ -437,7 +479,6 @@ async function downloadRemoteArchive(
   if (state.downloadedBytes >= manifest.artifactSizeBytes) {
     await validateWholeFile(paths.partialArtifactPath, manifest);
     await rename(paths.partialArtifactPath, paths.artifactPath);
-    await rename(paths.partialManifestPath, paths.manifestPath);
     state.validated = true;
     state.verifiedChunkCount = manifest.chunkSha256s.length;
     state.downloadedBytes = manifest.artifactSizeBytes;
@@ -452,7 +493,7 @@ async function downloadRemoteArchive(
     const startOffset = state.downloadedBytes;
 
     try {
-      const response = await fetchImpl(`${GETBLOCK_ARCHIVE_REMOTE_DATA_URL}?end=${manifest.endHeight}`, {
+      const response = await fetchImpl(`${GETBLOCK_ARCHIVE_REMOTE_BASE_URL}${manifest.artifactFilename}`, {
         headers: startOffset > 0 ? { Range: `bytes=${startOffset}-` } : undefined,
         signal,
       });
@@ -536,21 +577,20 @@ async function downloadRemoteArchive(
 
       await validateWholeFile(paths.partialArtifactPath, manifest);
       await rename(paths.partialArtifactPath, paths.artifactPath);
-      await rename(paths.partialManifestPath, paths.manifestPath);
       state.validated = true;
       state.verifiedChunkCount = manifest.chunkSha256s.length;
       state.downloadedBytes = manifest.artifactSizeBytes;
       state.lastError = null;
       await saveState(paths, state);
       await progress.setPhase("getblock_archive_download", {
-        message: "Downloading getblock archive.",
+        message: "Downloading getblock range.",
         resumed: startOffset > 0,
         downloadedBytes: manifest.artifactSizeBytes,
         totalBytes: manifest.artifactSizeBytes,
         percent: 100,
         bytesPerSecond: null,
         etaSeconds: 0,
-        targetHeight: manifest.endHeight,
+        targetHeight: manifest.lastBlockHeight,
         lastError: null,
       });
       return;
@@ -563,14 +603,14 @@ async function downloadRemoteArchive(
       }
 
       await progress.setPhase("getblock_archive_download", {
-        message: "Downloading getblock archive.",
+        message: "Downloading getblock range.",
         resumed: startOffset > 0,
         downloadedBytes: state.downloadedBytes,
         totalBytes: manifest.artifactSizeBytes,
         percent: manifest.artifactSizeBytes > 0 ? (state.downloadedBytes / manifest.artifactSizeBytes) * 100 : 0,
         bytesPerSecond: null,
         etaSeconds: null,
-        targetHeight: manifest.endHeight,
+        targetHeight: manifest.lastBlockHeight,
         lastError: state.lastError,
       });
       await sleep(retryDelayMs, signal);
@@ -579,37 +619,41 @@ async function downloadRemoteArchive(
   }
 }
 
-async function fetchLatestManifest(fetchImpl: typeof fetch, cacheBustEnd: number | null, signal?: AbortSignal): Promise<GetblockArchiveManifest> {
-  const url = cacheBustEnd === null
-    ? GETBLOCK_ARCHIVE_REMOTE_MANIFEST_URL
-    : `${GETBLOCK_ARCHIVE_REMOTE_MANIFEST_URL}?end=${cacheBustEnd}`;
-  const response = await fetchImpl(url, { signal });
+async function fetchManifestRange(
+  fetchImpl: typeof fetch,
+  firstBlockHeight: number,
+  lastBlockHeight: number,
+  signal?: AbortSignal,
+): Promise<GetblockArchiveManifest | null> {
+  const response = await fetchImpl(GETBLOCK_ARCHIVE_REMOTE_MANIFEST_URL, { signal });
+
+  if (response.status === 404) {
+    return null;
+  }
 
   if (!response.ok) {
     throw new Error(`managed_getblock_archive_manifest_http_${response.status}`);
   }
 
-  return assertManifestShape(await response.json());
+  const manifest = assertAggregateManifestShape(await response.json());
+  return manifest.ranges.find((range) =>
+    range.firstBlockHeight === firstBlockHeight && range.lastBlockHeight === lastBlockHeight,
+  ) ?? null;
 }
 
-export function resolveGetblockArchivePathsForTesting(dataDir: string): GetblockArchivePaths {
-  return resolvePaths(dataDir);
-}
-
-export async function resolveReadyGetblockArchiveForTesting(dataDir: string): Promise<ReadyGetblockArchive | null> {
-  return resolveReadyLocalGetblockArchive(resolvePaths(dataDir));
+export function resolveGetblockArchivePathsForTesting(
+  dataDir: string,
+  firstBlockHeight = GETBLOCK_ARCHIVE_FIRST_HEIGHT,
+  lastBlockHeight = GETBLOCK_ARCHIVE_BASE_HEIGHT + GETBLOCK_ARCHIVE_RANGE_SIZE,
+): GetblockArchivePaths {
+  return resolvePaths(dataDir, firstBlockHeight, lastBlockHeight);
 }
 
 async function resolveReadyLocalGetblockArchive(
   paths: GetblockArchivePaths,
+  manifest: GetblockArchiveManifest,
   state: GetblockArchiveDownloadState | null = null,
 ): Promise<ReadyGetblockArchive | null> {
-  const manifest = await readManifest(paths.manifestPath).catch(() => null);
-
-  if (manifest === null) {
-    return null;
-  }
-
   const info = await statOrNull(paths.artifactPath);
 
   if (info === null || info.size !== manifest.artifactSizeBytes) {
@@ -622,7 +666,8 @@ async function resolveReadyLocalGetblockArchive(
     try {
       await validateWholeFile(paths.artifactPath, manifest);
       loadedState.formatVersion = manifest.formatVersion;
-      loadedState.endHeight = manifest.endHeight;
+      loadedState.firstBlockHeight = manifest.firstBlockHeight;
+      loadedState.lastBlockHeight = manifest.lastBlockHeight;
       loadedState.artifactSizeBytes = manifest.artifactSizeBytes;
       loadedState.artifactSha256 = manifest.artifactSha256;
       loadedState.chunkSizeBytes = manifest.chunkSizeBytes;
@@ -639,8 +684,99 @@ async function resolveReadyLocalGetblockArchive(
   return {
     manifest,
     artifactPath: paths.artifactPath,
-    manifestPath: paths.manifestPath,
   };
+}
+
+export async function resolveReadyGetblockArchiveForTesting(
+  dataDir: string,
+  manifest: GetblockArchiveManifest,
+): Promise<ReadyGetblockArchive | null> {
+  return resolveReadyLocalGetblockArchive(
+    resolvePaths(dataDir, manifest.firstBlockHeight, manifest.lastBlockHeight),
+    manifest,
+  );
+}
+
+export async function prepareGetblockArchiveRange(options: {
+  dataDir: string;
+  progress: Pick<ManagedProgressController, "setPhase">;
+  firstBlockHeight: number;
+  lastBlockHeight: number;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<ReadyGetblockArchive | null> {
+  const paths = resolvePaths(options.dataDir, options.firstBlockHeight, options.lastBlockHeight);
+  await mkdir(paths.directory, { recursive: true });
+  const state = await loadState(paths);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  let remoteManifest: GetblockArchiveManifest | null;
+
+  try {
+    remoteManifest = await fetchManifestRange(
+      fetchImpl,
+      options.firstBlockHeight,
+      options.lastBlockHeight,
+      options.signal,
+    );
+  } catch {
+    const readyLocal = {
+      formatVersion: state.formatVersion,
+      chain: "main" as const,
+      baseSnapshotHeight: GETBLOCK_ARCHIVE_BASE_HEIGHT,
+      firstBlockHeight: state.firstBlockHeight ?? options.firstBlockHeight,
+      lastBlockHeight: state.lastBlockHeight ?? options.lastBlockHeight,
+      artifactFilename: buildRangeFilename(
+        state.firstBlockHeight ?? options.firstBlockHeight,
+        state.lastBlockHeight ?? options.lastBlockHeight,
+      ),
+      artifactSizeBytes: state.artifactSizeBytes,
+      artifactSha256: state.artifactSha256 ?? "",
+      chunkSizeBytes: state.chunkSizeBytes,
+      chunkSha256s: [],
+    };
+
+    if (
+      state.validated
+      && state.firstBlockHeight === options.firstBlockHeight
+      && state.lastBlockHeight === options.lastBlockHeight
+      && state.artifactSha256 !== null
+    ) {
+      const resolved = await resolveReadyLocalGetblockArchive(paths, readyLocal, state).catch(() => null);
+
+      if (resolved !== null) {
+        return resolved;
+      }
+    }
+
+    throw new Error("managed_getblock_archive_manifest_refresh_failed");
+  }
+
+  if (remoteManifest === null) {
+    return null;
+  }
+
+  const readyLocal = await resolveReadyLocalGetblockArchive(paths, remoteManifest, state);
+
+  if (
+    readyLocal !== null
+    && readyLocal.manifest.artifactSha256 === remoteManifest.artifactSha256
+  ) {
+    return readyLocal;
+  }
+
+  await downloadRemoteArchive(paths, remoteManifest, state, options.progress, fetchImpl, options.signal);
+  return resolveReadyLocalGetblockArchive(paths, remoteManifest, state);
+}
+
+export async function deleteGetblockArchiveRange(options: {
+  dataDir: string;
+  firstBlockHeight: number;
+  lastBlockHeight: number;
+}): Promise<void> {
+  const paths = resolvePaths(options.dataDir, options.firstBlockHeight, options.lastBlockHeight);
+  await rm(paths.artifactPath, { force: true }).catch(() => undefined);
+  await rm(paths.partialArtifactPath, { force: true }).catch(() => undefined);
+  await rm(paths.statePath, { force: true }).catch(() => undefined);
 }
 
 export async function prepareLatestGetblockArchive(options: {
@@ -649,43 +785,16 @@ export async function prepareLatestGetblockArchive(options: {
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 }): Promise<ReadyGetblockArchive | null> {
-  const paths = resolvePaths(options.dataDir);
-  await mkdir(paths.directory, { recursive: true });
-  const state = await loadState(paths);
-  const readyLocal = await resolveReadyLocalGetblockArchive(paths, state);
-  const fetchImpl = options.fetchImpl ?? fetch;
-  let remoteManifest: GetblockArchiveManifest;
-
-  try {
-    remoteManifest = await fetchLatestManifest(fetchImpl, readyLocal?.manifest.endHeight ?? null, options.signal);
-  } catch {
-    return readyLocal;
-  }
-
-  if (
-    readyLocal !== null
-    && readyLocal.manifest.endHeight === remoteManifest.endHeight
-    && readyLocal.manifest.artifactSha256 === remoteManifest.artifactSha256
-  ) {
-    return readyLocal;
-  }
-
-  if (readyLocal !== null && readyLocal.manifest.endHeight > remoteManifest.endHeight) {
-    return readyLocal;
-  }
-
-  await writeJsonAtomic(paths.partialManifestPath, remoteManifest);
-
-  try {
-    await downloadRemoteArchive(paths, remoteManifest, state, options.progress, fetchImpl, options.signal);
-  } catch {
-    return readyLocal;
-  }
-
-  return resolveReadyLocalGetblockArchive(paths, state);
+  return prepareGetblockArchiveRange({
+    ...options,
+    firstBlockHeight: GETBLOCK_ARCHIVE_FIRST_HEIGHT,
+    lastBlockHeight: GETBLOCK_ARCHIVE_BASE_HEIGHT + GETBLOCK_ARCHIVE_RANGE_SIZE,
+  });
 }
 
 export const prepareLatestGetblockArchiveForTesting = prepareLatestGetblockArchive;
+export const prepareGetblockArchiveRangeForTesting = prepareGetblockArchiveRange;
+export const deleteGetblockArchiveRangeForTesting = deleteGetblockArchiveRange;
 
 export async function waitForGetblockArchiveImportForTesting(
   rpc: Pick<{ getBlockchainInfo(): Promise<{ blocks: number; headers: number; bestblockhash: string }> }, "getBlockchainInfo">,
@@ -709,7 +818,7 @@ export async function waitForGetblockArchiveImport(
 
     const info = await rpc.getBlockchainInfo();
     await progress.setPhase("getblock_archive_import", {
-      message: "Bitcoin Core is importing getblock archive blocks.",
+      message: "Bitcoin Core is importing getblock range blocks.",
       blocks: info.blocks,
       headers: info.headers,
       targetHeight: targetEndHeight,

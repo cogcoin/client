@@ -1,10 +1,19 @@
 import type { BitcoinBlock } from "@cogcoin/indexer/types";
 
 import type { Client, ClientStoreAdapter } from "../../types.js";
-import type { AssumeUtxoBootstrapController } from "../bootstrap.js";
+import {
+  AssumeUtxoBootstrapController,
+  deleteGetblockArchiveRange,
+  prepareGetblockArchiveRange,
+} from "../bootstrap.js";
 import type { IndexerDaemonClient } from "../indexer-daemon.js";
+import { createRpcClient } from "../node.js";
 import type { ManagedProgressController } from "../progress.js";
 import type { BitcoinRpcClient } from "../rpc.js";
+import {
+  attachOrStartManagedBitcoindService,
+  stopManagedBitcoindService,
+} from "../service.js";
 import type {
   ManagedBitcoindClient,
   ManagedBitcoindNodeHandle,
@@ -20,17 +29,58 @@ import {
 } from "./internal-types.js";
 import { syncToTip as runManagedSync } from "./sync-engine.js";
 
+const GETBLOCK_RANGE_BASE_HEIGHT = 910_000;
+const GETBLOCK_RANGE_SIZE = 500;
+
+function isBoundaryHeight(height: number): boolean {
+  return height >= GETBLOCK_RANGE_BASE_HEIGHT
+    && (height - GETBLOCK_RANGE_BASE_HEIGHT) % GETBLOCK_RANGE_SIZE === 0;
+}
+
+function resolveNextBoundary(height: number): number | null {
+  if (height < GETBLOCK_RANGE_BASE_HEIGHT) {
+    return GETBLOCK_RANGE_BASE_HEIGHT;
+  }
+
+  if (isBoundaryHeight(height)) {
+    return height;
+  }
+
+  return GETBLOCK_RANGE_BASE_HEIGHT
+    + Math.ceil((height - GETBLOCK_RANGE_BASE_HEIGHT) / GETBLOCK_RANGE_SIZE) * GETBLOCK_RANGE_SIZE;
+}
+
+function mergeSyncResults(target: SyncResult, source: SyncResult): void {
+  target.appliedBlocks += source.appliedBlocks;
+  target.rewoundBlocks += source.rewoundBlocks;
+  target.startingHeight = target.startingHeight ?? source.startingHeight;
+  target.endingHeight = source.endingHeight;
+  target.bestHeight = source.bestHeight;
+  target.bestHashHex = source.bestHashHex;
+
+  if (source.commonAncestorHeight !== null) {
+    target.commonAncestorHeight = target.commonAncestorHeight === null
+      ? source.commonAncestorHeight
+      : Math.min(target.commonAncestorHeight, source.commonAncestorHeight);
+  }
+}
+
 export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
   readonly #client: Client;
   readonly #store: ClientStoreAdapter;
-  readonly #node: ManagedBitcoindNodeHandle;
-  readonly #rpc: BitcoinRpcClient;
+  #node: ManagedBitcoindNodeHandle;
+  #rpc: BitcoinRpcClient;
   readonly #progress: ManagedProgressController;
-  readonly #bootstrap: AssumeUtxoBootstrapController;
+  #bootstrap: AssumeUtxoBootstrapController;
   #indexerDaemon: IndexerDaemonClient | null;
   readonly #reattachIndexerDaemon: (() => Promise<IndexerDaemonClient | null>) | null;
   readonly #startHeight: number;
   readonly #syncDebounceMs: number;
+  readonly #dataDir: string;
+  readonly #walletRootId: string;
+  readonly #startupTimeoutMs: number | undefined;
+  readonly #shutdownTimeoutMs: number | undefined;
+  readonly #fetchImpl: typeof fetch | undefined;
   #following = false;
   #closed = false;
   #subscriber: FollowLoopSubscriber | null = null;
@@ -53,6 +103,11 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     reattachIndexerDaemon: (() => Promise<IndexerDaemonClient | null>) | null,
     startHeight: number,
     syncDebounceMs: number,
+    dataDir: string,
+    walletRootId: string,
+    startupTimeoutMs: number | undefined,
+    shutdownTimeoutMs: number | undefined,
+    fetchImpl: typeof fetch | undefined,
   ) {
     this.#client = client;
     this.#store = store;
@@ -64,6 +119,11 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     this.#reattachIndexerDaemon = reattachIndexerDaemon;
     this.#startHeight = startHeight;
     this.#syncDebounceMs = syncDebounceMs;
+    this.#dataDir = dataDir;
+    this.#walletRootId = walletRootId;
+    this.#startupTimeoutMs = startupTimeoutMs;
+    this.#shutdownTimeoutMs = shutdownTimeoutMs;
+    this.#fetchImpl = fetchImpl;
   }
 
   async getTip() {
@@ -91,20 +151,11 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
       this.#syncAbortControllers.add(abortController);
 
       try {
-        return await runManagedSync({
-          client: this.#client,
-          store: this.#store,
-          node: this.#node,
-          rpc: this.#rpc,
-          progress: this.#progress,
-          bootstrap: this.#bootstrap,
-          startHeight: this.#startHeight,
-          bitcoinRateTracker: this.#bitcoinRateTracker,
-          cogcoinRateTracker: this.#cogcoinRateTracker,
-          abortSignal: abortController.signal,
-          isFollowing: () => this.#following,
-          loadVisibleFollowBlockTimes: (tip) => this.#loadVisibleFollowBlockTimes(tip),
-        });
+        if (this.#node.expectedChain !== "main") {
+          return await this.#runManagedSyncPass(null, abortController.signal);
+        }
+
+        return await this.#syncWithStagedRanges(abortController.signal);
       } finally {
         this.#syncAbortControllers.delete(abortController);
       }
@@ -236,6 +287,163 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
   async playSyncCompletionScene(): Promise<void> {
     this.#assertOpen();
     await this.#progress.playCompletionScene();
+  }
+
+  async #syncWithStagedRanges(abortSignal: AbortSignal): Promise<SyncResult> {
+    const aggregate = createInitialSyncResult();
+    let stagedModeEnabled = true;
+
+    await this.#ensureBootstrapReady(abortSignal);
+
+    while (stagedModeEnabled) {
+      const info = await this.#rpc.getBlockchainInfo();
+
+      if (info.blocks < GETBLOCK_RANGE_BASE_HEIGHT) {
+        break;
+      }
+
+      const nextBoundary = resolveNextBoundary(info.blocks);
+
+      if (nextBoundary === null) {
+        break;
+      }
+
+      if (!isBoundaryHeight(info.blocks)) {
+        mergeSyncResults(aggregate, await this.#runManagedSyncPass(nextBoundary, abortSignal));
+        continue;
+      }
+
+      const firstBlockHeight = info.blocks + 1;
+      const lastBlockHeight = info.blocks + GETBLOCK_RANGE_SIZE;
+      let readyRange;
+
+      try {
+        readyRange = await prepareGetblockArchiveRange({
+          dataDir: this.#dataDir,
+          progress: this.#progress,
+          firstBlockHeight,
+          lastBlockHeight,
+          fetchImpl: this.#fetchImpl,
+          signal: abortSignal,
+        });
+      } catch {
+        stagedModeEnabled = false;
+        break;
+      }
+
+      if (readyRange === null) {
+        stagedModeEnabled = false;
+        break;
+      }
+
+      const stagedRestartActive = await this.#restartManagedNodeWithRange(readyRange, abortSignal);
+      mergeSyncResults(aggregate, await this.#runManagedSyncPass(lastBlockHeight, abortSignal));
+
+      if (stagedRestartActive) {
+        await deleteGetblockArchiveRange({
+          dataDir: this.#dataDir,
+          firstBlockHeight,
+          lastBlockHeight,
+        }).catch(() => undefined);
+      } else {
+        stagedModeEnabled = false;
+      }
+    }
+
+    mergeSyncResults(aggregate, await this.#runManagedSyncPass(null, abortSignal));
+    return aggregate;
+  }
+
+  async #runManagedSyncPass(targetHeightCap: number | null, abortSignal: AbortSignal): Promise<SyncResult> {
+    return runManagedSync({
+      client: this.#client,
+      store: this.#store,
+      node: this.#node,
+      rpc: this.#rpc,
+      progress: this.#progress,
+      bootstrap: this.#bootstrap,
+      startHeight: this.#startHeight,
+      targetHeightCap,
+      bitcoinRateTracker: this.#bitcoinRateTracker,
+      cogcoinRateTracker: this.#cogcoinRateTracker,
+      abortSignal,
+      isFollowing: () => this.#following,
+      loadVisibleFollowBlockTimes: (tip) => this.#loadVisibleFollowBlockTimes(tip),
+    });
+  }
+
+  async #ensureBootstrapReady(signal: AbortSignal): Promise<void> {
+    await this.#node.validate();
+    const indexedTipBeforeBootstrap = await this.#client.getTip();
+    await this.#bootstrap.ensureReady(indexedTipBeforeBootstrap, this.#node.expectedChain, { signal });
+  }
+
+  async #restartManagedNodeWithRange(
+    readyRange: {
+      manifest: {
+        lastBlockHeight: number;
+        artifactSha256: string;
+      };
+      artifactPath: string;
+    },
+    abortSignal: AbortSignal,
+  ): Promise<boolean> {
+    if (abortSignal.aborted) {
+      throw abortSignal.reason instanceof Error ? abortSignal.reason : new Error("managed_sync_aborted");
+    }
+
+    const baseOptions = {
+      chain: this.#node.expectedChain,
+      startHeight: this.#node.startHeight,
+      dataDir: this.#dataDir,
+      walletRootId: this.#walletRootId,
+      startupTimeoutMs: this.#startupTimeoutMs,
+      shutdownTimeoutMs: this.#shutdownTimeoutMs,
+    };
+
+    try {
+      await stopManagedBitcoindService({
+        dataDir: this.#dataDir,
+        walletRootId: this.#walletRootId,
+        shutdownTimeoutMs: this.#shutdownTimeoutMs,
+      });
+
+      const node = await attachOrStartManagedBitcoindService({
+        ...baseOptions,
+        getblockArchivePath: readyRange.artifactPath,
+        getblockArchiveEndHeight: readyRange.manifest.lastBlockHeight,
+        getblockArchiveSha256: readyRange.manifest.artifactSha256,
+      });
+
+      await this.#replaceManagedBindings(node);
+      return true;
+    } catch {
+      const node = await attachOrStartManagedBitcoindService({
+        ...baseOptions,
+        getblockArchivePath: null,
+        getblockArchiveEndHeight: null,
+        getblockArchiveSha256: null,
+      });
+
+      await this.#replaceManagedBindings(node);
+      return false;
+    }
+  }
+
+  async #replaceManagedBindings(node: ManagedBitcoindNodeHandle): Promise<void> {
+    this.#node = node;
+    this.#rpc = createRpcClient(node.rpc);
+    this.#bootstrap = new AssumeUtxoBootstrapController({
+      rpc: this.#rpc,
+      dataDir: node.dataDir,
+      progress: this.#progress,
+      snapshot: this.#progress.getStatusSnapshot().snapshot,
+    });
+
+    if (this.#subscriber !== null) {
+      this.#subscriber.connect(node.zmq.endpoint);
+      this.#subscriber.subscribe(node.zmq.topic);
+    }
   }
 
   #scheduleSync(): void {

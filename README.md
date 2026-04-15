@@ -107,7 +107,7 @@ The built-in managed-node integration:
 - uses RPC for durable reads and ZMQ `hashblock` notifications for tip following
 - launches a local full node with cookie auth
 - defaults to an assumeutxo-first mainnet bootstrap using `https://snapshots.cogcoin.org/utxo-910000.dat`
-- opportunistically loads the public getblock archive family from `https://snapshots.cogcoin.org/getblock-910000-latest.{json,dat}` to accelerate post-`910000` Bitcoin Core catch-up
+- opportunistically loads the public getblock range family from `https://snapshots.cogcoin.org/getblock-manifest.json` plus immutable `getblock-<first>-<last>.dat` bands to accelerate post-`910000` Bitcoin Core catch-up
 - composes the existing SQLite-backed client rather than replacing it
 
 If `dataDir` is omitted, the managed node defaults to:
@@ -121,15 +121,16 @@ On a fresh mainnet managed sync, `syncToTip()` or `startFollowingTip()`:
 1. downloads the pinned Cogcoin UTXO snapshot with resume support
 2. validates its known size and SHA-256
 3. loads it with Bitcoin Core assumeutxo
-4. opportunistically downloads and validates the public getblock archive for raw post-snapshot Bitcoin blocks
-5. loads that archive into managed Bitcoin Core when available
-6. continues Bitcoin sync and Cogcoin replay from the managed node until the live tip is caught up
+4. opportunistically checks for the next published 500-block getblock band at each post-snapshot boundary
+5. downloads, validates, and loads that range into managed Bitcoin Core when available
+6. syncs Cogcoin through that range, deletes the consumed local band cache, and repeats for the next boundary
+7. falls back to ordinary Bitcoin sync and Cogcoin replay once no further published range exists
 
-The public getblock archive provenance is tracked in the companion scraper repository:
+The public getblock range provenance is tracked in the companion scraper repository:
 
 - [`github.com/cogcoin/bitcoin-scrape`](https://github.com/cogcoin/bitcoin-scrape)
 
-That repo documents how the `getblock-910000-latest.dat` and `getblock-910000-latest.json` artifacts are assembled from `bitcoin-cli getblockhash` plus `bitcoin-cli getblock <hash> 0`, including the blk-style file layout, manifest format, durability guarantees, and height-based cache-busting rules.
+That repo documents how `getblock-manifest.json` and immutable files such as `getblock-910001-910500.dat` and `getblock-910501-911000.dat` are assembled from `bitcoin-cli getblockhash` plus `bitcoin-cli getblock <hash> 0`, including the blk-style file layout, range manifest format, durability guarantees, and publish order.
 
 The managed `bitcoind` client also exposes:
 

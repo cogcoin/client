@@ -64,13 +64,15 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 async function setBitcoinSyncProgress(
   dependencies: BitcoinSyncProgressDependencies,
   info: RpcBlockchainInfo,
+  targetHeightCap: number | null,
 ): Promise<void> {
-  const etaSeconds = estimateEtaSeconds(dependencies.bitcoinRateTracker, info.blocks, info.headers);
+  const targetHeight = targetHeightCap === null ? info.headers : Math.min(info.headers, targetHeightCap);
+  const etaSeconds = estimateEtaSeconds(dependencies.bitcoinRateTracker, info.blocks, targetHeight);
 
   await dependencies.progress.setPhase("bitcoin_sync", {
     blocks: info.blocks,
     headers: info.headers,
-    targetHeight: info.headers,
+    targetHeight,
     etaSeconds,
     lastError: null,
     message: dependencies.node.expectedChain === "main"
@@ -255,9 +257,12 @@ export async function syncToTip(
     while (true) {
       throwIfAborted(dependencies.abortSignal);
       const startInfo = await runRpc(() => dependencies.rpc.getBlockchainInfo());
-      await setBitcoinSyncProgress(dependencies, startInfo);
+      const cappedBestHeight = dependencies.targetHeightCap === null || dependencies.targetHeightCap === undefined
+        ? startInfo.blocks
+        : Math.min(startInfo.blocks, dependencies.targetHeightCap);
+      await setBitcoinSyncProgress(dependencies, startInfo, dependencies.targetHeightCap ?? null);
 
-      const pass = await syncAgainstBestHeight(dependencies, startInfo.blocks, runRpc);
+      const pass = await syncAgainstBestHeight(dependencies, cappedBestHeight, runRpc);
       aggregate.appliedBlocks += pass.appliedBlocks;
       aggregate.rewoundBlocks += pass.rewoundBlocks;
 
@@ -269,13 +274,17 @@ export async function syncToTip(
 
       const finalTip = await dependencies.client.getTip();
       const endInfo = await runRpc(() => dependencies.rpc.getBlockchainInfo());
-      const caughtUpCogcoin = endInfo.blocks < dependencies.startHeight || finalTip?.height === endInfo.blocks;
+      const endBestHeight = dependencies.targetHeightCap === null || dependencies.targetHeightCap === undefined
+        ? endInfo.blocks
+        : Math.min(endInfo.blocks, dependencies.targetHeightCap);
+      const caughtUpCogcoin = endBestHeight < dependencies.startHeight || finalTip?.height === endBestHeight;
 
       aggregate.endingHeight = finalTip?.height ?? null;
-      aggregate.bestHeight = endInfo.blocks;
+      aggregate.bestHeight = endBestHeight;
       aggregate.bestHashHex = endInfo.bestblockhash;
 
-      if (endInfo.blocks === endInfo.headers && caughtUpCogcoin) {
+      if ((dependencies.targetHeightCap !== null && dependencies.targetHeightCap !== undefined && caughtUpCogcoin)
+        || (endInfo.blocks === endInfo.headers && caughtUpCogcoin)) {
         if (dependencies.isFollowing()) {
           dependencies.progress.replaceFollowBlockTimes(await runRpc(() =>
             dependencies.loadVisibleFollowBlockTimes(finalTip)));
@@ -284,7 +293,7 @@ export async function syncToTip(
         await dependencies.progress.setPhase(dependencies.isFollowing() ? "follow_tip" : "complete", {
           blocks: endInfo.blocks,
           headers: endInfo.headers,
-          targetHeight: endInfo.headers,
+          targetHeight: dependencies.targetHeightCap ?? endInfo.headers,
           lastError: null,
           message: dependencies.isFollowing()
             ? "Following the live Bitcoin tip."
@@ -294,9 +303,9 @@ export async function syncToTip(
         return aggregate;
       }
 
-      await setBitcoinSyncProgress(dependencies, endInfo);
+      await setBitcoinSyncProgress(dependencies, endInfo, dependencies.targetHeightCap ?? null);
 
-      if (endInfo.blocks >= dependencies.startHeight && finalTip?.height !== endInfo.blocks) {
+      if (endBestHeight >= dependencies.startHeight && finalTip?.height !== endBestHeight) {
         continue;
       }
 

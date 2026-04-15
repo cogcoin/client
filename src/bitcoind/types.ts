@@ -33,29 +33,29 @@ export interface SnapshotChunkManifest {
   chunkSha256s: string[];
 }
 
-export interface GetblockArchiveManifestBlockRecord {
-  height: number;
-  blockHash: string;
-  previousBlockHash: string;
-  recordOffset: number;
-  recordLength: number;
-  rawBlockSizeBytes: number;
-}
-
-export interface GetblockArchiveManifest {
+export interface GetblockRangeManifestEntry {
   formatVersion: number;
   chain: "main";
   baseSnapshotHeight: number;
   firstBlockHeight: number;
-  endHeight: number;
-  blockCount: number;
+  lastBlockHeight: number;
   artifactFilename: string;
   artifactSizeBytes: number;
   artifactSha256: string;
   chunkSizeBytes: number;
   chunkSha256s: string[];
-  blocks: GetblockArchiveManifestBlockRecord[];
 }
+
+export interface GetblockRangeManifest {
+  formatVersion: number;
+  chain: "main";
+  baseSnapshotHeight: number;
+  rangeSizeBlocks: number;
+  publishedThroughHeight: number;
+  ranges: GetblockRangeManifestEntry[];
+}
+
+export type GetblockArchiveManifest = GetblockRangeManifestEntry;
 
 export interface WritingQuote {
   quote: string;

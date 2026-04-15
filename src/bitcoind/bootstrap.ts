@@ -4,6 +4,10 @@ export { DEFAULT_SNAPSHOT_METADATA } from "./bootstrap/constants.js";
 export { AssumeUtxoBootstrapController } from "./bootstrap/controller.js";
 export { downloadSnapshotFileForTesting } from "./bootstrap/download.js";
 export {
+  deleteGetblockArchiveRange,
+  deleteGetblockArchiveRangeForTesting,
+  prepareGetblockArchiveRange,
+  prepareGetblockArchiveRangeForTesting,
   prepareLatestGetblockArchive,
   prepareLatestGetblockArchiveForTesting,
   resolveGetblockArchivePathsForTesting,

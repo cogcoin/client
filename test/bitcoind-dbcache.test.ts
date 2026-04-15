@@ -69,7 +69,7 @@ test("buildManagedServiceArgsForTesting includes loadblock when a getblock archi
     dataDir: "/tmp/cogcoin-bitcoind",
     chain: "main",
     startHeight: 937_337,
-    getblockArchivePath: "/tmp/cogcoin-bitcoind/bootstrap/getblock/getblock-910000-latest.dat",
+    getblockArchivePath: "/tmp/cogcoin-bitcoind/bootstrap/getblock/getblock-910001-910500.dat",
     getblockArchiveEndHeight: 945_188,
     getblockArchiveSha256: "ab".repeat(32),
   }, {
@@ -78,5 +78,5 @@ test("buildManagedServiceArgsForTesting includes loadblock when a getblock archi
     getblockArchiveSha256: "ab".repeat(32),
   });
 
-  assert.ok(args.includes("-loadblock=/tmp/cogcoin-bitcoind/bootstrap/getblock/getblock-910000-latest.dat"));
+  assert.ok(args.includes("-loadblock=/tmp/cogcoin-bitcoind/bootstrap/getblock/getblock-910001-910500.dat"));
 });

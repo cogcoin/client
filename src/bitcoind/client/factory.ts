@@ -5,7 +5,6 @@ import { openClient } from "../../client.js";
 import {
   AssumeUtxoBootstrapController,
   DEFAULT_SNAPSHOT_METADATA,
-  prepareLatestGetblockArchiveForTesting,
   resolveBootstrapPathsForTesting,
 } from "../bootstrap.js";
 import { attachOrStartIndexerDaemon } from "../indexer-daemon.js";
@@ -17,8 +16,6 @@ import {
 import { ManagedProgressController } from "../progress.js";
 import {
   attachOrStartManagedBitcoindService,
-  probeManagedBitcoindService,
-  stopManagedBitcoindService,
 } from "../service.js";
 import type {
   InternalManagedBitcoindOptions,
@@ -51,56 +48,18 @@ async function createManagedBitcoindClient(
     await progress.start();
     progressStarted = true;
 
-    let getblockArchive = options.chain === "main"
-      ? await prepareLatestGetblockArchiveForTesting({
-        dataDir,
-        progress,
-        fetchImpl: options.fetchImpl,
-      })
-      : null;
-
-    if (options.chain === "main" && getblockArchive !== null) {
-      const existingProbe = await probeManagedBitcoindService({
-        ...options,
-        dataDir,
-      });
-
-      if (existingProbe.compatibility === "compatible" && existingProbe.status !== null) {
-        const currentArchiveEndHeight = existingProbe.status.getblockArchiveEndHeight ?? null;
-        const currentArchiveSha256 = existingProbe.status.getblockArchiveSha256 ?? null;
-        const nextArchiveEndHeight = getblockArchive.manifest.endHeight;
-        const nextArchiveSha256 = getblockArchive.manifest.artifactSha256;
-        const needsRestart = currentArchiveEndHeight !== nextArchiveEndHeight
-          || currentArchiveSha256 !== nextArchiveSha256;
-
-        if (needsRestart) {
-          const restartApproved = options.confirmGetblockArchiveRestart === undefined
-            ? false
-            : await options.confirmGetblockArchiveRestart({
-              currentArchiveEndHeight,
-              nextArchiveEndHeight,
-            });
-
-          if (restartApproved) {
-            await stopManagedBitcoindService({
-              dataDir,
-              walletRootId: options.walletRootId,
-              shutdownTimeoutMs: options.shutdownTimeoutMs,
-            });
-          } else {
-            getblockArchive = null;
-          }
-        }
-      }
-    }
-
     const node = await attachOrStartManagedBitcoindService({
       ...options,
       dataDir,
-      getblockArchivePath: getblockArchive?.artifactPath ?? null,
-      getblockArchiveEndHeight: getblockArchive?.manifest.endHeight ?? null,
-      getblockArchiveSha256: getblockArchive?.manifest.artifactSha256 ?? null,
+      getblockArchivePath: null,
+      getblockArchiveEndHeight: null,
+      getblockArchiveSha256: null,
     });
+    const walletRootId = options.walletRootId ?? node.walletRootId;
+
+    if (walletRootId === undefined) {
+      throw new Error("managed_bitcoind_wallet_root_unavailable");
+    }
     const rpc = createRpcClient(node.rpc);
     const bootstrap = new AssumeUtxoBootstrapController({
       rpc,
@@ -147,6 +106,11 @@ async function createManagedBitcoindClient(
         : null,
       options.startHeight,
       options.syncDebounceMs ?? DEFAULT_SYNC_DEBOUNCE_MS,
+      dataDir,
+      walletRootId,
+      options.startupTimeoutMs,
+      options.shutdownTimeoutMs,
+      options.fetchImpl,
     );
   } catch (error) {
     if (progressStarted) {

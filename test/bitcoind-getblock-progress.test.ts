@@ -27,5 +27,5 @@ test("getblock_archive_import progress formatting shows Bitcoin height import pr
 
   const line = formatProgressLineForTesting(progress, null, null, 120, 0);
 
-  assert.equal(line, "[████████████████████] Bitcoin 945,120 / 945,188 Bitcoin Core is importing getblock archive blocks.");
+  assert.equal(line, "[████████████████████] Bitcoin 945,120 / 945,188 Bitcoin Core is importing getblock range blocks.");
 });
