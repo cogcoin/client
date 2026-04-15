@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { access, constants, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { totalmem } from "node:os";
 import { promisify } from "node:util";
 import net from "node:net";
 
@@ -30,7 +31,38 @@ const LOCAL_HOST = "127.0.0.1";
 const SUPPORTED_BITCOIND_VERSION = "30.2.0";
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15_000;
+const DEFAULT_DBCACHE_MIB = 450;
 const claimedUninitializedRuntimeKeys = new Set<string>();
+
+const GIB = 1024 ** 3;
+
+export function resolveManagedBitcoindDbcacheMiB(totalRamBytes: number): number {
+  if (!Number.isFinite(totalRamBytes) || totalRamBytes <= 0) {
+    return DEFAULT_DBCACHE_MIB;
+  }
+
+  if (totalRamBytes < 8 * GIB) {
+    return 450;
+  }
+
+  if (totalRamBytes < 16 * GIB) {
+    return 768;
+  }
+
+  if (totalRamBytes < 32 * GIB) {
+    return 1024;
+  }
+
+  return 2048;
+}
+
+function detectManagedBitcoindDbcacheMiB(): number {
+  try {
+    return resolveManagedBitcoindDbcacheMiB(totalmem());
+  } catch {
+    return DEFAULT_DBCACHE_MIB;
+  }
+}
 
 interface ManagedWalletReplicaRpc {
   listWallets(): Promise<string[]>;
@@ -513,6 +545,7 @@ async function resolveRuntimeConfig(
     },
     zmqPort,
     p2pPort,
+    dbcacheMiB: detectManagedBitcoindDbcacheMiB(),
   };
 }
 
@@ -530,6 +563,7 @@ async function writeBitcoinConf(
     "prune=0",
     "dnsseed=1",
     "listen=0",
+    `dbcache=${runtimeConfig.dbcacheMiB}`,
     `rpcbind=${LOCAL_HOST}`,
     `rpcallowip=${LOCAL_HOST}`,
     `rpcport=${runtimeConfig.rpc.port}`,
@@ -559,6 +593,7 @@ function buildManagedServiceArgs(
     "-prune=0",
     "-dnsseed=1",
     "-listen=0",
+    `-dbcache=${runtimeConfig.dbcacheMiB}`,
   ];
 
   if (options.chain === "regtest") {
@@ -566,6 +601,21 @@ function buildManagedServiceArgs(
   }
 
   return args;
+}
+
+export async function writeBitcoinConfForTesting(
+  filePath: string,
+  options: ManagedBitcoindServiceOptions,
+  runtimeConfig: ManagedBitcoindRuntimeConfig,
+): Promise<void> {
+  await writeBitcoinConf(filePath, options, runtimeConfig);
+}
+
+export function buildManagedServiceArgsForTesting(
+  options: ManagedBitcoindServiceOptions,
+  runtimeConfig: ManagedBitcoindRuntimeConfig,
+): string[] {
+  return buildManagedServiceArgs(options, runtimeConfig);
 }
 
 function isMissingWalletError(message: string): boolean {

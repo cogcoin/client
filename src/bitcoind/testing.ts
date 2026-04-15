@@ -9,9 +9,12 @@ export { normalizeRpcBlock } from "./normalize.js";
 export { BitcoinRpcClient } from "./rpc.js";
 export {
   attachOrStartManagedBitcoindService,
+  buildManagedServiceArgsForTesting,
   readManagedBitcoindServiceStatusForTesting,
+  resolveManagedBitcoindDbcacheMiB,
   stopManagedBitcoindService,
   shutdownManagedBitcoindServiceForTesting,
+  writeBitcoinConfForTesting,
 } from "./service.js";
 export {
   AssumeUtxoBootstrapController,

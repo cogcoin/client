@@ -81,6 +81,7 @@ export interface ManagedBitcoindRuntimeConfig {
   rpc: BitcoindRpcConfig;
   zmqPort: number;
   p2pPort: number;
+  dbcacheMiB: number;
 }
 
 export const MANAGED_BITCOIND_SERVICE_API_VERSION = "cogcoin/bitcoind-service/v1";
