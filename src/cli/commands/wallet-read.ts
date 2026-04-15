@@ -102,12 +102,14 @@ export async function runWalletReadCommand(
 ): Promise<number> {
   const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
   const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+  const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
   await context.ensureDirectory(dirname(dbPath));
 
   const readContext = await context.openWalletReadContext({
     dataDir,
     databasePath: dbPath,
     secretProvider: context.walletSecretProvider,
+    paths: runtimePaths,
   });
 
   try {

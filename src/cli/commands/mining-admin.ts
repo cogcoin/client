@@ -37,12 +37,14 @@ export async function runMiningAdminCommand(
 ): Promise<number> {
   try {
     const provider = context.walletSecretProvider;
+    const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
 
     if (parsed.command === "hooks-mining-enable") {
       const prompter = createCommandPrompter(parsed, context);
       const view = await context.enableMiningHooks({
         provider,
         prompter,
+        paths: runtimePaths,
       });
       const nextSteps = getHooksEnableMiningNextSteps();
       if (parsed.outputMode === "preview-json") {
@@ -79,6 +81,7 @@ export async function runMiningAdminCommand(
     if (parsed.command === "hooks-mining-disable") {
       const view = await context.disableMiningHooks({
         provider,
+        paths: runtimePaths,
       });
       if (parsed.outputMode === "preview-json") {
         writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
@@ -107,6 +110,7 @@ export async function runMiningAdminCommand(
       const view = await context.setupBuiltInMining({
         provider,
         prompter,
+        paths: runtimePaths,
       });
       const nextSteps = getMineSetupNextSteps();
       if (parsed.outputMode === "preview-json") {

@@ -24,10 +24,6 @@ export interface ManagedServicePaths {
   indexerDaemonSocketPath: string;
 }
 
-function sanitizeWalletRootId(walletRootId: string): string {
-  return walletRootId.replace(/[^a-zA-Z0-9._-]+/g, "-");
-}
-
 function createDataDirSuffix(dataDir: string): string {
   return createHash("sha256").update(dataDir).digest("hex").slice(0, 12);
 }
@@ -46,7 +42,6 @@ export function resolveManagedServicePaths(
   dataDir: string,
   walletRootId = UNINITIALIZED_WALLET_ROOT_ID,
 ): ManagedServicePaths {
-  const normalizedWalletRootId = sanitizeWalletRootId(walletRootId);
   const defaultPaths = resolveCogcoinPathsForTesting();
   const defaultBitcoindDataDir = resolveDefaultBitcoindDataDirForTesting();
   const useDefaultRoots = dataDir === defaultBitcoindDataDir;
@@ -54,8 +49,8 @@ export function resolveManagedServicePaths(
   const runtimeRoot = useDefaultRoots ? defaultPaths.runtimeRoot : join(dataRoot, "runtime");
   const indexerRoot = useDefaultRoots ? defaultPaths.indexerRoot : join(dataRoot, "indexer");
   const serviceRootId = useDefaultRoots
-    ? normalizedWalletRootId
-    : `${normalizedWalletRootId}-${createDataDirSuffix(dataDir)}`;
+    ? "managed"
+    : `managed-${createDataDirSuffix(dataDir)}`;
   const walletRuntimeRoot = join(runtimeRoot, serviceRootId);
   const indexerServiceRoot = join(indexerRoot, serviceRootId);
 

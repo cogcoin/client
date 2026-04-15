@@ -23,6 +23,7 @@ import {
   exportWallet,
   importWallet,
   initializeWallet,
+  deleteImportedWalletSeed,
   lockWallet,
   previewResetWallet,
   repairWallet,
@@ -99,6 +100,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     previewResetWallet: overrides.previewResetWallet ?? previewResetWallet,
     exportWallet: overrides.exportWallet ?? exportWallet,
     importWallet: overrides.importWallet ?? importWallet,
+    deleteImportedWalletSeed: overrides.deleteImportedWalletSeed ?? deleteImportedWalletSeed,
     showWalletMnemonic: overrides.showWalletMnemonic ?? showWalletMnemonic,
     unlockWallet: overrides.unlockWallet ?? unlockWallet,
     lockWallet: overrides.lockWallet ?? lockWallet,
@@ -158,6 +160,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     loadWalletExplicitLock: overrides.loadWalletExplicitLock ?? loadWalletExplicitLock,
     resolveDefaultBitcoindDataDir: overrides.resolveDefaultBitcoindDataDir ?? resolveDefaultBitcoindDataDirForTesting,
     resolveDefaultClientDatabasePath: overrides.resolveDefaultClientDatabasePath ?? resolveDefaultClientDatabasePathForTesting,
-    resolveWalletRuntimePaths: overrides.resolveWalletRuntimePaths ?? resolveWalletRuntimePathsForTesting,
+    resolveWalletRuntimePaths: overrides.resolveWalletRuntimePaths ?? ((seedName) =>
+      resolveWalletRuntimePathsForTesting({ seedName })),
   };
 }

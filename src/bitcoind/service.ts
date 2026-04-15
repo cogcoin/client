@@ -364,18 +364,22 @@ function validateManagedBitcoindStatus(
   options: ManagedBitcoindServiceOptions,
   runtimeRoot: string,
 ): void {
+  const legacyRuntimeRoot = join(
+    resolveManagedServicePaths(
+      options.dataDir ?? "",
+      options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID,
+    ).runtimeRoot,
+    status.walletRootId,
+  );
+
   if (status.serviceApiVersion !== MANAGED_BITCOIND_SERVICE_API_VERSION_VALUE) {
     throw new Error("managed_bitcoind_service_version_mismatch");
-  }
-
-  if (status.walletRootId !== (options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID)) {
-    throw new Error("managed_bitcoind_wallet_root_mismatch");
   }
 
   if (
     status.chain !== options.chain
     || status.dataDir !== (options.dataDir ?? "")
-    || status.runtimeRoot !== runtimeRoot
+    || (status.runtimeRoot !== runtimeRoot && status.runtimeRoot !== legacyRuntimeRoot)
   ) {
     throw new Error("managed_bitcoind_runtime_mismatch");
   }
@@ -457,9 +461,7 @@ function mapManagedBitcoindValidationError(error: unknown): ManagedBitcoindServi
     compatibility: error instanceof Error
       ? error.message === "managed_bitcoind_service_version_mismatch"
         ? "service-version-mismatch"
-        : error.message === "managed_bitcoind_wallet_root_mismatch"
-          ? "wallet-root-mismatch"
-          : "runtime-mismatch"
+        : "runtime-mismatch"
       : "protocol-error",
     status: null,
     error: error instanceof Error ? error.message : "managed_bitcoind_protocol_error",
@@ -862,6 +864,12 @@ export async function withClaimedUninitializedManagedRuntime<T>(options: {
   shutdownTimeoutMs?: number;
 }, callback: () => Promise<T>): Promise<T> {
   const targetWalletRootId = options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
+  const targetPaths = resolveManagedServicePaths(options.dataDir, targetWalletRootId);
+  const uninitializedPaths = resolveManagedServicePaths(options.dataDir, UNINITIALIZED_WALLET_ROOT_ID);
+
+  if (targetPaths.walletRuntimeRoot === uninitializedPaths.walletRuntimeRoot) {
+    return callback();
+  }
 
   if (targetWalletRootId === UNINITIALIZED_WALLET_ROOT_ID) {
     return callback();
@@ -874,7 +882,6 @@ export async function withClaimedUninitializedManagedRuntime<T>(options: {
   }
 
   claimedUninitializedRuntimeKeys.add(claimKey);
-  const uninitializedPaths = resolveManagedServicePaths(options.dataDir, UNINITIALIZED_WALLET_ROOT_ID);
   const lockTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   const bitcoindLock = await acquireFileLockWithRetry(
     uninitializedPaths.bitcoindLockPath,
@@ -927,13 +934,16 @@ async function refreshManagedBitcoindStatus(
 ): Promise<ManagedBitcoindServiceStatus> {
   const nowUnixMs = Date.now();
   const rpc = createRpcClient(status.rpc);
+  const targetWalletRootId = options.walletRootId ?? status.walletRootId;
 
   try {
     await waitForRpcReady(rpc, status.rpc.cookieFile, status.chain, options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS);
     await validateNodeConfigForTesting(rpc, status.chain, status.zmq.endpoint);
-    const walletReplica = await loadManagedWalletReplicaIfPresent(rpc, status.walletRootId, status.dataDir);
+    const walletReplica = await loadManagedWalletReplicaIfPresent(rpc, targetWalletRootId, status.dataDir);
     const nextStatus: ManagedBitcoindServiceStatus = {
       ...status,
+      walletRootId: targetWalletRootId,
+      runtimeRoot: paths.walletRuntimeRoot,
       state: "ready",
       processId: await isProcessAlive(status.processId) ? status.processId : null,
       walletReplica,
@@ -946,6 +956,8 @@ async function refreshManagedBitcoindStatus(
   } catch (error) {
     const nextStatus: ManagedBitcoindServiceStatus = {
       ...status,
+      walletRootId: targetWalletRootId,
+      runtimeRoot: paths.walletRuntimeRoot,
       state: "failed",
       processId: await isProcessAlive(status.processId) ? status.processId : null,
       heartbeatAtUnixMs: nowUnixMs,
@@ -983,6 +995,7 @@ function createNodeHandle(
       currentStatus = await refreshManagedBitcoindStatus(currentStatus, paths, options);
       this.getblockArchiveEndHeight = currentStatus.getblockArchiveEndHeight ?? null;
       this.getblockArchiveSha256 = currentStatus.getblockArchiveSha256 ?? null;
+      this.walletRootId = currentStatus.walletRootId;
       return currentStatus;
     },
     async stop(): Promise<void> {

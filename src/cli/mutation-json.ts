@@ -12,6 +12,7 @@ import type {
   WalletInitializationResult,
   WalletExportResult,
   WalletImportResult,
+  WalletDeleteResult,
   WalletRepairResult,
   WalletResetResult,
   WalletRestoreResult,
@@ -303,6 +304,22 @@ export function buildResetMutationData(result: WalletResetResult) {
   });
 }
 
+export function buildWalletDeleteMutationData(result: WalletDeleteResult) {
+  return buildOperationData({
+    kind: "wallet-delete",
+    state: {
+      seedName: result.seedName,
+      walletRootId: result.walletRootId,
+      deleted: result.deleted,
+    },
+    operation: {
+      seedName: result.seedName,
+      walletRootId: result.walletRootId,
+      deleted: result.deleted,
+    },
+  });
+}
+
 export function buildDomainAdminMutationData(
   result: DomainAdminMutationResult,
   options: {
@@ -413,6 +430,7 @@ export function buildWalletLockMutationData(result: { walletRootId: string | nul
 
 export function buildInitMutationData(result: WalletInitializationResult) {
   const after = {
+    seedName: "main",
     walletRootId: result.walletRootId,
     fundingAddress: result.fundingAddress,
     unlockUntilUnixMs: result.unlockUntilUnixMs,
@@ -429,6 +447,7 @@ export function buildInitMutationData(result: WalletInitializationResult) {
 
 export function buildRestoreMutationData(result: WalletRestoreResult) {
   const after = {
+    seedName: result.seedName ?? null,
     walletRootId: result.walletRootId,
     fundingAddress: result.fundingAddress,
     unlockUntilUnixMs: result.unlockUntilUnixMs,

@@ -355,10 +355,6 @@ function validateIndexerRuntimeIdentity(
     throw new Error("indexer_daemon_service_version_mismatch");
   }
 
-  if (identity.walletRootId !== expectedWalletRootId) {
-    throw new Error("indexer_daemon_wallet_root_mismatch");
-  }
-
   if (identity.schemaVersion !== INDEXER_DAEMON_SCHEMA_VERSION || identity.state === "schema-mismatch") {
     throw new Error("indexer_daemon_schema_mismatch");
   }
@@ -476,9 +472,7 @@ async function probeIndexerDaemonAtSocket(
         compatibility: error instanceof Error
           ? error.message === "indexer_daemon_service_version_mismatch"
             ? "service-version-mismatch"
-            : error.message === "indexer_daemon_wallet_root_mismatch"
-              ? "wallet-root-mismatch"
-              : "schema-mismatch"
+            : "schema-mismatch"
           : "protocol-error",
         status,
         client: null,

@@ -20,6 +20,7 @@ import type {
   WalletPrompter,
   importWallet,
   initializeWallet,
+  deleteImportedWalletSeed,
   lockWallet,
   previewResetWallet,
   repairWallet,
@@ -135,6 +136,7 @@ export type CommandName =
   | "wallet-export"
   | "wallet-import"
   | "wallet-init"
+  | "wallet-delete"
   | "wallet-restore"
   | "wallet-show-mnemonic"
   | "wallet-lock"
@@ -176,6 +178,7 @@ export interface ParsedCliArgs {
   dbPath: string | null;
   dataDir: string | null;
   progressOutput: ProgressOutput;
+  seedName: string | null;
   unlockFor: string | null;
   assumeYes: boolean;
   forceRace: boolean;
@@ -261,6 +264,7 @@ export interface CliRunnerContext {
   previewResetWallet?: typeof previewResetWallet;
   exportWallet?: typeof exportWallet;
   importWallet?: typeof importWallet;
+  deleteImportedWalletSeed?: typeof deleteImportedWalletSeed;
   showWalletMnemonic?: typeof showWalletMnemonic;
   unlockWallet?: typeof unlockWallet;
   lockWallet?: typeof lockWallet;
@@ -303,7 +307,7 @@ export interface CliRunnerContext {
   readPackageVersion?: () => Promise<string>;
   resolveDefaultBitcoindDataDir?: () => string;
   resolveDefaultClientDatabasePath?: () => string;
-  resolveWalletRuntimePaths?: () => WalletRuntimePaths;
+  resolveWalletRuntimePaths?: (seedName?: string | null) => WalletRuntimePaths;
 }
 
 export interface StopSignalWatcher {

@@ -540,6 +540,51 @@ test("managed bitcoind service reuses a singleton node and records runtime statu
   }
 });
 
+test("managed bitcoind service adopts a live legacy wallet-scoped runtime status across wallet roots", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-client-bitcoind-legacy-runtime");
+
+  try {
+    const firstHandle = await attachOrStartManagedBitcoindService({
+      dataDir: fixture.dataDir,
+      chain: "regtest",
+      startHeight: 0,
+    });
+    const sharedPaths = resolveManagedServicePaths(fixture.dataDir, "wallet-root-uninitialized");
+    const currentStatus = await readManagedBitcoindServiceStatusForTesting(fixture.dataDir);
+
+    assert.ok(currentStatus !== null);
+
+    const legacyWalletRootId = "wallet-root-legacy";
+    const targetWalletRootId = "wallet-root-target";
+    const legacyRuntimeRoot = join(sharedPaths.runtimeRoot, legacyWalletRootId);
+    const legacyStatusPath = join(legacyRuntimeRoot, "bitcoind-status.json");
+    await mkdir(legacyRuntimeRoot, { recursive: true });
+    await writeFile(legacyStatusPath, JSON.stringify({
+      ...currentStatus,
+      walletRootId: legacyWalletRootId,
+      runtimeRoot: legacyRuntimeRoot,
+    }, null, 2));
+    await rm(sharedPaths.bitcoindStatusPath, { force: true });
+
+    const adoptedHandle = await attachOrStartManagedBitcoindService({
+      dataDir: fixture.dataDir,
+      chain: "regtest",
+      startHeight: 0,
+      walletRootId: targetWalletRootId,
+    });
+    const adoptedStatus = await readManagedBitcoindServiceStatusForTesting(fixture.dataDir);
+
+    assert.equal(adoptedHandle.pid, firstHandle.pid);
+    assert.ok(adoptedStatus !== null);
+    assert.equal(adoptedStatus?.runtimeRoot, sharedPaths.walletRuntimeRoot);
+    assert.equal(adoptedStatus?.walletRootId, targetWalletRootId);
+    assert.equal(adoptedStatus?.processId, firstHandle.pid);
+  } finally {
+    await cleanupManagedFixture(fixture);
+  }
+});
+
 test("managed client close detaches without stopping the managed services", async (t) => {
   await ensureBitcoinBinaries(t);
   const fixture = createFixture("cogcoin-client-managed-client-detach");
@@ -1055,7 +1100,7 @@ test("attach rejects a live daemon with incompatible service metadata without sp
   }
 });
 
-test("attach rejects a live daemon for a different wallet root", async () => {
+test("attach accepts a live daemon for a different wallet root when the daemon is otherwise compatible", async () => {
   const fixture = createFixture("cogcoin-client-indexer-root-mismatch");
   const walletRootId = "wallet-root-test";
   const paths = resolveManagedServicePaths(fixture.dataDir, walletRootId);
@@ -1065,15 +1110,13 @@ test("attach rejects a live daemon for a different wallet root", async () => {
   );
 
   try {
-    await assert.rejects(
-      async () => attachOrStartIndexerDaemon({
-        dataDir: fixture.dataDir,
-        databasePath: fixture.databasePath,
-        walletRootId,
-        startupTimeoutMs: 1_000,
-      }),
-      /indexer_daemon_wallet_root_mismatch/,
-    );
+    const daemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      walletRootId,
+      startupTimeoutMs: 1_000,
+    });
+    await daemon.close();
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);

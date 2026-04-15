@@ -34,6 +34,7 @@ import { createWalletReadModel } from "../src/wallet/read/index.js";
 import type { WalletReadContext } from "../src/wallet/read/index.js";
 import type { WalletLockView } from "../src/wallet/read/index.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
+import { saveWalletSeedIndex } from "../src/wallet/state/seed-index.js";
 import type { WalletStateV1 } from "../src/wallet/types.js";
 import { createTempDatabasePath, loadHistoryVector, materializeBlock } from "./helpers.js";
 import { createTempDirectory, removeTempDirectory, replayBlocks } from "./bitcoind-helpers.js";
@@ -65,7 +66,7 @@ class FakeSignalSource extends EventEmitter {
   }
 }
 
-function createTempWalletPaths(root: string) {
+function createTempWalletPaths(root: string, seedName?: string | null) {
   return resolveWalletRuntimePathsForTesting({
     platform: "linux",
     homeDirectory: root,
@@ -75,6 +76,7 @@ function createTempWalletPaths(root: string) {
       XDG_STATE_HOME: join(root, "state"),
       XDG_RUNTIME_DIR: join(root, "runtime"),
     },
+    seedName,
   });
 }
 
@@ -92,6 +94,21 @@ function createWalletStateEnvelopeStub(walletRootId: string) {
       ciphertext: "ciphertext",
     },
   };
+}
+
+async function writeMainSeedIndex(root: string): Promise<void> {
+  const mainPaths = createTempWalletPaths(root);
+  await saveWalletSeedIndex(mainPaths, {
+    schemaVersion: 1,
+    lastWrittenAtUnixMs: 1_700_000_000_000,
+    seeds: [{
+      name: "main",
+      kind: "main",
+      walletRootId: "wallet-root-main",
+      createdAtUnixMs: 1_700_000_000_000,
+      restoredAtUnixMs: null,
+    }],
+  });
 }
 
 async function waitForMissingPath(path: string): Promise<void> {
@@ -750,6 +767,7 @@ test("parseCliArgs handles commands and common flags", () => {
     dbPath: "/tmp/client.sqlite",
     dataDir: "/tmp/bitcoin",
     progressOutput: "tty",
+    seedName: null,
     unlockFor: null,
     assumeYes: false,
     forceRace: false,
@@ -1059,11 +1077,17 @@ test("parseCliArgs handles wallet init/restore/unlock/lock/export/import and rep
   const walletInit = parseCliArgs(["wallet", "init"]);
   assert.equal(walletInit.command, "wallet-init");
 
-  const restore = parseCliArgs(["restore"]);
+  const restore = parseCliArgs(["restore", "--seed", "trading"]);
   assert.equal(restore.command, "restore");
+  assert.equal(restore.seedName, "trading");
 
-  const walletRestore = parseCliArgs(["wallet", "restore"]);
+  const walletRestore = parseCliArgs(["wallet", "restore", "--seed", "trading"]);
   assert.equal(walletRestore.command, "wallet-restore");
+  assert.equal(walletRestore.seedName, "trading");
+
+  const walletDelete = parseCliArgs(["wallet", "delete", "--seed", "trading"]);
+  assert.equal(walletDelete.command, "wallet-delete");
+  assert.equal(walletDelete.seedName, "trading");
 
   const walletShowMnemonic = parseCliArgs(["wallet", "show-mnemonic"]);
   assert.equal(walletShowMnemonic.command, "wallet-show-mnemonic");
@@ -1084,6 +1108,10 @@ test("parseCliArgs handles wallet init/restore/unlock/lock/export/import and rep
   assert.equal(walletImport.command, "wallet-import");
   assert.deepEqual(walletImport.args, ["/tmp/archive.cogwallet"]);
 
+  assert.throws(() => parseCliArgs(["restore"]), /cli_missing_seed_name/);
+  assert.throws(() => parseCliArgs(["wallet", "delete"]), /cli_missing_seed_name/);
+  assert.throws(() => parseCliArgs(["sync", "--seed", "trading"]), /cli_seed_not_supported_for_command/);
+
   const repair = parseCliArgs(["repair", "--yes"]);
   assert.equal(repair.command, "repair");
   assert.equal(repair.assumeYes, true);
@@ -1098,8 +1126,9 @@ test("parseCliArgs allows json on covered action commands and rejects excluded c
   const supportedArgv = [
     ["init", "--output", "json"],
     ["wallet", "init", "--output", "json"],
-    ["restore", "--output", "json"],
-    ["wallet", "restore", "--output", "json"],
+    ["restore", "--seed", "trading", "--output", "json"],
+    ["wallet", "restore", "--seed", "trading", "--output", "json"],
+    ["wallet", "delete", "--seed", "trading", "--output", "json"],
     ["unlock", "--output", "json"],
     ["wallet", "unlock", "--output", "json"],
     ["wallet", "export", "/tmp/archive.cogwallet", "--output", "json"],
@@ -1133,7 +1162,7 @@ test("parseCliArgs allows json on covered action commands and rejects excluded c
   }
 
   assert.throws(() => parseCliArgs(["mine", "--output", "json"]), /cli_output_not_supported_for_command/);
-  assert.throws(() => parseCliArgs(["restore", "--output", "preview-json"]), /cli_output_not_supported_for_command/);
+  assert.throws(() => parseCliArgs(["restore", "--seed", "trading", "--output", "preview-json"]), /cli_output_not_supported_for_command/);
   assert.throws(() => parseCliArgs(["wallet", "show-mnemonic", "--output", "json"]), /cli_output_not_supported_for_command/);
   assert.throws(() => parseCliArgs(["wallet", "show-mnemonic", "--output", "preview-json"]), /cli_output_not_supported_for_command/);
 });
@@ -2104,7 +2133,7 @@ test("wallet admin commands dispatch through the lifecycle hooks", async () => {
     },
   });
 
-  const restoreCode = await runCli(["restore"], {
+  const restoreCode = await runCli(["restore", "--seed", "trading"], {
     stdout: new MemoryStream(),
     stderr: new MemoryStream(),
     walletSecretProvider: {} as never,
@@ -2115,12 +2144,49 @@ test("wallet admin commands dispatch through the lifecycle hooks", async () => {
     restoreWalletFromMnemonic: async () => {
       calls.push("restore");
       return {
+        seedName: "trading",
         walletRootId: "wallet-root-restored",
         fundingAddress: "bc1qfundingidentity0000000000000000000000000",
         unlockUntilUnixMs: 1_700_000_900_000,
         state: createWalletState({
           walletRootId: "wallet-root-restored",
         }),
+      };
+    },
+    exportWallet: async () => {
+      throw new Error("unreachable");
+    },
+    importWallet: async () => {
+      throw new Error("unreachable");
+    },
+    unlockWallet: async () => {
+      throw new Error("unreachable");
+    },
+    lockWallet: async () => {
+      throw new Error("unreachable");
+    },
+    repairWallet: async () => {
+      throw new Error("unreachable");
+    },
+  });
+
+  const walletDeleteCode = await runCli(["wallet", "delete", "--seed", "trading", "--yes"], {
+    stdout: new MemoryStream(),
+    stderr: new MemoryStream(),
+    walletSecretProvider: {} as never,
+    createPrompter,
+    initializeWallet: async () => {
+      throw new Error("unreachable");
+    },
+    restoreWalletFromMnemonic: async () => {
+      throw new Error("unreachable");
+    },
+    deleteImportedWalletSeed: async () => {
+      calls.push("delete");
+      return {
+        seedName: "trading",
+        walletRootId: "wallet-root-restored",
+        deleted: true,
       };
     },
     exportWallet: async () => {
@@ -2320,12 +2386,13 @@ test("wallet admin commands dispatch through the lifecycle hooks", async () => {
 
   assert.equal(initCode, 0);
   assert.equal(restoreCode, 0);
+  assert.equal(walletDeleteCode, 0);
   assert.equal(unlockCode, 0);
   assert.equal(lockCode, 0);
   assert.equal(exportCode, 0);
   assert.equal(importCode, 0);
   assert.equal(repairCode, 0);
-  assert.deepEqual(calls, ["init", "restore", "unlock", "lock", "export", "import", "repair"]);
+  assert.deepEqual(calls, ["init", "restore", "delete", "unlock", "lock", "export", "import", "repair"]);
   assert.match(stdout.toString(), /Wallet initialized/);
   assert.match(stdout.toString(), /Quickstart: Fund this wallet with about 0\.0015 BTC/);
   assert.match(stdout.toString(), /Next step: cogcoin sync/);
@@ -5190,13 +5257,14 @@ test("json init cleanup output stays on the prompt stream", async () => {
   assert.match(stderr.toString(), /\u001b\[H/);
 });
 
-test("restore, unlock, wallet export, and wallet import emit stable secure-admin json envelopes", async () => {
+test("restore, wallet delete, unlock, wallet export, and wallet import emit stable secure-admin json envelopes", async () => {
   const restoreStdout = new MemoryStream();
-  const restoreCode = await runCli(["restore", "--output", "json"], {
+  const restoreCode = await runCli(["restore", "--seed", "trading", "--output", "json"], {
     stdout: restoreStdout,
     stderr: new MemoryStream(),
     walletSecretProvider: {} as never,
     restoreWalletFromMnemonic: async () => ({
+      seedName: "trading",
       walletRootId: "wallet-root-restored",
       fundingAddress: "bc1qfundingidentity0000000000000000000000000",
       unlockUntilUnixMs: 1_700_000_900_000,
@@ -5217,6 +5285,7 @@ test("restore, unlock, wallet export, and wallet import emit stable secure-admin
     data: {
       resultType: string;
       state: {
+        seedName: string | null;
         walletRootId: string;
         locked: boolean;
         unlockUntilUnixMs: number;
@@ -5224,6 +5293,7 @@ test("restore, unlock, wallet export, and wallet import emit stable secure-admin
       };
       stateChange: {
         after: {
+          seedName: string | null;
           walletRootId: string;
           locked: boolean;
           unlockUntilUnixMs: number;
@@ -5236,21 +5306,24 @@ test("restore, unlock, wallet export, and wallet import emit stable secure-admin
   assert.equal(restoreEnvelope.command, "cogcoin restore");
   assert.equal(restoreEnvelope.outcome, "restored");
   assert.equal(restoreEnvelope.data.resultType, "state-change");
+  assert.equal(restoreEnvelope.data.state.seedName, "trading");
   assert.equal(restoreEnvelope.data.state.walletRootId, "wallet-root-restored");
   assert.equal(restoreEnvelope.data.state.locked, false);
   assert.equal(restoreEnvelope.data.state.unlockUntilUnixMs, 1_700_000_900_000);
   assert.equal(restoreEnvelope.data.state.fundingAddress, "bc1qfundingidentity0000000000000000000000000");
+  assert.equal(restoreEnvelope.data.stateChange.after?.seedName, "trading");
   assert.equal(restoreEnvelope.data.stateChange.after?.walletRootId, "wallet-root-restored");
   assert.ok(restoreEnvelope.explanations.some((line) => line.includes("Managed Bitcoin/indexer bootstrap is deferred")));
   assert.ok(restoreEnvelope.nextSteps.some((line) => line.includes("cogcoin sync")));
   assert.ok(restoreEnvelope.warnings.some((line) => line.includes("Previous managed runtime cleanup did not complete")));
 
   const restoreAliasStdout = new MemoryStream();
-  const restoreAliasCode = await runCli(["wallet", "restore", "--output", "json"], {
+  const restoreAliasCode = await runCli(["wallet", "restore", "--seed", "trading", "--output", "json"], {
     stdout: restoreAliasStdout,
     stderr: new MemoryStream(),
     walletSecretProvider: {} as never,
     restoreWalletFromMnemonic: async () => ({
+      seedName: "trading",
       walletRootId: "wallet-root-restored",
       fundingAddress: "bc1qfundingidentity0000000000000000000000000",
       unlockUntilUnixMs: 1_700_000_900_000,
@@ -5431,13 +5504,54 @@ test("restore, unlock, wallet export, and wallet import emit stable secure-admin
   assert.equal(importEnvelope.data.state.fundingAddress, "bc1qfundingidentity0000000000000000000000000");
   assert.equal(importEnvelope.data.state.unlockUntilUnixMs, 1_700_000_900_000);
   assert.equal(importEnvelope.data.stateChange.after?.archivePath, "/tmp/archive.cogwallet");
+
+  const deleteStdout = new MemoryStream();
+  const deleteCode = await runCli(["wallet", "delete", "--seed", "trading", "--yes", "--output", "json"], {
+    stdout: deleteStdout,
+    stderr: new MemoryStream(),
+    walletSecretProvider: {} as never,
+    deleteImportedWalletSeed: async () => ({
+      seedName: "trading",
+      walletRootId: "wallet-root-restored",
+      deleted: true,
+    }),
+  });
+  assert.equal(deleteCode, 0);
+  const deleteEnvelope = parseJsonEnvelope(deleteStdout) as {
+    schema: string;
+    command: string;
+    outcome: string;
+    data: {
+      resultType: string;
+      operation: {
+        kind: string;
+        seedName: string;
+        walletRootId: string;
+        deleted: boolean;
+      };
+      state: {
+        seedName: string;
+        walletRootId: string;
+        deleted: boolean;
+      } | null;
+    };
+  };
+  assert.equal(deleteEnvelope.schema, "cogcoin/wallet-delete/v1");
+  assert.equal(deleteEnvelope.command, "cogcoin wallet delete");
+  assert.equal(deleteEnvelope.outcome, "deleted");
+  assert.equal(deleteEnvelope.data.resultType, "operation");
+  assert.equal(deleteEnvelope.data.operation.kind, "wallet-delete");
+  assert.equal(deleteEnvelope.data.operation.seedName, "trading");
+  assert.equal(deleteEnvelope.data.operation.walletRootId, "wallet-root-restored");
+  assert.equal(deleteEnvelope.data.operation.deleted, true);
+  assert.equal(deleteEnvelope.data.state?.seedName, "trading");
 });
 
 test("restore text success defers Bitcoin/indexer bootstrap and does not resolve a default db path", async () => {
   const stdout = new MemoryStream();
   let resolvedDbPath = false;
 
-  const code = await runCli(["restore"], {
+  const code = await runCli(["restore", "--seed", "trading"], {
     stdout,
     stderr: new MemoryStream(),
     walletSecretProvider: {} as never,
@@ -5457,6 +5571,7 @@ test("restore text success defers Bitcoin/indexer bootstrap and does not resolve
       },
     }),
     restoreWalletFromMnemonic: async () => ({
+      seedName: "trading",
       walletRootId: "wallet-root-restored",
       fundingAddress: "bc1qfundingidentity0000000000000000000000000",
       unlockUntilUnixMs: 1_700_000_900_000,
@@ -5469,7 +5584,7 @@ test("restore text success defers Bitcoin/indexer bootstrap and does not resolve
 
   assert.equal(code, 0);
   assert.equal(resolvedDbPath, false);
-  assert.match(stdout.toString(), /Wallet restored from mnemonic\./);
+  assert.match(stdout.toString(), /Wallet seed "trading" restored from mnemonic\./);
   assert.match(stdout.toString(), /Managed Bitcoin\/indexer bootstrap is deferred until you run `cogcoin sync`\./);
   assert.match(stdout.toString(), /Warning: Previous managed runtime cleanup did not complete\./);
   assert.match(stdout.toString(), /Next step: cogcoin sync/);
@@ -5899,7 +6014,7 @@ test("secure-admin json failures map to stable schemas and exit codes", async ()
   assert.match(initLinuxSecretEnvelope.error.message, /secret-tool/i);
 
   const restoreRequiresTtyStdout = new MemoryStream();
-  const restoreRequiresTtyCode = await runCli(["restore", "--output", "json"], {
+  const restoreRequiresTtyCode = await runCli(["restore", "--seed", "trading", "--output", "json"], {
     stdout: restoreRequiresTtyStdout,
     stderr: new MemoryStream(),
     walletSecretProvider: {} as never,
@@ -5919,7 +6034,7 @@ test("secure-admin json failures map to stable schemas and exit codes", async ()
   assert.match(restoreRequiresTtyEnvelope.error.message, /Interactive terminal input is required/);
 
   const restoreInvalidMnemonicStdout = new MemoryStream();
-  const restoreInvalidMnemonicCode = await runCli(["restore", "--output", "json"], {
+  const restoreInvalidMnemonicCode = await runCli(["restore", "--seed", "trading", "--output", "json"], {
     stdout: restoreInvalidMnemonicStdout,
     stderr: new MemoryStream(),
     walletSecretProvider: {} as never,
@@ -5938,7 +6053,7 @@ test("secure-admin json failures map to stable schemas and exit codes", async ()
   assert.equal(restoreInvalidMnemonicEnvelope.ok, false);
   assert.equal(restoreInvalidMnemonicEnvelope.error.code, "wallet_restore_mnemonic_invalid");
   assert.match(restoreInvalidMnemonicEnvelope.error.message, /Recovery phrase is invalid/);
-  assert.ok(restoreInvalidMnemonicEnvelope.nextSteps.some((step) => step.includes("cogcoin restore")));
+  assert.ok(restoreInvalidMnemonicEnvelope.nextSteps.some((step) => step.includes("cogcoin restore --seed <name>")));
 
   const unlockStdout = new MemoryStream();
   const unlockCode = await runCli(["unlock", "--output", "json"], {
@@ -6333,6 +6448,133 @@ test("status emits the stable json envelope in degraded mode", async () => {
   assert.equal(envelope.data.availability.bitcoind.publishState, "stale-heartbeat");
   assert.ok(envelope.warnings.some((warning) => warning.includes("Wallet state is locked")));
   assert.ok(envelope.nextSteps.includes("cogcoin sync"));
+});
+
+test("wallet status rejects an unknown imported seed before opening read context", async () => {
+  const tempRoot = createTempDirectory("cogcoin-cli-unknown-seed-status");
+  const stdout = new MemoryStream();
+  let opened = false;
+
+  try {
+    await writeMainSeedIndex(tempRoot);
+    const code = await runCli(["wallet", "status", "--seed", "trading", "--output", "json"], {
+      stdout,
+      stderr: new MemoryStream(),
+      resolveWalletRuntimePaths: (seedName) => createTempWalletPaths(tempRoot, seedName),
+      openWalletReadContext: async () => {
+        opened = true;
+        throw new Error("should_not_open_wallet_read_context");
+      },
+    });
+
+    const envelope = parseJsonEnvelope(stdout) as {
+      error: { code: string };
+    };
+    assert.equal(code, 3);
+    assert.equal(envelope.error.code, "wallet_seed_not_found");
+    assert.equal(opened, false);
+  } finally {
+    await removeTempDirectory(tempRoot);
+  }
+});
+
+test("wallet status with an imported seed stays uninitialized before any wallet exists", async () => {
+  const tempRoot = createTempDirectory("cogcoin-cli-uninitialized-seed-status");
+  const stdout = new MemoryStream();
+  let opened = false;
+
+  try {
+    const code = await runCli(["status", "--seed", "trading", "--output", "json"], {
+      stdout,
+      stderr: new MemoryStream(),
+      ensureDirectory: async () => {},
+      resolveWalletRuntimePaths: (seedName) => createTempWalletPaths(tempRoot, seedName),
+      openWalletReadContext: async () => {
+        opened = true;
+        return {
+          dataDir: "/tmp/bitcoin",
+          databasePath: "/tmp/client.sqlite",
+          localState: {
+            availability: "uninitialized",
+            walletRootId: null,
+            state: null,
+            source: null,
+            unlockUntilUnixMs: null,
+            hasPrimaryStateFile: false,
+            hasBackupStateFile: false,
+            hasUnlockSessionFile: false,
+            message: "Wallet state has not been initialized yet.",
+          },
+          bitcoind: {
+            health: "starting",
+            status: null,
+            message: "Managed bitcoind service is still starting.",
+          },
+          nodeStatus: null,
+          nodeHealth: "starting",
+          nodeMessage: "Bitcoin service is starting.",
+          indexer: {
+            health: "starting",
+            status: null,
+            message: "Indexer daemon is still starting.",
+            snapshotTip: null,
+          },
+          snapshot: null,
+          model: null,
+          async close() {},
+        };
+      },
+    });
+
+    const envelope = parseJsonEnvelope(stdout) as {
+      data: {
+        wallet: { availability: string };
+      };
+      nextSteps: string[];
+    };
+    assert.equal(code, 0);
+    assert.equal(opened, true);
+    assert.equal(envelope.data.wallet.availability, "uninitialized");
+    assert.ok(envelope.nextSteps.includes("Run `cogcoin init` to create a new local wallet root."));
+  } finally {
+    await removeTempDirectory(tempRoot);
+  }
+});
+
+test("wallet status surfaces a repair-style error when the seed registry is invalid", async () => {
+  const tempRoot = createTempDirectory("cogcoin-cli-invalid-seed-index");
+  const stdout = new MemoryStream();
+  const mainPaths = createTempWalletPaths(tempRoot);
+  let opened = false;
+
+  try {
+    await mkdir(mainPaths.stateRoot, { recursive: true });
+    await writeFile(mainPaths.seedRegistryPath, "{not-json\n", "utf8");
+
+    const code = await runCli(["wallet", "status", "--seed", "trading", "--output", "json"], {
+      stdout,
+      stderr: new MemoryStream(),
+      resolveWalletRuntimePaths: (seedName) => createTempWalletPaths(tempRoot, seedName),
+      openWalletReadContext: async () => {
+        opened = true;
+        throw new Error("should_not_open_wallet_read_context");
+      },
+    });
+
+    const envelope = parseJsonEnvelope(stdout) as {
+      error: { code: string; message: string };
+      explanations: string[];
+      nextSteps: string[];
+    };
+    assert.equal(code, 4);
+    assert.equal(envelope.error.code, "wallet_seed_index_invalid");
+    assert.equal(envelope.error.message, "Wallet seed registry is invalid.");
+    assert.ok(envelope.explanations.some((line) => line.includes("local seed registry file")));
+    assert.ok(envelope.nextSteps.includes("Run `cogcoin repair`, then retry the command."));
+    assert.equal(opened, false);
+  } finally {
+    await removeTempDirectory(tempRoot);
+  }
 });
 
 test("status json surfaces additive indexer compatibility metadata", async () => {
@@ -6855,6 +7097,34 @@ test("wallet mutation commands pass through --yes and blocked errors use shared 
   assert.match(stderr.toString(), /What happened: Wallet is locked\./);
   assert.match(stderr.toString(), /Why: This command needs access to the unlocked local wallet state/);
   assert.match(stderr.toString(), /Next: Run `cogcoin unlock --for 15m` and retry\./);
+});
+
+test("wallet mutations reject an unknown imported seed before dispatch", async () => {
+  const tempRoot = createTempDirectory("cogcoin-cli-unknown-seed-mutation");
+  const stdout = new MemoryStream();
+  let called = false;
+
+  try {
+    await writeMainSeedIndex(tempRoot);
+    const code = await runCli(["register", "alpha", "--seed", "trading", "--output", "json"], {
+      stdout,
+      stderr: new MemoryStream(),
+      resolveWalletRuntimePaths: (seedName) => createTempWalletPaths(tempRoot, seedName),
+      registerDomain: async () => {
+        called = true;
+        throw new Error("should_not_dispatch_register");
+      },
+    });
+
+    const envelope = parseJsonEnvelope(stdout) as {
+      error: { code: string };
+    };
+    assert.equal(code, 3);
+    assert.equal(envelope.error.code, "wallet_seed_not_found");
+    assert.equal(called, false);
+  } finally {
+    await removeTempDirectory(tempRoot);
+  }
 });
 
 test("repair indexer reset requirements are presented clearly in text mode", async () => {
@@ -7842,7 +8112,7 @@ test("restore clears wallet-control.lock on SIGINT", async () => {
   });
 
   try {
-    const restorePromise = runCli(["restore"], {
+    const restorePromise = runCli(["restore", "--seed", "trading"], {
       stdout,
       stderr,
       signalSource: signals,

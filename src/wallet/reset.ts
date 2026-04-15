@@ -30,6 +30,7 @@ import {
   createWalletSecretReference,
   type WalletSecretProvider,
 } from "./state/provider.js";
+import { loadWalletSeedIndex } from "./state/seed-index.js";
 import {
   extractWalletRootIdHintFromWalletStateEnvelope,
   loadRawWalletStateEnvelope,
@@ -132,6 +133,7 @@ interface WalletResetPreflight {
     mode: WalletEnvelopeMode;
     envelopeSource: "primary" | "backup" | null;
     secretProviderKeyId: string | null;
+    importedSeedSecretProviderKeyIds: string[];
     explicitLock: WalletExplicitLockStateV1 | null;
     rawEnvelope: RawWalletStateEnvelope | null;
   };
@@ -835,6 +837,12 @@ async function preflightReset(options: {
 
   const tracked = await collectTrackedManagedProcesses(options.paths);
   const secretProviderKeyId = rawEnvelope?.envelope.secretProvider?.keyId ?? null;
+  const seedIndex = await loadWalletSeedIndex({
+    paths: options.paths,
+  }).catch(() => null);
+  const importedSeedSecretProviderKeyIds = [...new Set((seedIndex?.seeds ?? [])
+    .filter((seed) => seed.kind === "imported")
+    .map((seed) => createWalletSecretReference(seed.walletRootId).keyId))];
 
   return {
     dataRoot: options.paths.dataRoot,
@@ -848,6 +856,7 @@ async function preflightReset(options: {
           : "passphrase-wrapped",
       envelopeSource: rawEnvelope?.source ?? null,
       secretProviderKeyId,
+      importedSeedSecretProviderKeyIds,
       explicitLock,
       rawEnvelope,
     },
@@ -1090,7 +1099,8 @@ export async function previewResetWallet(options: {
         : null,
     },
     trackedProcessKinds: preflight.trackedProcessKinds,
-    willDeleteOsSecrets: preflight.wallet.secretProviderKeyId !== null,
+    willDeleteOsSecrets: preflight.wallet.secretProviderKeyId !== null
+      || preflight.wallet.importedSeedSecretProviderKeyIds.length > 0,
     removedPaths,
   };
 }
@@ -1147,9 +1157,7 @@ export async function resetWallet(options: {
   let rootsDeleted = false;
   let committed = false;
   let newProviderKeyId: string | null = null;
-  let secretCleanupStatus: WalletResetSecretCleanupStatus = preflight.wallet.secretProviderKeyId === null
-    ? "not-found"
-    : "not-found";
+  let secretCleanupStatus: WalletResetSecretCleanupStatus = "not-found";
   const deletedSecretRefs: string[] = [];
   const failedSecretRefs: string[] = [];
   const preservedSecretRefs: string[] = [];
@@ -1271,37 +1279,45 @@ export async function resetWallet(options: {
 
     committed = true;
 
-    if (walletAction === "deleted") {
-      if (preflight.wallet.secretProviderKeyId !== null) {
-        try {
-          await provider.deleteSecret(preflight.wallet.secretProviderKeyId);
-          deletedSecretRefs.push(preflight.wallet.secretProviderKeyId);
-          secretCleanupStatus = "deleted";
-        } catch {
-          failedSecretRefs.push(preflight.wallet.secretProviderKeyId);
-          secretCleanupStatus = "failed";
-          throw new Error("reset_secret_cleanup_failed");
-        }
-      }
-    } else if (walletAction === "retain-mnemonic" && preflight.wallet.secretProviderKeyId !== null) {
+    const deleteTrackedSecretReference = async (keyId: string): Promise<void> => {
       try {
-        if (preflight.wallet.secretProviderKeyId !== newProviderKeyId) {
-          await provider.deleteSecret(preflight.wallet.secretProviderKeyId);
-          deletedSecretRefs.push(preflight.wallet.secretProviderKeyId);
-          secretCleanupStatus = "deleted";
-        }
+        await provider.deleteSecret(keyId);
+        deletedSecretRefs.push(keyId);
       } catch {
-        failedSecretRefs.push(preflight.wallet.secretProviderKeyId);
+        failedSecretRefs.push(keyId);
         secretCleanupStatus = "failed";
         throw new Error("reset_secret_cleanup_failed");
+      }
+    };
+
+    for (const importedSecretKeyId of preflight.wallet.importedSeedSecretProviderKeyIds) {
+      await deleteTrackedSecretReference(importedSecretKeyId);
+    }
+
+    if (walletAction === "deleted") {
+      if (preflight.wallet.secretProviderKeyId !== null) {
+        await deleteTrackedSecretReference(preflight.wallet.secretProviderKeyId);
+      }
+    } else if (walletAction === "retain-mnemonic" && preflight.wallet.secretProviderKeyId !== null) {
+      if (preflight.wallet.secretProviderKeyId !== newProviderKeyId) {
+        await deleteTrackedSecretReference(preflight.wallet.secretProviderKeyId);
       }
     } else if (preflight.wallet.secretProviderKeyId !== null) {
       preservedSecretRefs.push(preflight.wallet.secretProviderKeyId);
     }
 
-    if (preflight.wallet.secretProviderKeyId === null && preflight.wallet.present && preflight.wallet.rawEnvelope === null) {
+    if (failedSecretRefs.length > 0) {
+      secretCleanupStatus = "failed";
+    } else if (deletedSecretRefs.length > 0) {
+      secretCleanupStatus = "deleted";
+    } else if (
+      preflight.wallet.secretProviderKeyId === null
+      && preflight.wallet.importedSeedSecretProviderKeyIds.length === 0
+      && preflight.wallet.present
+      && preflight.wallet.rawEnvelope === null
+    ) {
       secretCleanupStatus = "unknown";
-    } else if (deletedSecretRefs.length === 0 && failedSecretRefs.length === 0) {
+    } else if (deletedSecretRefs.length === 0) {
       secretCleanupStatus = "not-found";
     }
 

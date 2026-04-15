@@ -20,7 +20,16 @@ import { runSyncCommand } from "./commands/sync.js";
 import { runWalletAdminCommand } from "./commands/wallet-admin.js";
 import { runWalletMutationCommand } from "./commands/wallet-mutation.js";
 import { runWalletReadCommand } from "./commands/wallet-read.js";
+import { findWalletSeedRecord, loadWalletSeedIndex } from "../wallet/state/seed-index.js";
 import type { CliRunnerContext, ParsedCliArgs } from "./types.js";
+
+function commandUsesExistingWalletSeed(parsed: ParsedCliArgs): boolean {
+  return parsed.seedName !== null
+    && parsed.seedName !== "main"
+    && parsed.command !== "restore"
+    && parsed.command !== "wallet-delete"
+    && parsed.command !== "wallet-restore";
+}
 
 export async function runCli(
   argv: string[],
@@ -68,6 +77,17 @@ export async function runCli(
   }
 
   try {
+    if (commandUsesExistingWalletSeed(parsed)) {
+      const mainPaths = context.resolveWalletRuntimePaths("main");
+      const seedIndex = await loadWalletSeedIndex({
+        paths: mainPaths,
+      });
+
+      if (seedIndex.seeds.length > 0 && findWalletSeedRecord(seedIndex, parsed.seedName!) === null) {
+        throw new Error("wallet_seed_not_found");
+      }
+    }
+
     if (parsed.command === "sync") {
       return runSyncCommand(parsed, context);
     }
@@ -116,6 +136,7 @@ export async function runCli(
       || parsed.command === "wallet-export"
       || parsed.command === "wallet-import"
       || parsed.command === "wallet-init"
+      || parsed.command === "wallet-delete"
       || parsed.command === "wallet-restore"
       || parsed.command === "wallet-show-mnemonic"
       || parsed.command === "wallet-unlock"

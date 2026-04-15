@@ -42,6 +42,7 @@ export async function runMiningRuntimeCommand(
     const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
     const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
     const provider = context.walletSecretProvider;
+    const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
     await context.ensureDirectory(dirname(dbPath));
 
     if (parsed.command === "mine") {
@@ -63,6 +64,7 @@ export async function runMiningRuntimeCommand(
           stdout: context.stdout,
           stderr: context.stderr,
           progressOutput: parsed.progressOutput,
+          paths: runtimePaths,
         });
       } finally {
         context.signalSource.off("SIGINT", onStop);
@@ -78,6 +80,7 @@ export async function runMiningRuntimeCommand(
         databasePath: dbPath,
         provider,
         prompter: createCommandPrompter(parsed, context),
+        paths: runtimePaths,
       });
 
       if (parsed.outputMode === "preview-json") {
@@ -120,6 +123,7 @@ export async function runMiningRuntimeCommand(
         dataDir,
         databasePath: dbPath,
         provider,
+        paths: runtimePaths,
       });
       const nextSteps = getMineStopNextSteps();
       if (parsed.outputMode === "preview-json") {

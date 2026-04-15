@@ -13,10 +13,10 @@ import {
 } from "../output.js";
 import { buildHooksStatusJson, buildMineLogJson, buildMineStatusJson } from "../read-json.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
-import { resolveWalletRuntimePathsForTesting } from "../../wallet/runtime.js";
 
-async function readRotationIndices(): Promise<number[]> {
-  const paths = resolveWalletRuntimePathsForTesting();
+async function readRotationIndices(paths: {
+  miningEventsPath: string;
+}): Promise<number[]> {
   const rotation: number[] = [];
 
   for (let index = 1; index <= 4; index += 1) {
@@ -40,11 +40,13 @@ export async function runMiningReadCommand(
   try {
     const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
     const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+    const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
     await context.ensureDirectory(dirname(dbPath));
 
     if (parsed.command === "hooks-mining-status") {
       const localState = await inspectWalletLocalState({
         secretProvider: context.walletSecretProvider,
+        paths: runtimePaths,
       });
       const view = await context.inspectMiningControlPlane({
         provider: context.walletSecretProvider,
@@ -67,6 +69,7 @@ export async function runMiningReadCommand(
           openedAtUnixMs: null,
         },
         verify: parsed.verify,
+        paths: runtimePaths,
       });
       if (parsed.outputMode === "json") {
         const result = buildHooksStatusJson(view);
@@ -101,7 +104,7 @@ export async function runMiningReadCommand(
 
         if (events.length === 0) {
           if (parsed.outputMode === "json") {
-            const result = buildMineLogJson(events, normalized.page, await readRotationIndices());
+            const result = buildMineLogJson(events, normalized.page, await readRotationIndices(runtimePaths));
             writeJsonValue(context.stdout, createSuccessEnvelope(
               "cogcoin/mine-log/v1",
               describeCanonicalCommand(parsed),
@@ -120,7 +123,7 @@ export async function runMiningReadCommand(
         }
 
         if (parsed.outputMode === "json") {
-          const result = buildMineLogJson(events, normalized.page, await readRotationIndices());
+          const result = buildMineLogJson(events, normalized.page, await readRotationIndices(runtimePaths));
           writeJsonValue(context.stdout, createSuccessEnvelope(
             "cogcoin/mine-log/v1",
             describeCanonicalCommand(parsed),
@@ -168,11 +171,12 @@ export async function runMiningReadCommand(
       return 0;
     }
 
-    const readContext = await context.openWalletReadContext({
-      dataDir,
-      databasePath: dbPath,
-      secretProvider: context.walletSecretProvider,
-    });
+      const readContext = await context.openWalletReadContext({
+        dataDir,
+        databasePath: dbPath,
+        secretProvider: context.walletSecretProvider,
+        paths: runtimePaths,
+      });
 
     try {
       const mining = readContext.mining ?? await context.inspectMiningControlPlane({
@@ -182,6 +186,7 @@ export async function runMiningReadCommand(
           nodeStatus: readContext.nodeStatus,
           nodeHealth: readContext.nodeHealth,
           indexer: readContext.indexer,
+          paths: runtimePaths,
         });
       if (parsed.outputMode === "json") {
         const result = buildMineStatusJson(mining);

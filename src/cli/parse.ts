@@ -17,7 +17,7 @@ Commands:
   indexer status          Show managed Cogcoin indexer status without starting it
   init                    Initialize a new local wallet root
   init --output json      Emit the stable v1 machine-readable init result envelope
-  restore                 Restore a fresh local wallet from a 24-word mnemonic; run sync afterward
+  restore                 Restore an imported named seed from a 24-word mnemonic; run sync afterward
   reset                   Factory-reset local Cogcoin state with interactive retention prompts
   repair                  Recover bounded wallet/indexer/runtime state
   unlock                  Clear an explicit wallet lock and unlock for a limited duration
@@ -53,7 +53,8 @@ Commands:
                          Lock COG to an anchored recipient domain
   wallet status           Show detailed wallet-local status and service health
   wallet init             Initialize a new local wallet root
-  wallet restore          Restore a fresh local wallet from a 24-word mnemonic; run sync afterward
+  wallet restore          Restore an imported named seed from a 24-word mnemonic; run sync afterward
+  wallet delete           Delete one imported named seed without affecting main
   wallet show-mnemonic    Reveal the initialized wallet recovery phrase after typed confirmation
   wallet unlock           Clear an explicit wallet lock and unlock for a limited duration
   wallet lock             Lock the local wallet and disable on-demand unlock
@@ -114,6 +115,7 @@ Options:
   --follow         Follow mining log output
   --output <mode>  Output mode: text, json, or preview-json
   --progress <mode> Progress output mode: auto, tty, or none
+  --seed <name>    Select an imported wallet seed for wallet-aware commands
   --force-race      Allow a visible root registration race
   --yes             Approve eligible plain yes/no mutation confirmations non-interactively
   --help            Show help
@@ -129,6 +131,7 @@ Examples:
   cogcoin bitcoin status
   cogcoin indexer status
   cogcoin init --output json
+  cogcoin restore --seed trading
   cogcoin wallet address
   cogcoin domain list --mineable
   cogcoin register alpha-child
@@ -149,6 +152,7 @@ function supportsYesFlag(command: CommandName | null): boolean {
     case "sync":
     case "follow":
     case "repair":
+    case "wallet-delete":
     case "anchor-clear":
     case "domain-anchor-clear":
     case "register":
@@ -186,6 +190,83 @@ function supportsYesFlag(command: CommandName | null): boolean {
   }
 }
 
+function supportsSeedFlag(command: CommandName | null): boolean {
+  switch (command) {
+    case "status":
+    case "unlock":
+    case "anchor":
+    case "anchor-clear":
+    case "domain-anchor":
+    case "domain-anchor-clear":
+    case "register":
+    case "domain-register":
+    case "transfer":
+    case "domain-transfer":
+    case "sell":
+    case "domain-sell":
+    case "unsell":
+    case "domain-unsell":
+    case "buy":
+    case "domain-buy":
+    case "domain-endpoint-set":
+    case "domain-endpoint-clear":
+    case "domain-delegate-set":
+    case "domain-delegate-clear":
+    case "domain-miner-set":
+    case "domain-miner-clear":
+    case "domain-canonical":
+    case "field-list":
+    case "field-show":
+    case "field-create":
+    case "field-set":
+    case "field-clear":
+    case "send":
+    case "claim":
+    case "reclaim":
+    case "cog-send":
+    case "cog-claim":
+    case "cog-reclaim":
+    case "cog-lock":
+    case "rep-give":
+    case "rep-revoke":
+    case "cog-balance":
+    case "cog-locks":
+    case "mine":
+    case "mine-start":
+    case "mine-stop":
+    case "mine-setup":
+    case "mine-status":
+    case "mine-log":
+    case "wallet-export":
+    case "wallet-delete":
+    case "wallet-restore":
+    case "restore":
+    case "wallet-show-mnemonic":
+    case "wallet-lock":
+    case "wallet-unlock":
+    case "wallet-status":
+    case "wallet-address":
+    case "wallet-ids":
+    case "address":
+    case "ids":
+    case "balance":
+    case "locks":
+    case "domain-list":
+    case "domains":
+    case "domain-show":
+    case "show":
+    case "fields":
+    case "field":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function requiresSeedFlag(command: CommandName | null): boolean {
+  return command === "restore" || command === "wallet-restore" || command === "wallet-delete";
+}
+
 export function parseCliArgs(argv: string[]): ParsedCliArgs {
   let command: CommandName | null = null;
   const args: string[] = [];
@@ -195,6 +276,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   let dbPath: string | null = null;
   let dataDir: string | null = null;
   let progressOutput: ProgressOutput = "auto";
+  let seedName: string | null = null;
   let unlockFor: string | null = null;
   let assumeYes = false;
   let forceRace = false;
@@ -253,6 +335,21 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
       if (dbPath === null) {
         throw new Error("cli_missing_db_path");
+      }
+
+      continue;
+    }
+
+    if (token === "--seed") {
+      index += 1;
+      seedName = argv[index] ?? null;
+
+      if (seedName === null) {
+        throw new Error("cli_missing_seed_name");
+      }
+
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(seedName)) {
+        throw new Error("cli_invalid_seed_name");
       }
 
       continue;
@@ -541,6 +638,12 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
         if (subcommand === "restore") {
           command = "wallet-restore";
+          index += 1;
+          continue;
+        }
+
+        if (subcommand === "delete") {
+          command = "wallet-delete";
           index += 1;
           continue;
         }
@@ -964,6 +1067,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
       || command === "reset"
       || command === "unlock"
       || command === "wallet-init"
+      || command === "wallet-delete"
       || command === "wallet-restore"
       || command === "wallet-lock"
       || command === "wallet-unlock"
@@ -1079,6 +1183,14 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
   if (assumeYes && !supportsYesFlag(command)) {
     throw new Error("cli_yes_not_supported_for_command");
+  }
+
+  if (seedName !== null && !supportsSeedFlag(command)) {
+    throw new Error("cli_seed_not_supported_for_command");
+  }
+
+  if (requiresSeedFlag(command) && seedName === null) {
+    throw new Error("cli_missing_seed_name");
   }
 
   if (forceRace && command !== "register" && command !== "domain-register") {
@@ -1261,6 +1373,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     dbPath,
     dataDir,
     progressOutput,
+    seedName,
     unlockFor,
     assumeYes,
     forceRace,

@@ -10,6 +10,7 @@ import { resolveBootstrapPathsForTesting } from "../src/bitcoind/bootstrap/paths
 import { deriveWalletMaterialFromMnemonic } from "../src/wallet/material.js";
 import { previewResetWallet, resetWallet, type WalletPrompter } from "../src/wallet/lifecycle.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
+import { addImportedWalletSeedRecord } from "../src/wallet/state/seed-index.js";
 import {
   createMemoryWalletSecretProviderForTesting,
   createWalletSecretReference,
@@ -108,7 +109,7 @@ function createResetRpcHarness(state: WalletStateV1) {
   };
 }
 
-function createTempWalletPaths(root: string) {
+function createTempWalletPaths(root: string, seedName?: string | null) {
   return resolveWalletRuntimePathsForTesting({
     platform: "linux",
     homeDirectory: root,
@@ -118,6 +119,7 @@ function createTempWalletPaths(root: string) {
       XDG_STATE_HOME: join(root, "state"),
       XDG_RUNTIME_DIR: join(root, "runtime"),
     },
+    seedName,
   });
 }
 
@@ -472,6 +474,80 @@ test("reset preserves base entropy for provider-backed wallets and clears derive
       /wallet_secret_missing_/,
     );
     await provider.loadSecret(createWalletSecretReference(result.walletNewRootId!).keyId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reset deletes imported seed secrets alongside the main wallet", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogcoin-reset-imported-seeds-"));
+  const mainPaths = createTempWalletPaths(root);
+  const importedPaths = createTempWalletPaths(root, "trading");
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const mainState = createWalletState();
+  const importedBaseState = createWalletState();
+  const importedState: WalletStateV1 = {
+    ...importedBaseState,
+    walletRootId: "wallet-root-imported",
+    managedCoreWallet: {
+      ...importedBaseState.managedCoreWallet,
+      walletName: "cogcoin-wallet-root-imported",
+    },
+  };
+  const mainSecretReference = createWalletSecretReference(mainState.walletRootId);
+  const importedSecretReference = createWalletSecretReference(importedState.walletRootId);
+  const prompter = new ScriptedPrompter({
+    visibleAnswers: ["permanently reset", "delete wallet"],
+  });
+
+  try {
+    await provider.storeSecret(mainSecretReference.keyId, randomBytes(32));
+    await provider.storeSecret(importedSecretReference.keyId, randomBytes(32));
+    await saveWalletState(
+      {
+        primaryPath: mainPaths.walletStatePath,
+        backupPath: mainPaths.walletStateBackupPath,
+      },
+      mainState,
+      {
+        provider,
+        secretReference: mainSecretReference,
+      },
+    );
+    await saveWalletState(
+      {
+        primaryPath: importedPaths.walletStatePath,
+        backupPath: importedPaths.walletStateBackupPath,
+      },
+      importedState,
+      {
+        provider,
+        secretReference: importedSecretReference,
+      },
+    );
+    await addImportedWalletSeedRecord({
+      paths: mainPaths,
+      seedName: "trading",
+      walletRootId: importedState.walletRootId,
+      nowUnixMs: 1_700_000_000_000,
+    });
+
+    const result = await resetWallet({
+      dataDir: mainPaths.bitcoinDataDir,
+      provider,
+      paths: mainPaths,
+      nowUnixMs: 1_700_000_100_000,
+      prompter,
+    });
+
+    assert.equal(result.walletAction, "deleted");
+    assert.equal(result.secretCleanupStatus, "deleted");
+    assert.ok(result.deletedSecretRefs.includes(mainSecretReference.keyId));
+    assert.ok(result.deletedSecretRefs.includes(importedSecretReference.keyId));
+    await assert.rejects(() => provider.loadSecret(mainSecretReference.keyId), /wallet_secret_missing_/);
+    await assert.rejects(() => provider.loadSecret(importedSecretReference.keyId), /wallet_secret_missing_/);
+    assert.equal(await pathExists(mainPaths.seedRegistryPath), false);
+    assert.equal(await pathExists(importedPaths.walletStatePath), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

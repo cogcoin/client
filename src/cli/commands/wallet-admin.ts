@@ -3,6 +3,7 @@ import {
   buildInitMutationData,
   buildResetMutationData,
   buildRestoreMutationData,
+  buildWalletDeleteMutationData,
   buildUnlockMutationData,
   buildRepairMutationData,
   buildWalletExportMutationData,
@@ -156,7 +157,7 @@ export async function runWalletAdminCommand(
   parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
 ): Promise<number> {
-  const runtimePaths = context.resolveWalletRuntimePaths();
+  const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
   const stopWatcher = createOwnedLockCleanupSignalWatcher(context.signalSource, context.forceExit, [
     runtimePaths.walletControlLockPath,
     runtimePaths.miningControlLockPath,
@@ -175,6 +176,7 @@ export async function runWalletAdminCommand(
           dataDir,
           provider,
           prompter,
+          paths: runtimePaths,
         });
         const nextSteps = getInitNextSteps();
         if (parsed.outputMode === "json") {
@@ -208,6 +210,7 @@ export async function runWalletAdminCommand(
           dataDir,
           provider,
           prompter,
+          paths: runtimePaths,
         });
         const nextSteps = getRestoreNextSteps();
         const explanations = ["Managed Bitcoin/indexer bootstrap is deferred until you run `cogcoin sync`."];
@@ -225,7 +228,7 @@ export async function runWalletAdminCommand(
           ));
           return 0;
         }
-        writeLine(context.stdout, "Wallet restored from mnemonic.");
+        writeLine(context.stdout, `Wallet seed "${result.seedName}" restored from mnemonic.`);
         writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
         writeLine(context.stdout, `Funding address: ${result.fundingAddress}`);
         writeLine(context.stdout, `Unlocked until: ${new Date(result.unlockUntilUnixMs).toISOString()}`);
@@ -239,11 +242,36 @@ export async function runWalletAdminCommand(
         return 0;
       }
 
+      if (parsed.command === "wallet-delete") {
+        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+        const prompter = createCommandPrompter(parsed, context);
+        const result = await context.deleteImportedWalletSeed({
+          dataDir,
+          provider,
+          prompter,
+          assumeYes: parsed.assumeYes,
+          paths: runtimePaths,
+        });
+        if (parsed.outputMode === "json") {
+          writeJsonValue(context.stdout, createMutationSuccessEnvelope(
+            resolveStableMutationJsonSchema(parsed)!,
+            describeCanonicalCommand(parsed),
+            "deleted",
+            buildWalletDeleteMutationData(result),
+          ));
+          return 0;
+        }
+        writeLine(context.stdout, `Imported wallet seed "${result.seedName}" deleted.`);
+        writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
+        return 0;
+      }
+
       if (parsed.command === "wallet-show-mnemonic") {
         const prompter = createCommandPrompter(parsed, context);
         await context.showWalletMnemonic({
           provider,
           prompter,
+          paths: runtimePaths,
         });
         return 0;
       }
@@ -255,6 +283,7 @@ export async function runWalletAdminCommand(
         const result = await context.unlockWallet({
           provider,
           unlockDurationMs: durationMs,
+          paths: runtimePaths,
         });
         if (parsed.outputMode === "json") {
           writeJsonValue(context.stdout, createMutationSuccessEnvelope(
@@ -321,6 +350,7 @@ export async function runWalletAdminCommand(
           databasePath: dbPath,
           provider,
           prompter,
+          paths: runtimePaths,
         });
         if (parsed.outputMode === "json") {
           writeJsonValue(context.stdout, createMutationSuccessEnvelope(
@@ -346,6 +376,7 @@ export async function runWalletAdminCommand(
           databasePath: dbPath,
           provider,
           prompter,
+          paths: runtimePaths,
         });
         if (parsed.outputMode === "json") {
           writeJsonValue(context.stdout, createMutationSuccessEnvelope(
@@ -368,6 +399,7 @@ export async function runWalletAdminCommand(
         const result = await context.lockWallet({
           dataDir,
           provider,
+          paths: runtimePaths,
         });
         if (parsed.outputMode === "preview-json") {
           writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
@@ -399,6 +431,7 @@ export async function runWalletAdminCommand(
           databasePath: dbPath,
           provider,
           assumeYes: parsed.assumeYes,
+          paths: runtimePaths,
         });
         if (parsed.outputMode === "preview-json") {
           writeJsonValue(context.stdout, createPreviewSuccessEnvelope(

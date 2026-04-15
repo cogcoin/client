@@ -38,7 +38,11 @@ import {
   isEnglishMnemonicWord,
   validateEnglishMnemonic,
 } from "./material.js";
-import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "./runtime.js";
+import {
+  deriveWalletRuntimePathsForSeed,
+  resolveWalletRuntimePathsForTesting,
+  type WalletRuntimePaths,
+} from "./runtime.js";
 import { requestMiningGenerationPreemption, type MiningPreemptionHandle } from "./mining/coordination.js";
 import { loadClientConfig } from "./mining/config.js";
 import { inspectMiningHookState } from "./mining/hooks.js";
@@ -57,6 +61,14 @@ import {
   saveWalletPendingInitializationState,
 } from "./state/pending-init.js";
 import { clearUnlockSession, loadUnlockSession, saveUnlockSession } from "./state/session.js";
+import {
+  addImportedWalletSeedRecord,
+  assertValidImportedWalletSeedName,
+  ensureMainWalletSeedIndexRecord,
+  findWalletSeedRecord,
+  loadWalletSeedIndex,
+  removeWalletSeedRecord,
+} from "./state/seed-index.js";
 import {
   createDefaultWalletSecretProvider,
   createWalletPendingInitSecretReference,
@@ -121,11 +133,18 @@ export interface WalletImportResult {
 }
 
 export interface WalletRestoreResult {
+  seedName?: string | null;
   walletRootId: string;
   fundingAddress: string;
   unlockUntilUnixMs: number;
   state: WalletStateV1;
   warnings?: string[];
+}
+
+export interface WalletDeleteResult {
+  seedName: string;
+  walletRootId: string;
+  deleted: boolean;
 }
 
 export interface WalletRepairResult {
@@ -236,7 +255,7 @@ async function clearPendingInitialization(
     resolvePendingInitializationStoragePaths(paths),
     {
       provider,
-      secretReference: createWalletPendingInitSecretReference(paths.stateRoot),
+      secretReference: createWalletPendingInitSecretReference(paths.walletStateRoot),
     },
   );
 }
@@ -262,7 +281,7 @@ async function loadOrCreatePendingInitializationMaterial(options: {
   }
 
   const material = generateWalletMaterial();
-  const secretReference = createWalletPendingInitSecretReference(options.paths.stateRoot);
+  const secretReference = createWalletPendingInitSecretReference(options.paths.walletStateRoot);
   const pendingState: WalletPendingInitializationStateV1 = {
     schemaVersion: 1,
     createdAtUnixMs: options.nowUnixMs,
@@ -701,6 +720,17 @@ async function confirmOverwriteIfNeeded(
   }
 }
 
+async function confirmYesNo(
+  prompter: WalletPrompter,
+  message: string,
+): Promise<void> {
+  const answer = (await prompter.prompt(message)).trim().toLowerCase();
+
+  if (answer !== "yes") {
+    throw new Error("wallet_delete_confirmation_required");
+  }
+}
+
 async function readManagedSnapshotTip(options: {
   dataDir: string;
   databasePath: string;
@@ -1081,6 +1111,21 @@ function createSilentNonInteractivePrompter(): WalletPrompter {
       return "";
     },
   };
+}
+
+function resolveMainWalletPaths(paths: WalletRuntimePaths): WalletRuntimePaths {
+  return deriveWalletRuntimePathsForSeed(paths, "main");
+}
+
+async function loadSharedWalletSeedIndex(
+  paths: WalletRuntimePaths,
+  nowUnixMs: number,
+) {
+  const mainPaths = resolveMainWalletPaths(paths);
+  return await loadWalletSeedIndex({
+    paths: mainPaths,
+    nowUnixMs,
+  });
 }
 
 function applyRepairStoppedMiningState(state: WalletStateV1): WalletStateV1 {
@@ -1664,6 +1709,11 @@ export async function initializeWallet(options: {
   const nowUnixMs = options.nowUnixMs ?? Date.now();
   const unlockDurationMs = options.unlockDurationMs ?? DEFAULT_UNLOCK_DURATION_MS;
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
+
+  if (paths.selectedSeedName !== "main") {
+    throw new Error("wallet_init_seed_not_supported");
+  }
+
   const controlLock = await acquireFileLock(paths.walletControlLockPath, {
     purpose: "wallet-init",
     walletRootId: null,
@@ -1744,6 +1794,11 @@ export async function initializeWallet(options: {
       },
     );
     await clearPendingInitialization(paths, provider);
+    await ensureMainWalletSeedIndexRecord({
+      paths: resolveMainWalletPaths(paths),
+      walletRootId,
+      nowUnixMs,
+    });
 
     return {
       walletRootId,
@@ -2045,6 +2100,11 @@ export async function importWallet(options: {
   const nowUnixMs = options.nowUnixMs ?? Date.now();
   const unlockDurationMs = options.unlockDurationMs ?? DEFAULT_UNLOCK_DURATION_MS;
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
+
+  if (paths.selectedSeedName !== "main") {
+    throw new Error("wallet_import_seed_not_supported");
+  }
+
   const controlLock = await acquireFileLock(paths.walletControlLockPath, {
     purpose: "wallet-import",
     walletRootId: null,
@@ -2135,6 +2195,11 @@ export async function importWallet(options: {
       databasePath: options.databasePath,
       walletRootId: importedState.walletRootId,
     }).then((daemon) => daemon.close());
+    await ensureMainWalletSeedIndexRecord({
+      paths: resolveMainWalletPaths(paths),
+      walletRootId: importedState.walletRootId,
+      nowUnixMs,
+    });
 
     return {
       archivePath: options.archivePath,
@@ -2166,30 +2231,31 @@ export async function restoreWalletFromMnemonic(options: {
   const nowUnixMs = options.nowUnixMs ?? Date.now();
   const unlockDurationMs = options.unlockDurationMs ?? DEFAULT_UNLOCK_DURATION_MS;
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
+  const seedName = assertValidImportedWalletSeedName(paths.selectedSeedName);
   const controlLock = await acquireFileLock(paths.walletControlLockPath, {
     purpose: "wallet-restore",
     walletRootId: null,
   });
 
   try {
-    const rawEnvelope = await loadRawWalletStateEnvelope({
-      primaryPath: paths.walletStatePath,
-      backupPath: paths.walletStateBackupPath,
-    });
-    const replacementStateExists = rawEnvelope !== null
-      || await pathExists(paths.walletStatePath)
-      || await pathExists(paths.walletStateBackupPath);
-    const replacementCoreWalletExists = await detectExistingManagedWalletReplica(options.dataDir);
+    const mainPaths = resolveMainWalletPaths(paths);
+    const seedIndex = await loadSharedWalletSeedIndex(paths, nowUnixMs);
+
+    if (findWalletSeedRecord(seedIndex, "main") === null) {
+      throw new Error("wallet_restore_requires_main_wallet");
+    }
+
+    if (findWalletSeedRecord(seedIndex, seedName) !== null) {
+      throw new Error("wallet_seed_name_exists");
+    }
+
+    await ensureWalletNotInitialized(paths, provider);
     let promptPhaseStarted = false;
     let mnemonicPhrase: string;
 
     try {
       promptPhaseStarted = true;
       mnemonicPhrase = await promptForRestoreMnemonic(options.prompter);
-
-      if (replacementStateExists || replacementCoreWalletExists) {
-        await confirmRestoreReplacement(options.prompter);
-      }
     } finally {
       if (promptPhaseStarted) {
         await options.prompter.clearSensitiveDisplay?.("restore-mnemonic-entry");
@@ -2197,100 +2263,169 @@ export async function restoreWalletFromMnemonic(options: {
     }
 
     await clearPendingInitialization(paths, provider);
+    const material = deriveWalletMaterialFromMnemonic(mnemonicPhrase);
+    const walletRootId = createWalletRootId();
+    const internalCoreWalletPassphrase = createInternalCoreWalletPassphrase();
+    const secretReference = createWalletSecretReference(walletRootId);
+    const secret = randomBytes(32);
+    await provider.storeSecret(secretReference.keyId, secret);
 
-    let previousWalletRootId = extractWalletRootIdHintFromWalletStateEnvelope(rawEnvelope?.envelope ?? null);
-    try {
-      const loaded = await loadWalletState({
-        primaryPath: paths.walletStatePath,
-        backupPath: paths.walletStateBackupPath,
-      }, {
-        provider,
-      });
-      previousWalletRootId = loaded.state.walletRootId;
-    } catch {
-      previousWalletRootId = previousWalletRootId ?? null;
-    }
-
-    const miningLock = await acquireFileLock(paths.miningControlLockPath, {
-      purpose: "wallet-restore",
-      walletRootId: previousWalletRootId,
+    const initialState = createInitialWalletState({
+      walletRootId,
+      nowUnixMs,
+      material,
+      internalCoreWalletPassphrase,
     });
 
-    try {
-      const warnings: string[] = [];
-      const material = deriveWalletMaterialFromMnemonic(mnemonicPhrase);
-      const walletRootId = createWalletRootId();
-      const internalCoreWalletPassphrase = createInternalCoreWalletPassphrase();
-      const secretReference = createWalletSecretReference(walletRootId);
-      const secret = randomBytes(32);
-      await provider.storeSecret(secretReference.keyId, secret);
-
-      const initialState = createInitialWalletState({
-        walletRootId,
-        nowUnixMs,
-        material,
-        internalCoreWalletPassphrase,
-      });
-
-      await clearUnlockSession(paths.walletUnlockSessionPath);
-      await clearWalletExplicitLock(paths.walletExplicitLockPath);
-      await saveWalletState(
-        {
-          primaryPath: paths.walletStatePath,
-          backupPath: paths.walletStateBackupPath,
-        },
-        initialState,
-        {
-          provider,
-          secretReference,
-        },
-      );
-
-      const restoredState = await recreateManagedCoreWalletReplica(
-        initialState,
+    await clearUnlockSession(paths.walletUnlockSessionPath);
+    await clearWalletExplicitLock(paths.walletExplicitLockPath);
+    await saveWalletState(
+      {
+        primaryPath: paths.walletStatePath,
+        backupPath: paths.walletStateBackupPath,
+      },
+      initialState,
+      {
         provider,
-        paths,
-        options.dataDir,
-        nowUnixMs,
-        {
-          attachService: options.attachService,
-          rpcFactory: options.rpcFactory,
-        },
-      );
-      const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
-      await clearWalletExplicitLock(paths.walletExplicitLockPath);
-      await saveUnlockSession(
-        paths.walletUnlockSessionPath,
-        createUnlockSession(restoredState, unlockUntilUnixMs, secretReference.keyId, nowUnixMs),
-        {
-          provider,
-          secretReference,
-        },
-      );
-      await clearPendingInitialization(paths, provider);
+        secretReference,
+      },
+    );
 
-      if (previousWalletRootId !== null && previousWalletRootId !== walletRootId) {
-        try {
-          await clearPreviousManagedWalletRuntime({
-            dataDir: options.dataDir,
-            walletRootId: previousWalletRootId,
-          });
-        } catch (error) {
-          warnings.push(formatRestoreCleanupWarning(error));
-        }
-        await provider.deleteSecret(createWalletSecretReference(previousWalletRootId).keyId).catch(() => undefined);
-      }
+    const restoredState = await recreateManagedCoreWalletReplica(
+      initialState,
+      provider,
+      paths,
+      options.dataDir,
+      nowUnixMs,
+      {
+        attachService: options.attachService,
+        rpcFactory: options.rpcFactory,
+      },
+    );
+    const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
+    await clearWalletExplicitLock(paths.walletExplicitLockPath);
+    await saveUnlockSession(
+      paths.walletUnlockSessionPath,
+      createUnlockSession(restoredState, unlockUntilUnixMs, secretReference.keyId, nowUnixMs),
+      {
+        provider,
+        secretReference,
+      },
+    );
+    await clearPendingInitialization(paths, provider);
+    await addImportedWalletSeedRecord({
+      paths: mainPaths,
+      seedName,
+      walletRootId,
+      nowUnixMs,
+    });
 
-      return {
-        walletRootId,
-        fundingAddress: restoredState.funding.address,
-        unlockUntilUnixMs,
-        state: restoredState,
-        warnings,
-      };
-    } finally {
-      await miningLock.release();
+    return {
+      seedName,
+      walletRootId,
+      fundingAddress: restoredState.funding.address,
+      unlockUntilUnixMs,
+      state: restoredState,
+      warnings: [],
+    };
+  } finally {
+    await controlLock.release();
+  }
+}
+
+export async function deleteImportedWalletSeed(options: {
+  dataDir: string;
+  provider?: WalletSecretProvider;
+  prompter: WalletPrompter;
+  assumeYes?: boolean;
+  nowUnixMs?: number;
+  paths?: WalletRuntimePaths;
+  attachService?: typeof attachOrStartManagedBitcoindService;
+  probeBitcoindService?: typeof probeManagedBitcoindService;
+  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
+}): Promise<WalletDeleteResult> {
+  const provider = options.provider ?? createDefaultWalletSecretProvider();
+  const nowUnixMs = options.nowUnixMs ?? Date.now();
+  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
+  if ((paths.selectedSeedName ?? "main") === "main") {
+    throw new Error("wallet_delete_main_not_supported");
+  }
+  const seedName = assertValidImportedWalletSeedName(paths.selectedSeedName);
+  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
+    purpose: "wallet-delete",
+    walletRootId: null,
+  });
+
+  try {
+    const mainPaths = resolveMainWalletPaths(paths);
+    const seedIndex = await loadSharedWalletSeedIndex(paths, nowUnixMs);
+    const seedRecord = findWalletSeedRecord(seedIndex, seedName);
+
+    if (seedRecord === null) {
+      throw new Error("wallet_seed_not_found");
     }
+
+    if (seedRecord.kind !== "imported") {
+      throw new Error("wallet_delete_main_not_supported");
+    }
+
+    if (!options.assumeYes) {
+      await confirmYesNo(
+        options.prompter,
+        `Delete imported seed "${seedName}" and release its local wallet artifacts? Type yes to continue: `,
+      );
+    }
+
+    const probeManagedBitcoind = options.probeBitcoindService ?? probeManagedBitcoindService;
+    const managedBitcoindProbe = await probeManagedBitcoind({
+      dataDir: options.dataDir,
+      chain: "main",
+      startHeight: 0,
+    }).catch(() => ({
+      compatibility: "unreachable" as const,
+      status: null,
+      error: null,
+    }));
+
+    if (managedBitcoindProbe.compatibility !== "compatible" && managedBitcoindProbe.compatibility !== "unreachable") {
+      throw new Error(managedBitcoindProbe.error ?? "managed_bitcoind_protocol_error");
+    }
+
+    if (managedBitcoindProbe.compatibility === "compatible") {
+      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
+        dataDir: options.dataDir,
+        chain: "main",
+        startHeight: 0,
+      });
+      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
+      const walletName = sanitizeWalletName(seedRecord.walletRootId);
+
+      if (rpc.unloadWallet != null) {
+        await rpc.unloadWallet(walletName, false).catch(() => undefined);
+      }
+    }
+
+    await clearUnlockSession(paths.walletUnlockSessionPath).catch(() => undefined);
+    await clearWalletExplicitLock(paths.walletExplicitLockPath).catch(() => undefined);
+    await clearPendingInitialization(paths, provider).catch(() => undefined);
+    await provider.deleteSecret(createWalletSecretReference(seedRecord.walletRootId).keyId).catch(() => undefined);
+    await rm(paths.walletStateRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(paths.walletRuntimeRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(join(options.dataDir, "wallets", sanitizeWalletName(seedRecord.walletRootId)), {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
+    await removeWalletSeedRecord({
+      paths: mainPaths,
+      seedName,
+      nowUnixMs,
+    });
+
+    return {
+      seedName,
+      walletRootId: seedRecord.walletRootId,
+      deleted: true,
+    };
   } finally {
     await controlLock.release();
   }

@@ -111,7 +111,7 @@ export async function runWalletMutationCommand(
   parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
 ): Promise<number> {
-  const runtimePaths = context.resolveWalletRuntimePaths();
+  const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
   const stopWatcher = createOwnedLockCleanupSignalWatcher(context.signalSource, context.forceExit, [
     runtimePaths.walletControlLockPath,
     runtimePaths.miningControlLockPath,
@@ -138,6 +138,7 @@ export async function runWalletMutationCommand(
           provider: context.walletSecretProvider,
           prompter,
           assumeYes: parsed.assumeYes,
+          paths: runtimePaths,
         });
         const nextSteps = result.cleared
           ? workflowMutationNextSteps([`cogcoin show ${result.domainName}`, `cogcoin anchor ${result.domainName}`])
@@ -170,6 +171,7 @@ export async function runWalletMutationCommand(
           databasePath: dbPath,
           provider: context.walletSecretProvider,
           prompter,
+          paths: runtimePaths,
         });
         const nextSteps = getAnchorNextSteps(result.domainName);
         return writeMutationCommandSuccess(parsed, context, {
@@ -205,6 +207,7 @@ export async function runWalletMutationCommand(
         provider: context.walletSecretProvider,
         prompter,
         assumeYes: parsed.assumeYes,
+        paths: runtimePaths,
       });
       const nextSteps = getRegisterNextSteps(result.domainName, result.registerKind);
       return writeMutationCommandSuccess(parsed, context, {
@@ -243,6 +246,7 @@ export async function runWalletMutationCommand(
         provider: context.walletSecretProvider,
         prompter,
         assumeYes: parsed.assumeYes,
+        paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildDomainMarketMutationData(result, {
@@ -280,6 +284,7 @@ export async function runWalletMutationCommand(
         provider: context.walletSecretProvider,
         prompter,
         assumeYes: parsed.assumeYes,
+        paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildDomainMarketMutationData(result, {
@@ -319,6 +324,7 @@ export async function runWalletMutationCommand(
           provider: context.walletSecretProvider,
           prompter,
           assumeYes: parsed.assumeYes,
+          paths: runtimePaths,
         })
         : await context.clearDomainEndpoint({
           domainName: parsed.args[0]!,
@@ -327,6 +333,7 @@ export async function runWalletMutationCommand(
           provider: context.walletSecretProvider,
           prompter,
           assumeYes: parsed.assumeYes,
+          paths: runtimePaths,
         });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildDomainAdminMutationData(result, {
@@ -362,6 +369,7 @@ export async function runWalletMutationCommand(
           provider: context.walletSecretProvider,
           prompter,
           assumeYes: parsed.assumeYes,
+          paths: runtimePaths,
         })
         : await context.clearDomainDelegate({
           domainName: parsed.args[0]!,
@@ -370,6 +378,7 @@ export async function runWalletMutationCommand(
           provider: context.walletSecretProvider,
           prompter,
           assumeYes: parsed.assumeYes,
+          paths: runtimePaths,
         });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildDomainAdminMutationData(result, {
@@ -405,6 +414,7 @@ export async function runWalletMutationCommand(
           provider: context.walletSecretProvider,
           prompter,
           assumeYes: parsed.assumeYes,
+          paths: runtimePaths,
         })
         : await context.clearDomainMiner({
           domainName: parsed.args[0]!,
@@ -413,6 +423,7 @@ export async function runWalletMutationCommand(
           provider: context.walletSecretProvider,
           prompter,
           assumeYes: parsed.assumeYes,
+          paths: runtimePaths,
         });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildDomainAdminMutationData(result, {
@@ -446,6 +457,7 @@ export async function runWalletMutationCommand(
         provider: context.walletSecretProvider,
         prompter,
         assumeYes: parsed.assumeYes,
+        paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildDomainAdminMutationData(result, {
@@ -486,6 +498,7 @@ export async function runWalletMutationCommand(
         provider: context.walletSecretProvider,
         prompter,
         assumeYes: parsed.assumeYes,
+        paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildFieldMutationData(result),
@@ -523,6 +536,7 @@ export async function runWalletMutationCommand(
         provider: context.walletSecretProvider,
         prompter,
         assumeYes: parsed.assumeYes,
+        paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildFieldMutationData(result),
@@ -554,6 +568,7 @@ export async function runWalletMutationCommand(
         provider: context.walletSecretProvider,
         prompter,
         assumeYes: parsed.assumeYes,
+        paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildFieldMutationData(result),
@@ -585,6 +600,7 @@ export async function runWalletMutationCommand(
         provider: context.walletSecretProvider,
         prompter,
         assumeYes: parsed.assumeYes,
+        paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildCogMutationData(result, {
@@ -624,6 +640,7 @@ export async function runWalletMutationCommand(
         provider: context.walletSecretProvider,
         prompter,
         assumeYes: parsed.assumeYes,
+        paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildCogMutationData(result, {
@@ -664,6 +681,7 @@ export async function runWalletMutationCommand(
         databasePath: dbPath,
         provider: context.walletSecretProvider,
         prompter,
+        paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildCogMutationData(result, {
@@ -698,6 +716,7 @@ export async function runWalletMutationCommand(
         databasePath: dbPath,
         provider: context.walletSecretProvider,
         prompter,
+        paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildCogMutationData(result, {
@@ -737,6 +756,7 @@ export async function runWalletMutationCommand(
           provider: context.walletSecretProvider,
           prompter,
           assumeYes: parsed.assumeYes,
+          paths: runtimePaths,
         })
         : await context.revokeReputation({
           sourceDomainName: parsed.args[0]!,
@@ -748,6 +768,7 @@ export async function runWalletMutationCommand(
           provider: context.walletSecretProvider,
           prompter,
           assumeYes: parsed.assumeYes,
+          paths: runtimePaths,
         });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildReputationMutationData(result),
@@ -780,6 +801,7 @@ export async function runWalletMutationCommand(
         provider: context.walletSecretProvider,
         prompter,
         assumeYes: parsed.assumeYes,
+        paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
         data: buildDomainMarketMutationData(result, {
