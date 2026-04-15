@@ -9,6 +9,7 @@ import type {
   RpcDecodedPsbt,
   RpcListUnspentEntry,
   RpcTransaction,
+  RpcVin,
 } from "../../bitcoind/types.js";
 import { acquireFileLock } from "../fs/lock.js";
 import type { WalletPrompter } from "../lifecycle.js";
@@ -68,6 +69,8 @@ interface AnchorTxPlan {
   expectedReplacementAnchorScriptHex: string | null;
   expectedReplacementAnchorValueSats: bigint | null;
   allowedFundingScriptPubKeyHex: string;
+  requiredSenderOutpoint: OutpointRecord | null;
+  requiredProvisionalOutpoint: OutpointRecord | null;
   errorPrefix: string;
 }
 
@@ -778,6 +781,8 @@ function buildTx1Plan(options: {
       expectedReplacementAnchorScriptHex: null,
       expectedReplacementAnchorValueSats: null,
       allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+      requiredSenderOutpoint: null,
+      requiredProvisionalOutpoint: null,
       errorPrefix: "wallet_anchor_tx1",
     };
   }
@@ -814,6 +819,8 @@ function buildTx1Plan(options: {
     expectedReplacementAnchorScriptHex: options.operation.sourceSender.scriptPubKeyHex,
     expectedReplacementAnchorValueSats: BigInt(options.state.anchorValueSats),
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    requiredSenderOutpoint: options.operation.sourceAnchorOutpoint,
+    requiredProvisionalOutpoint: null,
     errorPrefix: "wallet_anchor_tx1",
   };
 }
@@ -872,8 +879,65 @@ function buildTx2Plan(options: {
     expectedReplacementAnchorScriptHex: null,
     expectedReplacementAnchorValueSats: null,
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    requiredSenderOutpoint: null,
+    requiredProvisionalOutpoint: {
+      txid: provisional.txid,
+      vout: provisional.vout,
+    },
     errorPrefix: "wallet_anchor_tx2",
   };
+}
+
+function getDecodedInputScriptPubKeyHex(input: RpcVin): string | null {
+  return input.prevout?.scriptPubKey?.hex ?? null;
+}
+
+function getDecodedInputVout(input: RpcVin): number | null {
+  const vout = (input as RpcVin & { vout?: unknown }).vout;
+  return typeof vout === "number" ? vout : null;
+}
+
+function inputMatchesOutpoint(input: RpcVin, outpoint: OutpointRecord): boolean {
+  return input.txid === outpoint.txid && getDecodedInputVout(input) === outpoint.vout;
+}
+
+function assertNoUnexpectedAnchorInputs(
+  inputs: RpcVin[],
+  allowedScripts: Set<string>,
+  unexpectedInputErrorCode: string,
+): void {
+  for (const input of inputs) {
+    const scriptPubKeyHex = getDecodedInputScriptPubKeyHex(input);
+    if (scriptPubKeyHex === null || !allowedScripts.has(scriptPubKeyHex)) {
+      throw new Error(unexpectedInputErrorCode);
+    }
+  }
+}
+
+function assertRequiredAnchorInputPresentOnce(options: {
+  inputs: RpcVin[];
+  requiredOutpoint: OutpointRecord;
+  requiredScriptPubKeyHex: string;
+  mismatchErrorCode: string;
+}): void {
+  let matches = 0;
+
+  for (const input of options.inputs) {
+    const scriptPubKeyHex = getDecodedInputScriptPubKeyHex(input);
+    if (scriptPubKeyHex !== options.requiredScriptPubKeyHex) {
+      continue;
+    }
+
+    if (!inputMatchesOutpoint(input, options.requiredOutpoint)) {
+      throw new Error(options.mismatchErrorCode);
+    }
+
+    matches += 1;
+  }
+
+  if (matches !== 1) {
+    throw new Error(options.mismatchErrorCode);
+  }
 }
 
 function validateTx1Draft(
@@ -884,14 +948,23 @@ function validateTx1Draft(
   const inputs = decoded.tx.vin;
   const outputs = decoded.tx.vout;
 
-  if (inputs.length === 0 || inputs[0]?.prevout?.scriptPubKey?.hex !== plan.sender.scriptPubKeyHex) {
+  if (inputs.length === 0) {
     throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
   }
 
-  for (let index = 1; index < inputs.length; index += 1) {
-    if (inputs[index]?.prevout?.scriptPubKey?.hex !== plan.allowedFundingScriptPubKeyHex) {
-      throw new Error(`${plan.errorPrefix}_unexpected_funding_input`);
-    }
+  const allowedScripts = new Set<string>([plan.allowedFundingScriptPubKeyHex]);
+  if (plan.requiredSenderOutpoint !== null) {
+    allowedScripts.add(plan.sender.scriptPubKeyHex);
+  }
+  assertNoUnexpectedAnchorInputs(inputs, allowedScripts, `${plan.errorPrefix}_unexpected_funding_input`);
+
+  if (plan.requiredSenderOutpoint !== null) {
+    assertRequiredAnchorInputPresentOnce({
+      inputs,
+      requiredOutpoint: plan.requiredSenderOutpoint,
+      requiredScriptPubKeyHex: plan.sender.scriptPubKeyHex,
+      mismatchErrorCode: `${plan.errorPrefix}_sender_input_mismatch`,
+    });
   }
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
@@ -941,15 +1014,21 @@ function validateTx2Draft(
   const inputs = decoded.tx.vin;
   const outputs = decoded.tx.vout;
 
-  if (inputs.length === 0 || inputs[0]?.prevout?.scriptPubKey?.hex !== plan.sender.scriptPubKeyHex) {
+  if (inputs.length === 0 || plan.requiredProvisionalOutpoint === null) {
     throw new Error(`${plan.errorPrefix}_provisional_input_mismatch`);
   }
 
-  for (let index = 1; index < inputs.length; index += 1) {
-    if (inputs[index]?.prevout?.scriptPubKey?.hex !== plan.allowedFundingScriptPubKeyHex) {
-      throw new Error(`${plan.errorPrefix}_unexpected_funding_input`);
-    }
-  }
+  assertNoUnexpectedAnchorInputs(
+    inputs,
+    new Set<string>([plan.sender.scriptPubKeyHex, plan.allowedFundingScriptPubKeyHex]),
+    `${plan.errorPrefix}_unexpected_funding_input`,
+  );
+  assertRequiredAnchorInputPresentOnce({
+    inputs,
+    requiredOutpoint: plan.requiredProvisionalOutpoint,
+    requiredScriptPubKeyHex: plan.sender.scriptPubKeyHex,
+    mismatchErrorCode: `${plan.errorPrefix}_provisional_input_mismatch`,
+  });
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
@@ -992,6 +1071,9 @@ async function buildTx1(options: {
     validateFundedDraft: validateTx1Draft,
     finalizeErrorCode: "wallet_anchor_tx1_finalize_failed",
     mempoolRejectPrefix: "wallet_anchor_tx1_mempool_rejected",
+    builderOptions: {
+      addInputs: false,
+    },
   });
 }
 
@@ -1008,6 +1090,7 @@ async function buildTx2(options: {
     finalizeErrorCode: "wallet_anchor_tx2_finalize_failed",
     mempoolRejectPrefix: "wallet_anchor_tx2_mempool_rejected",
     builderOptions: {
+      addInputs: false,
       includeUnsafe: true,
       minConf: 0,
     },
