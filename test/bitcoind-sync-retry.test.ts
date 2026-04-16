@@ -265,6 +265,47 @@ test("syncToTip retries a transient managed RPC timeout during bitcoin sync poll
   assert.equal(phases.includes("error"), false);
 });
 
+test("syncToTip keeps the progress phase on cogcoin_sync while Bitcoin advances during replay", async () => {
+  const blockchainInfoSequence = [
+    createBlockchainInfo(100),
+    createBlockchainInfo(101),
+    createBlockchainInfo(101),
+    createBlockchainInfo(101),
+  ];
+  let blockchainInfoIndex = 0;
+
+  const { dependencies, appliedHeights, phases } = createSyncDependencies({
+    startHeight: 100,
+    async getBlockchainInfo() {
+      const info = blockchainInfoSequence[Math.min(blockchainInfoIndex, blockchainInfoSequence.length - 1)]!;
+      blockchainInfoIndex += 1;
+      return info;
+    },
+    async getBlock(hash: string) {
+      const height = Number.parseInt(hash.slice(0, 2), 16);
+      const previousHeight = height - 1;
+      return createRpcBlock(
+        height,
+        hash,
+        previousHeight >= 100 ? `${previousHeight.toString(16).padStart(2, "0")}`.repeat(32) : undefined,
+      );
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.deepEqual(appliedHeights, [100, 101]);
+  assert.equal(result.endingHeight, 101);
+  assert.equal(phases.includes("bitcoin_sync"), false);
+  assert.deepEqual(phases, [
+    "cogcoin_sync",
+    "cogcoin_sync",
+    "cogcoin_sync",
+    "cogcoin_sync",
+    "complete",
+  ]);
+});
+
 test("syncToTip stays idle while Bitcoin Core remains below the Cogcoin genesis height", async () => {
   const genesis = await loadBundledGenesisParameters();
   const { dependencies, appliedHeights, phases } = createSyncDependencies({

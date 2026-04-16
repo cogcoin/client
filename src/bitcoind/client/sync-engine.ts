@@ -81,6 +81,25 @@ async function setBitcoinSyncProgress(
   });
 }
 
+function resolveIndexedHeightForReplayWindow(
+  tip: Awaited<ReturnType<Client["getTip"]>>,
+  startHeight: number,
+): number {
+  return tip?.height ?? (startHeight - 1);
+}
+
+function hasPendingCogcoinReplay(
+  tip: Awaited<ReturnType<Client["getTip"]>>,
+  startHeight: number,
+  bestHeight: number,
+): boolean {
+  if (bestHeight < startHeight) {
+    return false;
+  }
+
+  return resolveIndexedHeightForReplayWindow(tip, startHeight) < bestHeight;
+}
+
 async function setRetryingProgress(
   dependencies: Pick<SyncEngineDependencies, "progress">,
   error: unknown,
@@ -260,7 +279,11 @@ export async function syncToTip(
       const cappedBestHeight = dependencies.targetHeightCap === null || dependencies.targetHeightCap === undefined
         ? startInfo.blocks
         : Math.min(startInfo.blocks, dependencies.targetHeightCap);
-      await setBitcoinSyncProgress(dependencies, startInfo, dependencies.targetHeightCap ?? null);
+      const tipBeforePass = await dependencies.client.getTip();
+
+      if (!hasPendingCogcoinReplay(tipBeforePass, dependencies.startHeight, cappedBestHeight)) {
+        await setBitcoinSyncProgress(dependencies, startInfo, dependencies.targetHeightCap ?? null);
+      }
 
       const pass = await syncAgainstBestHeight(dependencies, cappedBestHeight, runRpc);
       aggregate.appliedBlocks += pass.appliedBlocks;
@@ -303,11 +326,11 @@ export async function syncToTip(
         return aggregate;
       }
 
-      await setBitcoinSyncProgress(dependencies, endInfo, dependencies.targetHeightCap ?? null);
-
       if (endBestHeight >= dependencies.startHeight && finalTip?.height !== endBestHeight) {
         continue;
       }
+
+      await setBitcoinSyncProgress(dependencies, endInfo, dependencies.targetHeightCap ?? null);
 
       await sleep(DEFAULT_SYNC_CATCH_UP_POLL_MS, dependencies.abortSignal);
     }
