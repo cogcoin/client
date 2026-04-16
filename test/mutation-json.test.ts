@@ -27,6 +27,28 @@ test("mutation and preview builders keep register and domain-market resolved blo
     previousFamilyStatus: "draft" as const,
     previousFamilyStep: "reserved" as const,
     releasedDedicatedIndex: 2,
+    forced: true,
+    clearedReservedFamilies: 1,
+    canceledActiveFamilies: 1,
+    releasedDedicatedIndices: [2, 4],
+    affectedFamilies: [
+      {
+        familyId: "anchor-family-1",
+        previousStatus: "draft" as const,
+        previousStep: "reserved" as const,
+        action: "cleared" as const,
+      },
+      {
+        familyId: "anchor-family-2",
+        previousStatus: "live" as const,
+        previousStep: "tx1" as const,
+        action: "canceled" as const,
+      },
+    ],
+    previousLocalAnchorIntent: "tx1-live" as const,
+    previousDedicatedIndex: 2,
+    resultingLocalAnchorIntent: "none" as const,
+    resultingDedicatedIndex: null,
   };
   const anchorClearMutation = buildAnchorClearMutationData(anchorClearResult);
   const anchorClearPreview = buildAnchorClearPreviewData(anchorClearResult);
@@ -36,7 +58,7 @@ test("mutation and preview builders keep register and domain-market resolved blo
     stateChange: {
       kind: "anchor-clear",
       before: {
-        localAnchorIntent: "reserved",
+        localAnchorIntent: "tx1-live",
         dedicatedIndex: 2,
         familyStatus: "draft",
         familyStep: "reserved",
@@ -54,6 +76,28 @@ test("mutation and preview builders keep register and domain-market resolved blo
       previousFamilyStatus: "draft",
       previousFamilyStep: "reserved",
       releasedDedicatedIndex: 2,
+      forced: true,
+      clearedReservedFamilies: 1,
+      canceledActiveFamilies: 1,
+      releasedDedicatedIndices: [2, 4],
+      affectedFamilies: [
+        {
+          familyId: "anchor-family-1",
+          previousStatus: "draft",
+          previousStep: "reserved",
+          action: "cleared",
+        },
+        {
+          familyId: "anchor-family-2",
+          previousStatus: "live",
+          previousStep: "tx1",
+          action: "canceled",
+        },
+      ],
+      previousLocalAnchorIntent: "tx1-live",
+      previousDedicatedIndex: 2,
+      resultingLocalAnchorIntent: "none",
+      resultingDedicatedIndex: null,
     },
   });
 

@@ -822,6 +822,7 @@ test("parseCliArgs handles commands and common flags", () => {
     seedName: null,
     unlockFor: null,
     assumeYes: false,
+    force: false,
     forceRace: false,
     anchorMessage: null,
     transferTarget: null,
@@ -922,6 +923,12 @@ test("parseCliArgs handles wallet status and field inspection commands", () => {
   assert.equal(anchorClear.command, "anchor-clear");
   assert.deepEqual(anchorClear.args, ["weatherbot"]);
   assert.equal(anchorClear.assumeYes, true);
+  assert.equal(anchorClear.force, false);
+
+  const anchorClearForce = parseCliArgs(["anchor", "clear", "weatherbot", "--force"]);
+  assert.equal(anchorClearForce.command, "anchor-clear");
+  assert.deepEqual(anchorClearForce.args, ["weatherbot"]);
+  assert.equal(anchorClearForce.force, true);
 
   const domainAnchor = parseCliArgs(["domain", "anchor", "alpha-child"]);
   assert.equal(domainAnchor.command, "domain-anchor");
@@ -930,6 +937,7 @@ test("parseCliArgs handles wallet status and field inspection commands", () => {
   const domainAnchorClear = parseCliArgs(["domain", "anchor", "clear", "alpha-child"]);
   assert.equal(domainAnchorClear.command, "domain-anchor-clear");
   assert.deepEqual(domainAnchorClear.args, ["alpha-child"]);
+  assert.equal(domainAnchorClear.force, false);
 
   const transfer = parseCliArgs(["transfer", "alpha", "--to", "spk:00141111111111111111111111111111111111111111"]);
   assert.equal(transfer.command, "transfer");
@@ -3133,21 +3141,99 @@ test("anchor clear dispatches through the wallet mutation hook", async () => {
     clearPendingAnchor: async (options) => {
       assert.equal(options.domainName, "weatherbot");
       assert.equal(options.assumeYes, true);
+      assert.equal(options.force, false);
       return {
         domainName: options.domainName,
         cleared: true,
         previousFamilyStatus: "draft",
         previousFamilyStep: "reserved",
         releasedDedicatedIndex: 2,
+        forced: false,
+        clearedReservedFamilies: 1,
+        canceledActiveFamilies: 0,
+        releasedDedicatedIndices: [2],
+        affectedFamilies: [
+          {
+            familyId: "anchor-family-1",
+            previousStatus: "draft",
+            previousStep: "reserved",
+            action: "cleared",
+          },
+        ],
+        previousLocalAnchorIntent: "reserved",
+        previousDedicatedIndex: 2,
+        resultingLocalAnchorIntent: "none",
+        resultingDedicatedIndex: null,
       };
     },
   });
 
   assert.equal(code, 0);
   assert.match(stdout.toString(), /Pending anchor cleared/);
+  assert.match(stdout.toString(), /Cleared reserved families: 1/);
+  assert.match(stdout.toString(), /Canceled active families: 0/);
   assert.match(stdout.toString(), /Released dedicated index: 2/);
   assert.match(stdout.toString(), /Next step: cogcoin anchor weatherbot/);
   assert.doesNotMatch(stdout.toString(), /View at: https:\/\/mempool\.space\/tx\//);
+});
+
+test("anchor clear --force dispatches through the wallet mutation hook", async () => {
+  const stdout = new MemoryStream();
+  const code = await runCli(["anchor", "clear", "weatherbot", "--force", "--yes"], {
+    stdout,
+    stderr: new MemoryStream(),
+    walletSecretProvider: {} as never,
+    createPrompter: () => ({
+      isInteractive: true,
+      writeLine() {},
+      async prompt() {
+        return "y";
+      },
+    }),
+    clearPendingAnchor: async (options) => {
+      assert.equal(options.domainName, "weatherbot");
+      assert.equal(options.assumeYes, true);
+      assert.equal(options.force, true);
+      return {
+        domainName: options.domainName,
+        cleared: true,
+        previousFamilyStatus: "live",
+        previousFamilyStep: "tx1",
+        releasedDedicatedIndex: 2,
+        forced: true,
+        clearedReservedFamilies: 1,
+        canceledActiveFamilies: 1,
+        releasedDedicatedIndices: [2, 4],
+        affectedFamilies: [
+          {
+            familyId: "anchor-family-1",
+            previousStatus: "draft",
+            previousStep: "reserved",
+            action: "cleared",
+          },
+          {
+            familyId: "anchor-family-2",
+            previousStatus: "live",
+            previousStep: "tx1",
+            action: "canceled",
+          },
+        ],
+        previousLocalAnchorIntent: "tx1-live",
+        previousDedicatedIndex: 2,
+        resultingLocalAnchorIntent: "none",
+        resultingDedicatedIndex: null,
+      };
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.toString(), /Pending anchor workflow canceled/);
+  assert.match(stdout.toString(), /Forced: yes/);
+  assert.match(stdout.toString(), /Cleared reserved families: 1/);
+  assert.match(stdout.toString(), /Canceled active families: 1/);
+  assert.match(stdout.toString(), /Released dedicated indices: 2, 4/);
+  assert.match(stdout.toString(), /Next step: cogcoin show weatherbot/);
+  assert.doesNotMatch(stdout.toString(), /Next step: cogcoin anchor weatherbot/);
 });
 
 test("anchor clear json output reports noop results cleanly", async () => {
@@ -3169,6 +3255,15 @@ test("anchor clear json output reports noop results cleanly", async () => {
       previousFamilyStatus: null,
       previousFamilyStep: null,
       releasedDedicatedIndex: null,
+      forced: false,
+      clearedReservedFamilies: 0,
+      canceledActiveFamilies: 0,
+      releasedDedicatedIndices: [],
+      affectedFamilies: [],
+      previousLocalAnchorIntent: "none",
+      previousDedicatedIndex: null,
+      resultingLocalAnchorIntent: "none",
+      resultingDedicatedIndex: null,
     }),
   });
 
@@ -3180,6 +3275,8 @@ test("anchor clear json output reports noop results cleanly", async () => {
       state: {
         domainName: string;
         cleared: boolean;
+        forced: boolean;
+        releasedDedicatedIndices: number[];
       };
     };
   };
@@ -3187,6 +3284,8 @@ test("anchor clear json output reports noop results cleanly", async () => {
   assert.equal(envelope.data.resultType, "state-change");
   assert.equal(envelope.data.state.domainName, "weatherbot");
   assert.equal(envelope.data.state.cleared, false);
+  assert.equal(envelope.data.state.forced, false);
+  assert.deepEqual(envelope.data.state.releasedDedicatedIndices, []);
 });
 
 test("anchor clear surfaces repair guidance for inconsistent local state", async () => {
@@ -3210,6 +3309,29 @@ test("anchor clear surfaces repair guidance for inconsistent local state", async
   assert.equal(code, 5);
   assert.match(stderr.toString(), /Pending anchor state is inconsistent/);
   assert.match(stderr.toString(), /cogcoin repair/);
+});
+
+test("anchor clear surfaces force guidance when same-domain active families remain", async () => {
+  const stderr = new MemoryStream();
+  const code = await runCli(["anchor", "clear", "weatherbot", "--yes"], {
+    stdout: new MemoryStream(),
+    stderr,
+    walletSecretProvider: {} as never,
+    createPrompter: () => ({
+      isInteractive: true,
+      writeLine() {},
+      async prompt() {
+        return "y";
+      },
+    }),
+    clearPendingAnchor: async () => {
+      throw new Error("wallet_anchor_clear_force_required_weatherbot");
+    },
+  });
+
+  assert.equal(code, 5);
+  assert.match(stderr.toString(), /requires forced local cancellation/);
+  assert.match(stderr.toString(), /cogcoin anchor clear weatherbot --force/);
 });
 
 test("subdomain anchors keep the show hint without mining follow-through", async () => {

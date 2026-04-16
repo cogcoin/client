@@ -182,6 +182,7 @@ export interface ParsedCliArgs {
   seedName: string | null;
   unlockFor: string | null;
   assumeYes: boolean;
+  force: boolean;
   forceRace: boolean;
   anchorMessage: string | null;
   transferTarget: string | null;

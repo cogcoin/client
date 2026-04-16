@@ -721,6 +721,15 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode.startsWith("wallet_anchor_clear_force_required_")) {
+    const domainName = errorCode.slice("wallet_anchor_clear_force_required_".length) || "<domain>";
+    return {
+      what: "Pending anchor requires forced local cancellation.",
+      why: "The wallet found same-domain anchor families beyond the local-only reserved stage, so a plain clear would not fully clean up the local anchor workflow state.",
+      next: `Run \`cogcoin anchor clear ${domainName} --force\` to cancel the local anchor workflow state for that domain.`,
+    };
+  }
+
   if (errorCode.startsWith("wallet_anchor_clear_pending_first_")) {
     const domainName = errorCode.slice("wallet_anchor_clear_pending_first_".length) || "<domain>";
     return {
@@ -1557,6 +1566,7 @@ function createSchemaProbe(command: CommandName | null): ParsedCliArgs {
     seedName: null,
     unlockFor: null,
     assumeYes: false,
+    force: false,
     forceRace: false,
     anchorMessage: null,
     transferTarget: null,

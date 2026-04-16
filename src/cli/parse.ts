@@ -35,7 +35,7 @@ Commands:
   mine status             Show mining control-plane health and readiness
   mine log                Show recent mining control-plane events
   anchor <domain>         Anchor an owned unanchored domain with the Tx1/Tx2 family
-  anchor clear <domain>   Clear a local-only pending anchor reservation before broadcast
+  anchor clear <domain>   Clear same-domain local pending anchor state; add --force to cancel active local workflow too
   register <domain> [--from <identity>]
                          Register a root domain or subdomain
   transfer <domain> --to <btc-target>
@@ -116,6 +116,7 @@ Options:
   --output <mode>  Output mode: text, json, or preview-json
   --progress <mode> Progress output mode: auto, tty, or none
   --seed <name>    Select an imported wallet seed for wallet-aware commands
+  --force          Cancel same-domain active anchor workflow during anchor clear
   --force-race      Allow a visible root registration race
   --yes             Approve eligible plain yes/no mutation confirmations non-interactively
   --help            Show help
@@ -279,6 +280,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   let seedName: string | null = null;
   let unlockFor: string | null = null;
   let assumeYes = false;
+  let force = false;
   let forceRace = false;
   let anchorMessage: string | null = null;
   let transferTarget: string | null = null;
@@ -596,6 +598,11 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
     if (token === "--yes") {
       assumeYes = true;
+      continue;
+    }
+
+    if (token === "--force") {
+      force = true;
       continue;
     }
 
@@ -1197,6 +1204,10 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_force_race_not_supported_for_command");
   }
 
+  if (force && command !== "anchor-clear" && command !== "domain-anchor-clear") {
+    throw new Error("cli_force_not_supported_for_command");
+  }
+
   if (anchorMessage !== null && command !== "anchor" && command !== "domain-anchor") {
     throw new Error("cli_message_not_supported_for_command");
   }
@@ -1376,6 +1387,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     seedName,
     unlockFor,
     assumeYes,
+    force,
     forceRace,
     anchorMessage,
     transferTarget,

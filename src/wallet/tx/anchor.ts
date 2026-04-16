@@ -141,11 +141,19 @@ export interface ClearPendingAnchorOptions {
   provider?: WalletSecretProvider;
   prompter: WalletPrompter;
   assumeYes?: boolean;
+  force?: boolean;
   nowUnixMs?: number;
   paths?: WalletRuntimePaths;
   openReadContext?: typeof openWalletReadContext;
   attachService?: typeof attachOrStartManagedBitcoindService;
   rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletAnchorRpcClient;
+}
+
+export interface AnchorClearFamilyActionSummary {
+  familyId: string;
+  previousStatus: ProactiveFamilyStateRecord["status"];
+  previousStep: ProactiveFamilyStateRecord["currentStep"] | null;
+  action: "cleared" | "canceled";
 }
 
 export interface ClearPendingAnchorResult {
@@ -154,6 +162,15 @@ export interface ClearPendingAnchorResult {
   previousFamilyStatus: ProactiveFamilyStateRecord["status"] | null;
   previousFamilyStep: ProactiveFamilyStateRecord["currentStep"] | null;
   releasedDedicatedIndex: number | null;
+  forced: boolean;
+  clearedReservedFamilies: number;
+  canceledActiveFamilies: number;
+  releasedDedicatedIndices: number[];
+  affectedFamilies: AnchorClearFamilyActionSummary[];
+  previousLocalAnchorIntent: DomainRecord["localAnchorIntent"] | null;
+  previousDedicatedIndex: number | null;
+  resultingLocalAnchorIntent: DomainRecord["localAnchorIntent"] | null;
+  resultingDedicatedIndex: number | null;
 }
 
 const ACTIVE_FAMILY_STATUSES = new Set<ProactiveFamilyStateRecord["status"]>([
@@ -292,11 +309,33 @@ function findActiveAnchorFamilyByDomain(
   state: WalletStateV1,
   domainName: string,
 ): ProactiveFamilyStateRecord | null {
-  return state.proactiveFamilies.find((family) =>
-    family.type === "anchor"
-    && family.domainName === domainName
-    && ACTIVE_FAMILY_STATUSES.has(family.status)
-  ) ?? null;
+  return findActiveAnchorFamiliesByDomain(state, domainName)[0] ?? null;
+}
+
+function compareAnchorFamilies(
+  left: ProactiveFamilyStateRecord,
+  right: ProactiveFamilyStateRecord,
+): number {
+  return left.createdAtUnixMs - right.createdAtUnixMs
+    || (left.lastUpdatedAtUnixMs ?? left.createdAtUnixMs) - (right.lastUpdatedAtUnixMs ?? right.createdAtUnixMs)
+    || left.familyId.localeCompare(right.familyId);
+}
+
+function findAnchorFamiliesByDomain(
+  state: WalletStateV1,
+  domainName: string,
+): ProactiveFamilyStateRecord[] {
+  return state.proactiveFamilies
+    .filter((family) => family.type === "anchor" && family.domainName === domainName)
+    .sort(compareAnchorFamilies);
+}
+
+function findActiveAnchorFamiliesByDomain(
+  state: WalletStateV1,
+  domainName: string,
+): ProactiveFamilyStateRecord[] {
+  return findAnchorFamiliesByDomain(state, domainName)
+    .filter((family) => ACTIVE_FAMILY_STATUSES.has(family.status));
 }
 
 function isClearableReservedAnchorFamily(
@@ -308,6 +347,15 @@ function isClearableReservedAnchorFamily(
   return family?.type === "anchor"
     && family.status === "draft"
     && family.currentStep === "reserved";
+}
+
+function isClearableReservedAnchorFamilyRecord(
+  family: ProactiveFamilyStateRecord,
+): family is ProactiveFamilyStateRecord & {
+  status: "draft";
+  currentStep: "reserved";
+} {
+  return family.status === "draft" && family.currentStep === "reserved";
 }
 
 function findAnchorFamilyById(
@@ -550,20 +598,48 @@ async function confirmAnchor(
   }
 }
 
-async function confirmAnchorClear(
-  prompter: WalletPrompter,
-  domainName: string,
-  dedicatedIndex: number | null,
-  assumeYes = false,
-): Promise<void> {
-  const releaseLine = dedicatedIndex === null
-    ? "This will cancel the local pending anchor reservation."
-    : `This will cancel the local pending anchor reservation and release dedicated index ${dedicatedIndex} for reuse.`;
-  await confirmYesNo(prompter, releaseLine, {
-    assumeYes,
+async function confirmAnchorClear(options: {
+  prompter: WalletPrompter;
+  domainName: string;
+  releasedDedicatedIndices: number[];
+  clearedReservedFamilies: number;
+  canceledActiveFamilies: number;
+  forced?: boolean;
+  assumeYes?: boolean;
+}): Promise<void> {
+  const releasedIndexText = options.releasedDedicatedIndices.length === 0
+    ? null
+    : options.releasedDedicatedIndices.length === 1
+      ? `release dedicated index ${options.releasedDedicatedIndices[0]} for reuse`
+      : `release dedicated indices ${options.releasedDedicatedIndices.join(", ")} for reuse`;
+  const actionParts: string[] = [];
+
+  if (options.clearedReservedFamilies > 0) {
+    actionParts.push(
+      options.clearedReservedFamilies === 1
+        ? "cancel 1 local pending anchor reservation"
+        : `cancel ${options.clearedReservedFamilies} local pending anchor reservations`,
+    );
+  }
+  if (options.canceledActiveFamilies > 0) {
+    actionParts.push(
+      options.canceledActiveFamilies === 1
+        ? "cancel 1 same-domain active anchor family"
+        : `cancel ${options.canceledActiveFamilies} same-domain active anchor families`,
+    );
+  }
+
+  const releaseLine = releasedIndexText === null
+    ? `This will ${actionParts.join(" and ")}.`
+    : `This will ${actionParts.join(" and ")} and ${releasedIndexText}.`;
+  if (options.forced === true && options.canceledActiveFamilies > 0) {
+    options.prompter.writeLine("This clears local anchor workflow state only and does not undo chain state.");
+  }
+  await confirmYesNo(options.prompter, releaseLine, {
+    assumeYes: options.assumeYes ?? false,
     errorCode: "wallet_anchor_clear_confirmation_rejected",
     requiresTtyErrorCode: "wallet_anchor_clear_requires_tty",
-    prompt: `Clear pending anchor for "${domainName}"? [y/N]: `,
+    prompt: `Clear pending anchor for "${options.domainName}"? [y/N]: `,
   });
 }
 
@@ -671,6 +747,111 @@ function releaseClearedAnchorReservationState(options: {
       temporaryBuilderLockedOutpoints: [],
     },
   });
+}
+
+function cancelAnchorFamilyRecord(
+  family: ProactiveFamilyStateRecord,
+  nowUnixMs: number,
+): ProactiveFamilyStateRecord {
+  return {
+    ...family,
+    status: "canceled",
+    lastUpdatedAtUnixMs: nowUnixMs,
+    tx1: family.tx1 == null ? family.tx1 : {
+      ...family.tx1,
+      status: "canceled",
+      temporaryBuilderLockedOutpoints: [],
+    },
+    tx2: family.tx2 == null ? family.tx2 : {
+      ...family.tx2,
+      status: "canceled",
+      temporaryBuilderLockedOutpoints: [],
+    },
+  };
+}
+
+function alignAssignedDomainToOwnerIndex(options: {
+  identities: LocalIdentityRecord[];
+  domainName: string;
+  ownerLocalIndex: number | null;
+}): LocalIdentityRecord[] {
+  return options.identities.map((identity) => {
+    let assigned = identity.assignedDomainNames.filter((name) => name !== options.domainName);
+    if (options.ownerLocalIndex !== null && identity.index === options.ownerLocalIndex) {
+      assigned = [...assigned, options.domainName];
+    }
+    return {
+      ...identity,
+      assignedDomainNames: assigned.sort((left, right) => left.localeCompare(right)),
+    };
+  });
+}
+
+function recomputeDomainAfterAnchorClear(options: {
+  state: WalletStateV1;
+  snapshot: NonNullable<WalletReadContext["snapshot"]>;
+  domainName: string;
+}): WalletStateV1 {
+  const domain = options.state.domains.find((entry) => entry.name === options.domainName) ?? null;
+  if (domain === null) {
+    return options.state;
+  }
+
+  const chainDomain = lookupDomain(options.snapshot.state, options.domainName);
+  const ownerScriptPubKeyHex = chainDomain === null
+    ? domain.currentOwnerScriptPubKeyHex
+    : Buffer.from(chainDomain.ownerScriptPubKey).toString("hex");
+  const ownerIdentity = ownerScriptPubKeyHex === null
+    ? null
+    : options.state.identities.find((identity) => identity.scriptPubKeyHex === ownerScriptPubKeyHex) ?? null;
+  const ownerLocalIndex = ownerIdentity?.index ?? (chainDomain === null ? domain.currentOwnerLocalIndex : null);
+  const dedicatedIndex = ownerIdentity?.status === "dedicated" ? ownerIdentity.index : null;
+  const canonicalChainStatus = chainDomain === null
+    ? domain.canonicalChainStatus
+    : chainDomain.anchored ? "anchored" : "registered-unanchored";
+  const currentCanonicalAnchorOutpoint = canonicalChainStatus === "anchored"
+    ? domain.currentCanonicalAnchorOutpoint
+    : null;
+
+  return {
+    ...options.state,
+    identities: alignAssignedDomainToOwnerIndex({
+      identities: options.state.identities,
+      domainName: options.domainName,
+      ownerLocalIndex,
+    }),
+    domains: options.state.domains.map((entry) =>
+      entry.name !== options.domainName
+        ? entry
+        : {
+          ...entry,
+          dedicatedIndex,
+          currentOwnerScriptPubKeyHex: ownerScriptPubKeyHex,
+          currentOwnerLocalIndex: ownerLocalIndex,
+          canonicalChainStatus,
+          localAnchorIntent: "none",
+          currentCanonicalAnchorOutpoint,
+        }
+    ),
+  };
+}
+
+function summarizeAnchorClearFamilies(options: {
+  state: WalletStateV1;
+  domainName: string;
+}) {
+  const families = findAnchorFamiliesByDomain(options.state, options.domainName);
+  const clearableReserved = families.filter(isClearableReservedAnchorFamilyRecord);
+  const activeNonReserved = families.filter((family) =>
+    ACTIVE_FAMILY_STATUSES.has(family.status) && !isClearableReservedAnchorFamilyRecord(family)
+  );
+  const terminal = families.filter((family) => !ACTIVE_FAMILY_STATUSES.has(family.status));
+  return {
+    families,
+    clearableReserved,
+    activeNonReserved,
+    terminal,
+  };
 }
 
 function createFamilyTransactionRecord(): ProactiveFamilyTransactionRecord {
@@ -1672,10 +1853,12 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
       );
       const initialFamily = createDraftAnchorFamily(operation, nowUnixMs);
       const existingFamily = findAnchorFamilyByIntent(operation.state, initialFamily.intentFingerprintHex);
-      const conflictingFamily = findActiveAnchorFamilyByDomain(operation.state, normalizedDomainName);
+      const conflictingFamilies = findActiveAnchorFamiliesByDomain(operation.state, normalizedDomainName);
+      const clearableConflictingFamily = conflictingFamilies.find(isClearableReservedAnchorFamilyRecord) ?? null;
+      const conflictingFamily = conflictingFamilies[0] ?? null;
 
-      if (existingFamily === null && isClearableReservedAnchorFamily(conflictingFamily)) {
-        throw new Error(`wallet_anchor_clear_pending_first_${conflictingFamily.domainName}`);
+      if (existingFamily === null && clearableConflictingFamily !== null && conflictingFamilies.length === 1) {
+        throw new Error(`wallet_anchor_clear_pending_first_${clearableConflictingFamily.domainName}`);
       }
 
       if (existingFamily === null && conflictingFamily !== null) {
@@ -1906,6 +2089,7 @@ export async function clearPendingAnchor(
 ): Promise<ClearPendingAnchorResult> {
   const provider = options.provider ?? createDefaultWalletSecretProvider();
   const nowUnixMs = options.nowUnixMs ?? Date.now();
+  const force = options.force ?? false;
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
   const controlLock = await acquireFileLock(paths.walletControlLockPath, {
     purpose: "wallet-anchor-clear",
@@ -1928,16 +2112,21 @@ export async function clearPendingAnchor(
 
     try {
       assertWalletMutationContextReady(readContext, "wallet_anchor_clear");
-      const family = findActiveAnchorFamilyByDomain(readContext.localState.state, normalizedDomainName);
+      const summary = summarizeAnchorClearFamilies({
+        state: readContext.localState.state,
+        domainName: normalizedDomainName,
+      });
       const domain = readContext.localState.state.domains.find((entry) =>
         entry.name === normalizedDomainName
       ) ?? null;
+      const previousLocalAnchorIntent = domain?.localAnchorIntent ?? null;
+      const previousDedicatedIndex = domain?.dedicatedIndex ?? null;
 
-      if (domain === null && family === null) {
+      if (domain === null && summary.families.length === 0) {
         throw new Error("wallet_anchor_clear_domain_not_found");
       }
 
-      if (family === null) {
+      if (summary.clearableReserved.length === 0 && summary.activeNonReserved.length === 0) {
         if (domain === null) {
           throw new Error("wallet_anchor_clear_domain_not_found");
         }
@@ -1952,51 +2141,82 @@ export async function clearPendingAnchor(
           previousFamilyStatus: null,
           previousFamilyStep: null,
           releasedDedicatedIndex: null,
+          forced: force,
+          clearedReservedFamilies: 0,
+          canceledActiveFamilies: 0,
+          releasedDedicatedIndices: [],
+          affectedFamilies: [],
+          previousLocalAnchorIntent,
+          previousDedicatedIndex,
+          resultingLocalAnchorIntent: previousLocalAnchorIntent,
+          resultingDedicatedIndex: previousDedicatedIndex,
         };
       }
 
-      if (family.type !== "anchor") {
-        throw new Error("wallet_anchor_clear_inconsistent_state");
-      }
-
-      if (family.status !== "draft" || family.currentStep !== "reserved") {
-        throw new Error(`wallet_anchor_clear_not_clearable_${family.status}`);
-      }
-
-      const reservedDedicatedIndex = family.reservedDedicatedIndex ?? null;
-
-      if (
-        reservedDedicatedIndex === null
+      const invalidReservedFamily = summary.clearableReserved.find((family) =>
+        family.reservedDedicatedIndex === null
         || family.tx1?.attemptedTxid !== null
         || family.tx2?.attemptedTxid !== null
-        || (
-          domain !== null
-          && (
-            domain.localAnchorIntent !== "reserved"
-            || domain.dedicatedIndex === null
-            || domain.dedicatedIndex !== reservedDedicatedIndex
-          )
-        )
-      ) {
+      ) ?? null;
+      if (invalidReservedFamily !== null) {
         throw new Error("wallet_anchor_clear_inconsistent_state");
       }
 
-      await confirmAnchorClear(
-        options.prompter,
-        normalizedDomainName,
-        reservedDedicatedIndex,
-        options.assumeYes ?? false,
-      );
-      const releasedState = releaseClearedAnchorReservationState({
-        state: readContext.localState.state,
-        familyId: family.familyId,
+      if (!force && summary.activeNonReserved.length > 0) {
+        throw new Error(`wallet_anchor_clear_force_required_${normalizedDomainName}`);
+      }
+
+      const affectedFamilies: AnchorClearFamilyActionSummary[] = [
+        ...summary.clearableReserved.map((family) => ({
+          familyId: family.familyId,
+          previousStatus: family.status,
+          previousStep: family.currentStep ?? null,
+          action: "cleared" as const,
+        })),
+        ...summary.activeNonReserved.map((family) => ({
+          familyId: family.familyId,
+          previousStatus: family.status,
+          previousStep: family.currentStep ?? null,
+          action: "canceled" as const,
+        })),
+      ];
+      const reservedDedicatedIndicesBefore = [...new Set(summary.clearableReserved
+        .map((family) => family.reservedDedicatedIndex)
+        .filter((value): value is number => value !== null && value !== undefined))]
+        .sort((left, right) => left - right);
+      const canceledActiveFamilies = force ? summary.activeNonReserved.length : 0;
+      const familiesToCancel = force
+        ? [...summary.clearableReserved, ...summary.activeNonReserved]
+        : [...summary.clearableReserved];
+      let nextState = readContext.localState.state;
+
+      for (const family of familiesToCancel) {
+        nextState = upsertProactiveFamily(nextState, cancelAnchorFamilyRecord(family, nowUnixMs));
+      }
+      nextState = recomputeDomainAfterAnchorClear({
+        state: nextState,
+        snapshot: readContext.snapshot,
         domainName: normalizedDomainName,
-        nowUnixMs,
       });
+      const resultingDomain = nextState.domains.find((entry) => entry.name === normalizedDomainName) ?? null;
+      const releasedDedicatedIndices = reservedDedicatedIndicesBefore
+        .filter((index) => resultingDomain?.dedicatedIndex !== index);
+
+      await confirmAnchorClear(
+        {
+          prompter: options.prompter,
+          domainName: normalizedDomainName,
+          releasedDedicatedIndices,
+          clearedReservedFamilies: summary.clearableReserved.length,
+          canceledActiveFamilies,
+          forced: force,
+          assumeYes: options.assumeYes ?? false,
+        },
+      );
       await saveWalletStatePreservingUnlock({
         state: {
-          ...releasedState,
-          stateRevision: releasedState.stateRevision + 1,
+          ...nextState,
+          stateRevision: nextState.stateRevision + 1,
           lastWrittenAtUnixMs: nowUnixMs,
         },
         provider,
@@ -2008,9 +2228,18 @@ export async function clearPendingAnchor(
       return {
         domainName: normalizedDomainName,
         cleared: true,
-        previousFamilyStatus: family.status,
-        previousFamilyStep: family.currentStep ?? null,
-        releasedDedicatedIndex: reservedDedicatedIndex,
+        previousFamilyStatus: affectedFamilies[0]?.previousStatus ?? null,
+        previousFamilyStep: affectedFamilies[0]?.previousStep ?? null,
+        releasedDedicatedIndex: releasedDedicatedIndices[0] ?? null,
+        forced: force,
+        clearedReservedFamilies: summary.clearableReserved.length,
+        canceledActiveFamilies,
+        releasedDedicatedIndices,
+        affectedFamilies,
+        previousLocalAnchorIntent,
+        previousDedicatedIndex,
+        resultingLocalAnchorIntent: resultingDomain?.localAnchorIntent ?? null,
+        resultingDedicatedIndex: resultingDomain?.dedicatedIndex ?? null,
       };
     } finally {
       await readContext.close();

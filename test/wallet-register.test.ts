@@ -5734,6 +5734,22 @@ test("clearPendingAnchor cancels a reserved draft family and releases its dedica
     previousFamilyStatus: "draft",
     previousFamilyStep: "reserved",
     releasedDedicatedIndex: 3,
+    forced: false,
+    clearedReservedFamilies: 1,
+    canceledActiveFamilies: 0,
+    releasedDedicatedIndices: [3],
+    affectedFamilies: [
+      {
+        familyId: "anchor-family-clear",
+        previousStatus: "draft",
+        previousStep: "reserved",
+        action: "cleared",
+      },
+    ],
+    previousLocalAnchorIntent: "reserved",
+    previousDedicatedIndex: 3,
+    resultingLocalAnchorIntent: "none",
+    resultingDedicatedIndex: null,
   });
   assert.deepEqual(clearPrompter.prompts, ['Clear pending anchor for "weatherbot"? [y/N]: ']);
   assert.equal(clearHarness.sendCount, 0);
@@ -5879,6 +5895,22 @@ test("clearPendingAnchor cancels a reserved draft family even when the local dom
     previousFamilyStatus: "draft",
     previousFamilyStep: "reserved",
     releasedDedicatedIndex: 3,
+    forced: false,
+    clearedReservedFamilies: 1,
+    canceledActiveFamilies: 0,
+    releasedDedicatedIndices: [3],
+    affectedFamilies: [
+      {
+        familyId: "anchor-family-clear-missing-domain",
+        previousStatus: "draft",
+        previousStep: "reserved",
+        action: "cleared",
+      },
+    ],
+    previousLocalAnchorIntent: null,
+    previousDedicatedIndex: null,
+    resultingLocalAnchorIntent: null,
+    resultingDedicatedIndex: null,
   });
   assert.deepEqual(clearPrompter.prompts, ['Clear pending anchor for "weatherbot"? [y/N]: ']);
   assert.equal(saved.state.proactiveFamilies[0]?.status, "canceled");
@@ -5939,119 +5971,576 @@ test("clearPendingAnchor returns a no-op result when the domain has no pending a
     previousFamilyStatus: null,
     previousFamilyStep: null,
     releasedDedicatedIndex: null,
+    forced: false,
+    clearedReservedFamilies: 0,
+    canceledActiveFamilies: 0,
+    releasedDedicatedIndices: [],
+    affectedFamilies: [],
+    previousLocalAnchorIntent: "none",
+    previousDedicatedIndex: null,
+    resultingLocalAnchorIntent: "none",
+    resultingDedicatedIndex: null,
   });
   assert.deepEqual(prompter.prompts, []);
 });
 
-test("clearPendingAnchor refuses non-reserved or already-live anchor families without changing state", async () => {
-  for (const [status, localAnchorIntent, currentStep] of [
-    ["broadcasting", "reserved", "tx1"],
-    ["broadcast-unknown", "reserved", "tx1"],
-    ["live", "tx1-live", "tx1"],
-    ["repair-required", "repair-required", "tx2"],
-  ] as const) {
-    const tempRoot = await mkdtemp(join(tmpdir(), `cogcoin-anchor-clear-refuse-${status}-`));
-    const paths = createTempWalletPaths(tempRoot);
-    const provider = createMemoryWalletSecretProviderForTesting();
-    const snapshot = structuredClone(await createSnapshotState());
-    const baseState = createAnchorCapableWalletState();
-    const reservedIdentity = deriveWalletIdentityMaterial(baseState.keys.accountXprv, 3);
-    const state = {
-      ...baseState,
-      nextDedicatedIndex: 4,
-      identities: [
-        ...baseState.identities,
-        {
-          index: 3,
-          scriptPubKeyHex: reservedIdentity.scriptPubKeyHex,
-          address: reservedIdentity.address,
-          status: "dedicated" as const,
-          assignedDomainNames: [],
+test("clearPendingAnchor clears multiple same-domain reserved draft families in one call", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-clear-multi-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const reservedIdentity3 = deriveWalletIdentityMaterial(baseState.keys.accountXprv, 3);
+  const reservedIdentity4 = deriveWalletIdentityMaterial(baseState.keys.accountXprv, 4);
+  const state = {
+    ...baseState,
+    nextDedicatedIndex: 5,
+    identities: [
+      ...baseState.identities,
+      {
+        index: 3,
+        scriptPubKeyHex: reservedIdentity3.scriptPubKeyHex,
+        address: reservedIdentity3.address,
+        status: "dedicated" as const,
+        assignedDomainNames: [],
+      },
+      {
+        index: 4,
+        scriptPubKeyHex: reservedIdentity4.scriptPubKeyHex,
+        address: reservedIdentity4.address,
+        status: "dedicated" as const,
+        assignedDomainNames: [],
+      },
+    ],
+    domains: [
+      {
+        name: "weatherbot",
+        domainId: 10,
+        dedicatedIndex: 4,
+        currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        currentOwnerLocalIndex: 0,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "reserved" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+    ],
+    proactiveFamilies: [
+      {
+        familyId: "anchor-family-clear-1",
+        type: "anchor",
+        status: "draft" as const,
+        intentFingerprintHex: "ce".repeat(32),
+        createdAtUnixMs: 1_700_000_000_000,
+        lastUpdatedAtUnixMs: 1_700_000_000_000,
+        domainName: "weatherbot",
+        domainId: 10,
+        sourceSenderLocalIndex: 0,
+        sourceSenderScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        reservedDedicatedIndex: 3,
+        reservedScriptPubKeyHex: reservedIdentity3.scriptPubKeyHex,
+        foundingMessageText: null,
+        foundingMessagePayloadHex: null,
+        listingCancelCommitted: false,
+        currentStep: "reserved",
+        tx1: {
+          status: "draft",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
         },
-      ],
-      domains: [
-        {
-          name: "weatherbot",
-          domainId: 10,
-          dedicatedIndex: 3,
-          currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
-          currentOwnerLocalIndex: 0,
-          canonicalChainStatus: "registered-unanchored" as const,
-          localAnchorIntent,
-          currentCanonicalAnchorOutpoint: null,
-          foundingMessageText: null,
-          birthTime: null,
+        tx2: {
+          status: "draft",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
         },
-      ],
-      proactiveFamilies: [
-        {
-          familyId: `anchor-family-${status}`,
-          type: "anchor",
-          status,
-          intentFingerprintHex: "dd".repeat(32),
-          createdAtUnixMs: 1_700_000_000_000,
-          lastUpdatedAtUnixMs: 1_700_000_000_000,
-          domainName: "weatherbot",
-          domainId: 10,
-          sourceSenderLocalIndex: 0,
-          sourceSenderScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
-          reservedDedicatedIndex: 3,
-          reservedScriptPubKeyHex: reservedIdentity.scriptPubKeyHex,
-          foundingMessageText: null,
-          foundingMessagePayloadHex: null,
-          listingCancelCommitted: false,
-          currentStep,
-          tx1: {
-            status,
-            attemptedTxid: status === "repair-required" ? "44".repeat(32) : null,
-            attemptedWtxid: null,
-            temporaryBuilderLockedOutpoints: [],
-            rawHex: null,
-          },
-          tx2: {
-            status: "draft",
-            attemptedTxid: null,
-            attemptedWtxid: null,
-            temporaryBuilderLockedOutpoints: [],
-            rawHex: null,
-          },
+      },
+      {
+        familyId: "anchor-family-clear-2",
+        type: "anchor",
+        status: "draft" as const,
+        intentFingerprintHex: "cf".repeat(32),
+        createdAtUnixMs: 1_700_000_001_000,
+        lastUpdatedAtUnixMs: 1_700_000_001_000,
+        domainName: "weatherbot",
+        domainId: 10,
+        sourceSenderLocalIndex: 0,
+        sourceSenderScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        reservedDedicatedIndex: 4,
+        reservedScriptPubKeyHex: reservedIdentity4.scriptPubKeyHex,
+        foundingMessageText: null,
+        foundingMessagePayloadHex: null,
+        listingCancelCommitted: false,
+        currentStep: "reserved",
+        tx1: {
+          status: "draft",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
         },
-      ],
-    } satisfies WalletStateV1;
-    addUnanchoredDomainToSnapshot({
-      snapshot,
-      domainId: 10,
-      domainName: "weatherbot",
-      ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
-    });
-    await writeInitialUnlockedState({
-      paths,
-      provider,
-      state,
-    });
+        tx2: {
+          status: "draft",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+      },
+    ],
+  } satisfies WalletStateV1;
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "weatherbot",
+    ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
+  });
 
-    await assert.rejects(() => clearPendingAnchor({
-      domainName: "weatherbot",
-      dataDir: paths.bitcoinDataDir,
-      databasePath: join(tempRoot, "client.sqlite"),
-      provider,
-      paths,
-      prompter: new NonInteractivePrompter(),
-      openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
-      nowUnixMs: 1_700_000_510_000,
-    }), new RegExp(`wallet_anchor_clear_not_clearable_${status.replaceAll("-", "\\-")}`));
+  const cleared = await clearPendingAnchor({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["y"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    nowUnixMs: 1_700_000_510_000,
+  });
 
-    const saved = await loadWalletState({
-      primaryPath: paths.walletStatePath,
-      backupPath: paths.walletStateBackupPath,
-    }, {
-      provider,
-    });
+  const saved = await loadWalletState({
+    primaryPath: paths.walletStatePath,
+    backupPath: paths.walletStateBackupPath,
+  }, {
+    provider,
+  });
 
-    assert.equal(saved.state.proactiveFamilies[0]?.status, status);
-    assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.localAnchorIntent, localAnchorIntent);
-    assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.dedicatedIndex, 3);
-  }
+  assert.deepEqual(cleared, {
+    domainName: "weatherbot",
+    cleared: true,
+    previousFamilyStatus: "draft",
+    previousFamilyStep: "reserved",
+    releasedDedicatedIndex: 3,
+    forced: false,
+    clearedReservedFamilies: 2,
+    canceledActiveFamilies: 0,
+    releasedDedicatedIndices: [3, 4],
+    affectedFamilies: [
+      {
+        familyId: "anchor-family-clear-1",
+        previousStatus: "draft",
+        previousStep: "reserved",
+        action: "cleared",
+      },
+      {
+        familyId: "anchor-family-clear-2",
+        previousStatus: "draft",
+        previousStep: "reserved",
+        action: "cleared",
+      },
+    ],
+    previousLocalAnchorIntent: "reserved",
+    previousDedicatedIndex: 4,
+    resultingLocalAnchorIntent: "none",
+    resultingDedicatedIndex: null,
+  });
+  assert.equal(saved.state.proactiveFamilies[0]?.status, "canceled");
+  assert.equal(saved.state.proactiveFamilies[1]?.status, "canceled");
+  assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.localAnchorIntent, "none");
+  assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.dedicatedIndex, null);
+});
+
+test("clearPendingAnchor requires --force when same-domain active non-reserved anchor families exist", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-clear-force-required-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const reservedIdentity = deriveWalletIdentityMaterial(baseState.keys.accountXprv, 3);
+  const state = {
+    ...baseState,
+    nextDedicatedIndex: 4,
+    identities: [
+      ...baseState.identities,
+      {
+        index: 3,
+        scriptPubKeyHex: reservedIdentity.scriptPubKeyHex,
+        address: reservedIdentity.address,
+        status: "dedicated" as const,
+        assignedDomainNames: [],
+      },
+    ],
+    domains: [
+      {
+        name: "weatherbot",
+        domainId: 10,
+        dedicatedIndex: 3,
+        currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        currentOwnerLocalIndex: 0,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "tx1-live" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+    ],
+    proactiveFamilies: [
+      {
+        familyId: "anchor-family-reserved",
+        type: "anchor",
+        status: "draft" as const,
+        intentFingerprintHex: "dd".repeat(32),
+        createdAtUnixMs: 1_700_000_000_000,
+        lastUpdatedAtUnixMs: 1_700_000_000_000,
+        domainName: "weatherbot",
+        domainId: 10,
+        sourceSenderLocalIndex: 0,
+        sourceSenderScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        reservedDedicatedIndex: 3,
+        reservedScriptPubKeyHex: reservedIdentity.scriptPubKeyHex,
+        foundingMessageText: null,
+        foundingMessagePayloadHex: null,
+        listingCancelCommitted: false,
+        currentStep: "reserved",
+        tx1: {
+          status: "draft",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+        tx2: {
+          status: "draft",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+      },
+      {
+        familyId: "anchor-family-live",
+        type: "anchor",
+        status: "live" as const,
+        intentFingerprintHex: "de".repeat(32),
+        createdAtUnixMs: 1_700_000_001_000,
+        lastUpdatedAtUnixMs: 1_700_000_001_000,
+        domainName: "weatherbot",
+        domainId: 10,
+        sourceSenderLocalIndex: 0,
+        sourceSenderScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        reservedDedicatedIndex: 3,
+        reservedScriptPubKeyHex: reservedIdentity.scriptPubKeyHex,
+        foundingMessageText: null,
+        foundingMessagePayloadHex: null,
+        listingCancelCommitted: false,
+        currentStep: "tx1",
+        tx1: {
+          status: "live",
+          attemptedTxid: "44".repeat(32),
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+        tx2: {
+          status: "draft",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+      },
+    ],
+  } satisfies WalletStateV1;
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "weatherbot",
+    ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
+  });
+
+  await assert.rejects(() => clearPendingAnchor({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new NonInteractivePrompter(),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    nowUnixMs: 1_700_000_510_000,
+  }), /wallet_anchor_clear_force_required_weatherbot/);
+
+  const saved = await loadWalletState({
+    primaryPath: paths.walletStatePath,
+    backupPath: paths.walletStateBackupPath,
+  }, {
+    provider,
+  });
+
+  assert.equal(saved.state.proactiveFamilies[0]?.status, "draft");
+  assert.equal(saved.state.proactiveFamilies[1]?.status, "live");
+  assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.localAnchorIntent, "tx1-live");
+  assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.dedicatedIndex, 3);
+});
+
+test("clearPendingAnchor --force clears reserved families, cancels active same-domain families, and preserves confirmed dedicated ownership", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-clear-force-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const dedicatedOwner = deriveWalletIdentityMaterial(baseState.keys.accountXprv, 3);
+  const extraReserved = deriveWalletIdentityMaterial(baseState.keys.accountXprv, 4);
+  const state = {
+    ...baseState,
+    nextDedicatedIndex: 5,
+    identities: [
+      ...baseState.identities,
+      {
+        index: 3,
+        scriptPubKeyHex: dedicatedOwner.scriptPubKeyHex,
+        address: dedicatedOwner.address,
+        status: "dedicated" as const,
+        assignedDomainNames: ["weatherbot"],
+      },
+      {
+        index: 4,
+        scriptPubKeyHex: extraReserved.scriptPubKeyHex,
+        address: extraReserved.address,
+        status: "dedicated" as const,
+        assignedDomainNames: [],
+      },
+    ],
+    domains: [
+      {
+        name: "weatherbot",
+        domainId: 10,
+        dedicatedIndex: 3,
+        currentOwnerScriptPubKeyHex: dedicatedOwner.scriptPubKeyHex,
+        currentOwnerLocalIndex: 3,
+        canonicalChainStatus: "anchored" as const,
+        localAnchorIntent: "tx1-live" as const,
+        currentCanonicalAnchorOutpoint: {
+          txid: "77".repeat(32),
+          vout: 1,
+          valueSats: 2_000,
+        },
+        foundingMessageText: "weatherbot founded",
+        birthTime: 1_700_000_000,
+      },
+    ],
+    proactiveFamilies: [
+      {
+        familyId: "anchor-family-reserved",
+        type: "anchor",
+        status: "draft" as const,
+        intentFingerprintHex: "ea".repeat(32),
+        createdAtUnixMs: 1_700_000_000_000,
+        lastUpdatedAtUnixMs: 1_700_000_000_000,
+        domainName: "weatherbot",
+        domainId: 10,
+        sourceSenderLocalIndex: 0,
+        sourceSenderScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        reservedDedicatedIndex: 4,
+        reservedScriptPubKeyHex: extraReserved.scriptPubKeyHex,
+        foundingMessageText: null,
+        foundingMessagePayloadHex: null,
+        listingCancelCommitted: false,
+        currentStep: "reserved",
+        tx1: {
+          status: "draft",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+        tx2: {
+          status: "draft",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+      },
+      {
+        familyId: "anchor-family-live",
+        type: "anchor",
+        status: "live" as const,
+        intentFingerprintHex: "eb".repeat(32),
+        createdAtUnixMs: 1_700_000_001_000,
+        lastUpdatedAtUnixMs: 1_700_000_001_000,
+        domainName: "weatherbot",
+        domainId: 10,
+        sourceSenderLocalIndex: 0,
+        sourceSenderScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        reservedDedicatedIndex: 3,
+        reservedScriptPubKeyHex: dedicatedOwner.scriptPubKeyHex,
+        foundingMessageText: null,
+        foundingMessagePayloadHex: null,
+        listingCancelCommitted: false,
+        currentStep: "tx2",
+        tx1: {
+          status: "confirmed",
+          attemptedTxid: "55".repeat(32),
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+        tx2: {
+          status: "live",
+          attemptedTxid: "66".repeat(32),
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+      },
+      {
+        familyId: "anchor-family-confirmed",
+        type: "anchor",
+        status: "confirmed" as const,
+        intentFingerprintHex: "ec".repeat(32),
+        createdAtUnixMs: 1_700_000_002_000,
+        lastUpdatedAtUnixMs: 1_700_000_002_000,
+        domainName: "weatherbot",
+        domainId: 10,
+        sourceSenderLocalIndex: 0,
+        sourceSenderScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        reservedDedicatedIndex: 3,
+        reservedScriptPubKeyHex: dedicatedOwner.scriptPubKeyHex,
+        foundingMessageText: null,
+        foundingMessagePayloadHex: null,
+        listingCancelCommitted: false,
+        currentStep: "tx2",
+        tx1: {
+          status: "confirmed",
+          attemptedTxid: "77".repeat(32),
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+        tx2: {
+          status: "confirmed",
+          attemptedTxid: "88".repeat(32),
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+      },
+      {
+        familyId: "anchor-family-canceled",
+        type: "anchor",
+        status: "canceled" as const,
+        intentFingerprintHex: "ed".repeat(32),
+        createdAtUnixMs: 1_700_000_003_000,
+        lastUpdatedAtUnixMs: 1_700_000_003_000,
+        domainName: "weatherbot",
+        domainId: 10,
+        sourceSenderLocalIndex: 0,
+        sourceSenderScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        reservedDedicatedIndex: 4,
+        reservedScriptPubKeyHex: extraReserved.scriptPubKeyHex,
+        foundingMessageText: null,
+        foundingMessagePayloadHex: null,
+        listingCancelCommitted: false,
+        currentStep: null,
+        tx1: {
+          status: "canceled",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+        tx2: {
+          status: "canceled",
+          attemptedTxid: null,
+          attemptedWtxid: null,
+          temporaryBuilderLockedOutpoints: [],
+          rawHex: null,
+        },
+      },
+    ],
+  } satisfies WalletStateV1;
+  addAnchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "weatherbot",
+    ownerScriptPubKeyHex: dedicatedOwner.scriptPubKeyHex,
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
+  });
+
+  const cleared = await clearPendingAnchor({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["y"]),
+    force: true,
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    nowUnixMs: 1_700_000_520_000,
+  });
+
+  const saved = await loadWalletState({
+    primaryPath: paths.walletStatePath,
+    backupPath: paths.walletStateBackupPath,
+  }, {
+    provider,
+  });
+
+  assert.deepEqual(cleared, {
+    domainName: "weatherbot",
+    cleared: true,
+    previousFamilyStatus: "draft",
+    previousFamilyStep: "reserved",
+    releasedDedicatedIndex: 4,
+    forced: true,
+    clearedReservedFamilies: 1,
+    canceledActiveFamilies: 1,
+    releasedDedicatedIndices: [4],
+    affectedFamilies: [
+      {
+        familyId: "anchor-family-reserved",
+        previousStatus: "draft",
+        previousStep: "reserved",
+        action: "cleared",
+      },
+      {
+        familyId: "anchor-family-live",
+        previousStatus: "live",
+        previousStep: "tx2",
+        action: "canceled",
+      },
+    ],
+    previousLocalAnchorIntent: "tx1-live",
+    previousDedicatedIndex: 3,
+    resultingLocalAnchorIntent: "none",
+    resultingDedicatedIndex: 3,
+  });
+  assert.equal(saved.state.proactiveFamilies.find((family) => family.familyId === "anchor-family-reserved")?.status, "canceled");
+  assert.equal(saved.state.proactiveFamilies.find((family) => family.familyId === "anchor-family-live")?.status, "canceled");
+  assert.equal(saved.state.proactiveFamilies.find((family) => family.familyId === "anchor-family-confirmed")?.status, "confirmed");
+  assert.equal(saved.state.proactiveFamilies.find((family) => family.familyId === "anchor-family-canceled")?.status, "canceled");
+  assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.localAnchorIntent, "none");
+  assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.dedicatedIndex, 3);
+  assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.currentOwnerLocalIndex, 3);
+  assert.deepEqual(saved.state.identities.find((identity) => identity.index === 3)?.assignedDomainNames, ["weatherbot"]);
+  assert.deepEqual(saved.state.identities.find((identity) => identity.index === 4)?.assignedDomainNames, []);
 });
 
 test("anchorDomain builds Case B from an anchored local owner and relocks both replacement anchors", async () => {

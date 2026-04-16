@@ -243,17 +243,17 @@ export function buildAnchorClearMutationData(
 ) {
   const before = result.cleared
     ? {
-      localAnchorIntent: "reserved",
-      dedicatedIndex: result.releasedDedicatedIndex,
+      localAnchorIntent: result.previousLocalAnchorIntent,
+      dedicatedIndex: result.previousDedicatedIndex,
       familyStatus: result.previousFamilyStatus,
       familyStep: result.previousFamilyStep,
     }
     : null;
   const after = result.cleared
     ? {
-      localAnchorIntent: "none",
-      dedicatedIndex: null,
-      familyStatus: "canceled",
+      localAnchorIntent: result.resultingLocalAnchorIntent,
+      dedicatedIndex: result.resultingDedicatedIndex,
+      familyStatus: result.canceledActiveFamilies > 0 || result.clearedReservedFamilies > 0 ? "canceled" : null,
       familyStep: result.previousFamilyStep,
     }
     : null;
@@ -266,6 +266,15 @@ export function buildAnchorClearMutationData(
       previousFamilyStatus: result.previousFamilyStatus,
       previousFamilyStep: result.previousFamilyStep,
       releasedDedicatedIndex: result.releasedDedicatedIndex,
+      forced: result.forced,
+      clearedReservedFamilies: result.clearedReservedFamilies,
+      canceledActiveFamilies: result.canceledActiveFamilies,
+      releasedDedicatedIndices: result.releasedDedicatedIndices,
+      affectedFamilies: result.affectedFamilies,
+      previousLocalAnchorIntent: result.previousLocalAnchorIntent,
+      previousDedicatedIndex: result.previousDedicatedIndex,
+      resultingLocalAnchorIntent: result.resultingLocalAnchorIntent,
+      resultingDedicatedIndex: result.resultingDedicatedIndex,
     },
     before,
     after,
