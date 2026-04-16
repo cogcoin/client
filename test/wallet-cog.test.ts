@@ -453,8 +453,14 @@ function createCogRpcHarness(options: {
             },
           };
         },
+        async walletPassphrase() {
+          return null;
+        },
         async walletProcessPsbt() {
           return { psbt: "signed", complete: true };
+        },
+        async walletLock() {
+          return null;
         },
         async finalizePsbt() {
           return { complete: true, hex: "deadbeef" };

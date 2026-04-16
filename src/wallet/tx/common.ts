@@ -30,6 +30,7 @@ import type { WalletRuntimePaths } from "../runtime.js";
 import { requestMiningGenerationPreemption, type MiningPreemptionHandle } from "../mining/coordination.js";
 
 export const DEFAULT_WALLET_MUTATION_FEE_RATE_SAT_VB = 10;
+const MANAGED_CORE_WALLET_SIGNING_UNLOCK_TIMEOUT_SECONDS = 10;
 
 export interface MutationSender {
   localIndex: number;
@@ -51,12 +52,14 @@ export interface WalletMutationRpcClient {
     bip32Derivs?: boolean,
   ): Promise<RpcWalletCreateFundedPsbtResult>;
   decodePsbt(psbt: string): Promise<RpcDecodedPsbt>;
+  walletPassphrase(walletName: string, passphrase: string, timeoutSeconds: number): Promise<null>;
   walletProcessPsbt(
     walletName: string,
     psbt: string,
     sign?: boolean,
     sighashType?: string,
   ): Promise<RpcWalletProcessPsbtResult>;
+  walletLock(walletName: string): Promise<null>;
   finalizePsbt(psbt: string, extract?: boolean): Promise<RpcFinalizePsbtResult>;
   decodeRawTransaction(hex: string): Promise<RpcTransaction>;
   testMempoolAccept(rawTransactions: string[]): Promise<RpcTestMempoolAcceptResult[]>;
@@ -490,19 +493,31 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
         throw new Error("wallet_mutation_insufficient_funding_after_reserve");
       }
     }
-    const signed = await options.rpc.walletProcessPsbt(options.walletName, funded.psbt, true, "DEFAULT");
-    const finalized = await options.rpc.finalizePsbt(signed.psbt, true);
+    await options.rpc.walletPassphrase(
+      options.walletName,
+      options.state.managedCoreWallet.internalPassphrase,
+      MANAGED_CORE_WALLET_SIGNING_UNLOCK_TIMEOUT_SECONDS,
+    );
+    let signed: RpcWalletProcessPsbtResult;
+    let finalized: RpcFinalizePsbtResult;
+    let decodedRaw: RpcTransaction;
+    try {
+      signed = await options.rpc.walletProcessPsbt(options.walletName, funded.psbt, true, "DEFAULT");
+      finalized = await options.rpc.finalizePsbt(signed.psbt, true);
 
-    if (!finalized.complete || finalized.hex == null) {
-      throw new Error(options.finalizeErrorCode);
-    }
+      if (!finalized.complete || finalized.hex == null) {
+        throw new Error(options.finalizeErrorCode);
+      }
 
-    const decodedRaw = await options.rpc.decodeRawTransaction(finalized.hex);
-    const mempoolResult = await options.rpc.testMempoolAccept([finalized.hex]);
-    const accepted = mempoolResult[0];
+      decodedRaw = await options.rpc.decodeRawTransaction(finalized.hex);
+      const mempoolResult = await options.rpc.testMempoolAccept([finalized.hex]);
+      const accepted = mempoolResult[0];
 
-    if (accepted == null || !accepted.allowed) {
-      throw new Error(`${options.mempoolRejectPrefix}_${accepted?.["reject-reason"] ?? "unknown"}`);
+      if (accepted == null || !accepted.allowed) {
+        throw new Error(`${options.mempoolRejectPrefix}_${accepted?.["reject-reason"] ?? "unknown"}`);
+      }
+    } finally {
+      await options.rpc.walletLock(options.walletName).catch(() => undefined);
     }
 
     if ((options.temporarilyUnlockedPolicyOutpoints?.length ?? 0) > 0) {

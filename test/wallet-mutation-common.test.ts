@@ -128,6 +128,13 @@ function createWalletState(partial: Partial<WalletStateV1> = {}): WalletStateV1 
 }
 
 type DecodedInputScriptSource = "prevout" | "witness_utxo" | "non_witness_utxo";
+type ReserveHarnessBehavior = {
+  walletProcessPsbtError?: Error;
+  finalizePsbtError?: Error;
+  finalizeIncomplete?: boolean;
+  mempoolRejectReason?: string;
+  walletLockError?: Error;
+};
 
 function createDecodedTransaction(changeValueSats: number, includePrevout = true): RpcTransaction {
   return {
@@ -199,11 +206,18 @@ function createDecodedPsbt(changeValueSats: number, inputScriptSource: DecodedIn
   };
 }
 
-function createReserveHarness(changeValueSats: number, inputScriptSource: DecodedInputScriptSource = "prevout") {
+function createReserveHarness(
+  changeValueSats: number,
+  inputScriptSource: DecodedInputScriptSource = "prevout",
+  behavior: ReserveHarnessBehavior = {},
+) {
   let locked: RpcLockedUnspent[] = [RESERVE_OUTPOINT];
   const calls = {
     unlockCalls: [] as RpcLockedUnspent[][],
     lockCalls: [] as RpcLockedUnspent[][],
+    walletPassphraseCalls: [] as Array<{ walletName: string; passphrase: string; timeoutSeconds: number }>,
+    coreWalletLockCalls: [] as string[],
+    signingSequence: [] as string[],
   };
 
   return {
@@ -277,27 +291,52 @@ function createReserveHarness(changeValueSats: number, inputScriptSource: Decode
       async decodePsbt(): Promise<RpcDecodedPsbt> {
         return createDecodedPsbt(changeValueSats, inputScriptSource);
       },
+      async walletPassphrase(walletName: string, passphrase: string, timeoutSeconds: number): Promise<null> {
+        calls.walletPassphraseCalls.push({ walletName, passphrase, timeoutSeconds });
+        calls.signingSequence.push("walletPassphrase");
+        return null;
+      },
       async walletProcessPsbt(): Promise<{ psbt: string; complete: boolean }> {
+        calls.signingSequence.push("walletProcessPsbt");
+        if (behavior.walletProcessPsbtError != null) {
+          throw behavior.walletProcessPsbtError;
+        }
         return {
           psbt: "signed-psbt",
           complete: true,
         };
       },
       async finalizePsbt(): Promise<{ complete: boolean; hex: string }> {
+        calls.signingSequence.push("finalizePsbt");
+        if (behavior.finalizePsbtError != null) {
+          throw behavior.finalizePsbtError;
+        }
         return {
-          complete: true,
+          complete: !behavior.finalizeIncomplete,
           hex: "deadbeef",
         };
       },
       async decodeRawTransaction(): Promise<RpcTransaction> {
+        calls.signingSequence.push("decodeRawTransaction");
         return {
           ...createDecodedTransaction(changeValueSats),
           txid: "66".repeat(32),
           hash: "77".repeat(32),
         };
       },
-      async testMempoolAccept(): Promise<Array<{ allowed: boolean }>> {
-        return [{ allowed: true }];
+      async testMempoolAccept(): Promise<Array<{ allowed: boolean; "reject-reason"?: string }>> {
+        calls.signingSequence.push("testMempoolAccept");
+        return behavior.mempoolRejectReason == null
+          ? [{ allowed: true }]
+          : [{ allowed: false, "reject-reason": behavior.mempoolRejectReason }];
+      },
+      async walletLock(walletName: string): Promise<null> {
+        calls.coreWalletLockCalls.push(walletName);
+        calls.signingSequence.push("walletLock");
+        if (behavior.walletLockError != null) {
+          throw behavior.walletLockError;
+        }
+        return null;
       },
     },
   };
@@ -375,7 +414,154 @@ test("buildWalletMutationTransactionWithReserveFallback unlocks a locked reserve
     [RESERVE_OUTPOINT],
     [RESERVE_OUTPOINT],
   ]);
+  assert.deepEqual(harness.calls.walletPassphraseCalls, [{
+    walletName: state.managedCoreWallet.walletName,
+    passphrase: state.managedCoreWallet.internalPassphrase,
+    timeoutSeconds: 10,
+  }]);
+  assert.deepEqual(harness.calls.coreWalletLockCalls, [state.managedCoreWallet.walletName]);
+  assert.deepEqual(harness.calls.signingSequence, [
+    "walletPassphrase",
+    "walletProcessPsbt",
+    "finalizePsbt",
+    "decodeRawTransaction",
+    "testMempoolAccept",
+    "walletLock",
+  ]);
   assert.deepEqual(built.temporaryBuilderLockedOutpoints, [TEMP_LOCK_OUTPOINT]);
+});
+
+test("buildWalletMutationTransactionWithReserveFallback re-locks the Core wallet when walletProcessPsbt fails", async () => {
+  const state = createWalletState();
+  const harness = createReserveHarness(2_000, "prevout", {
+    walletProcessPsbtError: new Error("walletprocesspsbt_failed"),
+  });
+
+  await assert.rejects(() => buildWalletMutationTransactionWithReserveFallback({
+    rpc: harness.rpc,
+    walletName: state.managedCoreWallet.walletName,
+    state,
+    plan: {
+      fixedInputs: [],
+      outputs: [{ data: "00" }],
+      changeAddress: state.funding.address,
+      changePosition: 1,
+      allowedFundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+      eligibleFundingOutpointKeys: new Set<string>(),
+    },
+    validateFundedDraft() {},
+    finalizeErrorCode: "wallet_test_finalize_failed",
+    mempoolRejectPrefix: "wallet_test_mempool_rejected",
+    reserveCandidates: state.proactiveReserveOutpoints,
+  }), /walletprocesspsbt_failed/);
+
+  assert.deepEqual(harness.calls.coreWalletLockCalls, [state.managedCoreWallet.walletName]);
+  assert.deepEqual(harness.calls.signingSequence, [
+    "walletPassphrase",
+    "walletProcessPsbt",
+    "walletLock",
+  ]);
+});
+
+test("buildWalletMutationTransactionWithReserveFallback re-locks the Core wallet when finalizePsbt returns incomplete", async () => {
+  const state = createWalletState();
+  const harness = createReserveHarness(2_000, "prevout", {
+    finalizeIncomplete: true,
+  });
+
+  await assert.rejects(() => buildWalletMutationTransactionWithReserveFallback({
+    rpc: harness.rpc,
+    walletName: state.managedCoreWallet.walletName,
+    state,
+    plan: {
+      fixedInputs: [],
+      outputs: [{ data: "00" }],
+      changeAddress: state.funding.address,
+      changePosition: 1,
+      allowedFundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+      eligibleFundingOutpointKeys: new Set<string>(),
+    },
+    validateFundedDraft() {},
+    finalizeErrorCode: "wallet_test_finalize_failed",
+    mempoolRejectPrefix: "wallet_test_mempool_rejected",
+    reserveCandidates: state.proactiveReserveOutpoints,
+  }), /wallet_test_finalize_failed/);
+
+  assert.deepEqual(harness.calls.coreWalletLockCalls, [state.managedCoreWallet.walletName]);
+  assert.deepEqual(harness.calls.signingSequence, [
+    "walletPassphrase",
+    "walletProcessPsbt",
+    "finalizePsbt",
+    "walletLock",
+  ]);
+});
+
+test("buildWalletMutationTransactionWithReserveFallback re-locks the Core wallet when mempool acceptance fails", async () => {
+  const state = createWalletState();
+  const harness = createReserveHarness(2_000, "prevout", {
+    mempoolRejectReason: "insufficient fee",
+  });
+
+  await assert.rejects(() => buildWalletMutationTransactionWithReserveFallback({
+    rpc: harness.rpc,
+    walletName: state.managedCoreWallet.walletName,
+    state,
+    plan: {
+      fixedInputs: [],
+      outputs: [{ data: "00" }],
+      changeAddress: state.funding.address,
+      changePosition: 1,
+      allowedFundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+      eligibleFundingOutpointKeys: new Set<string>(),
+    },
+    validateFundedDraft() {},
+    finalizeErrorCode: "wallet_test_finalize_failed",
+    mempoolRejectPrefix: "wallet_test_mempool_rejected",
+    reserveCandidates: state.proactiveReserveOutpoints,
+  }), /wallet_test_mempool_rejected_insufficient fee/);
+
+  assert.deepEqual(harness.calls.coreWalletLockCalls, [state.managedCoreWallet.walletName]);
+  assert.deepEqual(harness.calls.signingSequence, [
+    "walletPassphrase",
+    "walletProcessPsbt",
+    "finalizePsbt",
+    "decodeRawTransaction",
+    "testMempoolAccept",
+    "walletLock",
+  ]);
+});
+
+test("buildWalletMutationTransactionWithReserveFallback keeps the original signing error when walletLock also fails", async () => {
+  const state = createWalletState();
+  const harness = createReserveHarness(2_000, "prevout", {
+    walletProcessPsbtError: new Error("walletprocesspsbt_failed"),
+    walletLockError: new Error("walletlock_failed"),
+  });
+
+  await assert.rejects(() => buildWalletMutationTransactionWithReserveFallback({
+    rpc: harness.rpc,
+    walletName: state.managedCoreWallet.walletName,
+    state,
+    plan: {
+      fixedInputs: [],
+      outputs: [{ data: "00" }],
+      changeAddress: state.funding.address,
+      changePosition: 1,
+      allowedFundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+      eligibleFundingOutpointKeys: new Set<string>(),
+    },
+    validateFundedDraft() {},
+    finalizeErrorCode: "wallet_test_finalize_failed",
+    mempoolRejectPrefix: "wallet_test_mempool_rejected",
+    reserveCandidates: state.proactiveReserveOutpoints,
+  }), /walletprocesspsbt_failed/);
+
+  assert.deepEqual(harness.calls.coreWalletLockCalls, [state.managedCoreWallet.walletName]);
+  assert.deepEqual(harness.calls.signingSequence, [
+    "walletPassphrase",
+    "walletProcessPsbt",
+    "walletLock",
+  ]);
 });
 
 test("buildWalletMutationTransactionWithReserveFallback rejects drafts that would leave less than the reserve floor and re-locks the reserve outpoint", async () => {

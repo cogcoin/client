@@ -567,11 +567,17 @@ function createRegisterRpcHarness(options: {
             inputs,
           };
         },
+        async walletPassphrase() {
+          return null;
+        },
         async walletProcessPsbt() {
           return {
             psbt: "signed-psbt",
             complete: false,
           };
+        },
+        async walletLock() {
+          return null;
         },
         async finalizePsbt() {
           return {
@@ -891,6 +897,9 @@ function createAnchorRpcHarness(options: {
             inputs: decoded.inputs,
           };
         },
+        async walletPassphrase() {
+          return null;
+        },
         async walletProcessPsbt(_walletName: string, psbt: string) {
           const callIndex = Math.max(0, Number(psbt.match(/-(\d+)$/)?.[1] ?? "1") - 1);
           const phase = captured.calls[callIndex]?.phase ?? "tx1";
@@ -898,6 +907,9 @@ function createAnchorRpcHarness(options: {
             psbt: phase === "tx2" ? "signed-psbt-2" : "signed-psbt-1",
             complete: false,
           };
+        },
+        async walletLock() {
+          return null;
         },
         async finalizePsbt(psbt: string) {
           return {
@@ -1119,11 +1131,17 @@ function createDomainMarketRpcHarness(options: {
             },
           };
         },
+        async walletPassphrase() {
+          return null;
+        },
         async walletProcessPsbt() {
           return {
             psbt: "signed-psbt",
             complete: false,
           };
+        },
+        async walletLock() {
+          return null;
         },
         async finalizePsbt() {
           return {
@@ -1291,11 +1309,17 @@ function createReputationRpcHarness(options: {
             },
           };
         },
+        async walletPassphrase() {
+          return null;
+        },
         async walletProcessPsbt() {
           return {
             psbt: "signed-psbt",
             complete: false,
           };
+        },
+        async walletLock() {
+          return null;
         },
         async finalizePsbt() {
           return {
