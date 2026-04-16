@@ -23,6 +23,7 @@ export class DefaultClient implements Client {
   readonly #store: ClientStoreAdapter;
   readonly #genesisParameters: GenesisParameters;
   readonly #snapshotInterval: number;
+  readonly #blockRecordRetention: number;
   #state: IndexerState;
   #tip: ClientTip | null;
   #closed = false;
@@ -34,12 +35,14 @@ export class DefaultClient implements Client {
     state: IndexerState,
     tip: ClientTip | null,
     snapshotInterval: number,
+    blockRecordRetention: number,
   ) {
     this.#store = store;
     this.#genesisParameters = genesisParameters;
     this.#state = state;
     this.#tip = tip;
     this.#snapshotInterval = snapshotInterval;
+    this.#blockRecordRetention = blockRecordRetention;
   }
 
   async getTip(): Promise<ClientTip | null> {
@@ -69,6 +72,7 @@ export class DefaultClient implements Client {
         blockRecord: createStoredBlockRecord(applied.blockRecord, createdAt),
         checkpoint,
         deleteAboveHeight: null,
+        deleteBelowHeight: this.#blockRecordLowerBound(block.height),
       };
 
       await this.#store.writeAppliedBlock(writeEntry);
@@ -159,6 +163,10 @@ export class DefaultClient implements Client {
 
   #shouldCheckpoint(height: number): boolean {
     return this.#snapshotInterval > 0 && height % this.#snapshotInterval === 0;
+  }
+
+  #blockRecordLowerBound(height: number): number {
+    return height - this.#blockRecordRetention + 1;
   }
 
   #enqueue<T>(operation: () => Promise<T>): Promise<T> {

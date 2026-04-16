@@ -35,6 +35,7 @@ export interface WriteAppliedBlockEntry {
   blockRecord?: StoredBlockRecord | null;
   checkpoint?: ClientCheckpoint | null;
   deleteAboveHeight?: number | null;
+  deleteBelowHeight?: number | null;
 }
 
 export interface ClientStoreAdapter {
@@ -51,6 +52,7 @@ export interface ClientOptions {
   store: ClientStoreAdapter;
   genesisParameters?: GenesisParameters;
   snapshotInterval?: number;
+  blockRecordRetention?: number;
 }
 
 export interface ApplyBlockResult {

@@ -94,6 +94,37 @@ test("rewinding below genesis clears the tip and restores the initial state", as
   await client.close();
 });
 
+test("client prunes block records below the retained rewind window", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-client-retention");
+  const historyVector = loadHistoryVector();
+  const blocks = [...historyVector.setupBlocks, ...historyVector.testBlocks].slice(0, 4).map(materializeBlock);
+  const genesis = await loadBundledGenesisParameters();
+
+  const store = await openSqliteStore({ filename: databasePath });
+  const client = await openClient({
+    store,
+    genesisParameters: genesis,
+    snapshotInterval: 1000,
+    blockRecordRetention: 2,
+  });
+
+  for (const block of blocks) {
+    await client.applyBlock(block);
+  }
+
+  assert.equal(await store.loadBlockRecord(blocks[0].height), null);
+  assert.equal(await store.loadBlockRecord(blocks[1].height), null);
+  assert.ok(await store.loadBlockRecord(blocks[2].height));
+  assert.ok(await store.loadBlockRecord(blocks[3].height));
+
+  await assert.rejects(
+    async () => client.rewindToHeight(blocks[0].height),
+    /client_store_missing_block_record_/,
+  );
+
+  await client.close();
+});
+
 test("client keeps blocks below genesis inactive and activates exactly at genesis", async () => {
   const databasePath = createTempDatabasePath("cogcoin-client-genesis-boundary");
   const historyVector = loadHistoryVector();

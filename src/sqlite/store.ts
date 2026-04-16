@@ -117,6 +117,10 @@ export function createSqliteStoreAdapter(database: SqliteDatabase): ClientStoreA
             await deleteCheckpointsAbove(database, entry.deleteAboveHeight);
           }
 
+          if (entry.deleteBelowHeight !== null && entry.deleteBelowHeight !== undefined) {
+            await database.run(`DELETE FROM block_records WHERE height < ?`, [entry.deleteBelowHeight]);
+          }
+
           if (entry.blockRecord !== null && entry.blockRecord !== undefined) {
             await database.run(
               `INSERT INTO block_records (height, block_hash, previous_hash, record_bytes, state_hash_hex, created_at)
