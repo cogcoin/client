@@ -505,6 +505,48 @@ test("syncToTip does not emit complete for an internal capped pass", async () =>
   ]);
 });
 
+test("syncToTip waits for a capped boundary target instead of returning at the current Bitcoin height", async () => {
+  const blockchainInfoSequence = [
+    createBlockchainInfo(120, 120),
+    createBlockchainInfo(120, 120),
+    createBlockchainInfo(150, 150),
+    createBlockchainInfo(150, 150),
+  ];
+  let blockchainInfoIndex = 0;
+
+  const { dependencies, appliedHeights, phases } = createSyncDependencies({
+    startHeight: 100,
+    targetHeightCap: 150,
+    initialTip: {
+      height: 119,
+      blockHashHex: "77".repeat(32),
+      previousHashHex: "76".repeat(32),
+      stateHashHex: null,
+    },
+    async getBlockchainInfo() {
+      const info = blockchainInfoSequence[Math.min(blockchainInfoIndex, blockchainInfoSequence.length - 1)]!;
+      blockchainInfoIndex += 1;
+      return info;
+    },
+    async getBlock(hash: string) {
+      const height = Number.parseInt(hash.slice(0, 2), 16);
+      const previousHeight = height - 1;
+      return createRpcBlock(
+        height,
+        hash,
+        previousHeight >= 100 ? `${previousHeight.toString(16).padStart(2, "0")}`.repeat(32) : undefined,
+      );
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.equal(result.endingHeight, 150);
+  assert.equal(result.bestHeight, 150);
+  assert.equal(phases.includes("complete"), false);
+  assert.deepEqual(appliedHeights, Array.from({ length: 31 }, (_, index) => 120 + index));
+});
+
 test("syncToTip does not alternate between bitcoin_sync and follow_tip across capped sync passes", async () => {
   const resumeDisplayModes: Array<"sync" | "follow" | undefined> = [];
   const { dependencies, appliedHeights, phases } = createSyncDependencies({

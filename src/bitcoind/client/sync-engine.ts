@@ -322,11 +322,19 @@ export async function syncToTip(
       aggregate.bestHeight = endBestHeight;
       aggregate.bestHashHex = endInfo.bestblockhash;
 
-      if (dependencies.targetHeightCap !== null && dependencies.targetHeightCap !== undefined && caughtUpCogcoin) {
+      const reachedTargetHeightCap = dependencies.targetHeightCap !== null
+        && dependencies.targetHeightCap !== undefined
+        && endBestHeight >= dependencies.targetHeightCap;
+
+      if (reachedTargetHeightCap && caughtUpCogcoin) {
         return aggregate;
       }
 
-      if (endInfo.blocks === endInfo.headers && caughtUpCogcoin) {
+      if (
+        dependencies.targetHeightCap === null
+        && endInfo.blocks === endInfo.headers
+        && caughtUpCogcoin
+      ) {
         if (dependencies.isFollowing()) {
           dependencies.progress.replaceFollowBlockTimes(await runRpc(() =>
             dependencies.loadVisibleFollowBlockTimes(finalTip)));
