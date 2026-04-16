@@ -15,7 +15,6 @@ import type {
   RpcTransaction,
 } from "../../bitcoind/types.js";
 import { acquireFileLock } from "../fs/lock.js";
-import { computeDesignatedProactiveReserveOutpoints } from "../coin-control.js";
 import type { WalletPrompter } from "../lifecycle.js";
 import {
   resolveWalletRuntimePathsForTesting,
@@ -634,10 +633,6 @@ async function buildFieldTransaction(options: {
   state: WalletStateV1;
   plan: FieldPlan;
 }): Promise<BuiltWalletMutationTransaction> {
-  const reserveCandidates = computeDesignatedProactiveReserveOutpoints(
-    options.state,
-    await options.rpc.listUnspent(options.walletName, 1),
-  );
   return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
     walletName: options.walletName,
@@ -646,7 +641,7 @@ async function buildFieldTransaction(options: {
     validateFundedDraft: validateFieldDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
-    reserveCandidates,
+    reserveCandidates: options.state.proactiveReserveOutpoints,
   });
 }
 

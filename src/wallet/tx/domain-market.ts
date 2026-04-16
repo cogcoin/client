@@ -33,7 +33,7 @@ import {
   assertFixedInputPrefixMatches,
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
-  buildWalletMutationTransaction,
+  buildWalletMutationTransactionWithReserveFallback,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
   outpointKey,
@@ -520,34 +520,17 @@ function buildPlanForDomainOperation(options: {
   const outputs: unknown[] = [{ data: Buffer.from(options.opReturnData).toString("hex") }];
 
   if (options.anchorOutpoint === null) {
-    const senderUtxo = options.allUtxos.find((entry) =>
-      entry.scriptPubKey === options.sender.scriptPubKeyHex
-      && entry.confirmations >= 1
-      && entry.spendable !== false
-      && entry.safe !== false
-    );
-
-    if (senderUtxo === undefined) {
-      throw new Error(`${options.errorPrefix}_sender_utxo_unavailable`);
-    }
-
     return {
       sender: options.sender,
       changeAddress: options.state.funding.address,
-      fixedInputs: [
-        { txid: senderUtxo.txid, vout: senderUtxo.vout },
-      ],
+      fixedInputs: [],
       outputs,
       changePosition: 1,
       expectedOpReturnScriptHex: encodeOpReturnScript(options.opReturnData),
       expectedAnchorScriptHex: null,
       expectedAnchorValueSats: null,
       allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
-      eligibleFundingOutpointKeys: new Set(
-        fundingUtxos
-          .filter((entry) => !(entry.txid === senderUtxo.txid && entry.vout === senderUtxo.vout))
-          .map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout })),
-      ),
+      eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
       errorPrefix: options.errorPrefix,
     };
   }
@@ -649,7 +632,7 @@ async function buildTransaction(options: {
   state: WalletStateV1;
   plan: DomainMarketPlan;
 }): Promise<BuiltDomainMarketTransaction> {
-  return buildWalletMutationTransaction({
+  return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
     walletName: options.walletName,
     state: options.state,
@@ -657,6 +640,7 @@ async function buildTransaction(options: {
     validateFundedDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
+    reserveCandidates: options.state.proactiveReserveOutpoints,
   });
 }
 

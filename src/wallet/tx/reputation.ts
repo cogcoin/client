@@ -35,7 +35,7 @@ import {
   assertFixedInputPrefixMatches,
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
-  buildWalletMutationTransaction,
+  buildWalletMutationTransactionWithReserveFallback,
   formatCogAmount,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
@@ -451,7 +451,7 @@ async function buildTransaction(options: {
   state: WalletStateV1;
   plan: ReputationPlan;
 }): Promise<BuiltReputationTransaction> {
-  return buildWalletMutationTransaction({
+  return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
     walletName: options.walletName,
     state: options.state,
@@ -459,6 +459,7 @@ async function buildTransaction(options: {
     validateFundedDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
+    reserveCandidates: options.state.proactiveReserveOutpoints,
   });
 }
 

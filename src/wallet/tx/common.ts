@@ -72,6 +72,16 @@ export interface BuiltWalletMutationTransaction {
 
 export interface FixedWalletInput extends OutpointRecord {}
 
+function btcNumberToSats(value: number): bigint {
+  return BigInt(Math.round(value * 100_000_000));
+}
+
+function valueToSats(value: number | string): bigint {
+  return typeof value === "string"
+    ? BigInt(Math.round(Number(value) * 100_000_000))
+    : btcNumberToSats(value);
+}
+
 function createUnlockSessionState(
   state: WalletStateV1,
   unlockUntilUnixMs: number,
@@ -135,6 +145,13 @@ export function formatCogAmount(value: bigint): string {
 
 export function outpointKey(outpoint: OutpointRecord): string {
   return `${outpoint.txid}:${outpoint.vout}`;
+}
+
+function isSpendableConfirmedFundingUtxo(entry: RpcListUnspentEntry, fundingScriptPubKeyHex: string): boolean {
+  return entry.scriptPubKey === fundingScriptPubKeyHex
+    && entry.confirmations >= 1
+    && entry.spendable !== false
+    && entry.safe !== false;
 }
 
 export function updateMutationRecord(
@@ -277,6 +294,45 @@ export function isInsufficientFundsError(error: unknown): boolean {
   return message.includes("insufficient funds");
 }
 
+function isReserveFloorFundingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes("insufficient_funding_after_reserve");
+}
+
+function computeRemainingFundingValueSats(options: {
+  transaction: RpcTransaction;
+  fundingScriptPubKeyHex: string;
+  availableFundingValueByKey: Map<string, bigint>;
+}): bigint {
+  let remaining = 0n;
+
+  for (const value of options.availableFundingValueByKey.values()) {
+    remaining += value;
+  }
+
+  for (const input of options.transaction.vin) {
+    const scriptPubKeyHex = getDecodedInputScriptPubKeyHex(input);
+    const vout = getDecodedInputVout(input);
+    if (scriptPubKeyHex !== options.fundingScriptPubKeyHex || vout === null || typeof input.txid !== "string") {
+      continue;
+    }
+
+    remaining -= options.availableFundingValueByKey.get(outpointKey({
+      txid: input.txid,
+      vout,
+    })) ?? 0n;
+  }
+
+  for (const output of options.transaction.vout) {
+    if (output.scriptPubKey?.hex !== options.fundingScriptPubKeyHex) {
+      continue;
+    }
+    remaining += valueToSats(output.value);
+  }
+
+  return remaining;
+}
+
 export function assertWalletMutationContextReady(
   context: WalletReadContext,
   errorPrefix: string,
@@ -337,6 +393,8 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
     outputs: unknown[];
     changeAddress: string;
     changePosition: number;
+    allowedFundingScriptPubKeyHex: string;
+    eligibleFundingOutpointKeys: Set<string>;
   };
   validateFundedDraft(
     decoded: RpcDecodedPsbt,
@@ -355,6 +413,21 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
     fixedInputs: options.plan.fixedInputs,
     temporarilyUnlockedOutpoints: options.temporarilyUnlockedPolicyOutpoints,
   });
+  const availableFundingUtxos = (await options.rpc.listUnspent(options.walletName, 1))
+    .filter((entry) => isSpendableConfirmedFundingUtxo(entry, options.plan.allowedFundingScriptPubKeyHex));
+  const availableFundingValueByKey = new Map(
+    availableFundingUtxos.map((entry) => [
+      outpointKey({ txid: entry.txid, vout: entry.vout }),
+      btcNumberToSats(entry.amount),
+    ]),
+  );
+  const validationPlan = {
+    ...options.plan,
+    eligibleFundingOutpointKeys: new Set([
+      ...options.plan.eligibleFundingOutpointKeys,
+      ...availableFundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout })),
+    ]),
+  } as TPlan;
   const lockedBefore = await options.rpc.listLockUnspent(options.walletName);
   let temporaryBuilderLockedOutpoints: OutpointRecord[] = [];
 
@@ -379,7 +452,17 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
     const lockedAfter = await options.rpc.listLockUnspent(options.walletName);
     temporaryBuilderLockedOutpoints = diffTemporaryLockedOutpoints(lockedBefore, lockedAfter);
     const decoded = await options.rpc.decodePsbt(funded.psbt);
-    options.validateFundedDraft(decoded, funded, options.plan);
+    options.validateFundedDraft(decoded, funded, validationPlan);
+    if (options.state.proactiveReserveSats > 0) {
+      const remainingFundingValueSats = computeRemainingFundingValueSats({
+        transaction: decoded.tx,
+        fundingScriptPubKeyHex: options.plan.allowedFundingScriptPubKeyHex,
+        availableFundingValueByKey,
+      });
+      if (remainingFundingValueSats < BigInt(options.state.proactiveReserveSats)) {
+        throw new Error("wallet_mutation_insufficient_funding_after_reserve");
+      }
+    }
     const signed = await options.rpc.walletProcessPsbt(options.walletName, funded.psbt, true, "DEFAULT");
     const finalized = await options.rpc.finalizePsbt(signed.psbt, true);
 
@@ -436,6 +519,8 @@ export async function buildWalletMutationTransactionWithReserveFallback<TPlan>(o
     outputs: unknown[];
     changeAddress: string;
     changePosition: number;
+    allowedFundingScriptPubKeyHex: string;
+    eligibleFundingOutpointKeys: Set<string>;
   };
   validateFundedDraft(
     decoded: RpcDecodedPsbt,
@@ -472,7 +557,7 @@ export async function buildWalletMutationTransactionWithReserveFallback<TPlan>(o
       });
     } catch (error) {
       lastError = error;
-      if (!isInsufficientFundsError(error) || attempt === options.reserveCandidates.length) {
+      if ((!isInsufficientFundsError(error) && !isReserveFloorFundingError(error)) || attempt === options.reserveCandidates.length) {
         throw error;
       }
     }

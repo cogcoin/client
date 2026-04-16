@@ -35,7 +35,7 @@ import {
   assertFixedInputPrefixMatches,
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
-  buildWalletMutationTransaction,
+  buildWalletMutationTransactionWithReserveFallback,
   formatCogAmount,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
@@ -790,22 +790,11 @@ function buildRegisterPlan(options: {
     });
 
     if (options.anchorOutpoint === null) {
-      if (fundingUtxos.length === 0) {
-        throw new Error("wallet_register_sender_utxo_unavailable");
-      }
-
-      const senderInput = fundingUtxos[0]!;
-      const additionalFunding = fundingUtxos
-        .slice(1)
-        .map((entry) => ({ txid: entry.txid, vout: entry.vout }));
-
       return {
         registerKind: "root",
         sender: options.sender,
         changeAddress: options.state.funding.address,
-        fixedInputs: [
-          { txid: senderInput.txid, vout: senderInput.vout },
-        ],
+        fixedInputs: [],
         outputs: rootOutputs.outputs,
         changePosition: rootOutputs.changePosition,
         expectedOpReturnScriptHex: rootOutputs.expectedOpReturnScriptHex,
@@ -816,7 +805,7 @@ function buildRegisterPlan(options: {
         expectedAnchorScriptHex: null,
         expectedAnchorValueSats: null,
         allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
-        eligibleFundingOutpointKeys: new Set(additionalFunding.map((entry) => outpointKey(entry))),
+        eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey(entry))),
       };
     }
 
@@ -901,7 +890,7 @@ async function buildRegisterTransaction(options: {
   state: WalletStateV1;
   plan: RegisterTransactionPlan;
 }): Promise<BuiltRegisterTransaction> {
-  return buildWalletMutationTransaction({
+  return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
     walletName: options.walletName,
     state: options.state,
@@ -909,6 +898,7 @@ async function buildRegisterTransaction(options: {
     validateFundedDraft,
     finalizeErrorCode: "wallet_register_finalize_failed",
     mempoolRejectPrefix: "wallet_register_mempool_rejected",
+    reserveCandidates: options.state.proactiveReserveOutpoints,
   });
 }
 

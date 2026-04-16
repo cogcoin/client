@@ -16,7 +16,6 @@ import {
   deriveWalletIdentityMaterial,
   type WalletDerivedIdentity,
 } from "../material.js";
-import { computeDesignatedProactiveReserveOutpoints } from "../coin-control.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../runtime.js";
 import {
   createDefaultWalletSecretProvider,
@@ -773,16 +772,10 @@ function buildTx1Plan(options: {
   ];
 
   if (options.operation.sourceAnchorOutpoint === null) {
-    if (fundingUtxos.length === 0) {
-      throw new Error("wallet_anchor_sender_utxo_unavailable");
-    }
-
-    const senderInput = fundingUtxos[0]!;
-
     return {
       sender: options.operation.sourceSender,
       changeAddress: options.state.funding.address,
-      fixedInputs: [{ txid: senderInput.txid, vout: senderInput.vout }],
+      fixedInputs: [],
       outputs,
       changePosition: 2,
       expectedOpReturnScriptHex: encodeOpReturnScript(
@@ -793,11 +786,7 @@ function buildTx1Plan(options: {
       expectedReplacementAnchorScriptHex: null,
       expectedReplacementAnchorValueSats: null,
       allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
-      eligibleFundingOutpointKeys: new Set(
-        fundingUtxos
-          .filter((entry) => !(entry.txid === senderInput.txid && entry.vout === senderInput.vout))
-          .map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout })),
-      ),
+      eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
       requiredSenderOutpoint: null,
       requiredProvisionalOutpoint: null,
       errorPrefix: "wallet_anchor_tx1",
@@ -1036,10 +1025,6 @@ async function buildTx1(options: {
   state: WalletStateV1;
   plan: AnchorTxPlan;
 }): Promise<BuiltAnchorTransaction> {
-  const reserveCandidates = computeDesignatedProactiveReserveOutpoints(
-    options.state,
-    await options.rpc.listUnspent(options.walletName, 1),
-  );
   return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
     walletName: options.walletName,
@@ -1048,7 +1033,7 @@ async function buildTx1(options: {
     validateFundedDraft: validateTx1Draft,
     finalizeErrorCode: "wallet_anchor_tx1_finalize_failed",
     mempoolRejectPrefix: "wallet_anchor_tx1_mempool_rejected",
-    reserveCandidates,
+    reserveCandidates: options.state.proactiveReserveOutpoints,
   });
 }
 
@@ -1058,10 +1043,6 @@ async function buildTx2(options: {
   state: WalletStateV1;
   plan: AnchorTxPlan;
 }): Promise<BuiltAnchorTransaction> {
-  const reserveCandidates = computeDesignatedProactiveReserveOutpoints(
-    options.state,
-    await options.rpc.listUnspent(options.walletName, 1),
-  );
   return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
     walletName: options.walletName,
@@ -1070,7 +1051,7 @@ async function buildTx2(options: {
     validateFundedDraft: validateTx2Draft,
     finalizeErrorCode: "wallet_anchor_tx2_finalize_failed",
     mempoolRejectPrefix: "wallet_anchor_tx2_mempool_rejected",
-    reserveCandidates,
+    reserveCandidates: options.state.proactiveReserveOutpoints,
   });
 }
 

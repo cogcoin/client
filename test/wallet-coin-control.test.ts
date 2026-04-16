@@ -5,6 +5,7 @@ import type { RpcListUnspentEntry, RpcLockedUnspent } from "../src/bitcoind/type
 import {
   DEFAULT_PROACTIVE_RESERVE_SATS,
   computeDesignatedProactiveReserveOutpoints,
+  normalizePortableWalletArchivePayload,
   normalizeWalletStateRecord,
   reconcilePersistentPolicyLocks,
 } from "../src/wallet/coin-control.js";
@@ -18,7 +19,7 @@ function createWalletState(partial: Partial<WalletStateV1> = {}): WalletStateV1 
     walletRootId: "wallet-root-test",
     network: "mainnet",
     anchorValueSats: 2_000,
-    proactiveReserveSats: 50_000,
+    proactiveReserveSats: 1_000,
     proactiveReserveOutpoints: [],
     nextDedicatedIndex: 3,
     fundingIndex: 0,
@@ -206,6 +207,46 @@ test("normalizeWalletStateRecord adds the reserve defaults", () => {
   assert.deepEqual(normalized.proactiveReserveOutpoints, []);
 });
 
+test("normalizeWalletStateRecord migrates positive reserve values to the default and clears stale reserve outpoints", () => {
+  const normalized = normalizeWalletStateRecord(createWalletState({
+    proactiveReserveSats: 50_000,
+    proactiveReserveOutpoints: [
+      { txid: "dd".repeat(32), vout: 0 },
+      { txid: "ee".repeat(32), vout: 0 },
+    ],
+  }));
+
+  assert.equal(normalized.proactiveReserveSats, DEFAULT_PROACTIVE_RESERVE_SATS);
+  assert.deepEqual(normalized.proactiveReserveOutpoints, []);
+});
+
+test("normalizePortableWalletArchivePayload migrates positive reserve values to the default and clears stale reserve outpoints", () => {
+  const normalized = normalizePortableWalletArchivePayload({
+    ...createWalletState(),
+    exportedAtUnixMs: 1_700_000_100_000,
+    expected: {
+      masterFingerprintHex: "1234abcd",
+      accountPath: "m/84'/0'/0'",
+      accountXpub: "xpub-test",
+      publicExternalDescriptor: "wpkh([1234abcd/84h/0h/0h]xpub-test/0/*)#pub",
+      descriptorChecksum: "pub",
+      rangeEnd: 4095,
+      safetyMargin: 128,
+      fundingAddress0: "bc1qfundingidentity0000000000000000000000000",
+      fundingScriptPubKeyHex0: "fund-script",
+      walletBirthTime: 1_700_000_000,
+    },
+    proactiveReserveSats: 50_000,
+    proactiveReserveOutpoints: [
+      { txid: "dd".repeat(32), vout: 0 },
+      { txid: "ee".repeat(32), vout: 0 },
+    ],
+  });
+
+  assert.equal(normalized.proactiveReserveSats, DEFAULT_PROACTIVE_RESERVE_SATS);
+  assert.deepEqual(normalized.proactiveReserveOutpoints, []);
+});
+
 test("computeDesignatedProactiveReserveOutpoints uses confirmed index-0 funding and excludes mining conflict", () => {
   const state = createWalletState();
   const reserve = computeDesignatedProactiveReserveOutpoints(state, [
@@ -226,8 +267,15 @@ test("computeDesignatedProactiveReserveOutpoints uses confirmed index-0 funding 
 
   assert.deepEqual(reserve, [
     { txid: "dd".repeat(32), vout: 0 },
-    { txid: "ee".repeat(32), vout: 0 },
   ]);
+});
+
+test("computeDesignatedProactiveReserveOutpoints returns no reserve when confirmed funding cannot reach the target", () => {
+  const reserve = computeDesignatedProactiveReserveOutpoints(createWalletState(), [
+    createFundingUtxo("dd", 0.000008, 1),
+  ]);
+
+  assert.deepEqual(reserve, []);
 });
 
 test("reconcilePersistentPolicyLocks locks canonical anchors, auxiliary dedicated utxos, reserve utxos, and idle mining conflict without touching unrelated locks", async () => {
@@ -271,7 +319,6 @@ test("reconcilePersistentPolicyLocks locks canonical anchors, auxiliary dedicate
     `${"bb".repeat(32)}:9`,
     `${"cc".repeat(32)}:0`,
     `${"dd".repeat(32)}:0`,
-    `${"ee".repeat(32)}:0`,
   ].sort()]);
 });
 
@@ -301,7 +348,6 @@ test("fixed inputs are exempt for the active build and restored by the next reco
   });
   assert.deepEqual(outpointStrings(rpc.calls.lockCalls), [[
     `${"dd".repeat(32)}:0`,
-    `${"ee".repeat(32)}:0`,
   ].sort()]);
 
   await reconcilePersistentPolicyLocks({
@@ -312,6 +358,42 @@ test("fixed inputs are exempt for the active build and restored by the next reco
   assert.deepEqual(outpointStrings(rpc.calls.lockCalls).at(-1), [
     `${"aa".repeat(32)}:1`,
   ]);
+});
+
+test("reconcilePersistentPolicyLocks migrates legacy reserve state and unlocks stale legacy reserve locks", async () => {
+  const state = createWalletState({
+    proactiveReserveSats: 50_000,
+    proactiveReserveOutpoints: [
+      { txid: "dd".repeat(32), vout: 0 },
+      { txid: "ee".repeat(32), vout: 0 },
+    ],
+  });
+  const rpc = createMockRpc({
+    spendable: [
+      createFundingUtxo("dd", 0.0003, 1),
+      createFundingUtxo("ee", 0.00025, 1),
+    ],
+    locked: [
+      { txid: "dd".repeat(32), vout: 0 },
+      { txid: "ee".repeat(32), vout: 0 },
+    ],
+  });
+
+  const reconciled = await reconcilePersistentPolicyLocks({
+    rpc,
+    walletName: state.managedCoreWallet.walletName,
+    state,
+  });
+
+  assert.equal(reconciled.state.proactiveReserveSats, DEFAULT_PROACTIVE_RESERVE_SATS);
+  assert.deepEqual(reconciled.state.proactiveReserveOutpoints, [
+    { txid: "dd".repeat(32), vout: 0 },
+  ]);
+  assert.deepEqual(outpointStrings(rpc.calls.unlockCalls), [[
+    `${"dd".repeat(32)}:0`,
+    `${"ee".repeat(32)}:0`,
+  ].sort()]);
+  assert.deepEqual(outpointStrings(rpc.calls.lockCalls), [[`${"dd".repeat(32)}:0`]]);
 });
 
 test("cleanupInactiveTemporaryBuilderLocks clears stale tracked locks and preserves active family locks", async () => {

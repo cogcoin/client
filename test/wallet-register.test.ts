@@ -113,7 +113,7 @@ function createWalletState(partial: Partial<WalletStateV1> = {}): WalletStateV1 
     walletRootId: "wallet-root-test",
     network: "mainnet",
     anchorValueSats: 2_000,
-    proactiveReserveSats: 50_000,
+    proactiveReserveSats: 1_000,
     proactiveReserveOutpoints: [],
     nextDedicatedIndex: 3,
     fundingIndex: 0,
@@ -409,6 +409,10 @@ function createRegisterRpcHarness(options: {
     inputs?: Array<{ txid: string; vout: number }>;
     outputs?: unknown[];
     options?: Record<string, unknown>;
+    decoded?: {
+      vin: Array<{ txid: string; vout: number; prevout: { scriptPubKey: { hex: string } } }>;
+      vout: Array<{ n: number; value: number; scriptPubKey: { hex: string } }>;
+    };
     unlockCalls: Array<Array<{ txid: string; vout: number }>>;
   } = {
     unlockCalls: [],
@@ -535,6 +539,7 @@ function createRegisterRpcHarness(options: {
               },
               { n: 2, value: 0.01899, scriptPubKey: { hex: options.fundingScriptPubKeyHex } },
             ];
+          captured.decoded = { vin, vout };
           return {
             tx: {
               txid: "44".repeat(32),
@@ -628,10 +633,15 @@ function createAnchorRpcHarness(options: {
       options: Record<string, unknown>;
       phase: "tx1" | "tx2";
     }>;
+    decoded: Partial<Record<"tx1" | "tx2", {
+      vin: Array<{ txid: string; vout: number; prevout: { scriptPubKey: { hex: string } } }>;
+      vout: Array<{ n: number; value: number; scriptPubKey: { hex: string } }>;
+    }>>;
     unlockCalls: Array<Array<{ txid: string; vout: number }>>;
     relockCalls: Array<Array<{ txid: string; vout: number }>>;
   } = {
     calls: [],
+    decoded: {},
     unlockCalls: [],
     relockCalls: [],
   };
@@ -813,10 +823,12 @@ function createAnchorRpcHarness(options: {
         async decodePsbt(psbt: string) {
           const callIndex = Math.max(0, Number(psbt.match(/-(\d+)$/)?.[1] ?? "1") - 1);
           const phase = captured.calls[callIndex]?.phase ?? "tx1";
+          const decoded = buildDecoded(callIndex);
+          captured.decoded[phase] = decoded;
           return {
             tx: {
               txid: phase === "tx2" ? tx2Txid : tx1Txid,
-              ...buildDecoded(callIndex),
+              ...decoded,
             },
           };
         },
@@ -837,10 +849,12 @@ function createAnchorRpcHarness(options: {
         async decodeRawTransaction(hex: string) {
           const phase = hex === "feedface" ? "tx2" : "tx1";
           const callIndex = Math.max(0, captured.calls.findIndex((call) => call.phase === phase));
+          const decoded = buildDecoded(callIndex);
+          captured.decoded[phase] = decoded;
           return {
             txid: phase === "tx2" ? tx2Txid : tx1Txid,
             hash: (phase === "tx2" ? "88" : "66").repeat(32),
-            ...buildDecoded(callIndex),
+            ...decoded,
           };
         },
         async testMempoolAccept() {
@@ -896,6 +910,10 @@ function createDomainMarketRpcHarness(options: {
     inputs?: Array<{ txid: string; vout: number }>;
     outputs?: unknown[];
     options?: Record<string, unknown>;
+    decoded?: {
+      vin: Array<{ txid: string; vout: number; prevout: { scriptPubKey: { hex: string } } }>;
+      vout: Array<{ n: number; value: number; scriptPubKey: { hex: string } }>;
+    };
     unlockCalls: Array<Array<{ txid: string; vout: number }>>;
   } = {
     unlockCalls: [],
@@ -1026,6 +1044,10 @@ function createDomainMarketRpcHarness(options: {
             vout.push({ n: 1, value: 0.02999, scriptPubKey: { hex: options.fundingScriptPubKeyHex } });
           }
 
+          captured.decoded = {
+            vin,
+            vout,
+          };
           return {
             tx: {
               txid: "44".repeat(32),
@@ -1446,7 +1468,8 @@ test("registerDomain builds a root registration, persists a live mutation, and r
   assert.equal(result.resolved.sender.selector, "id:0");
   assert.equal(result.resolved.economicEffect.kind, "treasury-payment");
   assert.equal(result.status, "live");
-  assert.equal(harness.captured.inputs?.[0]?.txid, "11".repeat(32));
+  assert.equal(harness.captured.inputs?.length ?? 0, 0);
+  assert.equal(harness.captured.decoded?.vin[0]?.prevout.scriptPubKey.hex, "0014ed495c1face9da3c7028519dbb36576c37f90e56");
   assert.equal((harness.captured.outputs?.[1] as Record<string, number>)["bc1qa4y4c8ava8drcupg2xwmkdjhdsmljrjk5ejp0t"], 0.001);
   assert.equal(harness.captured.options?.changePosition, 2);
   assert.deepEqual(harness.captured.unlockCalls, [[{ txid: "33".repeat(32), vout: 1 }]]);
@@ -1503,7 +1526,8 @@ test("registerDomain preserves the plain root builder shape when --from id:0 is 
 
   assert.equal(result.senderSelector, "id:0");
   assert.equal(result.resolved.sender.selector, "id:0");
-  assert.equal(harness.captured.inputs?.[0]?.txid, "11".repeat(32));
+  assert.equal(harness.captured.inputs?.length ?? 0, 0);
+  assert.equal(harness.captured.decoded?.vin[0]?.prevout.scriptPubKey.hex, "0014ed495c1face9da3c7028519dbb36576c37f90e56");
   assert.equal(harness.captured.options?.changePosition, 2);
   assert.equal(harness.captured.outputs?.length, 2);
 });
@@ -2351,7 +2375,8 @@ test("buyDomain buys a listed unanchored domain from funding identity zero witho
     scriptPubKeyHex: "00145f5a03d6c7c88648b5f947459b769008ced5a020",
     address: "bc1qbetaowner00000000000000000000000000000",
   });
-  assert.equal(harness.captured.inputs?.[0]?.txid, "11".repeat(32));
+  assert.equal(harness.captured.inputs?.length ?? 0, 0);
+  assert.equal(harness.captured.decoded?.vin[0]?.prevout.scriptPubKey.hex, "0014ed495c1face9da3c7028519dbb36576c37f90e56");
   assert.equal(harness.captured.outputs?.length, 1);
   assert.equal(saved.state.pendingMutations?.[0]?.kind, "buy");
   assert.equal(saved.state.pendingMutations?.[0]?.priceCogtoshi, 250n);
@@ -2409,7 +2434,8 @@ test("buyDomain preserves the plain buyer path for explicit --from id:0", async 
   });
 
   assert.equal(result.resolvedBuyer?.selector, "id:0");
-  assert.equal(harness.captured.inputs?.[0]?.txid, "11".repeat(32));
+  assert.equal(harness.captured.inputs?.length ?? 0, 0);
+  assert.equal(harness.captured.decoded?.vin[0]?.prevout.scriptPubKey.hex, "0014ed495c1face9da3c7028519dbb36576c37f90e56");
   assert.equal(harness.captured.outputs?.length, 1);
 });
 
@@ -4219,7 +4245,8 @@ test("anchorDomain builds Case A from funding identity zero and persists a live 
   assert.equal(harness.captured.calls.length, 2);
   assert.equal(harness.captured.calls[0]?.options.add_inputs, true);
   assert.equal(harness.captured.calls[1]?.options.add_inputs, true);
-  assert.equal(harness.captured.calls[0]?.inputs[0]?.txid, "11".repeat(32));
+  assert.equal(harness.captured.calls[0]?.inputs.length ?? 0, 0);
+  assert.equal(harness.captured.decoded.tx1?.vin[0]?.prevout.scriptPubKey.hex, weatherbotState.funding.scriptPubKeyHex);
   assert.equal(
     (harness.captured.calls[0]?.outputs[1] as Record<string, number>)[targetIdentity.address],
     0.00002,
@@ -4227,7 +4254,10 @@ test("anchorDomain builds Case A from funding identity zero and persists a live 
   assert.equal(harness.captured.calls[1]?.inputs[0]?.txid, harness.tx1Txid);
   assert.equal(harness.captured.calls[1]?.inputs[0]?.vout, 1);
   assert.deepEqual(harness.captured.relockCalls, [
-    [{ txid: harness.tx1Txid, vout: 1 }],
+    [
+      { txid: harness.tx1Txid, vout: 1 },
+      { txid: "11".repeat(32), vout: 0 },
+    ],
     [{ txid: "11".repeat(32), vout: 0 }],
     [{ txid: harness.tx2Txid, vout: 1 }],
   ]);
@@ -4319,10 +4349,11 @@ test("anchorDomain treats a funding-owned Tx1 as funding-sent even if fundingInd
 
   assert.equal(result.status, "live");
   assert.equal(harness.captured.calls[0]?.options.add_inputs, true);
-  assert.equal(harness.captured.calls[0]?.inputs[0]?.txid, "11".repeat(32));
+  assert.equal(harness.captured.calls[0]?.inputs.length ?? 0, 0);
+  assert.equal(harness.captured.decoded.tx1?.vin[0]?.prevout.scriptPubKey.hex, state.funding.scriptPubKeyHex);
 });
 
-test("anchorDomain rejects a funding-owner Tx1 decode when vin[0] no longer matches the fixed sender prefix", async () => {
+test("anchorDomain rejects a funding-owner Tx1 decode when vin[0] no longer matches the funding sender identity", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-case-a-reordered-funding-"));
   const paths = createTempWalletPaths(tempRoot);
   const provider = createMemoryWalletSecretProviderForTesting();
@@ -4380,7 +4411,7 @@ test("anchorDomain rejects a funding-owner Tx1 decode when vin[0] no longer matc
         {
           txid: "22".repeat(32),
           vout: 0,
-          scriptPubKeyHex: state.funding.scriptPubKeyHex,
+          scriptPubKeyHex: targetIdentity.scriptPubKeyHex,
         },
         {
           txid: "11".repeat(32),

@@ -23,7 +23,7 @@ function createPortableWalletArchivePayload(
     walletRootId: "wallet-root-test",
     network: "mainnet",
     anchorValueSats: 2_000,
-    proactiveReserveSats: 50_000,
+    proactiveReserveSats: 1_000,
     proactiveReserveOutpoints: [],
     nextDedicatedIndex: 1,
     fundingIndex: 0,
@@ -119,6 +119,22 @@ test("portable wallet archives round-trip with a passphrase", async () => {
 
   const loaded = await readPortableWalletArchive(archivePath, "archive-passphrase");
   assert.deepEqual(loaded, payload);
+});
+
+test("portable wallet archives normalize legacy reserve values on load", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-archive-legacy-"));
+  const archivePath = join(tempRoot, "wallet.cogwallet");
+  const payload = createPortableWalletArchivePayload({
+    proactiveReserveSats: 50_000,
+    proactiveReserveOutpoints: [{ txid: "dd".repeat(32), vout: 0 }],
+  });
+
+  await writePortableWalletArchive(archivePath, payload, "archive-passphrase");
+
+  const loaded = await readPortableWalletArchive(archivePath, "archive-passphrase");
+
+  assert.equal(loaded.proactiveReserveSats, 1_000);
+  assert.deepEqual(loaded.proactiveReserveOutpoints, []);
 });
 
 test("portable wallet archives created before the wasm migration still decrypt", async () => {

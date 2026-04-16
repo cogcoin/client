@@ -14,7 +14,7 @@ import type {
   WalletStateV1,
 } from "./types.js";
 
-export const DEFAULT_PROACTIVE_RESERVE_SATS = 50_000;
+export const DEFAULT_PROACTIVE_RESERVE_SATS = 1_000;
 
 export interface WalletCoinControlRpc {
   listUnspent(walletName: string, minConf?: number): Promise<RpcListUnspentEntry[]>;
@@ -62,7 +62,12 @@ function normalizeReserveSats(raw: unknown): number {
     return DEFAULT_PROACTIVE_RESERVE_SATS;
   }
 
-  return Math.max(0, Math.trunc(raw));
+  const normalized = Math.max(0, Math.trunc(raw));
+  if (normalized === 0) {
+    return 0;
+  }
+
+  return DEFAULT_PROACTIVE_RESERVE_SATS;
 }
 
 function sameOutpointList(left: readonly OutpointRecord[], right: readonly OutpointRecord[] | null | undefined): boolean {
@@ -76,11 +81,15 @@ function sameOutpointList(left: readonly OutpointRecord[], right: readonly Outpo
 }
 
 export function normalizeWalletStateRecord(state: WalletStateV1): WalletStateV1 {
+  const rawProactiveReserveSats = (state as WalletStateV1 & { proactiveReserveSats?: number }).proactiveReserveSats;
   const proactiveReserveSats = normalizeReserveSats(
-    (state as WalletStateV1 & { proactiveReserveSats?: number }).proactiveReserveSats,
+    rawProactiveReserveSats,
   );
+  const reserveValueChanged = proactiveReserveSats !== rawProactiveReserveSats;
   const proactiveReserveOutpoints = normalizeOutpointRecordList(
-    (state as WalletStateV1 & { proactiveReserveOutpoints?: OutpointRecord[] }).proactiveReserveOutpoints,
+    proactiveReserveSats <= 0 || reserveValueChanged
+      ? []
+      : (state as WalletStateV1 & { proactiveReserveOutpoints?: OutpointRecord[] }).proactiveReserveOutpoints,
   );
   const pendingMutations = state.pendingMutations ?? [];
 
@@ -106,11 +115,15 @@ export function normalizeWalletStateRecord(state: WalletStateV1): WalletStateV1 
 export function normalizePortableWalletArchivePayload(
   payload: PortableWalletArchivePayloadV1,
 ): PortableWalletArchivePayloadV1 {
+  const rawProactiveReserveSats = (payload as PortableWalletArchivePayloadV1 & { proactiveReserveSats?: number }).proactiveReserveSats;
   const proactiveReserveSats = normalizeReserveSats(
-    (payload as PortableWalletArchivePayloadV1 & { proactiveReserveSats?: number }).proactiveReserveSats,
+    rawProactiveReserveSats,
   );
+  const reserveValueChanged = proactiveReserveSats !== rawProactiveReserveSats;
   const proactiveReserveOutpoints = normalizeOutpointRecordList(
-    (payload as PortableWalletArchivePayloadV1 & { proactiveReserveOutpoints?: OutpointRecord[] }).proactiveReserveOutpoints,
+    proactiveReserveSats <= 0 || reserveValueChanged
+      ? []
+      : (payload as PortableWalletArchivePayloadV1 & { proactiveReserveOutpoints?: OutpointRecord[] }).proactiveReserveOutpoints,
   );
 
   if (
@@ -251,6 +264,10 @@ export function computeDesignatedProactiveReserveOutpoints(
     if (total >= target) {
       break;
     }
+  }
+
+  if (total < target) {
+    return [];
   }
 
   return selected;
@@ -418,8 +435,13 @@ export async function reconcilePersistentPolicyLocks(options: {
   changed: boolean;
   spendableUtxos: readonly RpcListUnspentEntry[];
 }> {
+  const rawReserveOutpoints = normalizeOutpointRecordList(
+    (options.state as WalletStateV1 & { proactiveReserveOutpoints?: OutpointRecord[] }).proactiveReserveOutpoints,
+  );
   let state = normalizeWalletStateRecord(options.state);
   let changed = state !== options.state;
+  const fixedInputKeys = new Set((options.fixedInputs ?? []).map((outpoint) => outpointKey(outpoint)));
+  const temporarilyUnlockedKeys = new Set((options.temporarilyUnlockedOutpoints ?? []).map((outpoint) => outpointKey(outpoint)));
 
   if (options.cleanupInactiveTemporaryBuilderLocks === true) {
     const cleaned = collectInactiveTemporaryBuilderLockCleanup(state);
@@ -430,13 +452,26 @@ export async function reconcilePersistentPolicyLocks(options: {
     }
   }
 
-  const spendableUtxos = options.spendableUtxos ?? await options.rpc.listUnspent(options.walletName, 0).catch(() => []);
+  const lockedBeforeReserveInspection = await options.rpc.listLockUnspent(options.walletName).catch(() => []);
+  const lockedBeforeReserveInspectionKeys = new Set(lockedBeforeReserveInspection.map((outpoint) => outpointKey(outpoint)));
+  const reserveInspectionUnlocks = rawReserveOutpoints.filter((outpoint) => {
+    const key = outpointKey(outpoint);
+    return lockedBeforeReserveInspectionKeys.has(key) && !fixedInputKeys.has(key);
+  });
+  if (reserveInspectionUnlocks.length > 0) {
+    await options.rpc.lockUnspent(options.walletName, true, reserveInspectionUnlocks).catch(() => undefined);
+  }
+
+  const spendableUtxos = reserveInspectionUnlocks.length > 0 || options.spendableUtxos === undefined
+    ? await options.rpc.listUnspent(options.walletName, 0).catch(() => [])
+    : options.spendableUtxos;
+  const previouslyProtectedUniverse = collectPersistentPolicyLockedOutpoints(state, spendableUtxos);
   const reserveSynced = syncStateWithComputedReserve(state, spendableUtxos);
   state = reserveSynced.state;
   changed ||= reserveSynced.changed;
 
   const protectedUniverse = collectPersistentPolicyLockedOutpoints(state, spendableUtxos);
-  if (protectedUniverse.length === 0) {
+  if (protectedUniverse.length === 0 && previouslyProtectedUniverse.length === 0) {
     return {
       state,
       changed,
@@ -445,22 +480,31 @@ export async function reconcilePersistentPolicyLocks(options: {
   }
 
   const protectedUniverseKeys = new Set(protectedUniverse.map((outpoint) => outpointKey(outpoint)));
-  const fixedInputKeys = new Set((options.fixedInputs ?? []).map((outpoint) => outpointKey(outpoint)));
-  const temporarilyUnlockedKeys = new Set((options.temporarilyUnlockedOutpoints ?? []).map((outpoint) => outpointKey(outpoint)));
+  const previouslyProtectedUniverseKeys = new Set(previouslyProtectedUniverse.map((outpoint) => outpointKey(outpoint)));
+  const managedProtectedKeys = new Set([
+    ...protectedUniverseKeys,
+    ...previouslyProtectedUniverseKeys,
+  ]);
 
   const locked = await options.rpc.listLockUnspent(options.walletName).catch(() => []);
   const spendableKeys = new Set(spendableUtxos.map((entry) => outpointKey(entry)));
+  const lockedKeys = new Set(locked.map((outpoint) => outpointKey(outpoint)));
   const expectedLocked = protectedUniverse.filter((outpoint) => {
     const key = outpointKey(outpoint);
-    return spendableKeys.has(key) && !fixedInputKeys.has(key) && !temporarilyUnlockedKeys.has(key);
+    return (spendableKeys.has(key) || lockedKeys.has(key))
+      && !fixedInputKeys.has(key)
+      && !temporarilyUnlockedKeys.has(key);
   });
   const expectedLockedKeys = new Set(expectedLocked.map((outpoint) => outpointKey(outpoint)));
-  const lockedProtected = locked.filter((outpoint) => protectedUniverseKeys.has(outpointKey(outpoint)));
-  const lockedProtectedKeys = new Set(lockedProtected.map((outpoint) => outpointKey(outpoint)));
-  const staleLocked = lockedProtected.filter((outpoint) =>
-    !expectedLockedKeys.has(outpointKey(outpoint)) || !spendableKeys.has(outpointKey(outpoint)),
-  );
-  const missingLocked = expectedLocked.filter((outpoint) => !lockedProtectedKeys.has(outpointKey(outpoint)));
+  const lockedManaged = locked.filter((outpoint) => managedProtectedKeys.has(outpointKey(outpoint)));
+  const staleLocked = lockedManaged.filter((outpoint) => !expectedLockedKeys.has(outpointKey(outpoint)));
+  const missingLocked = protectedUniverse.filter((outpoint) => {
+    const key = outpointKey(outpoint);
+    return spendableKeys.has(key)
+      && !fixedInputKeys.has(key)
+      && !temporarilyUnlockedKeys.has(key)
+      && !lockedKeys.has(key);
+  });
 
   if (staleLocked.length > 0) {
     await options.rpc.lockUnspent(options.walletName, true, staleLocked).catch(() => undefined);

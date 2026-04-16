@@ -45,7 +45,7 @@ function createWalletState(partial: Partial<WalletStateV1> = {}): WalletStateV1 
     walletRootId: "wallet-root-test",
     network: "mainnet",
     anchorValueSats: 2_000,
-    proactiveReserveSats: 50_000,
+    proactiveReserveSats: 1_000,
     proactiveReserveOutpoints: [],
     nextDedicatedIndex: 1,
     fundingIndex: 0,
