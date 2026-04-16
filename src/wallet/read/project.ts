@@ -53,57 +53,42 @@ export function createWalletReadModel(
   snapshot: WalletSnapshotView | null,
 ): WalletReadModel {
   const snapshotState = snapshot?.state ?? null;
-  const localIdentityByScript = new Map<string, WalletIdentityView>();
-
-  const identities = walletState.identities
-    .slice()
-    .sort((left, right) => left.index - right.index)
-    .map((identity): WalletIdentityView => {
-      const scriptBytes = scriptHexToBytes(identity.scriptPubKeyHex);
-      const ownedDomains = snapshotState === null
-        ? []
-        : listDomainsByOwner(snapshotState, scriptBytes).sort((left, right) => left.name.localeCompare(right.name));
-      const anchoredOwnedDomains = ownedDomains.filter((domain) => domain.anchored);
-      const canonicalDomainId = snapshotState === null ? null : resolveCanonical(snapshotState, scriptBytes);
-      const canonicalDomainName = canonicalDomainId === null || snapshotState === null
-        ? null
-        : (snapshotState ? lookupDomainById(snapshotState, canonicalDomainId)?.name ?? null : null);
-      const readOnly = identity.status === "read-only" || anchoredOwnedDomains.length > 1;
-      const observedCogBalance = snapshotState === null ? null : getBalance(snapshotState, scriptBytes);
-      const view: WalletIdentityView = {
-        index: identity.index,
-        scriptPubKeyHex: identity.scriptPubKeyHex,
-        address: identity.address,
-        selectors: [
-          `id:${identity.index}`,
-          ...ownedDomains.map((domain) => `domain:${domain.name}`),
-          ...(identity.address === null ? [] : [identity.address]),
-          `spk:${identity.scriptPubKeyHex}`,
-        ],
-        assignedDomainNames: identity.assignedDomainNames.slice().sort((left, right) => left.localeCompare(right)),
-        localStatus: identity.status,
-        effectiveStatus: readOnly ? "read-only" : identity.status,
-        canonicalDomainId,
-        canonicalDomainName,
-        ownedDomainNames: ownedDomains.map((domain) => domain.name),
-        anchoredOwnedDomainNames: anchoredOwnedDomains.map((domain) => domain.name),
-        observedCogBalance,
-        readOnly,
-      };
-      localIdentityByScript.set(identity.scriptPubKeyHex, view);
-      return view;
-    });
+  const localScriptHexes = new Set([
+    walletState.funding.scriptPubKeyHex,
+    ...(walletState.localScriptPubKeyHexes ?? []),
+  ]);
+  const fundingScriptBytes = scriptHexToBytes(walletState.funding.scriptPubKeyHex);
+  const ownedDomains = snapshotState === null
+    ? []
+    : listDomainsByOwner(snapshotState, fundingScriptBytes).sort((left, right) => left.name.localeCompare(right.name));
+  const anchoredOwnedDomains = ownedDomains.filter((domain) => domain.anchored);
+  const canonicalDomainId = snapshotState === null ? null : resolveCanonical(snapshotState, fundingScriptBytes);
+  const canonicalDomainName = canonicalDomainId === null || snapshotState === null
+    ? null
+    : lookupDomainById(snapshotState, canonicalDomainId)?.name ?? null;
+  const observedCogBalance = snapshotState === null ? null : getBalance(snapshotState, fundingScriptBytes);
+  const fundingIdentity: WalletIdentityView = {
+    index: 0,
+    scriptPubKeyHex: walletState.funding.scriptPubKeyHex,
+    address: walletState.funding.address,
+    selectors: [],
+    assignedDomainNames: (walletState.identities[0]?.assignedDomainNames ?? []).slice().sort((left, right) => left.localeCompare(right)),
+    localStatus: "funding",
+    effectiveStatus: "funding",
+    canonicalDomainId,
+    canonicalDomainName,
+    ownedDomainNames: ownedDomains.map((domain) => domain.name),
+    anchoredOwnedDomainNames: anchoredOwnedDomains.map((domain) => domain.name),
+    observedCogBalance,
+    readOnly: false,
+  };
 
   const domainNames = new Set<string>();
   for (const domain of walletState.domains) {
     domainNames.add(domain.name);
   }
-  if (snapshotState !== null) {
-    for (const identity of identities) {
-      for (const name of identity.ownedDomainNames) {
-        domainNames.add(name);
-      }
-    }
+  for (const name of fundingIdentity.ownedDomainNames) {
+    domainNames.add(name);
   }
 
   const domains = [...domainNames]
@@ -112,19 +97,15 @@ export function createWalletReadModel(
       const localRecord = walletState.domains.find((domain) => domain.name === name) ?? null;
       const chainRecord = snapshotState === null ? null : lookupDomain(snapshotState, name);
       const ownerScriptPubKeyHex = chainRecord ? bytesToHex(chainRecord.ownerScriptPubKey) : localRecord?.currentOwnerScriptPubKeyHex ?? null;
-      const ownerIdentity = ownerScriptPubKeyHex === null ? null : localIdentityByScript.get(ownerScriptPubKeyHex) ?? null;
+      const ownerIsLocal = ownerScriptPubKeyHex !== null && localScriptHexes.has(ownerScriptPubKeyHex);
       const fields = chainRecord && snapshotState ? listFields(snapshotState, chainRecord.domainId) : null;
       const listing = chainRecord && snapshotState ? getListing(snapshotState, chainRecord.domainId) : null;
       const activeLocks = chainRecord && snapshotState ? listActiveLocksByDomain(snapshotState, chainRecord.domainId) : null;
       const reputation = chainRecord && snapshotState ? getReputation(snapshotState, chainRecord.domainId) : null;
-      const readOnly = ownerIdentity?.readOnly ?? (localRecord?.currentOwnerLocalIndex !== null && localRecord?.currentOwnerLocalIndex !== undefined
-        ? identities.find((identity) => identity.index === localRecord.currentOwnerLocalIndex)?.readOnly ?? false
-        : false);
 
       let localRelationship: WalletDomainView["localRelationship"] = "external";
-
-      if (ownerIdentity !== null) {
-        localRelationship = readOnly ? "read-only" : "owned";
+      if (ownerIsLocal) {
+        localRelationship = "owned";
       } else if (localRecord !== null) {
         localRelationship = "tracked";
       } else if (ownerScriptPubKeyHex === null) {
@@ -136,15 +117,15 @@ export function createWalletReadModel(
         domainId: chainRecord?.domainId ?? localRecord?.domainId ?? null,
         anchored: chainRecord?.anchored ?? (localRecord?.canonicalChainStatus === "anchored" ? true : localRecord?.canonicalChainStatus === "registered-unanchored" ? false : null),
         ownerScriptPubKeyHex,
-        ownerLocalIndex: ownerIdentity?.index ?? localRecord?.currentOwnerLocalIndex ?? null,
-        ownerAddress: ownerIdentity?.address ?? null,
+        ownerLocalIndex: ownerIsLocal ? 0 : null,
+        ownerAddress: ownerIsLocal ? walletState.funding.address : null,
         localTracked: localRecord !== null,
         localRecord,
         chainFound: chainRecord !== null,
         chainStatus: chainRecord === null
           ? localRecord?.canonicalChainStatus ?? "unknown"
           : chainRecord.anchored ? "anchored" : "registered-unanchored",
-        localAnchorIntent: localRecord?.localAnchorIntent ?? null,
+        localAnchorIntent: null,
         foundingMessageText: chainRecord?.foundingMessage ?? localRecord?.foundingMessageText ?? null,
         endpointText: tryDecodeUtf8(chainRecord?.endpoint),
         delegateScriptPubKeyHex: bytesToHex(chainRecord?.delegate),
@@ -156,17 +137,17 @@ export function createWalletReadModel(
         supportedStakeCogtoshi: reputation?.supportedStake ?? null,
         totalSupportedCogtoshi: reputation?.totalSupported ?? null,
         totalRevokedCogtoshi: reputation?.totalRevoked ?? null,
-        readOnly,
+        readOnly: false,
         localRelationship,
       };
     });
 
   return {
     walletRootId: walletState.walletRootId,
-    fundingIdentity: identities.find((identity) => identity.index === walletState.fundingIndex) ?? null,
-    identities,
+    fundingIdentity,
+    identities: [fundingIdentity],
     domains,
-    readOnlyIdentityCount: identities.filter((identity) => identity.readOnly).length,
+    readOnlyIdentityCount: 0,
   };
 }
 

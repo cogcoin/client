@@ -35,7 +35,9 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  createFundingMutationSender,
   getDecodedInputScriptPubKeyHex,
+  isLocalWalletScript,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
   outpointKey,
@@ -464,27 +466,18 @@ function resolveOwnedDomainOperation(
   }
 
   const ownerHex = Buffer.from(chainDomain.ownerScriptPubKey).toString("hex");
-  const senderIdentity = context.model.identities.find((identity) => identity.scriptPubKeyHex === ownerHex) ?? null;
-
-  if (senderIdentity === null || senderIdentity.address === null) {
+  if (!isLocalWalletScript(context.localState.state, ownerHex) || context.model.fundingIdentity?.address == null) {
     throw new Error(`${errorPrefix}_owner_not_locally_controlled`);
   }
-
-  if (senderIdentity.readOnly) {
-    throw new Error(`${errorPrefix}_owner_read_only`);
-  }
+  const senderIdentity = context.model.fundingIdentity;
 
   return {
     readContext: context,
     state: context.localState.state,
     unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
-    sender: {
-      localIndex: senderIdentity.index,
-      scriptPubKeyHex: senderIdentity.scriptPubKeyHex,
-      address: senderIdentity.address,
-    },
-    senderSelector: getCanonicalIdentitySelector(senderIdentity),
-    anchorOutpoint: resolveAnchorOutpointForSender(context.localState.state, senderIdentity, errorPrefix),
+    sender: createFundingMutationSender(context.localState.state),
+    senderSelector: senderIdentity.address ?? context.localState.state.funding.address,
+    anchorOutpoint: null,
     chainDomain,
   };
 }
@@ -510,22 +503,14 @@ function resolveBuyOperation(
     throw new Error("wallet_buy_domain_not_listed");
   }
 
-  const selectedIdentity = fromIdentity === null
-    ? context.model.fundingIdentity
-    : resolveIdentityBySelector(context, fromIdentity, "wallet_buy");
+  const selectedIdentity = context.model.fundingIdentity;
 
   if (selectedIdentity === null) {
     throw new Error("wallet_buy_funding_identity_unavailable");
   }
 
   if (selectedIdentity.address === null) {
-    throw new Error(fromIdentity === null
-      ? "wallet_buy_funding_identity_unavailable"
-      : "wallet_buy_sender_address_unavailable");
-  }
-
-  if (selectedIdentity.readOnly) {
-    throw new Error("wallet_buy_sender_read_only");
+    throw new Error("wallet_buy_funding_identity_unavailable");
   }
 
   const ownerHex = Buffer.from(chainDomain.ownerScriptPubKey).toString("hex");
@@ -541,16 +526,12 @@ function resolveBuyOperation(
     readContext: context,
     state: context.localState.state,
     unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
-    sender: {
-      localIndex: selectedIdentity.index,
-      scriptPubKeyHex: selectedIdentity.scriptPubKeyHex,
-      address: selectedIdentity.address,
-    },
-    senderSelector: getCanonicalIdentitySelector(selectedIdentity),
-    anchorOutpoint: resolveAnchorOutpointForSender(context.localState.state, selectedIdentity, "wallet_buy"),
+    sender: createFundingMutationSender(context.localState.state),
+    senderSelector: selectedIdentity.address ?? context.localState.state.funding.address,
+    anchorOutpoint: null,
     chainDomain,
     listingPriceCogtoshi: listing.priceCogtoshi,
-    buyerSelector: getCanonicalIdentitySelector(selectedIdentity),
+    buyerSelector: selectedIdentity.address ?? context.localState.state.funding.address,
   };
 }
 

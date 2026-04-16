@@ -232,7 +232,6 @@ export function buildAnchorMutationData(
     tx2Txid: result.tx2Txid,
     intent: {
       domainName: result.domainName,
-      dedicatedIndex: result.dedicatedIndex,
       foundingMessageIncluded: options.foundingMessageText !== null,
     },
   });

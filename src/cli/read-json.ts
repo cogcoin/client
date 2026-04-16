@@ -213,7 +213,7 @@ function mapIdentity(identity: WalletIdentityView) {
     index: identity.index,
     scriptPubKeyHex: identity.scriptPubKeyHex,
     address: identity.address,
-    selectors: identity.selectors,
+    selectors: [],
     assignedDomainNames: identity.assignedDomainNames,
     ownedDomainNames: identity.ownedDomainNames,
     anchoredOwnedDomainNames: identity.anchoredOwnedDomainNames,
@@ -486,8 +486,8 @@ export function buildIdsJson(
 export function buildWalletStatusJson(context: WalletReadContext): ReadJsonResult<{
   lockState: string;
   unlockUntilUnixMs: number | null;
-  fundingAddress: string | null;
-  fundingScriptPubKeyHex: string | null;
+  walletAddress: string | null;
+  walletScriptPubKeyHex: string | null;
   availability: Record<string, JsonAvailabilityEntry>;
 }> {
   const messages = createBaseMessages(context);
@@ -500,8 +500,8 @@ export function buildWalletStatusJson(context: WalletReadContext): ReadJsonResul
     data: {
       lockState,
       unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
-      fundingAddress: fundingIdentity?.address ?? null,
-      fundingScriptPubKeyHex: fundingIdentity?.scriptPubKeyHex ?? null,
+      walletAddress: fundingIdentity?.address ?? null,
+      walletScriptPubKeyHex: fundingIdentity?.scriptPubKeyHex ?? null,
       availability: buildAvailability(context),
     },
   };

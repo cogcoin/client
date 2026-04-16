@@ -156,7 +156,7 @@ export function getMutationRecommendation(context: WalletReadContext): string | 
   );
 
   if (clearableAnchorFamily?.domainName != null) {
-    return `Run \`cogcoin anchor clear ${clearableAnchorFamily.domainName}\` to cancel the local pending anchor reservation, or rerun \`cogcoin anchor ${clearableAnchorFamily.domainName}\` to continue anchoring.`;
+    return `Run \`cogcoin anchor ${clearableAnchorFamily.domainName}\` to continue anchoring, or inspect the domain with \`cogcoin show ${clearableAnchorFamily.domainName}\`.`;
   }
 
   const unresolvedFamily = (context.localState.state?.proactiveFamilies ?? []).find((family) =>
@@ -574,9 +574,9 @@ function buildOverviewLocalInventorySection(context: WalletReadContext): Overvie
   }
 
   return [
-    overviewEntry(`Local identities: ${context.model.identities.length}`, true),
+    overviewEntry("Local wallet address: 1", true),
     overviewEntry(`Locally related domains: ${context.model.domains.length}`, true),
-    overviewEntry(`Read-only identities: ${context.model.readOnlyIdentityCount}`, true),
+    overviewEntry("Read-only identities: 0", true),
   ];
 }
 
@@ -659,25 +659,24 @@ export function formatDetailedWalletStatusReport(context: WalletReadContext): st
     return lines.join("\n");
   }
 
-  lines.push(`Funding identity: ${context.model.fundingIdentity?.selectors[0] ?? "unavailable"}`);
-  lines.push(`Funding address: ${context.model.fundingIdentity?.address ?? "unavailable"}`);
-  lines.push(`Controlled identities: ${context.model.identities.length}`);
+  lines.push(`Wallet address: ${context.model.fundingIdentity?.address ?? "unavailable"}`);
+  lines.push(`Wallet script: spk:${context.model.fundingIdentity?.scriptPubKeyHex ?? "unavailable"}`);
+  lines.push("Controlled identities: 1");
   lines.push(`Locally related domains: ${context.model.domains.length}`);
-  lines.push(`Read-only identities: ${context.model.readOnlyIdentityCount}`);
+  lines.push("Read-only identities: 0");
   appendPendingMutationSummary(lines, context);
 
   return lines.join("\n");
 }
 
 export function formatFundingAddressReport(context: WalletReadContext): string {
-  const lines = ["BTC Funding Address"];
+  const lines = ["BTC Wallet Address"];
 
   if (context.model?.fundingIdentity === null || context.model === null) {
     appendWalletAvailability(lines, context);
     return lines.join("\n");
   }
 
-  lines.push(`Selector: ${context.model.fundingIdentity.selectors[0]}`);
   lines.push(`Address: ${context.model.fundingIdentity.address ?? "unavailable"}`);
   lines.push(`ScriptPubKey: spk:${context.model.fundingIdentity.scriptPubKeyHex}`);
 
@@ -691,7 +690,7 @@ export function formatIdentityListReport(
     all?: boolean;
   } = {},
 ): string {
-  const lines = ["Wallet Identities"];
+  const lines = ["Wallet Address"];
 
   if (context.model === null) {
     appendWalletAvailability(lines, context);
@@ -701,7 +700,7 @@ export function formatIdentityListReport(
   const identities = context.model.identities;
 
   if (identities.length === 0) {
-    lines.push("No local identities are recorded yet.");
+    lines.push("No local wallet address is recorded yet.");
     return lines.join("\n");
   }
 
@@ -712,7 +711,7 @@ export function formatIdentityListReport(
     const domains = identity.ownedDomainNames.length === 0 ? "none" : identity.ownedDomainNames.join(", ");
     const balance = identity.observedCogBalance === null ? "unavailable" : formatCogAmount(identity.observedCogBalance);
     lines.push(
-      `${identity.selectors[0]}  ${identity.effectiveStatus}  ${identity.address ?? `spk:${identity.scriptPubKeyHex}`}  balance ${balance}  domains ${domains}  selectors ${identity.selectors.join(", ")}`,
+      `${identity.address ?? `spk:${identity.scriptPubKeyHex}`}  balance ${balance}  domains ${domains}`,
     );
   }
 
@@ -746,7 +745,7 @@ export function formatBalanceReport(context: WalletReadContext): string {
 
   for (const identity of context.model.identities) {
     lines.push(
-      `${identity.selectors[0]}  ${identity.address ?? `spk:${identity.scriptPubKeyHex}`}  ${formatCogAmount(identity.observedCogBalance ?? 0n)}${identity.readOnly ? "  read-only" : ""}`,
+      `${identity.address ?? `spk:${identity.scriptPubKeyHex}`}  ${formatCogAmount(identity.observedCogBalance ?? 0n)}`,
     );
   }
 
@@ -900,7 +899,7 @@ export function formatDomainsReport(
         ? pendingAnchors.map((family) => `${family.currentStep ?? "reserved"}:${family.status}`).join(",")
         : domain.localAnchorIntent}`;
     lines.push(
-      `${domain.name}  ${domain.chainStatus}  ${domain.localRelationship}  owner ${domain.ownerLocalIndex === null ? (domain.ownerAddress ?? domain.ownerScriptPubKeyHex ?? "unknown") : `id:${domain.ownerLocalIndex}`}  fields ${formatMaybe(domain.fieldCount)}${domain.readOnly ? "  read-only" : ""}${anchorText}${pendingText}${pendingFieldsText}`,
+      `${domain.name}  ${domain.chainStatus}  ${domain.localRelationship}  owner ${domain.ownerAddress ?? domain.ownerScriptPubKeyHex ?? "unknown"}  fields ${formatMaybe(domain.fieldCount)}${pendingText}${pendingFieldsText}`,
     );
   }
 
@@ -928,7 +927,7 @@ export function formatDomainReport(context: WalletReadContext, domainName: strin
 
   lines.push(`Domain ID: ${formatMaybe(view.domain.domainId)}`);
   lines.push(`Anchored: ${view.domain.anchored === null ? "unknown" : (view.domain.anchored ? "yes" : "no")}`);
-  lines.push(`Owner: ${view.domain.ownerLocalIndex === null ? (view.domain.ownerAddress ?? view.domain.ownerScriptPubKeyHex ?? "unknown") : `id:${view.domain.ownerLocalIndex}`}`);
+  lines.push(`Owner: ${view.domain.ownerAddress ?? view.domain.ownerScriptPubKeyHex ?? "unknown"}`);
   lines.push(`Local relationship: ${view.localRelationship}`);
   lines.push(`Listing price: ${view.domain.listingPriceCogtoshi === null ? "none" : formatCogAmount(view.domain.listingPriceCogtoshi)}`);
   lines.push(`Field count: ${formatMaybe(view.domain.fieldCount)}`);

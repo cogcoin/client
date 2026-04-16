@@ -748,6 +748,22 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode === "cli_from_not_supported_for_command") {
+    return {
+      what: "`--from` is no longer supported.",
+      why: "Cogcoin now uses a single wallet address for local transaction authorship, so sender selection is no longer part of the CLI.",
+      next: "Retry the command without `--from`.",
+    };
+  }
+
+  if (errorCode === "cli_anchor_clear_removed") {
+    return {
+      what: "`anchor clear` is no longer available.",
+      why: "The wallet no longer reserves dedicated local identities for anchor workflows, so there is no separate anchor-family cleanup command.",
+      next: "Retry with `cogcoin anchor <domain>` or inspect the domain with `cogcoin show <domain>`.",
+    };
+  }
+
   if (errorCode === "wallet_anchor_clear_inconsistent_state") {
     return {
       what: "Pending anchor state is inconsistent.",
@@ -1022,24 +1038,24 @@ export function createCliErrorPresentation(
   if (errorCode === "wallet_register_from_not_supported_for_subdomain") {
     return {
       what: "`--from` is not supported for subdomain registration.",
-      why: "Subdomain registration always derives the sender from the anchored parent owner, so this command will not accept an explicit sender override.",
-      next: "Retry without `--from`, or register a root domain if you need explicit sender selection.",
+      why: "Cogcoin now uses a single wallet address for local writes, so sender overrides are no longer part of subdomain registration.",
+      next: "Retry without `--from`.",
     };
   }
 
   if (errorCode === "wallet_register_sender_not_root_eligible") {
     return {
-      what: "Selected sender is not eligible for root registration.",
-      why: "Root registration can use funding identity `0` or a locally controlled anchored owner identity with a current canonical anchor outpoint.",
-      next: "Run `cogcoin ids`, then retry with `--from id:0` or an anchored local owner selector.",
+      what: "Root registration sender is not eligible.",
+      why: "Root registration now always uses the wallet address, and the local wallet state did not produce a usable sender.",
+      next: "Inspect `cogcoin address` and retry.",
     };
   }
 
   if (errorCode === "wallet_register_sender_not_found") {
     return {
-      what: "Selected sender was not found locally.",
-      why: "The provided selector did not resolve to a locally controlled identity in this wallet.",
-      next: "Run `cogcoin ids` and retry with one of the listed selectors.",
+      what: "Local sender was not found.",
+      why: "The wallet could not resolve a usable local wallet sender for this command.",
+      next: "Inspect `cogcoin address` and retry.",
     };
   }
 
@@ -1053,25 +1069,25 @@ export function createCliErrorPresentation(
 
   if (errorCode === "wallet_register_sender_address_unavailable") {
     return {
-      what: "Selected sender could not be displayed.",
-      why: "The selector resolved to a local identity, but the wallet does not have a usable display address for it.",
-      next: "Run `cogcoin ids` and retry with a different local sender selector.",
+      what: "Wallet address is unavailable.",
+      why: "The local wallet sender was resolved, but the wallet does not currently have a usable display address for it.",
+      next: "Inspect `cogcoin address` and retry.",
     };
   }
 
   if (errorCode === "wallet_buy_sender_not_found") {
     return {
-      what: "Selected buyer was not found locally.",
-      why: "The provided `--from` selector did not resolve to a locally controlled identity in this wallet.",
-      next: "Run `cogcoin ids` and retry with one of the listed selectors.",
+      what: "Local buyer was not found.",
+      why: "The wallet could not resolve a usable local wallet sender for this purchase.",
+      next: "Inspect `cogcoin address` and retry.",
     };
   }
 
   if (errorCode === "wallet_buy_sender_read_only") {
     return {
       what: "Selected buyer is read-only.",
-      why: "This local identity is tracked for visibility only and cannot author a domain purchase.",
-      next: "Retry with a locally controlled non-read-only buyer selector.",
+      why: "The old multi-identity sender path is no longer supported under the single-wallet model.",
+      next: "Retry without `--from`.",
     };
   }
 

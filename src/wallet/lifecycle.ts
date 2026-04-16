@@ -321,13 +321,14 @@ function createInitialWalletState(options: {
   internalCoreWalletPassphrase: string;
 }): WalletStateV1 {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     stateRevision: 1,
     lastWrittenAtUnixMs: options.nowUnixMs,
     walletRootId: options.walletRootId,
     network: "mainnet",
     anchorValueSats: 2_000,
-    proactiveReserveSats: DEFAULT_PROACTIVE_RESERVE_SATS,
+    localScriptPubKeyHexes: [options.material.funding.scriptPubKeyHex],
+    proactiveReserveSats: 0,
     proactiveReserveOutpoints: [],
     nextDedicatedIndex: 1,
     fundingIndex: 0,
@@ -357,6 +358,8 @@ function createInitialWalletState(options: {
       walletName: sanitizeWalletName(options.walletRootId),
       internalPassphrase: options.internalCoreWalletPassphrase,
       descriptorChecksum: null,
+      walletAddress: null,
+      walletScriptPubKeyHex: null,
       fundingAddress0: null,
       fundingScriptPubKeyHex0: null,
       proofStatus: "not-proven",
@@ -522,11 +525,12 @@ function createPortableWalletArchivePayload(
   exportedAtUnixMs: number,
 ): PortableWalletArchivePayloadV1 {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     exportedAtUnixMs,
     walletRootId: state.walletRootId,
     network: state.network,
     anchorValueSats: state.anchorValueSats,
+    localScriptPubKeyHexes: state.localScriptPubKeyHexes ?? [state.funding.scriptPubKeyHex],
     proactiveReserveSats: state.proactiveReserveSats,
     proactiveReserveOutpoints: state.proactiveReserveOutpoints,
     nextDedicatedIndex: state.nextDedicatedIndex,
@@ -543,6 +547,8 @@ function createPortableWalletArchivePayload(
       descriptorChecksum: state.descriptor.checksum,
       rangeEnd: state.descriptor.rangeEnd,
       safetyMargin: state.descriptor.safetyMargin,
+      walletAddress: state.funding.address,
+      walletScriptPubKeyHex: state.funding.scriptPubKeyHex,
       fundingAddress0: state.funding.address,
       fundingScriptPubKeyHex0: state.funding.scriptPubKeyHex,
       walletBirthTime: state.walletBirthTime,

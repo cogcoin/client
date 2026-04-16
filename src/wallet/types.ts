@@ -195,12 +195,13 @@ export interface ProactiveFamilyStateRecord {
 }
 
 export interface WalletStateV1 {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   stateRevision: number;
   lastWrittenAtUnixMs: number;
   walletRootId: string;
   network: WalletNetwork;
   anchorValueSats: number;
+  localScriptPubKeyHexes?: ScriptPubKeyHex[];
   proactiveReserveSats: number;
   proactiveReserveOutpoints: OutpointRecord[];
   nextDedicatedIndex: number;
@@ -231,6 +232,8 @@ export interface WalletStateV1 {
     walletName: string;
     internalPassphrase: string;
     descriptorChecksum: string | null;
+    walletAddress?: string | null;
+    walletScriptPubKeyHex?: ScriptPubKeyHex | null;
     fundingAddress0: string | null;
     fundingScriptPubKeyHex0: ScriptPubKeyHex | null;
     proofStatus: "not-proven" | "ready" | "missing" | "mismatch";
@@ -248,11 +251,12 @@ export interface WalletStateV1 {
 }
 
 export interface PortableWalletArchivePayloadV1 {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   exportedAtUnixMs: number;
   walletRootId: string;
   network: WalletNetwork;
   anchorValueSats: number;
+  localScriptPubKeyHexes?: ScriptPubKeyHex[];
   proactiveReserveSats: number;
   proactiveReserveOutpoints: OutpointRecord[];
   nextDedicatedIndex: number;
@@ -269,6 +273,8 @@ export interface PortableWalletArchivePayloadV1 {
     descriptorChecksum: string | null;
     rangeEnd: number;
     safetyMargin: number;
+    walletAddress?: string;
+    walletScriptPubKeyHex?: ScriptPubKeyHex;
     fundingAddress0: string;
     fundingScriptPubKeyHex0: ScriptPubKeyHex;
     walletBirthTime: number;

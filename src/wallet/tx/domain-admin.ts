@@ -36,7 +36,9 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  createFundingMutationSender,
   getDecodedInputScriptPubKeyHex,
+  isLocalWalletScript,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
   outpointKey,
@@ -298,26 +300,17 @@ function resolveAnchoredDomainOperation(
   }
 
   const ownerHex = Buffer.from(chainDomain.ownerScriptPubKey).toString("hex");
-  const ownerIdentity = context.model.identities.find((identity) => identity.scriptPubKeyHex === ownerHex) ?? null;
-
-  if (ownerIdentity === null || ownerIdentity.address === null) {
+  if (!isLocalWalletScript(context.localState.state, ownerHex) || context.model.fundingIdentity?.address == null) {
     throw new Error(`${errorPrefix}_owner_not_locally_controlled`);
   }
-
-  if ((options.rejectReadOnly ?? true) && ownerIdentity.readOnly) {
-    throw new Error(`${errorPrefix}_owner_read_only`);
-  }
+  const ownerIdentity = context.model.fundingIdentity;
 
   return {
     readContext: context,
     state: context.localState.state,
     unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
-    sender: {
-      localIndex: ownerIdentity.index,
-      scriptPubKeyHex: ownerIdentity.scriptPubKeyHex,
-      address: ownerIdentity.address,
-    },
-    senderSelector: getCanonicalIdentitySelector(ownerIdentity),
+    sender: createFundingMutationSender(context.localState.state),
+    senderSelector: ownerIdentity.address ?? context.localState.state.funding.address,
     anchorOutpoint: resolveAnchorOutpointForSender(context.localState.state, ownerIdentity, errorPrefix),
     chainDomain,
   };

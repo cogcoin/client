@@ -34,15 +34,14 @@ Commands:
                          Emit the stable v1 machine-readable mine setup result envelope
   mine status             Show mining control-plane health and readiness
   mine log                Show recent mining control-plane events
-  anchor <domain>         Anchor an owned unanchored domain with the Tx1/Tx2 family
-  anchor clear <domain>   Clear same-domain local pending anchor state; add --force to cancel active local workflow too
-  register <domain> [--from <identity>]
+  anchor <domain>         Anchor an owned unanchored domain with the wallet address
+  register <domain>
                          Register a root domain or subdomain
   transfer <domain> --to <btc-target>
                           Transfer an unanchored domain to another BTC identity
   sell <domain> <price>   List an unanchored domain for sale in COG
   unsell <domain>         Clear an active domain listing
-  buy <domain> [--from <identity>]
+  buy <domain>
                          Buy an unanchored listed domain in COG
   send <amount> --to <btc-target>
                          Send COG from one local identity to another BTC target
@@ -60,8 +59,8 @@ Commands:
   wallet lock             Lock the local wallet and disable on-demand unlock
   wallet export <path>    Export a portable encrypted wallet archive
   wallet import <path>    Import a portable encrypted wallet archive
-  address                 Show the BTC funding identity for this wallet
-  ids                     List locally controlled identities
+  address                 Show the BTC wallet address for this wallet
+  ids                     Show the local wallet address
   balance                 Show per-identity COG balances
   locks                   Show locally related active COG locks
   domain list             Alias for domains
@@ -88,7 +87,6 @@ Options:
   --for <duration>  Unlock duration like 15m, 2h, or 1d when unlocking explicitly
   --message <text>  Founding message text for anchor
   --to <btc-target> Transfer or send target as an address or spk:<hex>
-  --from <identity> Resolve sender identity as id:<n>, domain:<name>, address, or spk:<hex>
   --to-domain <domain>
                     Recipient domain for cog lock
   --condition <sha256hex>
@@ -116,7 +114,7 @@ Options:
   --output <mode>  Output mode: text, json, or preview-json
   --progress <mode> Progress output mode: auto, tty, or none
   --seed <name>    Select an imported wallet seed for wallet-aware commands
-  --force          Cancel same-domain active anchor workflow during anchor clear
+  --force          Reserved for future use
   --force-race      Allow a visible root registration race
   --yes             Approve eligible plain yes/no mutation confirmations non-interactively
   --help            Show help
@@ -136,10 +134,8 @@ Examples:
   cogcoin wallet address
   cogcoin domain list --mineable
   cogcoin register alpha-child
-  cogcoin register weatherbot --from id:1
   cogcoin anchor alpha
   cogcoin buy alpha
-  cogcoin buy alpha --from id:1
   cogcoin field create alpha bio --text "hello"
   cogcoin rep give alpha beta 10 --review "great operator"
   cogcoin hooks status
@@ -1047,9 +1043,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
         || token === "fields"
       ) {
         if (token === "anchor" && argv[index + 1] === "clear") {
-          command = "anchor-clear";
-          index += 1;
-          continue;
+          throw new Error("cli_anchor_clear_removed");
         }
         command = token as CommandName;
         continue;
@@ -1204,7 +1198,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_force_race_not_supported_for_command");
   }
 
-  if (force && command !== "anchor-clear" && command !== "domain-anchor-clear") {
+  if (force) {
     throw new Error("cli_force_not_supported_for_command");
   }
 
@@ -1269,16 +1263,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_missing_transfer_target");
   }
 
-  if (
-    fromIdentity !== null
-    && command !== "register"
-    && command !== "domain-register"
-    && command !== "buy"
-    && command !== "domain-buy"
-    && command !== "send"
-    && command !== "cog-send"
-    && command !== "cog-lock"
-  ) {
+  if (fromIdentity !== null) {
     throw new Error("cli_from_not_supported_for_command");
   }
 

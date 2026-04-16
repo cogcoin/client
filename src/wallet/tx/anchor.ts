@@ -1309,7 +1309,7 @@ async function relockAnchorOutpoint(
   walletName: string,
   outpoint: OutpointRecord | null,
 ): Promise<void> {
-  if (outpoint === null) {
+  if (outpoint === null || rpc.lockUnspent === undefined) {
     return;
   }
 

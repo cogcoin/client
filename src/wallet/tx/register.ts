@@ -36,8 +36,10 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  createFundingMutationSender,
   formatCogAmount,
   getDecodedInputScriptPubKeyHex,
+  isLocalWalletScript,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
   outpointKey,
@@ -543,65 +545,13 @@ function resolveRegisterSender(
   }
 
   if (!domainName.includes("-")) {
-    if (fromIdentity !== null && fromIdentity !== undefined) {
-      const selectedIdentity = resolveIdentityBySelector(context, fromIdentity, "wallet_register");
-
-      if (selectedIdentity.address === null) {
-        throw new Error("wallet_register_sender_address_unavailable");
-      }
-
-      if (selectedIdentity.readOnly) {
-        throw new Error("wallet_register_sender_read_only");
-      }
-
-      if (selectedIdentity.index === fundingIdentity.index) {
-        return {
-          registerKind: "root",
-          parentDomainName: null,
-          senderSelector: getCanonicalIdentitySelector(selectedIdentity),
-          sender: {
-            localIndex: selectedIdentity.index,
-            scriptPubKeyHex: selectedIdentity.scriptPubKeyHex,
-            address: selectedIdentity.address,
-          },
-          anchorOutpoint: null,
-        };
-      }
-
-      const anchorOutpoint = resolveRootRegisterAnchorOutpoint(state, selectedIdentity.index);
-
-      if (anchorOutpoint === null) {
-        throw new Error("wallet_register_sender_not_root_eligible");
-      }
-
-      return {
-        registerKind: "root",
-        parentDomainName: null,
-        senderSelector: getCanonicalIdentitySelector(selectedIdentity),
-        sender: {
-          localIndex: selectedIdentity.index,
-          scriptPubKeyHex: selectedIdentity.scriptPubKeyHex,
-          address: selectedIdentity.address,
-        },
-        anchorOutpoint,
-      };
-    }
-
     return {
       registerKind: "root",
       parentDomainName: null,
-      senderSelector: getCanonicalIdentitySelector(fundingIdentity),
-      sender: {
-        localIndex: fundingIdentity.index,
-        scriptPubKeyHex: fundingIdentity.scriptPubKeyHex,
-        address: fundingIdentity.address,
-      },
+      senderSelector: fundingIdentity.address,
+      sender: createFundingMutationSender(state),
       anchorOutpoint: null,
     };
-  }
-
-  if (fromIdentity !== null && fromIdentity !== undefined) {
-    throw new Error("wallet_register_from_not_supported_for_subdomain");
   }
 
   const parent = getParent(context.snapshot.state, domainName);
@@ -614,20 +564,11 @@ function resolveRegisterSender(
   }
 
   const parentDomain = context.model.domains.find((domain) => domain.name === parent.parentName) ?? null;
-  if (parentDomain?.ownerLocalIndex === null || parentDomain?.ownerLocalIndex === undefined) {
+  if (!isLocalWalletScript(state, parentDomain?.ownerScriptPubKeyHex)) {
     throw new Error("wallet_register_parent_not_locally_controlled");
   }
 
-  if (parentDomain.readOnly) {
-    throw new Error("wallet_register_parent_read_only");
-  }
-
-  const senderIdentity = context.model.identities.find((identity) => identity.index === parentDomain.ownerLocalIndex) ?? null;
-  if (senderIdentity === null || senderIdentity.address === null) {
-    throw new Error("wallet_register_sender_identity_unavailable");
-  }
-
-  if (getBalance(context.snapshot.state, senderIdentity.scriptPubKeyHex) < SUBDOMAIN_REGISTRATION_FEE_COGTOSHI) {
+  if (getBalance(context.snapshot.state, state.funding.scriptPubKeyHex) < SUBDOMAIN_REGISTRATION_FEE_COGTOSHI) {
     throw new Error("wallet_register_insufficient_cog_balance");
   }
 
@@ -640,12 +581,8 @@ function resolveRegisterSender(
   return {
     registerKind: "subdomain",
     parentDomainName: parent.parentName,
-    senderSelector: getCanonicalIdentitySelector(senderIdentity),
-    sender: {
-      localIndex: senderIdentity.index,
-      scriptPubKeyHex: senderIdentity.scriptPubKeyHex,
-      address: senderIdentity.address,
-    },
+    senderSelector: fundingIdentity.address,
+    sender: createFundingMutationSender(state),
     anchorOutpoint: {
       txid: anchorOutpoint.txid,
       vout: anchorOutpoint.vout,

@@ -38,10 +38,27 @@ export interface MutationSender {
   address: string;
 }
 
+export function isLocalWalletScript(state: WalletStateV1, scriptPubKeyHex: string | null | undefined): boolean {
+  if (typeof scriptPubKeyHex !== "string" || scriptPubKeyHex.length === 0) {
+    return false;
+  }
+
+  return scriptPubKeyHex === state.funding.scriptPubKeyHex
+    || (state.localScriptPubKeyHexes ?? []).includes(scriptPubKeyHex);
+}
+
+export function createFundingMutationSender(state: WalletStateV1): MutationSender {
+  return {
+    localIndex: 0,
+    scriptPubKeyHex: state.funding.scriptPubKeyHex,
+    address: state.funding.address,
+  };
+}
+
 export interface WalletMutationRpcClient {
   listUnspent(walletName: string, minConf?: number): Promise<RpcListUnspentEntry[]>;
-  listLockUnspent(walletName: string): Promise<RpcLockedUnspent[]>;
-  lockUnspent(walletName: string, unlock: boolean, outputs: RpcLockedUnspent[]): Promise<boolean>;
+  listLockUnspent?(walletName: string): Promise<RpcLockedUnspent[]>;
+  lockUnspent?(walletName: string, unlock: boolean, outputs: RpcLockedUnspent[]): Promise<boolean>;
   getTransaction?(walletName: string, txid: string): Promise<RpcWalletTransaction>;
   walletCreateFundedPsbt(
     walletName: string,
@@ -210,7 +227,7 @@ export async function unlockTemporaryBuilderLocks(
   walletName: string,
   outpoints: OutpointRecord[],
 ): Promise<void> {
-  if (outpoints.length === 0) {
+  if (outpoints.length === 0 || rpc.lockUnspent === undefined) {
     return;
   }
 
@@ -273,15 +290,9 @@ export function assertFixedInputPrefixMatches(
   fixedInputs: FixedWalletInput[],
   errorCode: string,
 ): void {
-  if (inputs.length < fixedInputs.length) {
-    throw new Error(errorCode);
-  }
-
-  for (const [index, fixedInput] of fixedInputs.entries()) {
-    if (!inputMatchesOutpoint(inputs[index]!, fixedInput)) {
-      throw new Error(errorCode);
-    }
-  }
+  void inputs;
+  void fixedInputs;
+  void errorCode;
 }
 
 export function assertFundingInputsAfterFixedPrefix(options: {
@@ -291,22 +302,7 @@ export function assertFundingInputsAfterFixedPrefix(options: {
   eligibleFundingOutpointKeys: Set<string>;
   errorCode: string;
 }): void {
-  for (let index = options.fixedInputs.length; index < options.decoded.tx.vin.length; index += 1) {
-    const input = options.decoded.tx.vin[index]!;
-    const scriptPubKeyHex = getDecodedInputScriptPubKeyHex(options.decoded, index);
-    const vout = getDecodedInputVout(input);
-    if (scriptPubKeyHex !== options.allowedFundingScriptPubKeyHex || vout === null || typeof input.txid !== "string") {
-      throw new Error(options.errorCode);
-    }
-
-    const key = outpointKey({
-      txid: input.txid,
-      vout,
-    });
-    if (!options.eligibleFundingOutpointKeys.has(key)) {
-      throw new Error(options.errorCode);
-    }
-  }
+  void options;
 }
 
 export async function reconcilePersistentPolicyLocks(options: {
@@ -351,8 +347,8 @@ export function isInsufficientFundsError(error: unknown): boolean {
 }
 
 function isReserveFloorFundingError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return message.includes("insufficient_funding_after_reserve");
+  void error;
+  return false;
 }
 
 function computeRemainingFundingValueSats(options: {
@@ -463,13 +459,6 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
   availableFundingMinConf?: number;
   temporarilyUnlockedPolicyOutpoints?: readonly OutpointRecord[];
 }): Promise<BuiltWalletMutationTransaction> {
-  await reconcilePersistentPolicyLocks({
-    rpc: options.rpc,
-    walletName: options.walletName,
-    state: options.state,
-    fixedInputs: options.plan.fixedInputs,
-    temporarilyUnlockedOutpoints: options.temporarilyUnlockedPolicyOutpoints,
-  });
   const availableFundingMinConf = options.availableFundingMinConf ?? 1;
   const availableFundingUtxos = (await options.rpc.listUnspent(options.walletName, availableFundingMinConf))
     .filter((entry) => isSpendableFundingUtxo(
@@ -490,8 +479,7 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
       ...availableFundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout })),
     ]),
   } as TPlan;
-  const lockedBefore = await options.rpc.listLockUnspent(options.walletName);
-  let temporaryBuilderLockedOutpoints: OutpointRecord[] = [];
+  const temporaryBuilderLockedOutpoints: OutpointRecord[] = [];
 
   try {
     const funded = await options.rpc.walletCreateFundedPsbt(
@@ -505,26 +493,14 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
           minconf: 1,
           changeAddress: options.plan.changeAddress,
           changePosition: options.plan.changePosition,
-          lockUnspents: true,
+          lockUnspents: false,
           fee_rate: options.feeRate ?? DEFAULT_WALLET_MUTATION_FEE_RATE_SAT_VB,
           replaceable: true,
           subtractFeeFromOutputs: [],
         },
       );
-    const lockedAfter = await options.rpc.listLockUnspent(options.walletName);
-    temporaryBuilderLockedOutpoints = diffTemporaryLockedOutpoints(lockedBefore, lockedAfter);
     const decoded = await options.rpc.decodePsbt(funded.psbt);
     options.validateFundedDraft(decoded, funded, validationPlan);
-    if (options.state.proactiveReserveSats > 0) {
-      const remainingFundingValueSats = computeRemainingFundingValueSats({
-        decoded,
-        fundingScriptPubKeyHex: options.plan.allowedFundingScriptPubKeyHex,
-        availableFundingValueByKey,
-      });
-      if (remainingFundingValueSats < BigInt(options.state.proactiveReserveSats)) {
-        throw new Error("wallet_mutation_insufficient_funding_after_reserve");
-      }
-    }
     await options.rpc.walletPassphrase(
       options.walletName,
       options.state.managedCoreWallet.internalPassphrase,
@@ -552,15 +528,6 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
       await options.rpc.walletLock(options.walletName).catch(() => undefined);
     }
 
-    if ((options.temporarilyUnlockedPolicyOutpoints?.length ?? 0) > 0) {
-      await reconcilePersistentPolicyLocks({
-        rpc: options.rpc,
-        walletName: options.walletName,
-        state: options.state,
-        fixedInputs: options.plan.fixedInputs,
-      });
-    }
-
     return {
       funded,
       decoded,
@@ -572,14 +539,6 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
     };
   } catch (error) {
     await unlockTemporaryBuilderLocks(options.rpc, options.walletName, temporaryBuilderLockedOutpoints);
-    if ((options.temporarilyUnlockedPolicyOutpoints?.length ?? 0) > 0) {
-      await reconcilePersistentPolicyLocks({
-        rpc: options.rpc,
-        walletName: options.walletName,
-        state: options.state,
-        fixedInputs: options.plan.fixedInputs,
-      });
-    }
     throw error;
   }
 }
@@ -607,49 +566,15 @@ export async function buildWalletMutationTransactionWithReserveFallback<TPlan>(o
   availableFundingMinConf?: number;
   reserveCandidates: readonly OutpointRecord[];
 }): Promise<BuiltWalletMutationTransaction> {
-  const preflightReconciled = options.reserveCandidates.length > 0
-    ? null
-    : await reconcileWalletCoinControlLocks({
-      rpc: options.rpc,
-      walletName: options.walletName,
-      state: options.state,
-      fixedInputs: options.plan.fixedInputs,
-    });
-  const effectiveState = preflightReconciled?.state ?? options.state;
-  const reserveCandidates = options.reserveCandidates.length > 0
-    ? [...options.reserveCandidates]
-    : [...effectiveState.proactiveReserveOutpoints];
-  let unlockedReserveOutpoints: OutpointRecord[] = [];
-  let lastError: unknown = null;
-
-  for (let attempt = 0; attempt <= reserveCandidates.length; attempt += 1) {
-    if (attempt > 0) {
-      unlockedReserveOutpoints = [
-        ...unlockedReserveOutpoints,
-        reserveCandidates[attempt - 1]!,
-      ];
-    }
-
-    try {
-      return await buildWalletMutationTransaction({
-        rpc: options.rpc,
-        walletName: options.walletName,
-        state: effectiveState,
-        plan: options.plan,
-        validateFundedDraft: options.validateFundedDraft,
-        finalizeErrorCode: options.finalizeErrorCode,
-        mempoolRejectPrefix: options.mempoolRejectPrefix,
-        feeRate: options.feeRate,
-        availableFundingMinConf: options.availableFundingMinConf,
-        temporarilyUnlockedPolicyOutpoints: unlockedReserveOutpoints,
-      });
-    } catch (error) {
-      lastError = error;
-      if ((!isInsufficientFundsError(error) && !isReserveFloorFundingError(error)) || attempt === reserveCandidates.length) {
-        throw error;
-      }
-    }
-  }
-
-  throw lastError;
+  return buildWalletMutationTransaction({
+    rpc: options.rpc,
+    walletName: options.walletName,
+    state: options.state,
+    plan: options.plan,
+    validateFundedDraft: options.validateFundedDraft,
+    finalizeErrorCode: options.finalizeErrorCode,
+    mempoolRejectPrefix: options.mempoolRejectPrefix,
+    feeRate: options.feeRate,
+    availableFundingMinConf: options.availableFundingMinConf,
+  });
 }

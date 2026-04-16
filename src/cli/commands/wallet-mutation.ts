@@ -202,16 +202,15 @@ export async function runWalletMutationCommand(
           reusedMessage: "The existing anchor family was reconciled instead of creating a duplicate.",
           interactive,
           explorerTxid: result.tx2Txid,
-          nextSteps: workflowMutationNextSteps(nextSteps),
-          text: {
-            heading: "Anchor family submitted.",
-            fields: [
-              { label: "Domain", value: result.domainName },
-              { label: "Dedicated index", value: String(result.dedicatedIndex) },
-              { label: "Status", value: result.status },
-              { label: "Tx1", value: result.tx1Txid },
-              { label: "Tx2", value: result.tx2Txid },
-            ],
+	          nextSteps: workflowMutationNextSteps(nextSteps),
+	          text: {
+	            heading: "Anchor submitted.",
+	            fields: [
+	              { label: "Domain", value: result.domainName },
+	              { label: "Status", value: result.status },
+	              { label: "Tx1", value: result.tx1Txid },
+	              { label: "Tx2", value: result.tx2Txid },
+	            ],
           },
         });
       }

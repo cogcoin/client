@@ -110,9 +110,9 @@ export function getIdsNextSteps(
   return identities === null || identities === undefined || identities.length === 0
     ? []
     : [
-      "cogcoin register <root> --from <selector>",
-      "cogcoin send ... --from <selector>",
-      "cogcoin cog lock ... --from <selector>",
+      "cogcoin register <root>",
+      "cogcoin send ...",
+      "cogcoin cog lock ...",
     ];
 }
 

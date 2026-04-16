@@ -32,8 +32,10 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  createFundingMutationSender,
   formatCogAmount,
   getDecodedInputScriptPubKeyHex,
+  isLocalWalletScript,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
   outpointKey,
@@ -292,39 +294,19 @@ function resolveIdentitySender(
   resolved: CogResolvedSummary;
 } {
   assertWalletMutationContextReady(context, errorPrefix);
-
   const identity = selector == null
-    ? (() => {
-      const eligible = context.model.identities.filter((candidate) =>
-        candidate.address !== null
-        && !candidate.readOnly
-        && candidate.observedCogBalance !== null
-        && candidate.observedCogBalance >= amountCogtoshi
-      );
-
-      if (eligible.length === 0) {
-        throw new Error(`${errorPrefix}_no_eligible_sender`);
-      }
-
-      if (eligible.length > 1) {
-        throw new Error(`${errorPrefix}_ambiguous_sender`);
-      }
-
-      return eligible[0]!;
-    })()
+    ? context.model.fundingIdentity
     : resolveIdentityBySelector(context, selector, errorPrefix);
-
+  if (identity == null) {
+    throw new Error(`${errorPrefix}_no_eligible_sender`);
+  }
   ensureUsableSender(identity, errorPrefix, amountCogtoshi);
 
   return {
     state: context.localState.state,
     unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
-    sender: {
-      localIndex: identity.index,
-      scriptPubKeyHex: identity.scriptPubKeyHex,
-      address: identity.address!,
-    },
-    anchorOutpoint: resolveAnchorOutpointForSender(context.localState.state, identity, errorPrefix),
+    sender: createFundingMutationSender(context.localState.state),
+    anchorOutpoint: null,
     resolved: {
       sender: createResolvedSenderSummary(identity),
       claimPath: null,
@@ -370,21 +352,17 @@ function resolveClaimSender(
     }
 
     const lockerHex = Buffer.from(lock.lockerScriptPubKey).toString("hex");
-    const senderIdentity = context.model.identities.find((identity) => identity.scriptPubKeyHex === lockerHex) ?? null;
-    if (senderIdentity === null) {
+    if (!isLocalWalletScript(context.localState.state, lockerHex) || context.model.fundingIdentity == null) {
       throw new Error("wallet_reclaim_sender_not_local");
     }
+    const senderIdentity = context.model.fundingIdentity;
     ensureUsableSender(senderIdentity, errorPrefix, 0n);
 
     return {
       state: context.localState.state,
       unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
-      sender: {
-        localIndex: senderIdentity.index,
-        scriptPubKeyHex: senderIdentity.scriptPubKeyHex,
-        address: senderIdentity.address!,
-      },
-      anchorOutpoint: resolveAnchorOutpointForSender(context.localState.state, senderIdentity, errorPrefix),
+      sender: createFundingMutationSender(context.localState.state),
+      anchorOutpoint: null,
       recipientDomainName,
       amountCogtoshi: lock.amount,
       lockId: lock.lockId,
@@ -409,21 +387,17 @@ function resolveClaimSender(
   }
 
   const recipientOwnerHex = Buffer.from(recipientDomain.ownerScriptPubKey).toString("hex");
-  const senderIdentity = context.model.identities.find((identity) => identity.scriptPubKeyHex === recipientOwnerHex) ?? null;
-  if (senderIdentity === null) {
+  if (!isLocalWalletScript(context.localState.state, recipientOwnerHex) || context.model.fundingIdentity == null) {
     throw new Error("wallet_claim_sender_not_local");
   }
+  const senderIdentity = context.model.fundingIdentity;
   ensureUsableSender(senderIdentity, errorPrefix, 0n);
 
   return {
     state: context.localState.state,
     unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
-    sender: {
-      localIndex: senderIdentity.index,
-      scriptPubKeyHex: senderIdentity.scriptPubKeyHex,
-      address: senderIdentity.address!,
-    },
-    anchorOutpoint: resolveAnchorOutpointForSender(context.localState.state, senderIdentity, errorPrefix),
+    sender: createFundingMutationSender(context.localState.state),
+    anchorOutpoint: null,
     recipientDomainName,
     amountCogtoshi: lock.amount,
     lockId: lock.lockId,
