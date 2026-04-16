@@ -4,7 +4,9 @@ import type { Client, ClientStoreAdapter } from "../../types.js";
 import {
   AssumeUtxoBootstrapController,
   deleteGetblockArchiveRange,
-  prepareGetblockArchiveRange,
+  preparePublishedGetblockArchiveRange,
+  refreshGetblockManifestCache,
+  resolveGetblockArchiveRangeForHeight,
 } from "../bootstrap.js";
 import type { IndexerDaemonClient } from "../indexer-daemon.js";
 import { createRpcClient } from "../node.js";
@@ -15,6 +17,7 @@ import {
   stopManagedBitcoindService,
 } from "../service.js";
 import type {
+  GetblockRangeManifest,
   ManagedBitcoindClient,
   ManagedBitcoindNodeHandle,
   ManagedBitcoindStatus,
@@ -30,25 +33,6 @@ import {
 import { syncToTip as runManagedSync } from "./sync-engine.js";
 
 const GETBLOCK_RANGE_BASE_HEIGHT = 910_000;
-const GETBLOCK_RANGE_SIZE = 500;
-
-function isBoundaryHeight(height: number): boolean {
-  return height >= GETBLOCK_RANGE_BASE_HEIGHT
-    && (height - GETBLOCK_RANGE_BASE_HEIGHT) % GETBLOCK_RANGE_SIZE === 0;
-}
-
-function resolveNextBoundary(height: number): number | null {
-  if (height < GETBLOCK_RANGE_BASE_HEIGHT) {
-    return GETBLOCK_RANGE_BASE_HEIGHT;
-  }
-
-  if (isBoundaryHeight(height)) {
-    return height;
-  }
-
-  return GETBLOCK_RANGE_BASE_HEIGHT
-    + Math.ceil((height - GETBLOCK_RANGE_BASE_HEIGHT) / GETBLOCK_RANGE_SIZE) * GETBLOCK_RANGE_SIZE;
-}
 
 function mergeSyncResults(target: SyncResult, source: SyncResult): void {
   target.appliedBlocks += source.appliedBlocks;
@@ -289,65 +273,150 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     await this.#progress.playCompletionScene();
   }
 
+  async #setGetblockStatusMessage(
+    currentHeight: number,
+    message: string,
+    targetHeight = currentHeight,
+  ): Promise<void> {
+    const safeTargetHeight = Math.max(currentHeight, targetHeight);
+
+    await this.#progress.setPhase("bitcoin_sync", {
+      blocks: currentHeight,
+      headers: safeTargetHeight,
+      targetHeight: safeTargetHeight,
+      etaSeconds: null,
+      lastError: null,
+      message,
+    });
+  }
+
+  async #refreshGetblockManifest(
+    currentHeight: number,
+    abortSignal: AbortSignal,
+    mode: "startup" | "refresh",
+  ): Promise<GetblockRangeManifest | null> {
+    await this.#setGetblockStatusMessage(
+      currentHeight,
+      mode === "startup"
+        ? "Fetching Getblock manifest."
+        : "Refreshing Getblock manifest.",
+    );
+
+    const refreshed = await refreshGetblockManifestCache({
+      dataDir: this.#dataDir,
+      fetchImpl: this.#fetchImpl,
+      signal: abortSignal,
+    });
+
+    if (refreshed.source === "remote" && refreshed.manifest !== null) {
+      await this.#setGetblockStatusMessage(
+        currentHeight,
+        `Getblock manifest ready through height ${refreshed.manifest.publishedThroughHeight.toLocaleString()}.`,
+        refreshed.manifest.publishedThroughHeight,
+      );
+      return refreshed.manifest;
+    }
+
+    if (refreshed.source === "cache" && refreshed.manifest !== null) {
+      await this.#setGetblockStatusMessage(
+        currentHeight,
+        `Warning: Getblock manifest fetch failed; using cached manifest through height ${refreshed.manifest.publishedThroughHeight.toLocaleString()}.`,
+        refreshed.manifest.publishedThroughHeight,
+      );
+      return refreshed.manifest;
+    }
+
+    await this.#setGetblockStatusMessage(
+      currentHeight,
+      "Warning: Getblock manifest fetch failed and no cached manifest is available; continuing with ordinary Bitcoin sync.",
+    );
+    return null;
+  }
+
   async #syncWithStagedRanges(abortSignal: AbortSignal): Promise<SyncResult> {
     const aggregate = createInitialSyncResult();
-    let stagedModeEnabled = true;
 
     await this.#ensureBootstrapReady(abortSignal);
 
-    while (stagedModeEnabled) {
-      const info = await this.#rpc.getBlockchainInfo();
+    let info = await this.#rpc.getBlockchainInfo();
 
-      if (info.blocks < GETBLOCK_RANGE_BASE_HEIGHT) {
+    if (info.blocks < GETBLOCK_RANGE_BASE_HEIGHT) {
+      mergeSyncResults(aggregate, await this.#runManagedSyncPass(null, abortSignal));
+      return aggregate;
+    }
+
+    let manifest = await this.#refreshGetblockManifest(info.blocks, abortSignal, "startup");
+
+    while (manifest !== null) {
+      const nextMissingHeight = info.blocks + 1;
+
+      if (nextMissingHeight > manifest.publishedThroughHeight) {
+        const refreshed = await this.#refreshGetblockManifest(info.blocks, abortSignal, "refresh");
+
+        if (refreshed === null || refreshed.publishedThroughHeight < nextMissingHeight) {
+          manifest = refreshed;
+          break;
+        }
+
+        manifest = refreshed;
+      }
+
+      if (manifest === null) {
         break;
       }
 
-      const nextBoundary = resolveNextBoundary(info.blocks);
+      const selectedRange = resolveGetblockArchiveRangeForHeight(manifest, nextMissingHeight);
 
-      if (nextBoundary === null) {
+      if (selectedRange === null) {
+        await this.#setGetblockStatusMessage(
+          info.blocks,
+          `Warning: Getblock manifest has no published range for next missing block ${nextMissingHeight.toLocaleString()}; continuing with ordinary Bitcoin sync.`,
+        );
         break;
       }
 
-      if (!isBoundaryHeight(info.blocks)) {
-        mergeSyncResults(aggregate, await this.#runManagedSyncPass(nextBoundary, abortSignal));
-        continue;
-      }
+      await this.#setGetblockStatusMessage(
+        info.blocks,
+        `Using Getblock range ${selectedRange.firstBlockHeight.toLocaleString()}-${selectedRange.lastBlockHeight.toLocaleString()} for current Bitcoin height ${info.blocks.toLocaleString()} (next missing block ${nextMissingHeight.toLocaleString()}).`,
+        selectedRange.lastBlockHeight,
+      );
 
-      const firstBlockHeight = info.blocks + 1;
-      const lastBlockHeight = info.blocks + GETBLOCK_RANGE_SIZE;
       let readyRange;
 
       try {
-        readyRange = await prepareGetblockArchiveRange({
+        readyRange = await preparePublishedGetblockArchiveRange({
           dataDir: this.#dataDir,
           progress: this.#progress,
-          firstBlockHeight,
-          lastBlockHeight,
+          manifest: selectedRange,
           fetchImpl: this.#fetchImpl,
           signal: abortSignal,
         });
       } catch {
-        stagedModeEnabled = false;
-        break;
-      }
-
-      if (readyRange === null) {
-        stagedModeEnabled = false;
+        await this.#setGetblockStatusMessage(
+          info.blocks,
+          "Warning: Getblock range staging failed; continuing with ordinary Bitcoin sync.",
+        );
         break;
       }
 
       const stagedRestartActive = await this.#restartManagedNodeWithRange(readyRange, abortSignal);
-      mergeSyncResults(aggregate, await this.#runManagedSyncPass(lastBlockHeight, abortSignal));
+      mergeSyncResults(aggregate, await this.#runManagedSyncPass(selectedRange.lastBlockHeight, abortSignal));
 
       if (stagedRestartActive) {
         await deleteGetblockArchiveRange({
           dataDir: this.#dataDir,
-          firstBlockHeight,
-          lastBlockHeight,
+          firstBlockHeight: selectedRange.firstBlockHeight,
+          lastBlockHeight: selectedRange.lastBlockHeight,
         }).catch(() => undefined);
       } else {
-        stagedModeEnabled = false;
+        await this.#setGetblockStatusMessage(
+          selectedRange.lastBlockHeight,
+          "Warning: Restarting with the Getblock archive failed; continuing with ordinary Bitcoin sync.",
+        );
+        break;
       }
+
+      info = await this.#rpc.getBlockchainInfo();
     }
 
     mergeSyncResults(aggregate, await this.#runManagedSyncPass(null, abortSignal));

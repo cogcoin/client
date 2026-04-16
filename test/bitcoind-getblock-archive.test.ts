@@ -6,8 +6,11 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  preparePublishedGetblockArchiveRangeForTesting,
   prepareGetblockArchiveRangeForTesting,
+  refreshGetblockManifestCacheForTesting,
   resolveGetblockArchivePathsForTesting,
+  resolveGetblockArchiveRangeForHeightForTesting,
   resolveReadyGetblockArchiveForTesting,
 } from "../src/bitcoind/testing.js";
 import type { GetblockArchiveManifest, GetblockRangeManifest } from "../src/bitcoind/types.js";
@@ -42,14 +45,14 @@ function createRangeManifest(
   };
 }
 
-function createAggregateManifest(range: GetblockArchiveManifest): GetblockRangeManifest {
+function createAggregateManifest(...ranges: GetblockArchiveManifest[]): GetblockRangeManifest {
   return {
     formatVersion: 1,
     chain: "main",
     baseSnapshotHeight: 910_000,
     rangeSizeBlocks: 500,
-    publishedThroughHeight: range.lastBlockHeight,
-    ranges: [range],
+    publishedThroughHeight: ranges.length === 0 ? 910_000 : ranges[ranges.length - 1]!.lastBlockHeight,
+    ranges,
   };
 }
 
@@ -120,6 +123,10 @@ test("prepareGetblockArchiveRangeForTesting downloads and validates a published 
 
     const artifact = await readFile(ready.artifactPath);
     assert.deepEqual(artifact, payload);
+    const cachedManifest = JSON.parse(
+      await readFile(join(root, "bootstrap", "getblock", "getblock-manifest.json"), "utf8"),
+    ) as GetblockRangeManifest;
+    assert.equal(cachedManifest.publishedThroughHeight, 910_500);
     const persisted = await resolveReadyGetblockArchiveForTesting(root, manifest);
     assert.ok(persisted !== null);
     assert.equal(persisted.manifest.artifactSha256, manifest.artifactSha256);
@@ -170,6 +177,119 @@ test("prepareGetblockArchiveRangeForTesting falls back to the verified local ran
     assert.equal(ready.manifest.lastBlockHeight, manifest.lastBlockHeight);
     assert.deepEqual(requests, [
       "https://snapshots.cogcoin.org/getblock-manifest.json",
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("refreshGetblockManifestCacheForTesting uses a valid cached manifest when the live fetch fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogcoin-client-getblock-manifest-cache-"));
+  const ranges: GetblockArchiveManifest[] = [];
+
+  for (let firstBlockHeight = 910_001; firstBlockHeight <= 937_001; firstBlockHeight += 500) {
+    ranges.push(
+      createRangeManifest(
+        Buffer.from(`cached-range-${firstBlockHeight}`),
+        firstBlockHeight,
+        firstBlockHeight + 499,
+      ),
+    );
+  }
+
+  const aggregateManifest = createAggregateManifest(...ranges);
+
+  try {
+    await mkdir(join(root, "bootstrap", "getblock"), { recursive: true });
+    await writeFile(
+      join(root, "bootstrap", "getblock", "getblock-manifest.json"),
+      JSON.stringify(aggregateManifest, null, 2),
+    );
+
+    const refreshed = await refreshGetblockManifestCacheForTesting({
+      dataDir: root,
+      fetchImpl: (async () => {
+        throw new Error("manifest fetch failed");
+      }) as typeof fetch,
+    });
+
+    assert.equal(refreshed.source, "cache");
+    assert.equal(refreshed.manifest?.publishedThroughHeight, 937_500);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("refreshGetblockManifestCacheForTesting ignores an invalid cached manifest when live fetch fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogcoin-client-getblock-manifest-invalid-"));
+
+  try {
+    await mkdir(join(root, "bootstrap", "getblock"), { recursive: true });
+    await writeFile(
+      join(root, "bootstrap", "getblock", "getblock-manifest.json"),
+      "{\"formatVersion\":0}",
+    );
+
+    const refreshed = await refreshGetblockManifestCacheForTesting({
+      dataDir: root,
+      fetchImpl: (async () => {
+        throw new Error("manifest fetch failed");
+      }) as typeof fetch,
+    });
+
+    assert.equal(refreshed.source, "none");
+    assert.equal(refreshed.manifest, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveGetblockArchiveRangeForHeightForTesting selects the containing published range", () => {
+  const firstRange = createRangeManifest(Buffer.from("aaaabbbb", "hex"), 910_001, 910_500);
+  const secondRange = createRangeManifest(Buffer.from("ccccdddd", "hex"), 910_501, 911_000);
+  const aggregateManifest: GetblockRangeManifest = {
+    formatVersion: 1,
+    chain: "main",
+    baseSnapshotHeight: 910_000,
+    rangeSizeBlocks: 500,
+    publishedThroughHeight: secondRange.lastBlockHeight,
+    ranges: [firstRange, secondRange],
+  };
+
+  assert.equal(
+    resolveGetblockArchiveRangeForHeightForTesting(aggregateManifest, 910_001)?.lastBlockHeight,
+    910_500,
+  );
+  assert.equal(
+    resolveGetblockArchiveRangeForHeightForTesting(aggregateManifest, 910_338)?.lastBlockHeight,
+    910_500,
+  );
+  assert.equal(
+    resolveGetblockArchiveRangeForHeightForTesting(aggregateManifest, 910_777)?.firstBlockHeight,
+    910_501,
+  );
+  assert.equal(resolveGetblockArchiveRangeForHeightForTesting(aggregateManifest, 911_001), null);
+});
+
+test("preparePublishedGetblockArchiveRangeForTesting downloads a range selected from a cached manifest entry", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogcoin-client-getblock-range-published-"));
+  const payload = Buffer.from("0011223344556677", "hex");
+  const manifest = createRangeManifest(payload, 937_001, 937_500);
+  const requests: string[] = [];
+
+  try {
+    const ready = await preparePublishedGetblockArchiveRangeForTesting({
+      dataDir: root,
+      progress: {
+        async setPhase() {},
+      },
+      manifest,
+      fetchImpl: createFetchForArchive(manifest, payload, requests),
+    });
+
+    assert.equal(ready.manifest.lastBlockHeight, 937_500);
+    assert.deepEqual(requests, [
+      "https://snapshots.cogcoin.org/getblock-937001-937500.dat",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });

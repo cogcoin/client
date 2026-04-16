@@ -10,6 +10,7 @@ const GETBLOCK_ARCHIVE_STATE_VERSION = 1;
 const GETBLOCK_ARCHIVE_BASE_HEIGHT = 910_000;
 const GETBLOCK_ARCHIVE_RANGE_SIZE = 500;
 const GETBLOCK_ARCHIVE_FIRST_HEIGHT = GETBLOCK_ARCHIVE_BASE_HEIGHT + 1;
+const GETBLOCK_ARCHIVE_MANIFEST_FILENAME = "getblock-manifest.json";
 const GETBLOCK_ARCHIVE_REMOTE_BASE_URL = "https://snapshots.cogcoin.org/";
 const GETBLOCK_ARCHIVE_REMOTE_MANIFEST_URL = `${GETBLOCK_ARCHIVE_REMOTE_BASE_URL}getblock-manifest.json`;
 const TRUSTED_FRONTIER_REVERIFY_CHUNKS = 2;
@@ -43,8 +44,17 @@ export interface ReadyGetblockArchive {
   artifactPath: string;
 }
 
+export interface RefreshedGetblockManifest {
+  manifest: GetblockRangeManifest | null;
+  source: "remote" | "cache" | "none";
+}
+
 function buildRangeFilename(firstBlockHeight: number, lastBlockHeight: number): string {
   return `getblock-${firstBlockHeight}-${lastBlockHeight}.dat`;
+}
+
+function resolveManifestCachePath(dataDir: string): string {
+  return join(dataDir, "bootstrap", "getblock", GETBLOCK_ARCHIVE_MANIFEST_FILENAME);
 }
 
 function createInitialState(): GetblockArchiveDownloadState {
@@ -175,6 +185,13 @@ async function writeJsonAtomic(path: string, payload: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tempPath = `${path}.tmp`;
   await writeFile(tempPath, JSON.stringify(payload, null, 2));
+  await rename(tempPath, path);
+}
+
+async function writeTextAtomic(path: string, payload: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tempPath = `${path}.tmp`;
+  await writeFile(tempPath, payload);
   await rename(tempPath, path);
 }
 
@@ -625,19 +642,111 @@ async function fetchManifestRange(
   lastBlockHeight: number,
   signal?: AbortSignal,
 ): Promise<GetblockArchiveManifest | null> {
-  const response = await fetchImpl(GETBLOCK_ARCHIVE_REMOTE_MANIFEST_URL, { signal });
+  const refreshed = await refreshGetblockManifestCache({
+    dataDir: "",
+    fetchImpl,
+    signal,
+    persist: false,
+  });
 
-  if (response.status === 404) {
+  if (refreshed.manifest === null) {
     return null;
   }
+
+  return resolveGetblockArchiveRange(
+    refreshed.manifest,
+    firstBlockHeight,
+    lastBlockHeight,
+  );
+}
+
+async function fetchAggregateManifest(
+  fetchImpl: typeof fetch,
+  signal?: AbortSignal,
+): Promise<{ manifest: GetblockRangeManifest; rawText: string }> {
+  const response = await fetchImpl(GETBLOCK_ARCHIVE_REMOTE_MANIFEST_URL, { signal });
 
   if (!response.ok) {
     throw new Error(`managed_getblock_archive_manifest_http_${response.status}`);
   }
 
-  const manifest = assertAggregateManifestShape(await response.json());
+  const rawText = await response.text();
+  return {
+    manifest: assertAggregateManifestShape(JSON.parse(rawText)),
+    rawText,
+  };
+}
+
+async function loadCachedAggregateManifest(dataDir: string): Promise<GetblockRangeManifest | null> {
+  try {
+    return assertAggregateManifestShape(
+      JSON.parse(await readFile(resolveManifestCachePath(dataDir), "utf8")),
+    );
+  } catch (error) {
+    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+
+    return null;
+  }
+}
+
+async function saveCachedAggregateManifest(dataDir: string, rawText: string): Promise<void> {
+  await writeTextAtomic(resolveManifestCachePath(dataDir), rawText);
+}
+
+export async function refreshGetblockManifestCache(options: {
+  dataDir: string;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+  persist?: boolean;
+}): Promise<RefreshedGetblockManifest> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+
+  try {
+    const { manifest, rawText } = await fetchAggregateManifest(fetchImpl, options.signal);
+
+    if (options.persist !== false) {
+      await saveCachedAggregateManifest(options.dataDir, rawText).catch(() => undefined);
+    }
+
+    return {
+      manifest,
+      source: "remote",
+    };
+  } catch {
+    if (options.persist === false) {
+      return {
+        manifest: null,
+        source: "none",
+      };
+    }
+
+    const cachedManifest = await loadCachedAggregateManifest(options.dataDir);
+
+    return {
+      manifest: cachedManifest,
+      source: cachedManifest === null ? "none" : "cache",
+    };
+  }
+}
+
+export function resolveGetblockArchiveRange(
+  manifest: GetblockRangeManifest,
+  firstBlockHeight: number,
+  lastBlockHeight: number,
+): GetblockArchiveManifest | null {
   return manifest.ranges.find((range) =>
     range.firstBlockHeight === firstBlockHeight && range.lastBlockHeight === lastBlockHeight,
+  ) ?? null;
+}
+
+export function resolveGetblockArchiveRangeForHeight(
+  manifest: GetblockRangeManifest,
+  height: number,
+): GetblockArchiveManifest | null {
+  return manifest.ranges.find((range) =>
+    range.firstBlockHeight <= height && height <= range.lastBlockHeight,
   ) ?? null;
 }
 
@@ -697,6 +806,40 @@ export async function resolveReadyGetblockArchiveForTesting(
   );
 }
 
+export async function preparePublishedGetblockArchiveRange(options: {
+  dataDir: string;
+  progress: Pick<ManagedProgressController, "setPhase">;
+  manifest: GetblockArchiveManifest;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<ReadyGetblockArchive> {
+  const paths = resolvePaths(options.dataDir, options.manifest.firstBlockHeight, options.manifest.lastBlockHeight);
+  await mkdir(paths.directory, { recursive: true });
+  const state = await loadState(paths);
+  const readyLocal = await resolveReadyLocalGetblockArchive(paths, options.manifest, state);
+
+  if (readyLocal !== null) {
+    return readyLocal;
+  }
+
+  await downloadRemoteArchive(
+    paths,
+    options.manifest,
+    state,
+    options.progress,
+    options.fetchImpl ?? fetch,
+    options.signal,
+  );
+
+  const ready = await resolveReadyLocalGetblockArchive(paths, options.manifest, state);
+
+  if (ready === null) {
+    throw new Error("managed_getblock_archive_ready_resolution_failed");
+  }
+
+  return ready;
+}
+
 export async function prepareGetblockArchiveRange(options: {
   dataDir: string;
   progress: Pick<ManagedProgressController, "setPhase">;
@@ -709,63 +852,59 @@ export async function prepareGetblockArchiveRange(options: {
   await mkdir(paths.directory, { recursive: true });
   const state = await loadState(paths);
   const fetchImpl = options.fetchImpl ?? fetch;
-  let remoteManifest: GetblockArchiveManifest | null;
+  const refreshed = await refreshGetblockManifestCache({
+    dataDir: options.dataDir,
+    fetchImpl,
+    signal: options.signal,
+  });
+  const publishedRange = refreshed.manifest === null
+    ? null
+    : resolveGetblockArchiveRange(refreshed.manifest, options.firstBlockHeight, options.lastBlockHeight);
 
-  try {
-    remoteManifest = await fetchManifestRange(
+  if (publishedRange !== null) {
+    return preparePublishedGetblockArchiveRange({
+      dataDir: options.dataDir,
+      progress: options.progress,
+      manifest: publishedRange,
       fetchImpl,
-      options.firstBlockHeight,
-      options.lastBlockHeight,
-      options.signal,
-    );
-  } catch {
-    const readyLocal = {
-      formatVersion: state.formatVersion,
-      chain: "main" as const,
-      baseSnapshotHeight: GETBLOCK_ARCHIVE_BASE_HEIGHT,
-      firstBlockHeight: state.firstBlockHeight ?? options.firstBlockHeight,
-      lastBlockHeight: state.lastBlockHeight ?? options.lastBlockHeight,
-      artifactFilename: buildRangeFilename(
-        state.firstBlockHeight ?? options.firstBlockHeight,
-        state.lastBlockHeight ?? options.lastBlockHeight,
-      ),
-      artifactSizeBytes: state.artifactSizeBytes,
-      artifactSha256: state.artifactSha256 ?? "",
-      chunkSizeBytes: state.chunkSizeBytes,
-      chunkSha256s: [],
-    };
+      signal: options.signal,
+    });
+  }
 
-    if (
-      state.validated
-      && state.firstBlockHeight === options.firstBlockHeight
-      && state.lastBlockHeight === options.lastBlockHeight
-      && state.artifactSha256 !== null
-    ) {
-      const resolved = await resolveReadyLocalGetblockArchive(paths, readyLocal, state).catch(() => null);
+  const readyLocal = {
+    formatVersion: state.formatVersion,
+    chain: "main" as const,
+    baseSnapshotHeight: GETBLOCK_ARCHIVE_BASE_HEIGHT,
+    firstBlockHeight: state.firstBlockHeight ?? options.firstBlockHeight,
+    lastBlockHeight: state.lastBlockHeight ?? options.lastBlockHeight,
+    artifactFilename: buildRangeFilename(
+      state.firstBlockHeight ?? options.firstBlockHeight,
+      state.lastBlockHeight ?? options.lastBlockHeight,
+    ),
+    artifactSizeBytes: state.artifactSizeBytes,
+    artifactSha256: state.artifactSha256 ?? "",
+    chunkSizeBytes: state.chunkSizeBytes,
+    chunkSha256s: [],
+  };
 
-      if (resolved !== null) {
-        return resolved;
-      }
+  if (
+    state.validated
+    && state.firstBlockHeight === options.firstBlockHeight
+    && state.lastBlockHeight === options.lastBlockHeight
+    && state.artifactSha256 !== null
+  ) {
+    const resolved = await resolveReadyLocalGetblockArchive(paths, readyLocal, state).catch(() => null);
+
+    if (resolved !== null) {
+      return resolved;
     }
+  }
 
+  if (refreshed.source === "none") {
     throw new Error("managed_getblock_archive_manifest_refresh_failed");
   }
 
-  if (remoteManifest === null) {
-    return null;
-  }
-
-  const readyLocal = await resolveReadyLocalGetblockArchive(paths, remoteManifest, state);
-
-  if (
-    readyLocal !== null
-    && readyLocal.manifest.artifactSha256 === remoteManifest.artifactSha256
-  ) {
-    return readyLocal;
-  }
-
-  await downloadRemoteArchive(paths, remoteManifest, state, options.progress, fetchImpl, options.signal);
-  return resolveReadyLocalGetblockArchive(paths, remoteManifest, state);
+  return null;
 }
 
 export async function deleteGetblockArchiveRange(options: {
@@ -794,7 +933,10 @@ export async function prepareLatestGetblockArchive(options: {
 
 export const prepareLatestGetblockArchiveForTesting = prepareLatestGetblockArchive;
 export const prepareGetblockArchiveRangeForTesting = prepareGetblockArchiveRange;
+export const preparePublishedGetblockArchiveRangeForTesting = preparePublishedGetblockArchiveRange;
 export const deleteGetblockArchiveRangeForTesting = deleteGetblockArchiveRange;
+export const refreshGetblockManifestCacheForTesting = refreshGetblockManifestCache;
+export const resolveGetblockArchiveRangeForHeightForTesting = resolveGetblockArchiveRangeForHeight;
 
 export async function waitForGetblockArchiveImportForTesting(
   rpc: Pick<{ getBlockchainInfo(): Promise<{ blocks: number; headers: number; bestblockhash: string }> }, "getBlockchainInfo">,

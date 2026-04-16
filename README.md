@@ -1,6 +1,6 @@
 # `@cogcoin/client`
 
-`@cogcoin/client@0.5.13` is the store-backed Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
+`@cogcoin/client@0.5.14` is the store-backed Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
 
 Use Node 22 or newer.
 

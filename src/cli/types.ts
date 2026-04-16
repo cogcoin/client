@@ -1,6 +1,7 @@
 import type { inspectPassiveClientStatus } from "../passive-status.js";
 import { openManagedBitcoindClient } from "../bitcoind/index.js";
 import { createRpcClient } from "../bitcoind/node.js";
+import type { ManagedBitcoindProgressEvent } from "../bitcoind/types.js";
 import {
   attachOrStartIndexerDaemon,
   probeIndexerDaemon,
@@ -243,6 +244,7 @@ export interface CliRunnerContext {
     dataDir?: string;
     walletRootId?: string;
     progressOutput?: ProgressOutput;
+    onProgress?: (event: ManagedBitcoindProgressEvent) => void;
     confirmGetblockArchiveRestart?: (options: {
       currentArchiveEndHeight: number | null;
       nextArchiveEndHeight: number;

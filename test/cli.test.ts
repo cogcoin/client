@@ -25,6 +25,7 @@ import {
   MANAGED_BITCOIND_SERVICE_API_VERSION,
   INDEXER_DAEMON_SCHEMA_VERSION,
   INDEXER_DAEMON_SERVICE_API_VERSION,
+  type ManagedBitcoindProgressEvent,
   type ManagedBitcoindServiceStatus,
 } from "../src/bitcoind/types.js";
 import { inspectPassiveClientStatus } from "../src/passive-status.js";
@@ -8477,6 +8478,268 @@ test("sync uses resolved defaults and prints a concise summary", async () => {
   assert.match(stdout.toString(), /Applied blocks: 12/);
   assert.match(stdout.toString(), /Rewound blocks: 3/);
   assert.match(stdout.toString(), /Node best height: 910010/);
+});
+
+test("sync prints getblock manifest and range progress by default when tty progress is inactive", async () => {
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream();
+  const runtimePaths = createTempWalletPaths("/tmp/cogcoin-cli-sync-getblock-progress");
+  let progressHandler: ((event: ManagedBitcoindProgressEvent) => void) | undefined;
+  const snapshot = {
+    url: "https://snapshots.cogcoin.org/utxo-910000.dat",
+    filename: "utxo-910000.dat",
+    height: 910000,
+    sha256: "aa".repeat(32),
+    sizeBytes: 1024,
+  };
+
+  const code = await runCli(["sync"], {
+    stdout,
+    stderr,
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-client.sqlite",
+    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveWalletRuntimePaths: () => runtimePaths,
+    loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub("wallet-root-sync"),
+    loadUnlockSession: async () => {
+      throw new Error("should-not-read-unlock-session");
+    },
+    loadWalletExplicitLock: async () => {
+      throw new Error("should-not-read-explicit-lock");
+    },
+    ensureDirectory: async () => {},
+    openSqliteStore: async () => createNoopStore(),
+    openManagedBitcoindClient: async ({ onProgress }) => {
+      progressHandler = onProgress;
+      return {
+        async syncToTip() {
+          progressHandler?.({
+            phase: "bitcoin_sync",
+            progress: {
+              phase: "bitcoin_sync",
+              message: "Fetching Getblock manifest.",
+              resumed: false,
+              downloadedBytes: null,
+              totalBytes: null,
+              percent: null,
+              bytesPerSecond: null,
+              etaSeconds: null,
+              headers: 910000,
+              blocks: 910000,
+              targetHeight: 910000,
+              baseHeight: null,
+              tipHashHex: null,
+              lastError: null,
+              updatedAt: Date.now(),
+            },
+            snapshot,
+            currentQuote: null,
+            cogcoinSyncHeight: null,
+            cogcoinSyncTargetHeight: null,
+          });
+          progressHandler?.({
+            phase: "bitcoin_sync",
+            progress: {
+              phase: "bitcoin_sync",
+              message: "Getblock manifest ready through height 945,000.",
+              resumed: false,
+              downloadedBytes: null,
+              totalBytes: null,
+              percent: null,
+              bytesPerSecond: null,
+              etaSeconds: null,
+              headers: 945000,
+              blocks: 910000,
+              targetHeight: 945000,
+              baseHeight: null,
+              tipHashHex: null,
+              lastError: null,
+              updatedAt: Date.now(),
+            },
+            snapshot,
+            currentQuote: null,
+            cogcoinSyncHeight: null,
+            cogcoinSyncTargetHeight: null,
+          });
+          progressHandler?.({
+            phase: "bitcoin_sync",
+            progress: {
+              phase: "bitcoin_sync",
+              message: "Using Getblock range 910,001-910,500 for current Bitcoin height 910,000 (next missing block 910,001).",
+              resumed: false,
+              downloadedBytes: null,
+              totalBytes: null,
+              percent: null,
+              bytesPerSecond: null,
+              etaSeconds: null,
+              headers: 910500,
+              blocks: 910000,
+              targetHeight: 910500,
+              baseHeight: null,
+              tipHashHex: null,
+              lastError: null,
+              updatedAt: Date.now(),
+            },
+            snapshot,
+            currentQuote: null,
+            cogcoinSyncHeight: null,
+            cogcoinSyncTargetHeight: null,
+          });
+          progressHandler?.({
+            phase: "getblock_archive_download",
+            progress: {
+              phase: "getblock_archive_download",
+              message: "Downloading getblock range.",
+              resumed: false,
+              downloadedBytes: 256,
+              totalBytes: 1024,
+              percent: 25,
+              bytesPerSecond: 64,
+              etaSeconds: 12,
+              headers: null,
+              blocks: null,
+              targetHeight: 910500,
+              baseHeight: null,
+              tipHashHex: null,
+              lastError: null,
+              updatedAt: Date.now(),
+            },
+            snapshot,
+            currentQuote: null,
+            cogcoinSyncHeight: null,
+            cogcoinSyncTargetHeight: null,
+          });
+
+          return {
+            appliedBlocks: 1,
+            rewoundBlocks: 0,
+            endingHeight: 910500,
+            bestHeight: 910500,
+          };
+        },
+        async playSyncCompletionScene() {},
+        async startFollowingTip() {
+          throw new Error("unreachable");
+        },
+        async getNodeStatus() {
+          throw new Error("unreachable");
+        },
+        async close() {},
+      };
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.match(stderr.toString(), /Fetching Getblock manifest\./);
+  assert.match(stderr.toString(), /Getblock manifest ready through height 945,000\./);
+  assert.match(stderr.toString(), /Using Getblock range 910,001-910,500 for current Bitcoin height 910,000/);
+  assert.match(stderr.toString(), /Getblock download: 25\.00%/);
+  assert.match(stdout.toString(), /Applied blocks: 1/);
+});
+
+test("sync still prints manifest fallback warnings when progress output is none", async () => {
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream();
+  const runtimePaths = createTempWalletPaths("/tmp/cogcoin-cli-sync-getblock-warning");
+  let progressHandler: ((event: ManagedBitcoindProgressEvent) => void) | undefined;
+  const snapshot = {
+    url: "https://snapshots.cogcoin.org/utxo-910000.dat",
+    filename: "utxo-910000.dat",
+    height: 910000,
+    sha256: "aa".repeat(32),
+    sizeBytes: 1024,
+  };
+
+  const code = await runCli(["sync", "--progress", "none"], {
+    stdout,
+    stderr,
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-client.sqlite",
+    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveWalletRuntimePaths: () => runtimePaths,
+    loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub("wallet-root-sync"),
+    loadUnlockSession: async () => {
+      throw new Error("should-not-read-unlock-session");
+    },
+    loadWalletExplicitLock: async () => {
+      throw new Error("should-not-read-explicit-lock");
+    },
+    ensureDirectory: async () => {},
+    openSqliteStore: async () => createNoopStore(),
+    openManagedBitcoindClient: async ({ onProgress }) => {
+      progressHandler = onProgress;
+      return {
+        async syncToTip() {
+          progressHandler?.({
+            phase: "bitcoin_sync",
+            progress: {
+              phase: "bitcoin_sync",
+              message: "Fetching Getblock manifest.",
+              resumed: false,
+              downloadedBytes: null,
+              totalBytes: null,
+              percent: null,
+              bytesPerSecond: null,
+              etaSeconds: null,
+              headers: 910000,
+              blocks: 910000,
+              targetHeight: 910000,
+              baseHeight: null,
+              tipHashHex: null,
+              lastError: null,
+              updatedAt: Date.now(),
+            },
+            snapshot,
+            currentQuote: null,
+            cogcoinSyncHeight: null,
+            cogcoinSyncTargetHeight: null,
+          });
+          progressHandler?.({
+            phase: "bitcoin_sync",
+            progress: {
+              phase: "bitcoin_sync",
+              message: "Warning: Getblock manifest fetch failed and no cached manifest is available; continuing with ordinary Bitcoin sync.",
+              resumed: false,
+              downloadedBytes: null,
+              totalBytes: null,
+              percent: null,
+              bytesPerSecond: null,
+              etaSeconds: null,
+              headers: 910000,
+              blocks: 910000,
+              targetHeight: 910000,
+              baseHeight: null,
+              tipHashHex: null,
+              lastError: null,
+              updatedAt: Date.now(),
+            },
+            snapshot,
+            currentQuote: null,
+            cogcoinSyncHeight: null,
+            cogcoinSyncTargetHeight: null,
+          });
+
+          return {
+            appliedBlocks: 0,
+            rewoundBlocks: 0,
+            endingHeight: 910000,
+            bestHeight: 910000,
+          };
+        },
+        async playSyncCompletionScene() {},
+        async startFollowingTip() {
+          throw new Error("unreachable");
+        },
+        async getNodeStatus() {
+          throw new Error("unreachable");
+        },
+        async close() {},
+      };
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.doesNotMatch(stderr.toString(), /Fetching Getblock manifest\./);
+  assert.match(stderr.toString(), /Warning: Getblock manifest fetch failed and no cached manifest is available/);
+  assert.match(stdout.toString(), /Node best height: 910000/);
 });
 
 test("sync refuses to start while another Cogcoin writer holds the wallet control lock", async () => {
