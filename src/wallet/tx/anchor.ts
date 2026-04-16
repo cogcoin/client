@@ -455,6 +455,10 @@ function resolveAnchorOutpointForSender(
   };
 }
 
+function isFundingSender(state: WalletStateV1, sender: MutationSender): boolean {
+  return sender.scriptPubKeyHex === state.funding.scriptPubKeyHex;
+}
+
 async function confirmAnchor(
   prompter: WalletPrompter,
   operation: AnchorOperation,
@@ -527,11 +531,16 @@ function resolveAnchorOperation(
     throw new Error("wallet_anchor_owner_read_only");
   }
 
-  const sourceAnchorOutpoint = senderIdentity.index === context.localState.state.fundingIndex
+  const sourceAnchorOutpoint = isFundingSender(context.localState.state, {
+    localIndex: senderIdentity.index,
+    scriptPubKeyHex: senderIdentity.scriptPubKeyHex,
+    address: senderIdentity.address,
+  })
     ? null
     : resolveAnchorOutpointForSender(context.localState.state, senderIdentity.index);
 
-  if (senderIdentity.index !== context.localState.state.fundingIndex && sourceAnchorOutpoint === null) {
+  if (sourceAnchorOutpoint === null
+    && senderIdentity.scriptPubKeyHex !== context.localState.state.funding.scriptPubKeyHex) {
     throw new Error("wallet_anchor_owner_identity_not_supported");
   }
 
@@ -914,32 +923,6 @@ function assertNoUnexpectedAnchorInputs(
   }
 }
 
-function assertRequiredAnchorInputPresentOnce(options: {
-  inputs: RpcVin[];
-  requiredOutpoint: OutpointRecord;
-  requiredScriptPubKeyHex: string;
-  mismatchErrorCode: string;
-}): void {
-  let matches = 0;
-
-  for (const input of options.inputs) {
-    const scriptPubKeyHex = getDecodedInputScriptPubKeyHex(input);
-    if (scriptPubKeyHex !== options.requiredScriptPubKeyHex) {
-      continue;
-    }
-
-    if (!inputMatchesOutpoint(input, options.requiredOutpoint)) {
-      throw new Error(options.mismatchErrorCode);
-    }
-
-    matches += 1;
-  }
-
-  if (matches !== 1) {
-    throw new Error(options.mismatchErrorCode);
-  }
-}
-
 function validateTx1Draft(
   decoded: RpcDecodedPsbt,
   funded: BuiltAnchorTransaction["funded"],
@@ -952,19 +935,31 @@ function validateTx1Draft(
     throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
   }
 
-  const allowedScripts = new Set<string>([plan.allowedFundingScriptPubKeyHex]);
-  if (plan.requiredSenderOutpoint !== null) {
-    allowedScripts.add(plan.sender.scriptPubKeyHex);
+  const firstInputScriptPubKeyHex = getDecodedInputScriptPubKeyHex(inputs[0]!);
+  if (firstInputScriptPubKeyHex !== plan.sender.scriptPubKeyHex) {
+    throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
   }
-  assertNoUnexpectedAnchorInputs(inputs, allowedScripts, `${plan.errorPrefix}_unexpected_funding_input`);
 
   if (plan.requiredSenderOutpoint !== null) {
-    assertRequiredAnchorInputPresentOnce({
+    if (!inputMatchesOutpoint(inputs[0]!, plan.requiredSenderOutpoint)) {
+      throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
+    }
+
+    if (inputs.length < 2 || getDecodedInputScriptPubKeyHex(inputs[1]!) !== plan.allowedFundingScriptPubKeyHex) {
+      throw new Error(`${plan.errorPrefix}_unexpected_funding_input`);
+    }
+
+    assertNoUnexpectedAnchorInputs(
+      inputs.slice(2),
+      new Set<string>([plan.allowedFundingScriptPubKeyHex]),
+      `${plan.errorPrefix}_unexpected_funding_input`,
+    );
+  } else {
+    assertNoUnexpectedAnchorInputs(
       inputs,
-      requiredOutpoint: plan.requiredSenderOutpoint,
-      requiredScriptPubKeyHex: plan.sender.scriptPubKeyHex,
-      mismatchErrorCode: `${plan.errorPrefix}_sender_input_mismatch`,
-    });
+      new Set<string>([plan.allowedFundingScriptPubKeyHex]),
+      `${plan.errorPrefix}_unexpected_funding_input`,
+    );
   }
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
@@ -1018,17 +1013,21 @@ function validateTx2Draft(
     throw new Error(`${plan.errorPrefix}_provisional_input_mismatch`);
   }
 
+  const firstInputScriptPubKeyHex = getDecodedInputScriptPubKeyHex(inputs[0]!);
+  if (firstInputScriptPubKeyHex !== plan.sender.scriptPubKeyHex
+    || !inputMatchesOutpoint(inputs[0]!, plan.requiredProvisionalOutpoint)) {
+    throw new Error(`${plan.errorPrefix}_provisional_input_mismatch`);
+  }
+
+  if (inputs.length < 2 || getDecodedInputScriptPubKeyHex(inputs[1]!) !== plan.allowedFundingScriptPubKeyHex) {
+    throw new Error(`${plan.errorPrefix}_unexpected_funding_input`);
+  }
+
   assertNoUnexpectedAnchorInputs(
-    inputs,
-    new Set<string>([plan.sender.scriptPubKeyHex, plan.allowedFundingScriptPubKeyHex]),
+    inputs.slice(2),
+    new Set<string>([plan.allowedFundingScriptPubKeyHex]),
     `${plan.errorPrefix}_unexpected_funding_input`,
   );
-  assertRequiredAnchorInputPresentOnce({
-    inputs,
-    requiredOutpoint: plan.requiredProvisionalOutpoint,
-    requiredScriptPubKeyHex: plan.sender.scriptPubKeyHex,
-    mismatchErrorCode: `${plan.errorPrefix}_provisional_input_mismatch`,
-  });
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);

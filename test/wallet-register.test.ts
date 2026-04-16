@@ -4167,6 +4167,86 @@ test("anchorDomain builds Case A from funding identity zero and persists a live 
   assert.equal(saved.state.nextDedicatedIndex, 4);
 });
 
+test("anchorDomain treats a funding-owned Tx1 as funding-sent even if fundingIndex is stale", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-case-a-stale-funding-index-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const state = {
+    ...baseState,
+    fundingIndex: 1 as unknown as 0,
+    identities: baseState.identities.map((identity) =>
+      identity.index === 0
+        ? {
+          ...identity,
+          assignedDomainNames: ["weatherbot"],
+        }
+        : identity
+    ),
+    domains: [
+      ...baseState.domains,
+      {
+        name: "weatherbot",
+        domainId: 10,
+        dedicatedIndex: 0,
+        currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        currentOwnerLocalIndex: 0,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "none" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+    ],
+  } satisfies WalletStateV1;
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "weatherbot",
+    ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
+  });
+
+  const targetIdentity = deriveWalletIdentityMaterial(state.keys.accountXprv, 3);
+  const harness = createAnchorRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    fundingAddress: state.funding.address,
+    senderScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    senderAddress: state.funding.address,
+    targetScriptPubKeyHex: targetIdentity.scriptPubKeyHex,
+    targetAddress: targetIdentity.address,
+  });
+
+  const result = await anchorDomain({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["weatherbot"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_404_000,
+  });
+
+  assert.equal(result.status, "live");
+  assert.equal(harness.captured.calls[0]?.options.add_inputs, false);
+  assert.equal(harness.captured.calls[0]?.inputs[0]?.txid, "11".repeat(32));
+});
+
 test("anchorDomain accepts a funding-owner Tx1 decode with reordered allowed funding inputs", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-case-a-reordered-funding-"));
   const paths = createTempWalletPaths(tempRoot);
@@ -4315,14 +4395,14 @@ test("anchorDomain rejects a Tx1 draft with an unexpected foreign input script",
     decodedVinOverrides: {
       tx1: [
         {
-          txid: "99".repeat(32),
-          vout: 7,
-          scriptPubKeyHex: "0014ffffffffffffffffffffffffffffffffffffffff",
-        },
-        {
           txid: "11".repeat(32),
           vout: 0,
           scriptPubKeyHex: state.funding.scriptPubKeyHex,
+        },
+        {
+          txid: "99".repeat(32),
+          vout: 7,
+          scriptPubKeyHex: "0014ffffffffffffffffffffffffffffffffffffffff",
         },
       ],
     },
@@ -5252,7 +5332,7 @@ test("anchorDomain builds Case B from an anchored local owner and relocks both r
   assert.equal(saved.state.domains.find((domain) => domain.name === "alpha-child")?.localAnchorIntent, "tx2-live");
 });
 
-test("anchorDomain accepts an anchored-owner Tx1 decode with the source anchor input not first", async () => {
+test("anchorDomain rejects an anchored-owner Tx1 decode when the source anchor sender is not vin[0]", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-case-b-reordered-source-"));
   const paths = createTempWalletPaths(tempRoot);
   const provider = createMemoryWalletSecretProviderForTesting();
@@ -5330,7 +5410,7 @@ test("anchorDomain accepts an anchored-owner Tx1 decode with the source anchor i
     },
   });
 
-  const result = await anchorDomain({
+  await assert.rejects(() => anchorDomain({
     domainName: "alpha-child",
     dataDir: paths.bitcoinDataDir,
     databasePath: join(tempRoot, "client.sqlite"),
@@ -5347,13 +5427,122 @@ test("anchorDomain accepts an anchored-owner Tx1 decode with the source anchor i
     } as never),
     rpcFactory: harness.rpcFactory,
     nowUnixMs: 1_700_000_505_000,
-  });
+  }), /wallet_anchor_tx1_sender_input_mismatch/);
 
-  assert.equal(result.status, "live");
   assert.equal(harness.captured.calls[0]?.options.add_inputs, false);
 });
 
-test("anchorDomain accepts a Tx2 decode with the provisional input not first", async () => {
+for (const [label, tx1Vin] of [
+  [
+    "missing vin[1] funding support",
+    [
+      {
+        txid: "aa".repeat(32),
+        vout: 1,
+        scriptPubKeyHex: createAnchorCapableWalletState().identities[1]!.scriptPubKeyHex,
+      },
+    ],
+  ],
+  [
+    "non-funding vin[1] support",
+    [
+      {
+        txid: "aa".repeat(32),
+        vout: 1,
+        scriptPubKeyHex: createAnchorCapableWalletState().identities[1]!.scriptPubKeyHex,
+      },
+      {
+        txid: "99".repeat(32),
+        vout: 7,
+        scriptPubKeyHex: "0014ffffffffffffffffffffffffffffffffffffffff",
+      },
+    ],
+  ],
+] as const) {
+  test(`anchorDomain rejects an anchored-owner Tx1 decode with ${label}`, async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-case-b-bad-funding-slot-"));
+    const paths = createTempWalletPaths(tempRoot);
+    const provider = createMemoryWalletSecretProviderForTesting();
+    const snapshot = structuredClone(await createSnapshotState());
+    const baseState = createAnchorCapableWalletState();
+    const state = {
+      ...baseState,
+      identities: baseState.identities.map((identity) =>
+        identity.index === 1
+          ? {
+            ...identity,
+            assignedDomainNames: ["alpha", "alpha-child"],
+          }
+          : identity
+      ),
+      domains: [
+        ...baseState.domains,
+        {
+          name: "alpha-child",
+          domainId: 10,
+          dedicatedIndex: null,
+          currentOwnerScriptPubKeyHex: baseState.identities[1]!.scriptPubKeyHex,
+          currentOwnerLocalIndex: 1,
+          canonicalChainStatus: "registered-unanchored" as const,
+          localAnchorIntent: "none" as const,
+          currentCanonicalAnchorOutpoint: null,
+          foundingMessageText: null,
+          birthTime: null,
+        },
+      ],
+    } satisfies WalletStateV1;
+    addUnanchoredDomainToSnapshot({
+      snapshot,
+      domainId: 10,
+      domainName: "alpha-child",
+      ownerScriptPubKeyHex: state.identities[1]!.scriptPubKeyHex,
+    });
+    await writeInitialUnlockedState({
+      paths,
+      provider,
+      state,
+    });
+
+    const targetIdentity = deriveWalletIdentityMaterial(state.keys.accountXprv, 3);
+    const harness = createAnchorRpcHarness({
+      snapshotHeight: snapshot.history.currentHeight ?? 0,
+      fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+      fundingAddress: state.funding.address,
+      senderScriptPubKeyHex: state.identities[1]!.scriptPubKeyHex,
+      senderAddress: state.identities[1]!.address!,
+      targetScriptPubKeyHex: targetIdentity.scriptPubKeyHex,
+      targetAddress: targetIdentity.address,
+      sourceAnchorOutpoint: {
+        txid: "aa".repeat(32),
+        vout: 1,
+      },
+      decodedVinOverrides: {
+        tx1: tx1Vin.map((input) => ({ ...input })),
+      },
+    });
+
+    await assert.rejects(() => anchorDomain({
+      domainName: "alpha-child",
+      dataDir: paths.bitcoinDataDir,
+      databasePath: join(tempRoot, "client.sqlite"),
+      provider,
+      paths,
+      prompter: new ScriptedPrompter(["alpha-child"]),
+      openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+      attachService: async () => ({
+        rpc: {
+          url: "http://127.0.0.1:18443",
+          cookieFile: "/tmp/does-not-matter",
+          port: 18_443,
+        },
+      } as never),
+      rpcFactory: harness.rpcFactory,
+      nowUnixMs: 1_700_000_505_500,
+    }), /wallet_anchor_tx1_unexpected_funding_input/);
+  });
+}
+
+test("anchorDomain rejects a Tx2 decode when the provisional sender is not vin[0]", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-tx2-reordered-provisional-"));
   const paths = createTempWalletPaths(tempRoot);
   const provider = createMemoryWalletSecretProviderForTesting();
@@ -5427,7 +5616,7 @@ test("anchorDomain accepts a Tx2 decode with the provisional input not first", a
     },
   });
 
-  const result = await anchorDomain({
+  await assert.rejects(() => anchorDomain({
     domainName: "weatherbot",
     dataDir: paths.bitcoinDataDir,
     databasePath: join(tempRoot, "client.sqlite"),
@@ -5444,10 +5633,209 @@ test("anchorDomain accepts a Tx2 decode with the provisional input not first", a
     } as never),
     rpcFactory: harness.rpcFactory,
     nowUnixMs: 1_700_000_506_000,
+  }), /wallet_anchor_tx2_provisional_input_mismatch/);
+
+  assert.equal(harness.captured.calls[1]?.options.add_inputs, false);
+});
+
+for (const [label, tx2Vin] of [
+  [
+    "missing vin[1] funding support",
+    [
+      {
+        txid: "55".repeat(32),
+        vout: 1,
+        scriptPubKeyHex: deriveWalletIdentityMaterial(createAnchorCapableWalletState().keys.accountXprv, 3).scriptPubKeyHex,
+      },
+    ],
+  ],
+  [
+    "non-funding vin[1] support",
+    [
+      {
+        txid: "55".repeat(32),
+        vout: 1,
+        scriptPubKeyHex: deriveWalletIdentityMaterial(createAnchorCapableWalletState().keys.accountXprv, 3).scriptPubKeyHex,
+      },
+      {
+        txid: "99".repeat(32),
+        vout: 7,
+        scriptPubKeyHex: "0014ffffffffffffffffffffffffffffffffffffffff",
+      },
+    ],
+  ],
+] as const) {
+  test(`anchorDomain rejects a Tx2 decode with ${label}`, async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-tx2-bad-funding-slot-"));
+    const paths = createTempWalletPaths(tempRoot);
+    const provider = createMemoryWalletSecretProviderForTesting();
+    const snapshot = structuredClone(await createSnapshotState());
+    const baseState = createAnchorCapableWalletState();
+    const state = {
+      ...baseState,
+      identities: baseState.identities.map((identity) =>
+        identity.index === 0
+          ? {
+            ...identity,
+            assignedDomainNames: ["weatherbot"],
+          }
+          : identity
+      ),
+      domains: [
+        ...baseState.domains,
+        {
+          name: "weatherbot",
+          domainId: 10,
+          dedicatedIndex: 0,
+          currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+          currentOwnerLocalIndex: 0,
+          canonicalChainStatus: "registered-unanchored" as const,
+          localAnchorIntent: "none" as const,
+          currentCanonicalAnchorOutpoint: null,
+          foundingMessageText: null,
+          birthTime: null,
+        },
+      ],
+    } satisfies WalletStateV1;
+    addUnanchoredDomainToSnapshot({
+      snapshot,
+      domainId: 10,
+      domainName: "weatherbot",
+      ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    });
+    await writeInitialUnlockedState({
+      paths,
+      provider,
+      state,
+    });
+
+    const targetIdentity = deriveWalletIdentityMaterial(state.keys.accountXprv, 3);
+    const harness = createAnchorRpcHarness({
+      snapshotHeight: snapshot.history.currentHeight ?? 0,
+      fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+      fundingAddress: state.funding.address,
+      senderScriptPubKeyHex: state.funding.scriptPubKeyHex,
+      senderAddress: state.funding.address,
+      targetScriptPubKeyHex: targetIdentity.scriptPubKeyHex,
+      targetAddress: targetIdentity.address,
+      decodedVinOverrides: {
+        tx2: tx2Vin.map((input) => ({ ...input })),
+      },
+    });
+
+    await assert.rejects(() => anchorDomain({
+      domainName: "weatherbot",
+      dataDir: paths.bitcoinDataDir,
+      databasePath: join(tempRoot, "client.sqlite"),
+      provider,
+      paths,
+      prompter: new ScriptedPrompter(["weatherbot"]),
+      openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+      attachService: async () => ({
+        rpc: {
+          url: "http://127.0.0.1:18443",
+          cookieFile: "/tmp/does-not-matter",
+          port: 18_443,
+        },
+      } as never),
+      rpcFactory: harness.rpcFactory,
+      nowUnixMs: 1_700_000_506_500,
+    }), /wallet_anchor_tx2_unexpected_funding_input/);
+  });
+}
+
+test("anchorDomain rejects a Tx2 decode with a foreign later input after the required prefix", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-tx2-foreign-later-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const state = {
+    ...baseState,
+    identities: baseState.identities.map((identity) =>
+      identity.index === 0
+        ? {
+          ...identity,
+          assignedDomainNames: ["weatherbot"],
+        }
+        : identity
+    ),
+    domains: [
+      ...baseState.domains,
+      {
+        name: "weatherbot",
+        domainId: 10,
+        dedicatedIndex: 0,
+        currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        currentOwnerLocalIndex: 0,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "none" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+    ],
+  } satisfies WalletStateV1;
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "weatherbot",
+    ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
   });
 
-  assert.equal(result.status, "live");
-  assert.equal(harness.captured.calls[1]?.options.add_inputs, false);
+  const targetIdentity = deriveWalletIdentityMaterial(state.keys.accountXprv, 3);
+  const harness = createAnchorRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    fundingAddress: state.funding.address,
+    senderScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    senderAddress: state.funding.address,
+    targetScriptPubKeyHex: targetIdentity.scriptPubKeyHex,
+    targetAddress: targetIdentity.address,
+    decodedVinOverrides: {
+      tx2: [
+        {
+          txid: "55".repeat(32),
+          vout: 1,
+          scriptPubKeyHex: targetIdentity.scriptPubKeyHex,
+        },
+        {
+          txid: "11".repeat(32),
+          vout: 0,
+          scriptPubKeyHex: state.funding.scriptPubKeyHex,
+        },
+        {
+          txid: "99".repeat(32),
+          vout: 7,
+          scriptPubKeyHex: "0014ffffffffffffffffffffffffffffffffffffffff",
+        },
+      ],
+    },
+  });
+
+  await assert.rejects(() => anchorDomain({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["weatherbot"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_506_750,
+  }), /wallet_anchor_tx2_unexpected_funding_input/);
 });
 
 test("anchorDomain continues into Tx2 when a prior Tx1 becomes visible on retry", async () => {
