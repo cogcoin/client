@@ -81,6 +81,8 @@ The installed `cogcoin` command covers the first-party local wallet and node wor
 - mining and hook commands such as `mine`, `mine start`, `mine stop`, `mine status`, `mine log`, `mine setup`, and `hooks status`
 
 The CLI also supports stable `--output json` and `--output preview-json` envelopes on the commands that advertise machine-readable output.
+Interactive text invocations periodically check the npm registry for newer `@cogcoin/client` releases and print `npm install -g @cogcoin/client` when a newer version is available.
+Set `COGCOIN_DISABLE_UPDATE_CHECK=1` to disable the CLI update notice entirely.
 Ordinary `sync`, `follow`, and wallet-aware read/status flows detach from the managed Bitcoin and indexer services on exit instead of stopping them.
 Use the explicit `bitcoin ...` and `indexer ...` commands when you want direct service inspection or start/stop control.
 For provider-backed local wallets, normal reads, mutations, export, and mining setup flows auto-materialize a local unlock session when the wallet is not explicitly locked.

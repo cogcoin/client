@@ -206,3 +206,13 @@ export function resolveDefaultClientDatabaseDirectoryForTesting(
   const dbPath = resolveDefaultClientDatabasePathForTesting(resolution);
   return platform === "win32" ? win32Path.dirname(dbPath) : dirname(dbPath);
 }
+
+export function resolveDefaultUpdateCheckStatePathForTesting(
+  resolution: CogcoinPathResolution = {},
+): string {
+  return joinForPlatform(
+    resolution.platform ?? process.platform,
+    resolveCogcoinPathsForTesting(resolution).stateRoot,
+    "update-check.json",
+  );
+}

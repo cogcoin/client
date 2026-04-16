@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
@@ -149,6 +149,54 @@ function createInteractivePrompter() {
 
 function parseJsonEnvelope(stream: MemoryStream): unknown {
   return JSON.parse(stream.toString());
+}
+
+const UPDATE_CHECK_DAY_MS = 24 * 60 * 60 * 1000;
+
+async function writeUpdateCheckCache(
+  cachePath: string,
+  overrides: Partial<{
+    schemaVersion: number;
+    lastCheckedAtUnixMs: number;
+    latestVersion: string | null;
+    lastNotifiedCurrentVersion: string | null;
+    lastNotifiedLatestVersion: string | null;
+    lastNotifiedAtUnixMs: number | null;
+    lastCheckErrorKind: string;
+  }> = {},
+): Promise<void> {
+  await mkdir(dirname(cachePath), { recursive: true });
+  await writeFile(cachePath, `${JSON.stringify({
+    schemaVersion: 1,
+    lastCheckedAtUnixMs: 0,
+    latestVersion: null,
+    lastNotifiedCurrentVersion: null,
+    lastNotifiedLatestVersion: null,
+    lastNotifiedAtUnixMs: null,
+    ...overrides,
+  }, null, 2)}\n`, "utf8");
+}
+
+async function readUpdateCheckCache(
+  cachePath: string,
+): Promise<{
+  schemaVersion: number;
+  lastCheckedAtUnixMs: number;
+  latestVersion: string | null;
+  lastNotifiedCurrentVersion: string | null;
+  lastNotifiedLatestVersion: string | null;
+  lastNotifiedAtUnixMs: number | null;
+  lastCheckErrorKind?: string;
+}> {
+  return JSON.parse(await readFile(cachePath, "utf8")) as {
+    schemaVersion: number;
+    lastCheckedAtUnixMs: number;
+    latestVersion: string | null;
+    lastNotifiedCurrentVersion: string | null;
+    lastNotifiedLatestVersion: string | null;
+    lastNotifiedAtUnixMs: number | null;
+    lastCheckErrorKind?: string;
+  };
 }
 
 function createNoopStore() {
@@ -1177,6 +1225,387 @@ test("help output lists wallet show-mnemonic", async () => {
 
   assert.equal(code, 0);
   assert.match(stdout.toString(), /wallet show-mnemonic/);
+});
+
+test("interactive text commands print cached update notices to stderr without touching stdout", async () => {
+  const root = createTempDirectory("cogcoin-cli-update-cache-hit");
+  const cachePath = join(root, "state", "update-check.json");
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream(true);
+  let fetchCalled = false;
+
+  try {
+    await writeUpdateCheckCache(cachePath, {
+      lastCheckedAtUnixMs: 2_000_000_000_000,
+      latestVersion: "0.5.12",
+    });
+
+    const code = await runCli(["wallet", "show-mnemonic"], {
+      stdout,
+      stderr,
+      readPackageVersion: async () => "0.5.11",
+      now: () => 2_000_000_000_000,
+      resolveUpdateCheckStatePath: () => cachePath,
+      fetchImpl: async () => {
+        fetchCalled = true;
+        return new Response(JSON.stringify({ version: "9.9.9" }), { status: 200 });
+      },
+      createPrompter: () => ({
+        isInteractive: true,
+        writeLine() {},
+        async prompt() {
+          return "";
+        },
+        clearSensitiveDisplay() {},
+      }),
+      showWalletMnemonic: async () => {},
+    });
+
+    assert.equal(code, 0);
+    assert.equal(fetchCalled, false);
+    assert.equal(stdout.toString(), "");
+    assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.11 -> 0\.5\.12/);
+    assert.match(stderr.toString(), /Run: npm install -g @cogcoin\/client/);
+  } finally {
+    await removeTempDirectory(root);
+  }
+});
+
+test("structured output commands skip update checks for json and preview-json", async () => {
+  const root = createTempDirectory("cogcoin-cli-update-structured");
+  const cachePath = join(root, "state", "update-check.json");
+  const readyContext = await createReadyWalletReadContext();
+  let fetchCalls = 0;
+
+  try {
+    await writeUpdateCheckCache(cachePath, {
+      lastCheckedAtUnixMs: 2_000_000_000_000,
+      latestVersion: "0.5.12",
+    });
+
+    const jsonStdout = new MemoryStream(true);
+    const jsonStderr = new MemoryStream(true);
+    const jsonCode = await runCli(["status", "--output", "json"], {
+      stdout: jsonStdout,
+      stderr: jsonStderr,
+      openWalletReadContext: async () => readyContext,
+      readPackageVersion: async () => "0.5.11",
+      now: () => 2_000_000_000_000,
+      resolveUpdateCheckStatePath: () => cachePath,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ version: "9.9.9" }), { status: 200 });
+      },
+    });
+
+    assert.equal(jsonCode, 0);
+    assert.equal(fetchCalls, 0);
+    assert.equal(jsonStderr.toString(), "");
+    assert.equal((parseJsonEnvelope(jsonStdout) as { ok: boolean }).ok, true);
+
+    const previewStdout = new MemoryStream(true);
+    const previewStderr = new MemoryStream(true);
+    const previewCode = await runCli(["wallet", "lock", "--output", "preview-json"], {
+      stdout: previewStdout,
+      stderr: previewStderr,
+      readPackageVersion: async () => "0.5.11",
+      now: () => 2_000_000_000_000,
+      resolveUpdateCheckStatePath: () => cachePath,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ version: "9.9.9" }), { status: 200 });
+      },
+      walletSecretProvider: {} as never,
+      lockWallet: async () => ({
+        walletRootId: "wallet-root-test",
+        coreLocked: true,
+      }),
+    });
+
+    assert.equal(previewCode, 0);
+    assert.equal(fetchCalls, 0);
+    assert.equal(previewStderr.toString(), "");
+    assert.equal((parseJsonEnvelope(previewStdout) as { schema: string }).schema, "cogcoin-preview/wallet-lock/v1");
+  } finally {
+    await removeTempDirectory(root);
+  }
+});
+
+test("help and version skip update checks", async () => {
+  const root = createTempDirectory("cogcoin-cli-update-help-version");
+  const cachePath = join(root, "state", "update-check.json");
+  const helpStdout = new MemoryStream(true);
+  const helpStderr = new MemoryStream(true);
+  const versionStdout = new MemoryStream(true);
+  const versionStderr = new MemoryStream(true);
+  let fetchCalls = 0;
+  let readVersionCalls = 0;
+
+  try {
+    const helpCode = await runCli(["--help"], {
+      stdout: helpStdout,
+      stderr: helpStderr,
+      now: () => 2_000_000_000_000,
+      resolveUpdateCheckStatePath: () => cachePath,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ version: "9.9.9" }), { status: 200 });
+      },
+    });
+
+    const versionCode = await runCli(["--version"], {
+      stdout: versionStdout,
+      stderr: versionStderr,
+      readPackageVersion: async () => {
+        readVersionCalls += 1;
+        return "0.5.11";
+      },
+      now: () => 2_000_000_000_000,
+      resolveUpdateCheckStatePath: () => cachePath,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ version: "9.9.9" }), { status: 200 });
+      },
+    });
+
+    assert.equal(helpCode, 0);
+    assert.equal(versionCode, 0);
+    assert.equal(fetchCalls, 0);
+    assert.equal(readVersionCalls, 1);
+    assert.equal(helpStderr.toString(), "");
+    assert.equal(versionStderr.toString(), "");
+    assert.match(helpStdout.toString(), /wallet show-mnemonic/);
+    assert.equal(versionStdout.toString(), "0.5.11\n");
+  } finally {
+    await removeTempDirectory(root);
+  }
+});
+
+test("stale update cache refreshes from npm and persists the result", async () => {
+  const root = createTempDirectory("cogcoin-cli-update-refresh");
+  const cachePath = join(root, "state", "update-check.json");
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream(true);
+  let fetchCalls = 0;
+
+  try {
+    await writeUpdateCheckCache(cachePath, {
+      lastCheckedAtUnixMs: 2_000_000_000_000 - UPDATE_CHECK_DAY_MS - 1,
+    });
+
+    const code = await runCli(["wallet", "show-mnemonic"], {
+      stdout,
+      stderr,
+      readPackageVersion: async () => "0.5.11",
+      now: () => 2_000_000_000_000,
+      resolveUpdateCheckStatePath: () => cachePath,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ version: "0.5.12" }), { status: 200 });
+      },
+      createPrompter: () => ({
+        isInteractive: true,
+        writeLine() {},
+        async prompt() {
+          return "";
+        },
+        clearSensitiveDisplay() {},
+      }),
+      showWalletMnemonic: async () => {},
+    });
+
+    assert.equal(code, 0);
+    assert.equal(fetchCalls, 1);
+    assert.equal(stdout.toString(), "");
+    assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.11 -> 0\.5\.12/);
+
+    const cache = await readUpdateCheckCache(cachePath);
+    assert.equal(cache.lastCheckedAtUnixMs, 2_000_000_000_000);
+    assert.equal(cache.latestVersion, "0.5.12");
+    assert.equal(cache.lastNotifiedCurrentVersion, "0.5.11");
+    assert.equal(cache.lastNotifiedLatestVersion, "0.5.12");
+    assert.equal(cache.lastNotifiedAtUnixMs, 2_000_000_000_000);
+    assert.equal(cache.lastCheckErrorKind, undefined);
+  } finally {
+    await removeTempDirectory(root);
+  }
+});
+
+test("update check failures back off silently and persist the error kind", async () => {
+  const root = createTempDirectory("cogcoin-cli-update-failure");
+  const cachePath = join(root, "state", "update-check.json");
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream(true);
+  let fetchCalls = 0;
+
+  try {
+    const code = await runCli(["wallet", "show-mnemonic"], {
+      stdout,
+      stderr,
+      readPackageVersion: async () => "0.5.11",
+      now: () => 2_000_000_000_000,
+      resolveUpdateCheckStatePath: () => cachePath,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({}), { status: 200 });
+      },
+      createPrompter: () => ({
+        isInteractive: true,
+        writeLine() {},
+        async prompt() {
+          return "";
+        },
+        clearSensitiveDisplay() {},
+      }),
+      showWalletMnemonic: async () => {},
+    });
+
+    assert.equal(code, 0);
+    assert.equal(fetchCalls, 1);
+    assert.equal(stdout.toString(), "");
+    assert.equal(stderr.toString(), "");
+
+    const cache = await readUpdateCheckCache(cachePath);
+    assert.equal(cache.lastCheckedAtUnixMs, 2_000_000_000_000);
+    assert.equal(cache.latestVersion, null);
+    assert.equal(cache.lastCheckErrorKind, "invalid_payload");
+  } finally {
+    await removeTempDirectory(root);
+  }
+});
+
+test("update check opt-out skips network and cache writes", async () => {
+  const root = createTempDirectory("cogcoin-cli-update-disabled");
+  const cachePath = join(root, "state", "update-check.json");
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream(true);
+  let fetchCalls = 0;
+
+  try {
+    const code = await runCli(["wallet", "show-mnemonic"], {
+      stdout,
+      stderr,
+      env: {
+        COGCOIN_DISABLE_UPDATE_CHECK: "yes",
+      },
+      readPackageVersion: async () => "0.5.11",
+      now: () => 2_000_000_000_000,
+      resolveUpdateCheckStatePath: () => cachePath,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ version: "0.5.12" }), { status: 200 });
+      },
+      createPrompter: () => ({
+        isInteractive: true,
+        writeLine() {},
+        async prompt() {
+          return "";
+        },
+        clearSensitiveDisplay() {},
+      }),
+      showWalletMnemonic: async () => {},
+    });
+
+    assert.equal(code, 0);
+    assert.equal(fetchCalls, 0);
+    assert.equal(stdout.toString(), "");
+    assert.equal(stderr.toString(), "");
+    await assert.rejects(stat(cachePath), /ENOENT/);
+  } finally {
+    await removeTempDirectory(root);
+  }
+});
+
+test("identical notified version pairs are suppressed until the notice window expires", async () => {
+  const root = createTempDirectory("cogcoin-cli-update-suppressed");
+  const cachePath = join(root, "state", "update-check.json");
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream(true);
+  let fetchCalls = 0;
+
+  try {
+    await writeUpdateCheckCache(cachePath, {
+      lastCheckedAtUnixMs: 2_000_000_000_000 - 1_000,
+      latestVersion: "0.5.12",
+      lastNotifiedCurrentVersion: "0.5.11",
+      lastNotifiedLatestVersion: "0.5.12",
+      lastNotifiedAtUnixMs: 2_000_000_000_000 - 1_000,
+    });
+
+    const code = await runCli(["wallet", "show-mnemonic"], {
+      stdout,
+      stderr,
+      readPackageVersion: async () => "0.5.11",
+      now: () => 2_000_000_000_000,
+      resolveUpdateCheckStatePath: () => cachePath,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ version: "9.9.9" }), { status: 200 });
+      },
+      createPrompter: () => ({
+        isInteractive: true,
+        writeLine() {},
+        async prompt() {
+          return "";
+        },
+        clearSensitiveDisplay() {},
+      }),
+      showWalletMnemonic: async () => {},
+    });
+
+    assert.equal(code, 0);
+    assert.equal(fetchCalls, 0);
+    assert.equal(stdout.toString(), "");
+    assert.equal(stderr.toString(), "");
+  } finally {
+    await removeTempDirectory(root);
+  }
+});
+
+test("changing the installed version resets update notice suppression", async () => {
+  const root = createTempDirectory("cogcoin-cli-update-current-change");
+  const cachePath = join(root, "state", "update-check.json");
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream(true);
+  let fetchCalls = 0;
+
+  try {
+    await writeUpdateCheckCache(cachePath, {
+      lastCheckedAtUnixMs: 2_000_000_000_000 - 1_000,
+      latestVersion: "0.5.12",
+      lastNotifiedCurrentVersion: "0.5.10",
+      lastNotifiedLatestVersion: "0.5.12",
+      lastNotifiedAtUnixMs: 2_000_000_000_000 - 1_000,
+    });
+
+    const code = await runCli(["wallet", "show-mnemonic"], {
+      stdout,
+      stderr,
+      readPackageVersion: async () => "0.5.11",
+      now: () => 2_000_000_000_000,
+      resolveUpdateCheckStatePath: () => cachePath,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ version: "9.9.9" }), { status: 200 });
+      },
+      createPrompter: () => ({
+        isInteractive: true,
+        writeLine() {},
+        async prompt() {
+          return "";
+        },
+        clearSensitiveDisplay() {},
+      }),
+      showWalletMnemonic: async () => {},
+    });
+
+    assert.equal(code, 0);
+    assert.equal(fetchCalls, 0);
+    assert.equal(stdout.toString(), "");
+    assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.11 -> 0\.5\.12/);
+  } finally {
+    await removeTempDirectory(root);
+  }
 });
 
 test("wallet show-mnemonic dispatches through wallet admin without resolving db or data paths", async () => {
@@ -8308,6 +8737,72 @@ test("follow stays active until signal and shuts down cleanly", async () => {
   assert.match(stdout.toString(), /Following managed Cogcoin tip/);
   assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
   assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+});
+
+test("follow emits the update notice before later stderr lifecycle lines", async () => {
+  const root = createTempDirectory("cogcoin-cli-update-follow");
+  const cachePath = join(root, "state", "update-check.json");
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream(true);
+  const signals = new FakeSignalSource();
+  let releaseFollowReady!: () => void;
+  const followReady = new Promise<void>((resolve) => {
+    releaseFollowReady = resolve;
+  });
+
+  try {
+    await writeUpdateCheckCache(cachePath, {
+      lastCheckedAtUnixMs: 2_000_000_000_000,
+      latestVersion: "0.5.12",
+    });
+
+    const followPromise = runCli(["follow"], {
+      stdout,
+      stderr,
+      signalSource: signals,
+      readPackageVersion: async () => "0.5.11",
+      now: () => 2_000_000_000_000,
+      resolveUpdateCheckStatePath: () => cachePath,
+      resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-follow-update.sqlite",
+      resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-follow-update-bitcoin",
+      ensureDirectory: async () => {},
+      openSqliteStore: async () => createNoopStore(),
+      openManagedBitcoindClient: async () => ({
+        async syncToTip() {
+          return {
+            appliedBlocks: 0,
+            rewoundBlocks: 0,
+            endingHeight: null,
+            bestHeight: 0,
+          };
+        },
+        async startFollowingTip() {
+          releaseFollowReady();
+        },
+        async getNodeStatus() {
+          return {
+            indexedTip: null,
+            nodeBestHeight: null,
+          };
+        },
+        async close() {},
+      }),
+    });
+
+    await followReady;
+    signals.emit("SIGINT");
+    const code = await followPromise;
+
+    assert.equal(code, 0);
+    assert.equal(stdout.toString(), "");
+    assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.11 -> 0\.5\.12/);
+    assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+    assert.ok(stderr.toString().startsWith(
+      "Update available: Cogcoin 0.5.11 -> 0.5.12\nRun: npm install -g @cogcoin/client\n",
+    ));
+  } finally {
+    await removeTempDirectory(root);
+  }
 });
 
 test("follow does not print a startup line when tty progress is active", async () => {

@@ -15,6 +15,7 @@ import {
 import {
   resolveDefaultBitcoindDataDirForTesting,
   resolveDefaultClientDatabasePathForTesting,
+  resolveDefaultUpdateCheckStatePathForTesting,
 } from "../app-paths.js";
 import { openManagedBitcoindClient } from "../bitcoind/index.js";
 import { inspectPassiveClientStatus } from "../passive-status.js";
@@ -87,10 +88,13 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     stdout: overrides.stdout ?? process.stdout,
     stderr: overrides.stderr ?? process.stderr,
     stdin: overrides.stdin ?? process.stdin,
+    env: overrides.env ?? process.env,
+    now: overrides.now ?? (() => Date.now()),
     signalSource: overrides.signalSource ?? process,
     forceExit: overrides.forceExit ?? ((code) => {
       process.exit(code);
     }),
+    fetchImpl: overrides.fetchImpl ?? fetch,
     openSqliteStore: overrides.openSqliteStore ?? openSqliteStore,
     openManagedBitcoindClient: overrides.openManagedBitcoindClient ?? openManagedBitcoindClient,
     inspectPassiveClientStatus: overrides.inspectPassiveClientStatus ?? inspectPassiveClientStatus,
@@ -160,6 +164,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     loadWalletExplicitLock: overrides.loadWalletExplicitLock ?? loadWalletExplicitLock,
     resolveDefaultBitcoindDataDir: overrides.resolveDefaultBitcoindDataDir ?? resolveDefaultBitcoindDataDirForTesting,
     resolveDefaultClientDatabasePath: overrides.resolveDefaultClientDatabasePath ?? resolveDefaultClientDatabasePathForTesting,
+    resolveUpdateCheckStatePath: overrides.resolveUpdateCheckStatePath ?? resolveDefaultUpdateCheckStatePathForTesting,
     resolveWalletRuntimePaths: overrides.resolveWalletRuntimePaths ?? ((seedName) =>
       resolveWalletRuntimePathsForTesting({ seedName })),
   };

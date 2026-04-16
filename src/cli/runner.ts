@@ -20,6 +20,7 @@ import { runSyncCommand } from "./commands/sync.js";
 import { runWalletAdminCommand } from "./commands/wallet-admin.js";
 import { runWalletMutationCommand } from "./commands/wallet-mutation.js";
 import { runWalletReadCommand } from "./commands/wallet-read.js";
+import { maybeNotifyAboutCliUpdate } from "./update-notifier.js";
 import { findWalletSeedRecord, loadWalletSeedIndex } from "../wallet/state/seed-index.js";
 import type { CliRunnerContext, ParsedCliArgs } from "./types.js";
 
@@ -75,6 +76,8 @@ export async function runCli(
     writeLine(context.stdout, HELP_TEXT.trimEnd());
     return parsed.help ? 0 : 2;
   }
+
+  await maybeNotifyAboutCliUpdate(parsed, context);
 
   try {
     if (commandUsesExistingWalletSeed(parsed)) {

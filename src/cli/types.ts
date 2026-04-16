@@ -231,8 +231,11 @@ export interface CliRunnerContext {
   stdout?: WritableLike;
   stderr?: WritableLike;
   stdin?: ReadableLike;
+  env?: NodeJS.ProcessEnv;
+  now?: () => number;
   signalSource?: SignalSource;
   forceExit?: (code: number) => never | void;
+  fetchImpl?: typeof fetch;
   openSqliteStore?: typeof openSqliteStore;
   openManagedBitcoindClient?: (options: {
     store: ClientStoreAdapter;
@@ -307,6 +310,7 @@ export interface CliRunnerContext {
   readPackageVersion?: () => Promise<string>;
   resolveDefaultBitcoindDataDir?: () => string;
   resolveDefaultClientDatabasePath?: () => string;
+  resolveUpdateCheckStatePath?: () => string;
   resolveWalletRuntimePaths?: (seedName?: string | null) => WalletRuntimePaths;
 }
 
