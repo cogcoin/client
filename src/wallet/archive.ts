@@ -18,7 +18,7 @@ function assertPortableWalletArchivePayload(
 ): PortableWalletArchivePayloadV1 {
   const normalized = normalizePortableWalletArchivePayload(payload);
   if (
-    normalized.schemaVersion !== 3
+    normalized.schemaVersion !== 4
     || normalized.walletRootId.trim() === ""
     || normalized.mnemonic.phrase.trim() === ""
     || normalized.expected.accountPath.trim() === ""

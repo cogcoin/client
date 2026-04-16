@@ -76,19 +76,11 @@ export interface LocalIdentityRecord {
 export interface DomainRecord {
   name: string;
   domainId: number | null;
-  dedicatedIndex: number | null;
   currentOwnerScriptPubKeyHex: ScriptPubKeyHex | null;
-  currentOwnerLocalIndex: number | null;
   canonicalChainStatus:
     | "unknown"
     | "registered-unanchored"
     | "anchored";
-  localAnchorIntent:
-    | "none"
-    | "reserved"
-    | "tx1-live"
-    | "tx2-live"
-    | "repair-required";
   currentCanonicalAnchorOutpoint:
     | { txid: string; vout: number; valueSats: number }
     | null;
@@ -196,17 +188,13 @@ export interface ProactiveFamilyStateRecord {
 }
 
 export interface WalletStateV1 {
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 4;
   stateRevision: number;
   lastWrittenAtUnixMs: number;
   walletRootId: string;
   network: WalletNetwork;
   anchorValueSats: number;
   localScriptPubKeyHexes?: ScriptPubKeyHex[];
-  proactiveReserveSats: number;
-  proactiveReserveOutpoints: OutpointRecord[];
-  nextDedicatedIndex: number;
-  fundingIndex: 0;
   mnemonic: {
     phrase: string;
     language: WalletMnemonicLanguage;
@@ -235,33 +223,25 @@ export interface WalletStateV1 {
     descriptorChecksum: string | null;
     walletAddress?: string | null;
     walletScriptPubKeyHex?: ScriptPubKeyHex | null;
-    fundingAddress0?: string | null;
-    fundingScriptPubKeyHex0?: ScriptPubKeyHex | null;
     proofStatus: "not-proven" | "ready" | "missing" | "mismatch";
     lastImportedAtUnixMs: number | null;
     lastVerifiedAtUnixMs: number | null;
   };
-  identities: LocalIdentityRecord[];
   domains: DomainRecord[];
   miningState: MiningStateRecord;
   hookClientState: {
     mining: HookClientStateRecord;
   };
-  proactiveFamilies: ProactiveFamilyStateRecord[];
   pendingMutations?: PendingMutationRecord[];
 }
 
 export interface PortableWalletArchivePayloadV1 {
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 4;
   exportedAtUnixMs: number;
   walletRootId: string;
   network: WalletNetwork;
   anchorValueSats: number;
   localScriptPubKeyHexes?: ScriptPubKeyHex[];
-  proactiveReserveSats?: number;
-  proactiveReserveOutpoints?: OutpointRecord[];
-  nextDedicatedIndex?: number;
-  fundingIndex?: 0;
   mnemonic: {
     phrase: string;
     language: WalletMnemonicLanguage;
@@ -274,19 +254,15 @@ export interface PortableWalletArchivePayloadV1 {
     descriptorChecksum: string | null;
     rangeEnd: number;
     safetyMargin: number;
-    walletAddress?: string;
-    walletScriptPubKeyHex?: ScriptPubKeyHex;
-    fundingAddress0?: string;
-    fundingScriptPubKeyHex0?: ScriptPubKeyHex;
+    walletAddress: string;
+    walletScriptPubKeyHex: ScriptPubKeyHex;
     walletBirthTime: number;
   };
-  identities?: LocalIdentityRecord[];
   domains: DomainRecord[];
   miningState: MiningStateRecord;
   hookClientState: {
     mining: HookClientStateRecord;
   };
-  proactiveFamilies?: ProactiveFamilyStateRecord[];
 }
 
 export interface Argon2EnvelopeParams {

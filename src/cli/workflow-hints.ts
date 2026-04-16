@@ -1,5 +1,4 @@
 import type {
-  WalletIdentityView,
   WalletLockView,
   WalletReadContext,
 } from "../wallet/read/index.js";
@@ -105,9 +104,9 @@ export function getAddressNextSteps(
 }
 
 export function getIdsNextSteps(
-  identities: readonly WalletIdentityView[] | null | undefined,
+  walletAddress: string | null | undefined,
 ): string[] {
-  return identities === null || identities === undefined || identities.length === 0
+  return walletAddress === null || walletAddress === undefined || walletAddress.length === 0
     ? []
     : [
       "cogcoin register <root>",

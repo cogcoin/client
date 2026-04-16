@@ -320,17 +320,13 @@ function createInitialWalletState(options: {
   internalCoreWalletPassphrase: string;
 }): WalletStateV1 {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     stateRevision: 1,
     lastWrittenAtUnixMs: options.nowUnixMs,
     walletRootId: options.walletRootId,
     network: "mainnet",
     anchorValueSats: 2_000,
     localScriptPubKeyHexes: [options.material.funding.scriptPubKeyHex],
-    proactiveReserveSats: 0,
-    proactiveReserveOutpoints: [],
-    nextDedicatedIndex: 1,
-    fundingIndex: 0,
     mnemonic: {
       phrase: options.material.mnemonic.phrase,
       language: options.material.mnemonic.language,
@@ -359,21 +355,10 @@ function createInitialWalletState(options: {
       descriptorChecksum: null,
       walletAddress: null,
       walletScriptPubKeyHex: null,
-      fundingAddress0: null,
-      fundingScriptPubKeyHex0: null,
       proofStatus: "not-proven",
       lastImportedAtUnixMs: null,
       lastVerifiedAtUnixMs: null,
     },
-    identities: [
-      {
-        index: 0,
-        scriptPubKeyHex: options.material.funding.scriptPubKeyHex,
-        address: options.material.funding.address,
-        status: "funding",
-        assignedDomainNames: [],
-      },
-    ],
     domains: [],
     miningState: {
       runMode: "stopped",
@@ -417,7 +402,6 @@ function createInitialWalletState(options: {
         cooldownUntilUnixMs: null,
       },
     },
-    proactiveFamilies: [],
     pendingMutations: [],
   };
 }
@@ -524,7 +508,7 @@ function createPortableWalletArchivePayload(
   exportedAtUnixMs: number,
 ): PortableWalletArchivePayloadV1 {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     exportedAtUnixMs,
     walletRootId: state.walletRootId,
     network: state.network,

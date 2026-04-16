@@ -375,40 +375,22 @@ async function restoreStagedArtifacts(
   }
 }
 
-function collectMnemonicDerivedIdentityIndices(state: WalletStateV1): number[] {
-  const indices = new Set<number>();
-  indices.add(state.fundingIndex);
-
-  for (const identity of state.identities) {
-    if (identity.status === "funding" || identity.status === "dedicated") {
-      indices.add(identity.index);
-    }
-  }
-
-  return [...indices].sort((left, right) => left - right);
-}
-
 function createEntropyRetainedWalletState(
   previousState: WalletStateV1,
   nowUnixMs: number,
 ): WalletStateV1 {
   const material = deriveWalletMaterialFromMnemonic(previousState.mnemonic.phrase);
   const walletRootId = createWalletRootId();
-  void collectMnemonicDerivedIdentityIndices;
   void deriveWalletIdentityMaterial;
 
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     stateRevision: 1,
     lastWrittenAtUnixMs: nowUnixMs,
     walletRootId,
     network: previousState.network,
     anchorValueSats: previousState.anchorValueSats,
     localScriptPubKeyHexes: [material.funding.scriptPubKeyHex],
-    proactiveReserveSats: 0,
-    proactiveReserveOutpoints: [],
-    nextDedicatedIndex: 1,
-    fundingIndex: 0,
     mnemonic: {
       phrase: previousState.mnemonic.phrase,
       language: previousState.mnemonic.language,
@@ -437,19 +419,10 @@ function createEntropyRetainedWalletState(
       descriptorChecksum: null,
       walletAddress: null,
       walletScriptPubKeyHex: null,
-      fundingAddress0: null,
-      fundingScriptPubKeyHex0: null,
       proofStatus: "not-proven",
       lastImportedAtUnixMs: null,
       lastVerifiedAtUnixMs: null,
     },
-    identities: [{
-      index: 0,
-      scriptPubKeyHex: material.funding.scriptPubKeyHex,
-      address: material.funding.address,
-      status: "funding",
-      assignedDomainNames: [],
-    }],
     domains: [],
     miningState: {
       runMode: "stopped",
@@ -493,7 +466,6 @@ function createEntropyRetainedWalletState(
         cooldownUntilUnixMs: null,
       },
     },
-    proactiveFamilies: [],
     pendingMutations: [],
   };
 }
@@ -567,8 +539,6 @@ async function recreateManagedCoreWalletReplicaForReset(options: {
       descriptorChecksum: normalizedDescriptors.checksum,
       walletAddress: options.state.funding.address,
       walletScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
-      fundingAddress0: options.state.funding.address,
-      fundingScriptPubKeyHex0: options.state.funding.scriptPubKeyHex,
       proofStatus: "ready",
       lastImportedAtUnixMs: options.nowUnixMs,
       lastVerifiedAtUnixMs: options.nowUnixMs,

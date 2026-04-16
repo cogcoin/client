@@ -48,7 +48,7 @@ async function readEnvelope(path: string): Promise<EncryptedEnvelopeV1> {
 
 function serializeWalletState(state: WalletStateV1): Record<string, unknown> {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     stateRevision: state.stateRevision,
     lastWrittenAtUnixMs: state.lastWrittenAtUnixMs,
     walletRootId: state.walletRootId,

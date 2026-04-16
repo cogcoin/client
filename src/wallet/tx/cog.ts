@@ -228,11 +228,11 @@ function sha256Hex(value: Uint8Array): string {
 
 function resolveAnchorOutpointForSender(
   state: WalletStateV1,
-  sender: NonNullable<WalletReadContext["model"]>["identities"][number],
+  _sender: ReturnType<typeof resolveIdentityBySelector>,
   errorPrefix: string,
 ): OutpointRecord | null {
   const anchoredDomains = state.domains.filter((domain) =>
-    domain.currentOwnerLocalIndex === sender.index
+    domain.currentOwnerScriptPubKeyHex === state.funding.scriptPubKeyHex
     && domain.canonicalChainStatus === "anchored"
   );
 
@@ -253,7 +253,7 @@ function resolveAnchorOutpointForSender(
 }
 
 function ensureUsableSender(
-  sender: NonNullable<WalletReadContext["model"]>["identities"][number],
+  sender: ReturnType<typeof resolveIdentityBySelector>,
   errorPrefix: string,
   amountCogtoshi: bigint,
 ): void {
@@ -271,7 +271,7 @@ function ensureUsableSender(
 }
 
 function createResolvedSenderSummary(
-  identity: NonNullable<WalletReadContext["model"]>["identities"][number],
+  identity: ReturnType<typeof resolveIdentityBySelector>,
 ): CogResolvedSenderSummary {
   return {
     selector: getCanonicalIdentitySelector(identity),
@@ -294,12 +294,11 @@ function resolveIdentitySender(
   resolved: CogResolvedSummary;
 } {
   assertWalletMutationContextReady(context, errorPrefix);
-  const identity = selector == null
-    ? context.model.fundingIdentity
-    : resolveIdentityBySelector(context, selector, errorPrefix);
-  if (identity == null) {
-    throw new Error(`${errorPrefix}_no_eligible_sender`);
-  }
+  const identity = resolveIdentityBySelector(
+    context,
+    selector ?? context.model.walletAddress ?? "",
+    errorPrefix,
+  );
   ensureUsableSender(identity, errorPrefix, amountCogtoshi);
 
   return {
@@ -352,10 +351,10 @@ function resolveClaimSender(
     }
 
     const lockerHex = Buffer.from(lock.lockerScriptPubKey).toString("hex");
-    if (!isLocalWalletScript(context.localState.state, lockerHex) || context.model.fundingIdentity == null) {
+    if (lockerHex !== context.localState.state.funding.scriptPubKeyHex || context.model.walletAddress == null) {
       throw new Error("wallet_reclaim_sender_not_local");
     }
-    const senderIdentity = context.model.fundingIdentity;
+    const senderIdentity = resolveIdentityBySelector(context, context.model.walletAddress, errorPrefix);
     ensureUsableSender(senderIdentity, errorPrefix, 0n);
 
     return {
@@ -387,10 +386,10 @@ function resolveClaimSender(
   }
 
   const recipientOwnerHex = Buffer.from(recipientDomain.ownerScriptPubKey).toString("hex");
-  if (!isLocalWalletScript(context.localState.state, recipientOwnerHex) || context.model.fundingIdentity == null) {
+  if (recipientOwnerHex !== context.localState.state.funding.scriptPubKeyHex || context.model.walletAddress == null) {
     throw new Error("wallet_claim_sender_not_local");
   }
-  const senderIdentity = context.model.fundingIdentity;
+  const senderIdentity = resolveIdentityBySelector(context, context.model.walletAddress, errorPrefix);
   ensureUsableSender(senderIdentity, errorPrefix, 0n);
 
   return {
@@ -525,20 +524,6 @@ function validateFundedDraft(
     throw new Error(`${plan.errorPrefix}_missing_sender_input`);
   }
 
-  assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_sender_input_mismatch`);
-
-  if (getDecodedInputScriptPubKeyHex(decoded, 0) !== plan.sender.scriptPubKeyHex) {
-    throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
-  }
-
-  assertFundingInputsAfterFixedPrefix({
-    decoded,
-    fixedInputs: plan.fixedInputs,
-    allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
-    eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
-    errorCode: `${plan.errorPrefix}_unexpected_funding_input`,
-  });
-
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
   }
@@ -584,7 +569,6 @@ async function buildTransaction(options: {
     validateFundedDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
-    reserveCandidates: options.state.proactiveReserveOutpoints,
   });
 }
 

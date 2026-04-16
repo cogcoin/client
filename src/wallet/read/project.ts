@@ -16,7 +16,6 @@ import type {
   WalletDomainDetailsView,
   WalletDomainView,
   WalletFieldView,
-  WalletIdentityView,
   WalletLockView,
   WalletReadContext,
   WalletReadModel,
@@ -61,30 +60,6 @@ export function createWalletReadModel(
   const ownedDomains = snapshotState === null
     ? []
     : listDomainsByOwner(snapshotState, fundingScriptBytes).sort((left, right) => left.name.localeCompare(right.name));
-  const anchoredOwnedDomains = ownedDomains.filter((domain) => domain.anchored);
-  const canonicalDomainId = snapshotState === null ? null : resolveCanonical(snapshotState, fundingScriptBytes);
-  const canonicalDomainName = canonicalDomainId === null || snapshotState === null
-    ? null
-    : lookupDomainById(snapshotState, canonicalDomainId)?.name ?? null;
-  const observedCogBalance = snapshotState === null ? null : getBalance(snapshotState, fundingScriptBytes);
-  const fundingIdentity: WalletIdentityView = {
-    index: 0,
-    scriptPubKeyHex: walletState.funding.scriptPubKeyHex,
-    address: walletState.funding.address,
-    selectors: [],
-    assignedDomainNames: (walletState.domains ?? [])
-      .filter((domain) => domain.currentOwnerScriptPubKeyHex === walletState.funding.scriptPubKeyHex)
-      .map((domain) => domain.name)
-      .sort((left, right) => left.localeCompare(right)),
-    localStatus: "funding",
-    effectiveStatus: "funding",
-    canonicalDomainId,
-    canonicalDomainName,
-    ownedDomainNames: ownedDomains.map((domain) => domain.name),
-    anchoredOwnedDomainNames: anchoredOwnedDomains.map((domain) => domain.name),
-    observedCogBalance,
-    readOnly: false,
-  };
 
   const domainNames = new Set<string>();
   for (const domain of walletState.domains) {
@@ -118,15 +93,13 @@ export function createWalletReadModel(
         domainId: chainRecord?.domainId ?? localRecord?.domainId ?? null,
         anchored: chainRecord?.anchored ?? (localRecord?.canonicalChainStatus === "anchored" ? true : localRecord?.canonicalChainStatus === "registered-unanchored" ? false : null),
         ownerScriptPubKeyHex,
-        ownerLocalIndex: ownerIsLocal ? 0 : null,
-        ownerAddress: ownerIsLocal ? walletState.funding.address : null,
+        ownerAddress: ownerScriptPubKeyHex === walletState.funding.scriptPubKeyHex ? walletState.funding.address : null,
         localTracked: localRecord !== null,
         localRecord,
         chainFound: chainRecord !== null,
         chainStatus: chainRecord === null
           ? localRecord?.canonicalChainStatus ?? "unknown"
           : chainRecord.anchored ? "anchored" : "registered-unanchored",
-        localAnchorIntent: null,
         foundingMessageText: chainRecord?.foundingMessage ?? localRecord?.foundingMessageText ?? null,
         endpointText: tryDecodeUtf8(chainRecord?.endpoint),
         delegateScriptPubKeyHex: bytesToHex(chainRecord?.delegate),
@@ -147,21 +120,8 @@ export function createWalletReadModel(
     walletRootId: walletState.walletRootId,
     walletAddress: walletState.funding.address,
     walletScriptPubKeyHex: walletState.funding.scriptPubKeyHex,
-    fundingIdentity,
-    identities: [fundingIdentity],
     domains,
-    readOnlyIdentityCount: 0,
   };
-}
-
-function lookupDomainById(state: IndexerState, domainId: number): { name: string } | null {
-  for (const record of state.consensus.domainsById.values()) {
-    if (record.domainId === domainId) {
-      return { name: record.name };
-    }
-  }
-
-  return null;
 }
 
 export function listWalletLocks(context: WalletReadContext): WalletLockView[] | null {
@@ -237,13 +197,11 @@ export function findWalletDomain(context: WalletReadContext, name: string): Wall
           domainId: chainDomain.domainId,
           anchored: chainDomain.anchored,
           ownerScriptPubKeyHex: bytesToHex(chainDomain.ownerScriptPubKey),
-          ownerLocalIndex: null,
           ownerAddress: null,
           localTracked: false,
           localRecord: null,
           chainFound: true,
           chainStatus: chainDomain.anchored ? "anchored" : "registered-unanchored",
-          localAnchorIntent: null,
           foundingMessageText: chainDomain.foundingMessage,
           endpointText: tryDecodeUtf8(chainDomain.endpoint),
           delegateScriptPubKeyHex: bytesToHex(chainDomain.delegate),

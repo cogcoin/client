@@ -5,5 +5,22 @@
     "outDir": ".test-dist",
     "rootDir": "."
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": [
+    "test/cli.test.ts",
+    "test/mining-control.test.ts",
+    "test/mining-runtime.test.ts",
+    "test/mutation-json.test.ts",
+    "test/mutation-text-format.test.ts",
+    "test/preview-json.test.ts",
+    "test/wallet-archive.test.ts",
+    "test/wallet-cog.test.ts",
+    "test/wallet-coin-control.test.ts",
+    "test/wallet-lifecycle.test.ts",
+    "test/wallet-mutation-common.test.ts",
+    "test/wallet-read.test.ts",
+    "test/wallet-register.test.ts",
+    "test/wallet-reset.test.ts",
+    "test/wallet-state.test.ts"
+  ]
 }

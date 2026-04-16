@@ -561,7 +561,6 @@ export async function buildWalletMutationTransactionWithReserveFallback<TPlan>(o
   mempoolRejectPrefix: string;
   feeRate?: number;
   availableFundingMinConf?: number;
-  reserveCandidates: readonly OutpointRecord[];
 }): Promise<BuiltWalletMutationTransaction> {
   return buildWalletMutationTransaction({
     rpc: options.rpc,

@@ -1,6 +1,5 @@
 import type {
   AnchorDomainResult,
-  ClearPendingAnchorResult,
   CogMutationResult,
   DomainAdminMutationResult,
   DomainMarketMutationResult,
@@ -124,7 +123,6 @@ export function buildRegisterMutationData(
   result: RegisterDomainResult,
   options: {
     forceRace: boolean;
-    fromIdentity: string | null;
   },
 ) {
   return {
@@ -137,7 +135,6 @@ export function buildRegisterMutationData(
         domainName: result.domainName,
         registerKind: result.registerKind,
         forceRace: options.forceRace,
-        fromIdentitySelector: options.fromIdentity,
       },
     }),
     resolved: buildRegisterResolvedJson(result),
@@ -148,7 +145,6 @@ export function buildDomainMarketMutationData(
   result: DomainMarketMutationResult,
   options: {
     commandKind: "transfer" | "sell" | "unsell" | "buy";
-    fromIdentity?: string | null;
   },
 ) {
   const intent: Record<string, unknown> = {
@@ -156,10 +152,6 @@ export function buildDomainMarketMutationData(
     listedPriceCogtoshi: decimalOrNull(result.listedPriceCogtoshi),
     recipientScriptPubKeyHex: result.recipientScriptPubKeyHex ?? null,
   };
-
-  if (options.commandKind === "buy") {
-    intent.fromIdentitySelector = options.fromIdentity ?? null;
-  }
 
   const data = buildSingleTxMutationData({
     kind: options.commandKind,
@@ -187,7 +179,6 @@ export function buildCogMutationData(
   result: CogMutationResult,
   options: {
     commandKind: "send" | "claim" | "reclaim" | "cog-lock";
-    fromIdentity: string | null;
     timeoutBlocksOrDuration?: string | null;
     timeoutHeight?: string | null;
     conditionHex?: string | null;
@@ -203,7 +194,6 @@ export function buildCogMutationData(
       recipientScriptPubKeyHex: result.recipientScriptPubKeyHex ?? null,
       recipientDomainName: result.recipientDomainName ?? null,
       lockId: result.lockId ?? null,
-      fromIdentitySelector: options.fromIdentity,
       timeoutBlocksOrDuration: options.timeoutBlocksOrDuration ?? null,
       timeoutHeight: options.timeoutHeight ?? null,
       conditionHex: options.conditionHex ?? null,
@@ -234,49 +224,6 @@ export function buildAnchorMutationData(
       domainName: result.domainName,
       foundingMessageIncluded: options.foundingMessageText !== null,
     },
-  });
-}
-
-export function buildAnchorClearMutationData(
-  result: ClearPendingAnchorResult,
-) {
-  const before = result.cleared
-    ? {
-      localAnchorIntent: result.previousLocalAnchorIntent,
-      dedicatedIndex: result.previousDedicatedIndex,
-      familyStatus: result.previousFamilyStatus,
-      familyStep: result.previousFamilyStep,
-    }
-    : null;
-  const after = result.cleared
-    ? {
-      localAnchorIntent: result.resultingLocalAnchorIntent,
-      dedicatedIndex: result.resultingDedicatedIndex,
-      familyStatus: result.canceledActiveFamilies > 0 || result.clearedReservedFamilies > 0 ? "canceled" : null,
-      familyStep: result.previousFamilyStep,
-    }
-    : null;
-
-  return buildStateChangeData({
-    kind: "anchor-clear",
-    state: {
-      domainName: result.domainName,
-      cleared: result.cleared,
-      previousFamilyStatus: result.previousFamilyStatus,
-      previousFamilyStep: result.previousFamilyStep,
-      releasedDedicatedIndex: result.releasedDedicatedIndex,
-      forced: result.forced,
-      clearedReservedFamilies: result.clearedReservedFamilies,
-      canceledActiveFamilies: result.canceledActiveFamilies,
-      releasedDedicatedIndices: result.releasedDedicatedIndices,
-      affectedFamilies: result.affectedFamilies,
-      previousLocalAnchorIntent: result.previousLocalAnchorIntent,
-      previousDedicatedIndex: result.previousDedicatedIndex,
-      resultingLocalAnchorIntent: result.resultingLocalAnchorIntent,
-      resultingDedicatedIndex: result.resultingDedicatedIndex,
-    },
-    before,
-    after,
   });
 }
 

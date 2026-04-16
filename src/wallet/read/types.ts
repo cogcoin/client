@@ -81,34 +81,16 @@ export interface WalletSnapshotView {
   openedAtUnixMs?: number | null;
 }
 
-export interface WalletIdentityView {
-  index: number;
-  scriptPubKeyHex: string;
-  address: string | null;
-  selectors: string[];
-  assignedDomainNames: string[];
-  localStatus: "funding";
-  effectiveStatus: "funding";
-  canonicalDomainId: number | null;
-  canonicalDomainName: string | null;
-  ownedDomainNames: string[];
-  anchoredOwnedDomainNames: string[];
-  observedCogBalance: bigint | null;
-  readOnly: false;
-}
-
 export interface WalletDomainView {
   name: string;
   domainId: number | null;
   anchored: boolean | null;
   ownerScriptPubKeyHex: string | null;
-  ownerLocalIndex: number | null;
   ownerAddress: string | null;
   localTracked: boolean;
   localRecord: LocalDomainRecord | null;
   chainFound: boolean;
   chainStatus: LocalDomainRecord["canonicalChainStatus"];
-  localAnchorIntent: null;
   foundingMessageText: string | null;
   endpointText: string | null;
   delegateScriptPubKeyHex: string | null;
@@ -131,10 +113,7 @@ export interface WalletReadModel {
   walletRootId: string;
   walletAddress: string | null;
   walletScriptPubKeyHex: string;
-  fundingIdentity: WalletIdentityView | null;
-  identities: WalletIdentityView[];
   domains: WalletDomainView[];
-  readOnlyIdentityCount: number;
 }
 
 export interface WalletReadContext {

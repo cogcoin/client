@@ -1,3 +1,5 @@
+import { getBalance } from "@cogcoin/indexer/queries";
+
 import {
   findDomainField,
   findWalletDomain,
@@ -7,7 +9,6 @@ import {
 import type {
   WalletDomainView,
   WalletFieldView,
-  WalletIdentityView,
   WalletLockView,
   WalletReadContext,
 } from "../wallet/read/index.js";
@@ -208,21 +209,30 @@ export function buildAvailability(context: WalletReadContext): Record<string, Js
   return availability;
 }
 
-function mapIdentity(identity: WalletIdentityView) {
+function walletCogBalance(context: WalletReadContext): bigint | null {
+  if (context.snapshot === null || context.model === null) {
+    return null;
+  }
+
+  return getBalance(
+    context.snapshot.state,
+    new Uint8Array(Buffer.from(context.model.walletScriptPubKeyHex, "hex")),
+  );
+}
+
+function mapWalletAddress(context: WalletReadContext) {
+  const localDomains = context.model === null
+    ? []
+    : context.model.domains
+      .filter((domain) => domain.localRelationship === "local")
+      .map((domain) => domain.name)
+      .sort((left, right) => left.localeCompare(right));
+
   return {
-    index: identity.index,
-    scriptPubKeyHex: identity.scriptPubKeyHex,
-    address: identity.address,
-    selectors: [],
-    assignedDomainNames: identity.assignedDomainNames,
-    ownedDomainNames: identity.ownedDomainNames,
-    anchoredOwnedDomainNames: identity.anchoredOwnedDomainNames,
-    localStatus: identity.localStatus,
-    effectiveStatus: identity.effectiveStatus,
-    canonicalDomainId: identity.canonicalDomainId,
-    canonicalDomainName: identity.canonicalDomainName,
-    observedCogBalance: decimalOrNull(identity.observedCogBalance),
-    readOnly: identity.readOnly,
+    address: context.model?.walletAddress ?? null,
+    scriptPubKeyHex: context.model?.walletScriptPubKeyHex ?? null,
+    localDomains,
+    observedCogBalance: decimalOrNull(walletCogBalance(context)),
   };
 }
 
@@ -458,9 +468,8 @@ export function buildAddressJson(context: WalletReadContext): ReadJsonResult<{
 export function buildIdsJson(
   context: WalletReadContext,
   page: JsonPage,
-  identities: WalletIdentityView[],
 ): ReadJsonResult<{
-  identities: ReturnType<typeof mapIdentity>[] | null;
+  addresses: ReturnType<typeof mapWalletAddress>[] | null;
   page: JsonPage;
   availability: Record<string, JsonAvailabilityEntry>;
 }> {
@@ -469,10 +478,10 @@ export function buildIdsJson(
     ...messages,
     nextSteps: dedupeStrings([
       ...messages.nextSteps,
-      ...getIdsNextSteps(context.model === null ? null : identities),
+      ...getIdsNextSteps(context.model?.walletAddress ?? null),
     ]),
     data: {
-      identities: context.model === null ? null : identities.map(mapIdentity),
+      addresses: context.model === null ? null : [mapWalletAddress(context)],
       page,
       availability: buildAvailability(context),
     },
@@ -703,11 +712,7 @@ export function buildBalanceJson(context: WalletReadContext): ReadJsonResult<{
   availability: Record<string, JsonAvailabilityEntry>;
 }> {
   const messages = createBaseMessages(context);
-  const total = context.model === null || context.snapshot === null
-    ? null
-    : context.model.identities.reduce((sum, identity) =>
-      identity.observedCogBalance === null ? sum : sum + identity.observedCogBalance,
-    0n);
+  const total = walletCogBalance(context);
 
   return {
     ...messages,

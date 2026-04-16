@@ -312,22 +312,11 @@ function createIntentFingerprint(parts: string[]): string {
     .digest("hex");
 }
 
-function replaceAssignedDomainNames(
-  identity: WalletStateV1["identities"][number],
-  nextAssignedDomainNames: string[],
-): WalletStateV1["identities"][number] {
-  return {
-    ...identity,
-    assignedDomainNames: nextAssignedDomainNames.slice().sort((left, right) => left.localeCompare(right)),
-  };
-}
-
 function reserveTransferredDomainRecord(options: {
   state: WalletStateV1;
   domainName: string;
   domainId: number | null;
   currentOwnerScriptPubKeyHex: string;
-  currentOwnerLocalIndex: number | null;
   nowUnixMs: number;
 }): WalletStateV1 {
   const existing = options.state.domains.find((domain) => domain.name === options.domainName) ?? null;
@@ -341,7 +330,6 @@ function reserveTransferredDomainRecord(options: {
         ...domain,
         domainId: options.domainId ?? domain.domainId,
         currentOwnerScriptPubKeyHex: options.currentOwnerScriptPubKeyHex,
-        currentOwnerLocalIndex: options.currentOwnerLocalIndex,
         canonicalChainStatus: "registered-unanchored",
         currentCanonicalAnchorOutpoint: null,
         birthTime: domain.birthTime ?? Math.floor(options.nowUnixMs / 1000),
@@ -352,30 +340,17 @@ function reserveTransferredDomainRecord(options: {
       {
         name: options.domainName,
         domainId: options.domainId,
-        dedicatedIndex: null,
         currentOwnerScriptPubKeyHex: options.currentOwnerScriptPubKeyHex,
-        currentOwnerLocalIndex: options.currentOwnerLocalIndex,
         canonicalChainStatus: "registered-unanchored",
-        localAnchorIntent: "none",
         currentCanonicalAnchorOutpoint: null,
         foundingMessageText: existing?.foundingMessageText ?? null,
         birthTime: Math.floor(options.nowUnixMs / 1000),
       },
     ];
 
-  const identities = options.state.identities.map((identity) => {
-    const filtered = identity.assignedDomainNames.filter((domainName) => domainName !== options.domainName);
-    if (identity.index === options.currentOwnerLocalIndex) {
-      return replaceAssignedDomainNames(identity, [...filtered, options.domainName]);
-    }
-
-    return replaceAssignedDomainNames(identity, filtered);
-  });
-
   return {
     ...options.state,
     domains,
-    identities,
   };
 }
 
@@ -424,11 +399,12 @@ function createSellEconomicEffectSummary(listedPriceCogtoshi: bigint): DomainMar
 
 function resolveAnchorOutpointForSender(
   state: WalletStateV1,
-  sender: NonNullable<WalletReadContext["model"]>["identities"][number],
+  domainName: string,
   errorPrefix: string,
 ): OutpointRecord | null {
   const anchoredDomains = state.domains.filter((domain) =>
-    domain.currentOwnerLocalIndex === sender.index
+    domain.name === domainName
+    && domain.currentOwnerScriptPubKeyHex === state.funding.scriptPubKeyHex
     && domain.canonicalChainStatus === "anchored"
   );
 
@@ -465,17 +441,16 @@ function resolveOwnedDomainOperation(
   }
 
   const ownerHex = Buffer.from(chainDomain.ownerScriptPubKey).toString("hex");
-  if (!isLocalWalletScript(context.localState.state, ownerHex) || context.model.fundingIdentity?.address == null) {
+  if (ownerHex !== context.localState.state.funding.scriptPubKeyHex || context.model.walletAddress == null) {
     throw new Error(`${errorPrefix}_owner_not_locally_controlled`);
   }
-  const senderIdentity = context.model.fundingIdentity;
 
   return {
     readContext: context,
     state: context.localState.state,
     unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
     sender: createFundingMutationSender(context.localState.state),
-    senderSelector: senderIdentity.address ?? context.localState.state.funding.address,
+    senderSelector: context.model.walletAddress,
     anchorOutpoint: null,
     chainDomain,
   };
@@ -502,22 +477,16 @@ function resolveBuyOperation(
     throw new Error("wallet_buy_domain_not_listed");
   }
 
-  const selectedIdentity = context.model.fundingIdentity;
-
-  if (selectedIdentity === null) {
-    throw new Error("wallet_buy_funding_identity_unavailable");
-  }
-
-  if (selectedIdentity.address === null) {
+  if (context.model.walletAddress === null) {
     throw new Error("wallet_buy_funding_identity_unavailable");
   }
 
   const ownerHex = Buffer.from(chainDomain.ownerScriptPubKey).toString("hex");
-  if (ownerHex === selectedIdentity.scriptPubKeyHex) {
+  if (ownerHex === context.localState.state.funding.scriptPubKeyHex) {
     throw new Error("wallet_buy_already_owner");
   }
 
-  if (getBalance(context.snapshot.state, selectedIdentity.scriptPubKeyHex) < listing.priceCogtoshi) {
+  if (getBalance(context.snapshot.state, context.localState.state.funding.scriptPubKeyHex) < listing.priceCogtoshi) {
     throw new Error("wallet_buy_insufficient_cog_balance");
   }
 
@@ -526,11 +495,11 @@ function resolveBuyOperation(
     state: context.localState.state,
     unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
     sender: createFundingMutationSender(context.localState.state),
-    senderSelector: selectedIdentity.address ?? context.localState.state.funding.address,
+    senderSelector: context.model.walletAddress,
     anchorOutpoint: null,
     chainDomain,
     listingPriceCogtoshi: listing.priceCogtoshi,
-    buyerSelector: selectedIdentity.address ?? context.localState.state.funding.address,
+    buyerSelector: context.model.walletAddress,
   };
 }
 
@@ -643,20 +612,6 @@ function validateFundedDraft(
     throw new Error(`${plan.errorPrefix}_missing_sender_input`);
   }
 
-  assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_sender_input_mismatch`);
-
-  if (getDecodedInputScriptPubKeyHex(decoded, 0) !== plan.sender.scriptPubKeyHex) {
-    throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
-  }
-
-  assertFundingInputsAfterFixedPrefix({
-    decoded,
-    fixedInputs: plan.fixedInputs,
-    allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
-    eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
-    errorCode: `${plan.errorPrefix}_unexpected_funding_input`,
-  });
-
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
   }
@@ -702,7 +657,6 @@ async function buildTransaction(options: {
     validateFundedDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
-    reserveCandidates: options.state.proactiveReserveOutpoints,
   });
 }
 
@@ -848,7 +802,6 @@ async function reconcilePendingMutation(options: {
           domainName: options.mutation.domainName,
           domainId: chainDomain.domainId,
           currentOwnerScriptPubKeyHex: ownerHex,
-          currentOwnerLocalIndex: options.context.model?.identities.find((identity) => identity.scriptPubKeyHex === ownerHex)?.index ?? null,
           nowUnixMs: options.nowUnixMs,
         });
         await saveWalletStatePreservingUnlock({
@@ -938,7 +891,6 @@ async function reconcilePendingMutation(options: {
           domainName: options.mutation.domainName,
           domainId: chainDomain.domainId,
           currentOwnerScriptPubKeyHex: ownerHex,
-          currentOwnerLocalIndex: options.context.model?.identities.find((identity) => identity.scriptPubKeyHex === ownerHex)?.index ?? null,
           nowUnixMs: options.nowUnixMs,
         });
         await saveWalletStatePreservingUnlock({
@@ -984,9 +936,6 @@ async function reconcilePendingMutation(options: {
           currentOwnerScriptPubKeyHex: live.kind === "transfer"
             ? (live.recipientScriptPubKeyHex ?? live.senderScriptPubKeyHex)
             : live.senderScriptPubKeyHex,
-          currentOwnerLocalIndex: live.kind === "transfer"
-            ? options.context.model?.identities.find((identity) => identity.scriptPubKeyHex === live.recipientScriptPubKeyHex)?.index ?? null
-            : live.senderLocalIndex,
           nowUnixMs: options.nowUnixMs,
         });
       }
@@ -1349,7 +1298,6 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
         domainName: normalizedDomainName,
         domainId: operation.chainDomain.domainId,
         currentOwnerScriptPubKeyHex: recipient.scriptPubKeyHex,
-        currentOwnerLocalIndex: model.identities.find((identity) => identity.scriptPubKeyHex === recipient.scriptPubKeyHex)?.index ?? null,
         nowUnixMs,
       });
       nextState = {
@@ -1684,7 +1632,7 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
       const snapshot = readContext.snapshot!;
       const model = readContext.model!;
       const sellerScriptPubKeyHex = Buffer.from(operation.chainDomain.ownerScriptPubKey).toString("hex");
-      const sellerAddress = model.identities.find((identity) => identity.scriptPubKeyHex === sellerScriptPubKeyHex)?.address ?? null;
+      const sellerAddress = sellerScriptPubKeyHex === model.walletScriptPubKeyHex ? model.walletAddress : null;
       const resolvedBuyer: DomainMarketResolvedBuyerSummary = {
         selector: operation.buyerSelector,
         localIndex: operation.sender.localIndex,
@@ -1903,7 +1851,6 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
         domainName: normalizedDomainName,
         domainId: operation.chainDomain.domainId,
         currentOwnerScriptPubKeyHex: operation.sender.scriptPubKeyHex,
-        currentOwnerLocalIndex: operation.sender.localIndex,
         nowUnixMs,
       });
       nextState = {

@@ -1,3 +1,5 @@
+import { getBalance } from "@cogcoin/indexer/queries";
+
 import type { WalletReadContext } from "../read/index.js";
 import { serializeDomainReg } from "../cogop/index.js";
 
@@ -7,7 +9,26 @@ type ReadyWalletMutationContext = WalletReadContext & {
   model: NonNullable<WalletReadContext["model"]>;
 };
 
-type ResolvedIdentity = ReadyWalletMutationContext["model"]["identities"][number];
+export interface ResolvedWalletIdentity {
+  index: 0;
+  scriptPubKeyHex: string;
+  address: string | null;
+  observedCogBalance: bigint | null;
+  readOnly: false;
+}
+
+function resolveWalletIdentity(context: ReadyWalletMutationContext): ResolvedWalletIdentity {
+  return {
+    index: 0,
+    scriptPubKeyHex: context.model.walletScriptPubKeyHex,
+    address: context.model.walletAddress,
+    observedCogBalance: getBalance(
+      context.snapshot.state,
+      new Uint8Array(Buffer.from(context.model.walletScriptPubKeyHex, "hex")),
+    ),
+    readOnly: false,
+  };
+}
 
 function normalizeDomainName(value: string, errorCode: string): string {
   const normalized = value.trim().toLowerCase();
@@ -20,7 +41,7 @@ function normalizeDomainName(value: string, errorCode: string): string {
   return normalized;
 }
 
-export function getCanonicalIdentitySelector(identity: ResolvedIdentity): string {
+export function getCanonicalIdentitySelector(identity: ResolvedWalletIdentity): string {
   return identity.address ?? `spk:${identity.scriptPubKeyHex}`;
 }
 
@@ -28,9 +49,9 @@ export function resolveIdentityBySelector(
   context: ReadyWalletMutationContext,
   selector: string,
   errorPrefix: string,
-): ResolvedIdentity {
-  const fundingIdentity = context.model.fundingIdentity ?? context.model.identities[0] ?? null;
-  if (fundingIdentity === null) {
+): ResolvedWalletIdentity {
+  const walletIdentity = resolveWalletIdentity(context);
+  if (walletIdentity.address === null && walletIdentity.scriptPubKeyHex.length === 0) {
     throw new Error(`${errorPrefix}_sender_not_found`);
   }
   const trimmed = selector.trim();
@@ -39,5 +60,5 @@ export function resolveIdentityBySelector(
     throw new Error(`${errorPrefix}_sender_selector_missing`);
   }
   void normalizeDomainName;
-  return fundingIdentity;
+  return walletIdentity;
 }

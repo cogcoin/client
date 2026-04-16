@@ -20,7 +20,6 @@ export type {
   WalletDomainDetailsView,
   WalletDomainView,
   WalletFieldView,
-  WalletIdentityView,
   WalletIndexerStatus,
   WalletLocalStateStatus,
   WalletLockView,

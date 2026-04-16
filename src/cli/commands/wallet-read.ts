@@ -126,11 +126,11 @@ export async function runWalletReadCommand(
           return emitJson(context, parsed, "cogcoin/address/v1", buildAddressJson(readContext));
         }
         writeLine(context.stdout, formatFundingAddressReport(readContext));
-        if (readContext.model?.fundingIdentity?.address !== null && readContext.model?.fundingIdentity?.address !== undefined) {
+        if (readContext.model?.walletAddress !== null && readContext.model?.walletAddress !== undefined) {
           writeLine(context.stdout, `Quickstart: ${getFundingQuickstartGuidance()}`);
         }
         for (const line of formatNextStepLines(
-          getAddressNextSteps(readContext, readContext.model?.fundingIdentity?.address ?? null),
+          getAddressNextSteps(readContext, readContext.model?.walletAddress ?? null),
         )) {
           writeLine(context.stdout, line);
         }
@@ -139,20 +139,16 @@ export async function runWalletReadCommand(
       case "ids": {
         const defaultLimit = 100;
         if (parsed.outputMode === "json") {
-          if (readContext.model === null) {
-            return emitJson(context, parsed, "cogcoin/ids/v1", buildIdsJson(
-              readContext,
-              createUnknownPage(parsed, defaultLimit),
-              [],
-            ));
-          }
-
-          const { items, page } = normalizeListPage(readContext.model.identities, {
-            limit: parsed.listLimit,
-            all: parsed.listAll,
-            defaultLimit,
-          });
-          return emitJson(context, parsed, "cogcoin/ids/v1", buildIdsJson(readContext, page, items));
+          return emitJson(context, parsed, "cogcoin/ids/v1", buildIdsJson(
+            readContext,
+            readContext.model === null
+              ? createUnknownPage(parsed, defaultLimit)
+              : normalizeListPage([readContext.model.walletAddress ?? `spk:${readContext.model.walletScriptPubKeyHex}`], {
+                limit: parsed.listLimit,
+                all: parsed.listAll,
+                defaultLimit,
+              }).page,
+          ));
         }
 
         writeLine(context.stdout, formatIdentityListReport(readContext, {
@@ -160,12 +156,7 @@ export async function runWalletReadCommand(
           all: parsed.listAll,
         }));
         if (readContext.model !== null) {
-          const { items } = normalizeListPage(readContext.model.identities, {
-            limit: parsed.listLimit,
-            all: parsed.listAll,
-            defaultLimit,
-          });
-          for (const line of formatNextStepLines(getIdsNextSteps(items))) {
+          for (const line of formatNextStepLines(getIdsNextSteps(readContext.model.walletAddress))) {
             writeLine(context.stdout, line);
           }
         }

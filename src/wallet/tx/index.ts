@@ -19,9 +19,7 @@ export {
 } from "./cog.js";
 export {
   anchorDomain,
-  clearPendingAnchor,
   type AnchorDomainResult,
-  type ClearPendingAnchorResult,
 } from "./anchor.js";
 export {
   clearDomainDelegate,

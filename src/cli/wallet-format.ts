@@ -1,3 +1,5 @@
+import { getBalance } from "@cogcoin/indexer/queries";
+
 import {
   findDomainField,
   findWalletDomain,
@@ -520,7 +522,6 @@ function buildOverviewLocalInventorySection(context: WalletReadContext): Overvie
   return [
     overviewEntry("Local wallet address: 1", true),
     overviewEntry(`Locally related domains: ${context.model.domains.length}`, true),
-    overviewEntry("Read-only identities: 0", true),
   ];
 }
 
@@ -628,7 +629,12 @@ export function formatIdentityListReport(
     .filter((domain) => domain.localRelationship === "local")
     .map((domain) => domain.name)
     .sort();
-  const balance = context.model.identities[0]?.observedCogBalance ?? null;
+  const balance = context.snapshot === null
+    ? null
+    : getBalance(
+      context.snapshot.state,
+      new Uint8Array(Buffer.from(context.model.walletScriptPubKeyHex, "hex")),
+    );
   lines.push(
     `${context.model.walletAddress ?? `spk:${context.model.walletScriptPubKeyHex}`}  balance ${balance === null ? "unavailable" : formatCogAmount(balance)}  domains ${domains.length === 0 ? "none" : domains.join(", ")}`,
   );
@@ -649,9 +655,10 @@ export function formatBalanceReport(context: WalletReadContext): string {
     return lines.join("\n");
   }
 
-  const spendableTotal = context.model.identities.reduce((sum, identity) =>
-    identity.observedCogBalance === null ? sum : sum + identity.observedCogBalance,
-  0n);
+  const spendableTotal = getBalance(
+    context.snapshot.state,
+    new Uint8Array(Buffer.from(context.model.walletScriptPubKeyHex, "hex")),
+  );
 
   lines.push(`Spendable total: ${formatCogAmount(spendableTotal)}`);
   lines.push(`${context.model.walletAddress ?? `spk:${context.model.walletScriptPubKeyHex}`}  ${formatCogAmount(spendableTotal)}`);

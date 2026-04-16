@@ -282,7 +282,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   let fieldPermanent = false;
   let fieldFormat: string | null = null;
   let fieldValue: string | null = null;
-  let fromIdentity: string | null = null;
   let lockRecipientDomain: string | null = null;
   let conditionHex: string | null = null;
   let untilHeight: string | null = null;
@@ -466,14 +465,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     }
 
     if (token === "--from") {
-      index += 1;
-      fromIdentity = argv[index] ?? null;
-
-      if (fromIdentity === null) {
-        throw new Error("cli_missing_from_identity");
-      }
-
-      continue;
+      throw new Error("cli_from_not_supported_for_command");
     }
 
     if (token === "--to-domain") {
@@ -1255,10 +1247,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_missing_transfer_target");
   }
 
-  if (fromIdentity !== null) {
-    throw new Error("cli_from_not_supported_for_command");
-  }
-
   if (lockRecipientDomain !== null && command !== "cog-lock") {
     throw new Error("cli_to_domain_not_supported_for_command");
   }
@@ -1374,7 +1362,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     fieldPermanent,
     fieldFormat,
     fieldValue,
-    fromIdentity,
     lockRecipientDomain,
     conditionHex,
     untilHeight,

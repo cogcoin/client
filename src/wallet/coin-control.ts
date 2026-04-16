@@ -98,14 +98,8 @@ function normalizeDomains(rawDomains: LegacyWalletStateRecord["domains"]): Walle
     .map((domain) => ({
       name: domain.name!.trim().toLowerCase(),
       domainId: domain.domainId ?? null,
-      dedicatedIndex: null,
       currentOwnerScriptPubKeyHex: domain.currentOwnerScriptPubKeyHex ?? null,
-      currentOwnerLocalIndex: domain.currentOwnerScriptPubKeyHex != null
-        && domain.currentOwnerScriptPubKeyHex.length > 0
-        ? 0
-        : null,
       canonicalChainStatus: domain.canonicalChainStatus ?? "unknown",
-      localAnchorIntent: "none" as const,
       currentCanonicalAnchorOutpoint: domain.currentCanonicalAnchorOutpoint ?? null,
       foundingMessageText: domain.foundingMessageText ?? null,
       birthTime: domain.birthTime ?? null,
@@ -135,17 +129,13 @@ export function normalizeWalletStateRecord(rawState: LegacyWalletStateRecord): W
     }));
 
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     stateRevision: rawState.stateRevision ?? 1,
     lastWrittenAtUnixMs: rawState.lastWrittenAtUnixMs ?? 0,
     walletRootId: rawState.walletRootId ?? "",
     network: rawState.network ?? "mainnet",
     anchorValueSats: rawState.anchorValueSats ?? 2_000,
     localScriptPubKeyHexes,
-    proactiveReserveSats: 0,
-    proactiveReserveOutpoints: [],
-    nextDedicatedIndex: 1,
-    fundingIndex: 0,
     mnemonic: {
       phrase: rawState.mnemonic?.phrase ?? "",
       language: rawState.mnemonic?.language ?? "english",
@@ -178,19 +168,9 @@ export function normalizeWalletStateRecord(rawState: LegacyWalletStateRecord): W
       lastImportedAtUnixMs: rawState.managedCoreWallet?.lastImportedAtUnixMs ?? null,
       lastVerifiedAtUnixMs: rawState.managedCoreWallet?.lastVerifiedAtUnixMs ?? null,
     },
-    identities: [{
-      index: 0,
-      scriptPubKeyHex: fundingScriptPubKeyHex,
-      address: fundingAddress,
-      status: "funding",
-      assignedDomainNames: normalizeDomains(rawState.domains)
-        .filter((domain) => domain.currentOwnerScriptPubKeyHex === fundingScriptPubKeyHex)
-        .map((domain) => domain.name),
-    }],
     domains: normalizeDomains(rawState.domains),
     miningState: rawState.miningState!,
     hookClientState: rawState.hookClientState!,
-    proactiveFamilies: [],
     pendingMutations,
   };
 }
@@ -220,7 +200,7 @@ export function normalizePortableWalletArchivePayload(
   ]);
 
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     exportedAtUnixMs: payload.exportedAtUnixMs ?? 0,
     walletRootId: payload.walletRootId ?? "",
     network: payload.network ?? "mainnet",

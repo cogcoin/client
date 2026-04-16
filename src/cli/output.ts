@@ -423,7 +423,6 @@ function isBlockedError(message: string): boolean {
   if (
     message === "wallet_control_lock_busy"
     || message.startsWith("file_lock_busy_")
-    || message.startsWith("wallet_anchor_clear_pending_first_")
   ) {
     return true;
   }
@@ -761,39 +760,6 @@ export function createCliErrorPresentation(
       what: "`anchor clear` is no longer available.",
       why: "The wallet no longer reserves dedicated local identities for anchor workflows, so there is no separate anchor-family cleanup command.",
       next: "Retry with `cogcoin anchor <domain>` or inspect the domain with `cogcoin show <domain>`.",
-    };
-  }
-
-  if (errorCode === "wallet_anchor_clear_inconsistent_state") {
-    return {
-      what: "Pending anchor state is inconsistent.",
-      why: "The domain still shows local pending anchor state, but the wallet could not find a matching clearable reserved anchor family.",
-      next: "Run `cogcoin repair`, then inspect the domain again with `cogcoin show <domain>`.",
-    };
-  }
-
-  if (errorCode.startsWith("wallet_anchor_clear_force_required_")) {
-    return {
-      what: "Pending anchor state requires repair.",
-      why: "The wallet found older same-domain anchor workflow state from the removed multi-identity model.",
-      next: "Run `cogcoin repair`, then inspect the domain again with `cogcoin show <domain>`.",
-    };
-  }
-
-  if (errorCode.startsWith("wallet_anchor_clear_pending_first_")) {
-    const domainName = errorCode.slice("wallet_anchor_clear_pending_first_".length) || "<domain>";
-    return {
-      what: `A local pending anchor already exists for "${domainName}".`,
-      why: "The wallet found older same-domain anchor workflow state from the removed multi-identity model, so it stopped before creating another pending anchor.",
-      next: `Run \`cogcoin repair\`, inspect \`${domainName}\` with \`cogcoin show ${domainName}\`, then rerun \`cogcoin anchor ${domainName}\`.`,
-    };
-  }
-
-  if (errorCode.startsWith("wallet_anchor_clear_not_clearable_")) {
-    return {
-      what: "Pending anchor cannot be cleared safely.",
-      why: "This command only clears a local pre-broadcast reservation. The anchor family is already beyond that safe stage or may have been observed by the wallet.",
-      next: "Rerun `cogcoin anchor <domain>` to reconcile the family, or run `cogcoin repair` if it remains unresolved.",
     };
   }
 
@@ -1618,7 +1584,6 @@ function createSchemaProbe(command: CommandName | null): ParsedCliArgs {
     fieldPermanent: false,
     fieldFormat: null,
     fieldValue: null,
-    fromIdentity: null,
     lockRecipientDomain: null,
     conditionHex: null,
     untilHeight: null,

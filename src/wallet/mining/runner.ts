@@ -23,9 +23,7 @@ import { extractOpReturnPayloadFromScriptHex } from "../tx/register.js";
 import {
   DEFAULT_WALLET_MUTATION_FEE_RATE_SAT_VB,
   assertFixedInputPrefixMatches,
-  assertFundingInputsAfterFixedPrefix,
   buildWalletMutationTransaction,
-  getDecodedInputScriptPubKeyHex,
   outpointKey as walletMutationOutpointKey,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
@@ -396,13 +394,7 @@ function cloneMiningState(state: MiningStateRecord): MiningStateRecord {
 }
 
 function hasBlockingMutation(state: WalletStateV1): boolean {
-  return state.proactiveFamilies.some((family) =>
-    family.status === "draft"
-    || family.status === "broadcasting"
-    || family.status === "broadcast-unknown"
-    || family.status === "live"
-    || family.status === "repair-required"
-  ) || (state.pendingMutations ?? []).some((mutation) =>
+  return (state.pendingMutations ?? []).some((mutation) =>
     mutation.status === "draft"
     || mutation.status === "broadcasting"
     || mutation.status === "broadcast-unknown"
@@ -1090,23 +1082,10 @@ function validateMiningDraft(
 
   assertFixedInputPrefixMatches(inputs, plan.fixedInputs, "wallet_mining_missing_inputs");
 
-  if (getDecodedInputScriptPubKeyHex(decoded, 0) !== plan.sender.scriptPubKeyHex) {
-    throw new Error("wallet_mining_sender_input_mismatch");
-  }
-
-  if (getDecodedInputScriptPubKeyHex(decoded, 1) !== plan.allowedFundingScriptPubKeyHex
-    || inputs[1]?.txid !== plan.expectedConflictOutpoint.txid
+  if (inputs[1]?.txid !== plan.expectedConflictOutpoint.txid
     || inputs[1]?.vout !== plan.expectedConflictOutpoint.vout) {
     throw new Error("wallet_mining_conflict_input_mismatch");
   }
-
-  assertFundingInputsAfterFixedPrefix({
-    decoded,
-    fixedInputs: plan.fixedInputs,
-    allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
-    eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
-    errorCode: "wallet_mining_unexpected_funding_input",
-  });
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error("wallet_mining_opreturn_mismatch");
@@ -1204,7 +1183,6 @@ function resolveEligibleAnchoredRoots(context: WalletReadContext): Array<{
     }
 
     const localRecord = state.domains.find((entry) => entry.name === domain.name);
-    const ownerIdentity = model.identities.find((identity) => identity.index === domain.ownerLocalIndex);
     const domainId = domain.domainId;
 
     if (
@@ -1212,8 +1190,8 @@ function resolveEligibleAnchoredRoots(context: WalletReadContext): Array<{
       || domainId === undefined
       || localRecord?.currentCanonicalAnchorOutpoint === null
       || localRecord?.currentCanonicalAnchorOutpoint === undefined
-      || ownerIdentity?.address == null
-      || ownerIdentity.readOnly
+      || domain.ownerAddress == null
+      || domain.ownerScriptPubKeyHex !== model.walletScriptPubKeyHex
     ) {
       continue;
     }
@@ -1226,11 +1204,11 @@ function resolveEligibleAnchoredRoots(context: WalletReadContext): Array<{
     domains.push({
       domainId,
       domainName: domain.name,
-      localIndex: ownerIdentity.index,
+      localIndex: 0,
       sender: {
-        localIndex: ownerIdentity.index,
-        scriptPubKeyHex: ownerIdentity.scriptPubKeyHex,
-        address: ownerIdentity.address,
+        localIndex: 0,
+        scriptPubKeyHex: model.walletScriptPubKeyHex,
+        address: domain.ownerAddress,
       },
       anchorOutpoint: {
         txid: localRecord.currentCanonicalAnchorOutpoint.txid,

@@ -424,20 +424,6 @@ function writeRegisterResolvedSummary(
   prompter.writeLine(`Economic effect: ${describeRegisterEconomicEffect(summary)}`);
 }
 
-function replaceAssignedDomainNames(
-  identity: WalletStateV1["identities"][number],
-  domainName: string,
-): WalletStateV1["identities"][number] {
-  if (identity.assignedDomainNames.includes(domainName)) {
-    return identity;
-  }
-
-  return {
-    ...identity,
-    assignedDomainNames: [...identity.assignedDomainNames, domainName].sort((left, right) => left.localeCompare(right)),
-  };
-}
-
 function reserveLocalDomainRecord(options: {
   state: WalletStateV1;
   domainName: string;
@@ -454,7 +440,6 @@ function reserveLocalDomainRecord(options: {
       return {
         ...domain,
         currentOwnerScriptPubKeyHex: options.sender.scriptPubKeyHex,
-        currentOwnerLocalIndex: options.sender.localIndex,
         birthTime: domain.birthTime ?? Math.floor(options.nowUnixMs / 1000),
       };
     })
@@ -463,26 +448,17 @@ function reserveLocalDomainRecord(options: {
       {
         name: options.domainName,
         domainId: null,
-        dedicatedIndex: null,
         currentOwnerScriptPubKeyHex: options.sender.scriptPubKeyHex,
-        currentOwnerLocalIndex: options.sender.localIndex,
         canonicalChainStatus: "unknown",
-        localAnchorIntent: "none",
         currentCanonicalAnchorOutpoint: null,
         foundingMessageText: existing?.foundingMessageText ?? null,
         birthTime: Math.floor(options.nowUnixMs / 1000),
       },
     ];
-  const identities = options.state.identities.map((identity) =>
-    identity.index === options.sender.localIndex
-      ? replaceAssignedDomainNames(identity, options.domainName)
-      : identity
-  );
 
   return {
     ...options.state,
     domains,
-    identities,
   };
 }
 
@@ -503,10 +479,9 @@ function getMutationStatusAfterAcceptance(options: {
 
 function resolveRootRegisterAnchorOutpoint(
   state: WalletStateV1,
-  senderIndex: number,
 ): OutpointRecord | null {
   const anchoredDomain = state.domains.find((domain) =>
-    domain.currentOwnerLocalIndex === senderIndex
+    domain.currentOwnerScriptPubKeyHex === state.funding.scriptPubKeyHex
     && domain.canonicalChainStatus === "anchored"
     && domain.currentCanonicalAnchorOutpoint !== null
   ) ?? null;
@@ -538,17 +513,16 @@ function resolveRegisterSender(
   fromIdentity: string | null | undefined,
 ): ResolvedRegisterSender {
   const state = context.localState.state;
-  const fundingIdentity = context.model.fundingIdentity;
-
-  if (fundingIdentity == null || fundingIdentity.address === null) {
+  if (context.model.walletAddress === null) {
     throw new Error("wallet_register_funding_identity_unavailable");
   }
+  void fromIdentity;
 
   if (!domainName.includes("-")) {
     return {
       registerKind: "root",
       parentDomainName: null,
-      senderSelector: fundingIdentity.address,
+      senderSelector: context.model.walletAddress,
       sender: createFundingMutationSender(state),
       anchorOutpoint: null,
     };
@@ -581,7 +555,7 @@ function resolveRegisterSender(
   return {
     registerKind: "subdomain",
     parentDomainName: parent.parentName,
-    senderSelector: fundingIdentity.address,
+    senderSelector: context.model.walletAddress,
     sender: createFundingMutationSender(state),
     anchorOutpoint: {
       txid: anchorOutpoint.txid,
@@ -643,20 +617,6 @@ function validateFundedDraft(
   if (inputs.length === 0) {
     throw new Error("wallet_register_missing_sender_input");
   }
-
-  assertFixedInputPrefixMatches(inputs, plan.fixedInputs, "wallet_register_sender_input_mismatch");
-
-  if (getDecodedInputScriptPubKeyHex(decoded, 0) !== plan.sender.scriptPubKeyHex) {
-    throw new Error("wallet_register_sender_input_mismatch");
-  }
-
-  assertFundingInputsAfterFixedPrefix({
-    decoded,
-    fixedInputs: plan.fixedInputs,
-    allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
-    eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
-    errorCode: "wallet_register_unexpected_funding_input",
-  });
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error("wallet_register_opreturn_mismatch");
@@ -836,7 +796,6 @@ async function buildRegisterTransaction(options: {
     validateFundedDraft,
     finalizeErrorCode: "wallet_register_finalize_failed",
     mempoolRejectPrefix: "wallet_register_mempool_rejected",
-    reserveCandidates: options.state.proactiveReserveOutpoints,
   });
 }
 

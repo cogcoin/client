@@ -257,11 +257,12 @@ function createIntentFingerprint(parts: Array<string | number | bigint>): string
 
 function resolveAnchorOutpointForSender(
   state: WalletStateV1,
-  sender: NonNullable<WalletReadContext["model"]>["identities"][number],
+  domainName: string,
   errorPrefix: string,
 ): OutpointRecord {
   const anchoredDomain = state.domains.find((domain) =>
-    domain.currentOwnerLocalIndex === sender.index
+    domain.name === domainName
+    && domain.currentOwnerScriptPubKeyHex === state.funding.scriptPubKeyHex
     && domain.canonicalChainStatus === "anchored"
   ) ?? null;
 
@@ -300,18 +301,17 @@ function resolveAnchoredDomainOperation(
   }
 
   const ownerHex = Buffer.from(chainDomain.ownerScriptPubKey).toString("hex");
-  if (!isLocalWalletScript(context.localState.state, ownerHex) || context.model.fundingIdentity?.address == null) {
+  if (ownerHex !== context.localState.state.funding.scriptPubKeyHex || context.model.walletAddress == null) {
     throw new Error(`${errorPrefix}_owner_not_locally_controlled`);
   }
-  const ownerIdentity = context.model.fundingIdentity;
 
   return {
     readContext: context,
     state: context.localState.state,
     unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
     sender: createFundingMutationSender(context.localState.state),
-    senderSelector: ownerIdentity.address ?? context.localState.state.funding.address,
-    anchorOutpoint: resolveAnchorOutpointForSender(context.localState.state, ownerIdentity, errorPrefix),
+    senderSelector: context.model.walletAddress,
+    anchorOutpoint: resolveAnchorOutpointForSender(context.localState.state, domainName, errorPrefix),
     chainDomain,
   };
 }
@@ -375,20 +375,6 @@ function validateFundedDraft(
     throw new Error(`${plan.errorPrefix}_missing_sender_input`);
   }
 
-  assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_sender_input_mismatch`);
-
-  if (getDecodedInputScriptPubKeyHex(decoded, 0) !== plan.sender.scriptPubKeyHex) {
-    throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
-  }
-
-  assertFundingInputsAfterFixedPrefix({
-    decoded,
-    fixedInputs: plan.fixedInputs,
-    allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
-    eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
-    errorCode: `${plan.errorPrefix}_unexpected_funding_input`,
-  });
-
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
   }
@@ -431,7 +417,6 @@ async function buildTransaction(options: {
     validateFundedDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
-    reserveCandidates: options.state.proactiveReserveOutpoints,
   });
 }
 

@@ -170,7 +170,6 @@ export async function runWalletMutationCommand(
         dataDir,
         databasePath: dbPath,
         forceRace: parsed.forceRace,
-        fromIdentity: parsed.fromIdentity,
         provider: context.walletSecretProvider,
         prompter,
         assumeYes: parsed.assumeYes,
@@ -180,11 +179,9 @@ export async function runWalletMutationCommand(
       return writeMutationCommandSuccess(parsed, context, {
         data: buildRegisterMutationData(result, {
           forceRace: parsed.forceRace,
-          fromIdentity: parsed.fromIdentity,
         }),
         previewData: buildRegisterPreviewData(result, {
           forceRace: parsed.forceRace,
-          fromIdentity: parsed.fromIdentity,
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending registration was reconciled instead of creating a duplicate.",
@@ -581,7 +578,6 @@ export async function runWalletMutationCommand(
       const result = await context.sendCog({
         amountCogtoshi: parseCogAmountToCogtoshi(parsed.args[0]!),
         target: parsed.transferTarget!,
-        fromIdentity: parsed.fromIdentity,
         dataDir,
         databasePath: dbPath,
         provider: context.walletSecretProvider,
@@ -592,11 +588,9 @@ export async function runWalletMutationCommand(
       return writeMutationCommandSuccess(parsed, context, {
         data: buildCogMutationData(result, {
           commandKind: "send",
-          fromIdentity: parsed.fromIdentity,
         }),
         previewData: buildCogPreviewData(result, {
           commandKind: "send",
-          fromIdentity: parsed.fromIdentity,
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending COG transfer was reconciled instead of creating a duplicate.",
@@ -620,7 +614,6 @@ export async function runWalletMutationCommand(
       const result = await context.lockCogToDomain({
         amountCogtoshi: parseCogAmountToCogtoshi(parsed.args[0]!),
         recipientDomainName: parsed.lockRecipientDomain!,
-        fromIdentity: parsed.fromIdentity,
         timeoutBlocksOrDuration: parsed.unlockFor,
         timeoutHeight: parsed.untilHeight === null ? null : Number.parseInt(parsed.untilHeight, 10),
         conditionHex: parsed.conditionHex!,
@@ -634,14 +627,12 @@ export async function runWalletMutationCommand(
       return writeMutationCommandSuccess(parsed, context, {
         data: buildCogMutationData(result, {
           commandKind: "cog-lock",
-          fromIdentity: parsed.fromIdentity,
           timeoutBlocksOrDuration: parsed.unlockFor,
           timeoutHeight: parsed.untilHeight,
           conditionHex: parsed.conditionHex,
         }),
         previewData: buildCogPreviewData(result, {
           commandKind: "cog-lock",
-          fromIdentity: parsed.fromIdentity,
           timeoutBlocksOrDuration: parsed.unlockFor,
           timeoutHeight: parsed.untilHeight,
           conditionHex: parsed.conditionHex,
@@ -677,11 +668,9 @@ export async function runWalletMutationCommand(
       return writeMutationCommandSuccess(parsed, context, {
         data: buildCogMutationData(result, {
           commandKind: "claim",
-          fromIdentity: null,
         }),
         previewData: buildCogPreviewData(result, {
           commandKind: "claim",
-          fromIdentity: null,
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending claim was reconciled instead of creating a duplicate.",
@@ -714,11 +703,9 @@ export async function runWalletMutationCommand(
       return writeMutationCommandSuccess(parsed, context, {
         data: buildCogMutationData(result, {
           commandKind: "reclaim",
-          fromIdentity: null,
         }),
         previewData: buildCogPreviewData(result, {
           commandKind: "reclaim",
-          fromIdentity: null,
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending reclaim was reconciled instead of creating a duplicate.",
@@ -792,7 +779,6 @@ export async function runWalletMutationCommand(
     if (isBuyMutationCommand(parsed.command)) {
       const result = await context.buyDomain({
         domainName: parsed.args[0]!,
-        fromIdentity: parsed.fromIdentity,
         dataDir,
         databasePath: dbPath,
         provider: context.walletSecretProvider,
@@ -803,11 +789,9 @@ export async function runWalletMutationCommand(
       return writeMutationCommandSuccess(parsed, context, {
         data: buildDomainMarketMutationData(result, {
           commandKind: "buy",
-          fromIdentity: parsed.fromIdentity,
         }),
         previewData: buildDomainMarketPreviewData(result, {
           commandKind: "buy",
-          fromIdentity: parsed.fromIdentity,
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending purchase was reconciled instead of creating a duplicate.",
