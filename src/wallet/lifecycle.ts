@@ -23,7 +23,6 @@ import type {
 import { openSqliteStore } from "../sqlite/index.js";
 import { readPortableWalletArchive, writePortableWalletArchive } from "./archive.js";
 import {
-  DEFAULT_PROACTIVE_RESERVE_SATS,
   normalizeWalletStateRecord,
   persistWalletCoinControlStateIfNeeded,
 } from "./coin-control.js";
@@ -321,7 +320,7 @@ function createInitialWalletState(options: {
   internalCoreWalletPassphrase: string;
 }): WalletStateV1 {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     stateRevision: 1,
     lastWrittenAtUnixMs: options.nowUnixMs,
     walletRootId: options.walletRootId,
@@ -525,16 +524,12 @@ function createPortableWalletArchivePayload(
   exportedAtUnixMs: number,
 ): PortableWalletArchivePayloadV1 {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     exportedAtUnixMs,
     walletRootId: state.walletRootId,
     network: state.network,
     anchorValueSats: state.anchorValueSats,
-    localScriptPubKeyHexes: state.localScriptPubKeyHexes ?? [state.funding.scriptPubKeyHex],
-    proactiveReserveSats: state.proactiveReserveSats,
-    proactiveReserveOutpoints: state.proactiveReserveOutpoints,
-    nextDedicatedIndex: state.nextDedicatedIndex,
-    fundingIndex: state.fundingIndex,
+    localScriptPubKeyHexes: state.localScriptPubKeyHexes,
     mnemonic: {
       phrase: state.mnemonic.phrase,
       language: state.mnemonic.language,
@@ -549,17 +544,11 @@ function createPortableWalletArchivePayload(
       safetyMargin: state.descriptor.safetyMargin,
       walletAddress: state.funding.address,
       walletScriptPubKeyHex: state.funding.scriptPubKeyHex,
-      fundingAddress0: state.funding.address,
-      fundingScriptPubKeyHex0: state.funding.scriptPubKeyHex,
       walletBirthTime: state.walletBirthTime,
     },
-    identities: state.identities,
     domains: state.domains,
     miningState: normalizeMiningStateRecord(state.miningState),
     hookClientState: state.hookClientState,
-    proactiveFamilies: state.proactiveFamilies.filter((family) =>
-      family.status === "confirmed" || family.status === "canceled"
-    ),
   };
 }
 
@@ -575,8 +564,8 @@ function createWalletStateFromPortableArchive(options: {
     || material.keys.accountPath !== options.payload.expected.accountPath
     || material.keys.accountXpub !== options.payload.expected.accountXpub
     || stripDescriptorChecksum(material.descriptor.publicExternal) !== stripDescriptorChecksum(options.payload.expected.publicExternalDescriptor)
-    || material.funding.address !== options.payload.expected.fundingAddress0
-    || material.funding.scriptPubKeyHex !== options.payload.expected.fundingScriptPubKeyHex0
+    || material.funding.address !== options.payload.expected.walletAddress
+    || material.funding.scriptPubKeyHex !== options.payload.expected.walletScriptPubKeyHex
   ) {
     throw new Error("wallet_import_material_mismatch");
   }
@@ -593,10 +582,7 @@ function createWalletStateFromPortableArchive(options: {
     walletRootId: options.payload.walletRootId,
     network: options.payload.network,
     anchorValueSats: options.payload.anchorValueSats,
-    proactiveReserveSats: options.payload.proactiveReserveSats,
-    proactiveReserveOutpoints: options.payload.proactiveReserveOutpoints,
-    nextDedicatedIndex: options.payload.nextDedicatedIndex,
-    fundingIndex: options.payload.fundingIndex,
+    localScriptPubKeyHexes: options.payload.localScriptPubKeyHexes ?? [material.funding.scriptPubKeyHex],
     walletBirthTime: options.payload.expected.walletBirthTime,
     descriptor: {
       ...baseState.descriptor,
@@ -604,11 +590,9 @@ function createWalletStateFromPortableArchive(options: {
       rangeEnd: options.payload.expected.rangeEnd,
       safetyMargin: options.payload.expected.safetyMargin,
     },
-    identities: options.payload.identities,
     domains: options.payload.domains,
     miningState: normalizeMiningStateRecord(options.payload.miningState),
     hookClientState: options.payload.hookClientState,
-    proactiveFamilies: options.payload.proactiveFamilies,
     pendingMutations: [],
   };
 }
@@ -620,20 +604,6 @@ function isExportBlockedByLocalState(state: WalletStateV1): string | null {
     || state.miningState.currentPublishState === "broadcast-unknown"
     || state.miningState.currentPublishState === "in-mempool"
   ) {
-    return "wallet_export_requires_quiescent_local_state";
-  }
-
-  if (state.proactiveFamilies.some((family) =>
-    family.status === "draft"
-    || family.status === "broadcasting"
-    || family.status === "broadcast-unknown"
-    || family.status === "live"
-    || family.status === "repair-required"
-  )) {
-    return "wallet_export_requires_quiescent_local_state";
-  }
-
-  if (state.domains.some((domain) => domain.localAnchorIntent === "repair-required")) {
     return "wallet_export_requires_quiescent_local_state";
   }
 
@@ -1456,8 +1426,8 @@ async function importDescriptorIntoManagedCoreWallet(
       ...state.managedCoreWallet,
       walletName,
       descriptorChecksum: normalizedDescriptors.checksum,
-      fundingAddress0: verifiedReplica.fundingAddress0 ?? null,
-      fundingScriptPubKeyHex0: verifiedReplica.fundingScriptPubKeyHex0 ?? null,
+      walletAddress: verifiedReplica.fundingAddress0 ?? null,
+      walletScriptPubKeyHex: verifiedReplica.fundingScriptPubKeyHex0 ?? null,
       proofStatus: "ready",
       lastImportedAtUnixMs: nowUnixMs,
       lastVerifiedAtUnixMs: nowUnixMs,
@@ -1514,8 +1484,8 @@ export async function verifyManagedCoreWalletReplica(
         created: false,
         proofStatus: "missing",
         descriptorChecksum: state.managedCoreWallet.descriptorChecksum,
-        fundingAddress0: state.managedCoreWallet.fundingAddress0,
-        fundingScriptPubKeyHex0: state.managedCoreWallet.fundingScriptPubKeyHex0,
+        fundingAddress0: state.managedCoreWallet.walletAddress,
+        fundingScriptPubKeyHex0: state.managedCoreWallet.walletScriptPubKeyHex,
         message: "Expected descriptor is missing from the managed Core wallet.",
       };
     }
@@ -1561,8 +1531,8 @@ export async function verifyManagedCoreWalletReplica(
       created: false,
       proofStatus: "not-proven",
       descriptorChecksum: state.managedCoreWallet.descriptorChecksum,
-      fundingAddress0: state.managedCoreWallet.fundingAddress0,
-      fundingScriptPubKeyHex0: state.managedCoreWallet.fundingScriptPubKeyHex0,
+      fundingAddress0: state.managedCoreWallet.walletAddress,
+      fundingScriptPubKeyHex0: state.managedCoreWallet.walletScriptPubKeyHex,
       message: error instanceof Error ? error.message : String(error),
     };
   }

@@ -44,11 +44,9 @@ import {
 } from "../read/index.js";
 import {
   assertFixedInputPrefixMatches,
-  assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
   findSpendableFundingInputsFromTransaction,
-  getDecodedInputScriptPubKeyHex,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
   outpointKey,
@@ -65,7 +63,6 @@ import {
   confirmTypedAcknowledgement as confirmSharedTypedAcknowledgement,
   confirmYesNo as confirmSharedYesNo,
 } from "./confirm.js";
-import { getCanonicalIdentitySelector } from "./identity-selector.js";
 import { findPendingMutationByIntent, upsertPendingMutation } from "./journal.js";
 
 type FieldMutationKind = "field-create" | "field-set" | "field-clear";
@@ -169,7 +166,7 @@ export interface FieldResolvedSenderSummary {
 
 export type FieldResolvedPath =
   | "standalone-field-reg"
-  | "field-reg-plus-data-update-family"
+  | "field-reg-plus-data-update"
   | "standalone-data-update"
   | "standalone-data-clear";
 
@@ -224,7 +221,7 @@ function createResolvedFieldSummary(options: {
     if (options.family) {
       return {
         sender: createResolvedFieldSenderSummary(options.sender, options.senderSelector),
-        path: "field-reg-plus-data-update-family",
+        path: "field-reg-plus-data-update",
         value: options.value,
         effect: {
           kind: "create-and-initialize-field",
@@ -434,26 +431,6 @@ function findActiveFieldCreateMutationByDomain(
   ) ?? null;
 }
 
-function resolveAnchorOutpointForSender(
-  state: WalletStateV1,
-  sender: NonNullable<WalletReadContext["model"]>["identities"][number],
-  errorPrefix: string,
-): OutpointRecord {
-  const anchoredDomain = state.domains.find((domain) =>
-    domain.currentOwnerLocalIndex === sender.index
-    && domain.canonicalChainStatus === "anchored"
-  ) ?? null;
-
-  if (anchoredDomain?.currentCanonicalAnchorOutpoint === null || anchoredDomain === null) {
-    throw new Error(`${errorPrefix}_anchor_outpoint_unavailable`);
-  }
-
-  return {
-    txid: anchoredDomain.currentCanonicalAnchorOutpoint.txid,
-    vout: anchoredDomain.currentCanonicalAnchorOutpoint.vout,
-  };
-}
-
 function resolveAnchoredFieldOperation(
   context: WalletReadContext,
   domainName: string,
@@ -471,27 +448,33 @@ function resolveAnchoredFieldOperation(
   }
 
   const ownerHex = Buffer.from(chainDomain.ownerScriptPubKey).toString("hex");
-  const ownerIdentity = context.model.identities.find((identity) => identity.scriptPubKeyHex === ownerHex) ?? null;
+  const state = context.localState.state;
 
-  if (ownerIdentity === null || ownerIdentity.address === null) {
+  if (ownerHex !== state.funding.scriptPubKeyHex || state.funding.address.trim() === "") {
     throw new Error(`${errorPrefix}_owner_not_locally_controlled`);
   }
 
-  if (ownerIdentity.readOnly) {
-    throw new Error(`${errorPrefix}_owner_read_only`);
+  const localDomain = state.domains.find((domain) => domain.name === domainName) ?? null;
+  const anchorOutpoint = localDomain?.currentCanonicalAnchorOutpoint ?? null;
+
+  if (anchorOutpoint === null) {
+    throw new Error(`${errorPrefix}_anchor_outpoint_unavailable`);
   }
 
   return {
     readContext: context,
-    state: context.localState.state,
+    state,
     unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
     sender: {
-      localIndex: ownerIdentity.index,
-      scriptPubKeyHex: ownerIdentity.scriptPubKeyHex,
-      address: ownerIdentity.address,
+      localIndex: 0,
+      scriptPubKeyHex: state.funding.scriptPubKeyHex,
+      address: state.funding.address,
     },
-    senderSelector: getCanonicalIdentitySelector(ownerIdentity),
-    anchorOutpoint: resolveAnchorOutpointForSender(context.localState.state, ownerIdentity, errorPrefix),
+    senderSelector: state.funding.address,
+    anchorOutpoint: {
+      txid: anchorOutpoint.txid,
+      vout: anchorOutpoint.vout,
+    },
     chainDomain,
   };
 }
@@ -596,19 +579,9 @@ function validateFieldDraft(
     throw new Error(`${plan.errorPrefix}_missing_sender_input`);
   }
 
-  assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_sender_input_mismatch`);
-
-  if (getDecodedInputScriptPubKeyHex(decoded, 0) !== plan.sender.scriptPubKeyHex) {
-    throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
+  if (plan.fixedInputs.length > 0) {
+    assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_required_input_mismatch`);
   }
-
-  assertFundingInputsAfterFixedPrefix({
-    decoded,
-    fixedInputs: plan.fixedInputs,
-    allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
-    eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
-    errorCode: `${plan.errorPrefix}_unexpected_funding_input`,
-  });
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
@@ -654,7 +627,7 @@ async function buildFieldTransaction(options: {
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
     availableFundingMinConf: options.availableFundingMinConf,
-    reserveCandidates: options.state.proactiveReserveOutpoints,
+    reserveCandidates: [],
   });
 }
 
@@ -1268,7 +1241,7 @@ async function confirmFieldCreate(
     return;
   }
 
-  prompter.writeLine("Path: field-reg-plus-data-update-family");
+  prompter.writeLine("Path: field-reg-plus-data-update");
   prompter.writeLine(`Effect: ${describeFieldEffect({
     kind: "create-and-initialize-field",
     tx1BurnCogtoshi: "100",
@@ -1278,9 +1251,9 @@ async function confirmFieldCreate(
   prompter.writeLine(`Initial value format: ${options.value.formatLabel}`);
   prompter.writeLine(`Initial value bytes: ${options.value.value.length}`);
   prompter.writeLine("Warning: non-clear field values are public in the mempool and on-chain.");
-  prompter.writeLine("This uses the same-block FIELD_REG -> DATA_UPDATE family.");
+  prompter.writeLine("This publishes FIELD_REG followed immediately by DATA_UPDATE from the wallet address.");
   prompter.writeLine("Tx1 burns 0.00000100 COG. Tx2 may burn an additional 0.00000001 COG.");
-  prompter.writeLine("Tx1 may confirm even if Tx2 later fails, is canceled, or needs repair.");
+  prompter.writeLine("Tx1 may confirm even if Tx2 later fails, and Cogcoin does not keep a resumable local family state for this path.");
 
   if (options.permanent) {
     prompter.writeLine("This is the first non-clear value write to a permanent field.");
@@ -2012,6 +1985,277 @@ async function submitStandaloneFieldMutation(options: {
   }
 }
 
+async function submitDirectInitializedFieldCreate(options: {
+  domainName: string;
+  fieldName: string;
+  permanent: boolean;
+  value: NormalizedFieldValue;
+  dataDir: string;
+  databasePath: string;
+  provider?: WalletSecretProvider;
+  prompter: WalletPrompter;
+  assumeYes?: boolean;
+  nowUnixMs?: number;
+  paths?: WalletRuntimePaths;
+  openReadContext?: typeof openWalletReadContext;
+  attachService?: typeof attachOrStartManagedBitcoindService;
+  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => FieldRpcClient;
+}): Promise<FieldMutationResult> {
+  if (!options.prompter.isInteractive && options.assumeYes !== true) {
+    throw new Error("wallet_field_create_requires_tty");
+  }
+
+  const provider = options.provider ?? createDefaultWalletSecretProvider();
+  const nowUnixMs = options.nowUnixMs ?? Date.now();
+  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
+  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
+    purpose: "wallet_field_create",
+    walletRootId: null,
+  });
+
+  try {
+    const miningPreemption = await pauseMiningForWalletMutation({
+      paths,
+      reason: "wallet_field_create",
+    });
+    const readContext = await (options.openReadContext ?? openWalletReadContext)({
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      secretProvider: provider,
+      walletControlLockHeld: true,
+      paths,
+    });
+
+    try {
+      const normalizedDomainName = normalizeDomainName(options.domainName);
+      const normalizedFieldName = normalizeFieldName(options.fieldName);
+      const operation = resolveAnchoredFieldOperation(readContext, normalizedDomainName, "wallet_field_create");
+      const existingField = getObservedFieldState(readContext, normalizedDomainName, normalizedFieldName);
+
+      if (existingField !== null) {
+        throw new Error("wallet_field_create_field_exists");
+      }
+
+      if (operation.chainDomain.nextFieldId === 0xffff_ffff) {
+        throw new Error("wallet_field_create_field_id_exhausted");
+      }
+
+      if (hex(operation.chainDomain.delegate) !== null) {
+        throw new Error("wallet_field_create_delegate_blocks_same_block_family");
+      }
+
+      const senderBalance = getBalance(operation.readContext.snapshot.state, Buffer.from(operation.sender.scriptPubKeyHex, "hex"));
+      if (senderBalance < 101n) {
+        throw new Error("wallet_field_create_insufficient_cog");
+      }
+
+      const createIntentFingerprintHex = createIntentFingerprint([
+        "field-create",
+        operation.state.walletRootId,
+        normalizedDomainName,
+        normalizedFieldName,
+        options.permanent ? 1 : 0,
+      ]);
+      const existingCreateMutation = (operation.state.pendingMutations ?? []).find((mutation) =>
+        mutation.kind === "field-create"
+        && mutation.domainName === normalizedDomainName
+        && isActiveMutationStatus(mutation.status)
+      ) ?? null;
+
+      if (existingCreateMutation !== null) {
+        throw new Error("wallet_field_create_registration_already_pending");
+      }
+
+      await confirmFieldCreate(options.prompter, {
+        domainName: normalizedDomainName,
+        fieldName: normalizedFieldName,
+        permanent: options.permanent,
+        value: options.value,
+        sender: createResolvedFieldSenderSummary(operation.sender, operation.senderSelector),
+        assumeYes: options.assumeYes,
+      });
+
+      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
+        dataDir: options.dataDir,
+        chain: "main",
+        startHeight: 0,
+        walletRootId: operation.state.walletRootId,
+      });
+      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
+      const walletName = operation.state.managedCoreWallet.walletName;
+      const expectedFieldId = operation.chainDomain.nextFieldId;
+
+      let nextState = upsertPendingMutation(
+        operation.state,
+        createStandaloneFieldMutation({
+          kind: "field-create",
+          domainName: normalizedDomainName,
+          fieldName: normalizedFieldName,
+          sender: operation.sender,
+          intentFingerprintHex: createIntentFingerprintHex,
+          nowUnixMs,
+          fieldId: expectedFieldId,
+          fieldPermanent: options.permanent,
+        }),
+      );
+      nextState = await saveUpdatedState({
+        state: nextState,
+        provider,
+        unlockUntilUnixMs: operation.unlockUntilUnixMs,
+        nowUnixMs,
+        paths,
+      });
+
+      const tx1 = await buildFieldTransaction({
+        rpc,
+        walletName,
+        state: nextState,
+        plan: buildAnchoredFieldPlan({
+          state: nextState,
+          allUtxos: await rpc.listUnspent(walletName, 1),
+          sender: operation.sender,
+          anchorOutpoint: operation.anchorOutpoint,
+          opReturnData: serializeFieldReg(operation.chainDomain.domainId, options.permanent, normalizedFieldName).opReturnData,
+          errorPrefix: "wallet_field_create_tx1",
+        }),
+      });
+
+      const currentCreateMutation = nextState.pendingMutations?.find((mutation) => mutation.intentFingerprintHex === createIntentFingerprintHex)
+        ?? createStandaloneFieldMutation({
+          kind: "field-create",
+          domainName: normalizedDomainName,
+          fieldName: normalizedFieldName,
+          sender: operation.sender,
+          intentFingerprintHex: createIntentFingerprintHex,
+          nowUnixMs,
+          fieldId: expectedFieldId,
+          fieldPermanent: options.permanent,
+        });
+      const afterTx1 = await sendStandaloneMutation({
+        rpc,
+        walletName,
+        snapshotHeight: readContext.snapshot?.tip?.height ?? null,
+        built: tx1,
+        mutation: currentCreateMutation,
+        state: nextState,
+        provider,
+        unlockUntilUnixMs: operation.unlockUntilUnixMs,
+        nowUnixMs,
+        paths,
+        errorPrefix: "wallet_field_create_tx1",
+      });
+
+      const tx1Txid = afterTx1.mutation.attemptedTxid ?? tx1.txid;
+      await rpc.getRawTransaction(tx1Txid, true);
+
+      const tx2IntentFingerprintHex = createIntentFingerprint([
+        "field-set",
+        operation.state.walletRootId,
+        normalizedDomainName,
+        expectedFieldId,
+        options.value.format,
+        options.value.valueHex,
+        tx1Txid,
+      ]);
+      nextState = upsertPendingMutation(
+        afterTx1.state,
+        createStandaloneFieldMutation({
+          kind: "field-set",
+          domainName: normalizedDomainName,
+          fieldName: normalizedFieldName,
+          sender: operation.sender,
+          intentFingerprintHex: tx2IntentFingerprintHex,
+          nowUnixMs,
+          fieldId: expectedFieldId,
+          fieldPermanent: options.permanent,
+          fieldFormat: options.value.format,
+          fieldValueHex: options.value.valueHex,
+        }),
+      );
+      nextState = await saveUpdatedState({
+        state: nextState,
+        provider,
+        unlockUntilUnixMs: operation.unlockUntilUnixMs,
+        nowUnixMs,
+        paths,
+      });
+
+      const tx2 = await buildFieldTransaction({
+        rpc,
+        walletName,
+        state: nextState,
+        availableFundingMinConf: 0,
+        plan: buildFieldFamilyTx2Plan({
+          state: nextState,
+          allUtxos: await rpc.listUnspent(walletName, 0),
+          sender: operation.sender,
+          tx1Txid,
+          opReturnData: serializeDataUpdate(
+            operation.chainDomain.domainId,
+            expectedFieldId,
+            options.value.format,
+            options.value.value,
+          ).opReturnData,
+        }),
+      });
+
+      const currentSetMutation = nextState.pendingMutations?.find((mutation) => mutation.intentFingerprintHex === tx2IntentFingerprintHex)
+        ?? createStandaloneFieldMutation({
+          kind: "field-set",
+          domainName: normalizedDomainName,
+          fieldName: normalizedFieldName,
+          sender: operation.sender,
+          intentFingerprintHex: tx2IntentFingerprintHex,
+          nowUnixMs,
+          fieldId: expectedFieldId,
+          fieldPermanent: options.permanent,
+          fieldFormat: options.value.format,
+          fieldValueHex: options.value.valueHex,
+        });
+      const afterTx2 = await sendStandaloneMutation({
+        rpc,
+        walletName,
+        snapshotHeight: readContext.snapshot?.tip?.height ?? null,
+        built: tx2,
+        mutation: currentSetMutation,
+        state: nextState,
+        provider,
+        unlockUntilUnixMs: operation.unlockUntilUnixMs,
+        nowUnixMs,
+        paths,
+        errorPrefix: "wallet_field_create_tx2",
+      });
+
+      return {
+        kind: "field-create",
+        domainName: normalizedDomainName,
+        fieldName: normalizedFieldName,
+        fieldId: expectedFieldId,
+        txid: afterTx2.mutation.attemptedTxid ?? tx2.txid,
+        tx1Txid,
+        tx2Txid: afterTx2.mutation.attemptedTxid ?? tx2.txid,
+        family: true,
+        permanent: options.permanent,
+        format: options.value.format,
+        status: "live",
+        reusedExisting: false,
+        resolved: createResolvedFieldSummary({
+          sender: operation.sender,
+          senderSelector: operation.senderSelector,
+          kind: "field-create",
+          family: true,
+          value: createResolvedFieldValueSummary(options.value.format, options.value.value),
+        }),
+      };
+    } finally {
+      await readContext.close();
+      await miningPreemption.release();
+    }
+  } finally {
+    await controlLock.release();
+  }
+}
+
 async function submitFieldCreateFamily(options: {
   domainName: string;
   fieldName: string;
@@ -2300,7 +2544,7 @@ export async function createField(
   const permanent = options.permanent ?? false;
 
   if (normalizedSource !== null) {
-    return submitFieldCreateFamily({
+    return submitDirectInitializedFieldCreate({
       ...options,
       permanent,
       value: normalizedSource,

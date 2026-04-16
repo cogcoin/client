@@ -138,8 +138,6 @@ export function getRepairRecommendation(context: WalletReadContext): string | nu
 
   if (
     context.localState.state?.miningState.state === "repair-required"
-    || context.localState.state?.proactiveFamilies.some((family) => family.status === "repair-required")
-    || context.localState.state?.domains.some((domain) => domain.localAnchorIntent === "repair-required")
     || (context.localState.state?.pendingMutations ?? []).some((mutation) => mutation.status === "repair-required")
   ) {
     return "Run `cogcoin repair` before relying on local wallet state.";
@@ -149,33 +147,6 @@ export function getRepairRecommendation(context: WalletReadContext): string | nu
 }
 
 export function getMutationRecommendation(context: WalletReadContext): string | null {
-  const clearableAnchorFamily = (context.localState.state?.proactiveFamilies ?? []).find((family) =>
-    family.type === "anchor"
-    && family.status === "draft"
-    && family.currentStep === "reserved"
-  );
-
-  if (clearableAnchorFamily?.domainName != null) {
-    return `Run \`cogcoin anchor ${clearableAnchorFamily.domainName}\` to continue anchoring, or inspect the domain with \`cogcoin show ${clearableAnchorFamily.domainName}\`.`;
-  }
-
-  const unresolvedFamily = (context.localState.state?.proactiveFamilies ?? []).find((family) =>
-    (family.type === "anchor" || family.type === "field")
-    && (family.status === "broadcast-unknown" || family.status === "repair-required")
-  );
-
-  if (unresolvedFamily !== undefined) {
-    if (unresolvedFamily.status === "repair-required") {
-      return unresolvedFamily.type === "field"
-        ? "Run `cogcoin repair` before starting another field family."
-        : "Run `cogcoin repair` before starting another anchor family.";
-    }
-
-    return unresolvedFamily.type === "field"
-      ? `Rerun \`cogcoin field create ${unresolvedFamily.domainName} ${unresolvedFamily.fieldName} ...\` to reconcile the pending field family, or run \`cogcoin repair\` if it remains unresolved.`
-      : `Rerun \`cogcoin anchor ${unresolvedFamily.domainName}\` to reconcile the pending anchor family, or run \`cogcoin repair\` if it remains unresolved.`;
-  }
-
   const pendingMutations = context.localState.state?.pendingMutations ?? [];
   const unresolved = pendingMutations.find((mutation) =>
     mutation.status === "broadcast-unknown" || mutation.status === "repair-required"
@@ -191,6 +162,10 @@ export function getMutationRecommendation(context: WalletReadContext): string | 
 
   if (unresolved.kind === "register") {
     return `Rerun \`cogcoin register ${unresolved.domainName}\` to reconcile the pending registration, or run \`cogcoin repair\` if it remains unresolved.`;
+  }
+
+  if (unresolved.kind === "anchor") {
+    return `Rerun \`cogcoin anchor ${unresolved.domainName}\` to reconcile the pending anchor, or run \`cogcoin repair\` if it remains unresolved.`;
   }
 
   if (unresolved.kind === "transfer") {
@@ -262,27 +237,14 @@ export function getMutationRecommendation(context: WalletReadContext): string | 
 }
 
 function appendPendingMutationSummary(lines: string[], context: WalletReadContext): void {
-  const pendingFamilies = (context.localState.state?.proactiveFamilies ?? [])
-    .filter((family) =>
-      (family.type === "anchor" || family.type === "field")
-      && family.status !== "confirmed"
-      && family.status !== "canceled"
-    );
   const pendingMutations = (context.localState.state?.pendingMutations ?? [])
     .filter((mutation) =>
       mutation.status !== "confirmed" && mutation.status !== "canceled"
     );
 
-  if (pendingFamilies.length === 0 && pendingMutations.length === 0) {
+  if (pendingMutations.length === 0) {
     lines.push("Pending mutations: none");
     return;
-  }
-
-  for (const family of pendingFamilies) {
-    const label = family.type === "field"
-      ? `Pending field family: ${family.domainName ?? "unknown"}.${family.fieldName ?? "unknown"}`
-      : `Pending anchor family: ${family.domainName ?? "unknown"}`;
-    lines.push(`${label}  ${family.status}${family.currentStep === null || family.currentStep === undefined ? "" : `  step ${family.currentStep}`}${family.reservedDedicatedIndex == null ? "" : `  index ${family.reservedDedicatedIndex}`}`);
   }
 
   for (const mutation of pendingMutations) {
@@ -299,6 +261,7 @@ function listPendingDomainMutations(context: WalletReadContext, domainName: stri
         || mutation.kind === "transfer"
         || mutation.kind === "sell"
         || mutation.kind === "buy"
+        || mutation.kind === "anchor"
         || mutation.kind === "endpoint"
         || mutation.kind === "delegate"
         || mutation.kind === "miner"
@@ -312,26 +275,6 @@ function listPendingDomainMutations(context: WalletReadContext, domainName: stri
     );
 }
 
-function listPendingAnchorFamilies(context: WalletReadContext, domainName: string) {
-  return (context.localState.state?.proactiveFamilies ?? [])
-    .filter((family) =>
-      family.type === "anchor"
-      && family.domainName === domainName
-      && family.status !== "confirmed"
-      && family.status !== "canceled"
-    );
-}
-
-function listPendingFieldFamilies(context: WalletReadContext, domainName: string) {
-  return (context.localState.state?.proactiveFamilies ?? [])
-    .filter((family) =>
-      family.type === "field"
-      && family.domainName === domainName
-      && family.status !== "confirmed"
-      && family.status !== "canceled"
-    );
-}
-
 function listPendingDomainShowMutations(context: WalletReadContext, domainName: string) {
   return (context.localState.state?.pendingMutations ?? [])
     .filter((mutation) =>
@@ -340,6 +283,7 @@ function listPendingDomainShowMutations(context: WalletReadContext, domainName: 
         || mutation.kind === "transfer"
         || mutation.kind === "sell"
         || mutation.kind === "buy"
+        || mutation.kind === "anchor"
         || mutation.kind === "endpoint"
         || mutation.kind === "delegate"
         || mutation.kind === "miner"
@@ -581,32 +525,16 @@ function buildOverviewLocalInventorySection(context: WalletReadContext): Overvie
 }
 
 function buildOverviewPendingWorkSection(context: WalletReadContext): OverviewEntry[] {
-  const pendingFamilies = (context.localState.state?.proactiveFamilies ?? [])
-    .filter((family) =>
-      (family.type === "anchor" || family.type === "field")
-      && family.status !== "confirmed"
-      && family.status !== "canceled"
-    );
   const pendingMutations = (context.localState.state?.pendingMutations ?? [])
     .filter((mutation) =>
       mutation.status !== "confirmed" && mutation.status !== "canceled"
     );
 
-  if (pendingFamilies.length === 0 && pendingMutations.length === 0) {
+  if (pendingMutations.length === 0) {
     return [overviewEntry("Status: none", true)];
   }
 
   const lines: OverviewEntry[] = [];
-
-  for (const family of pendingFamilies) {
-    const label = family.type === "field"
-      ? `Field family: ${family.domainName ?? "unknown"}.${family.fieldName ?? "unknown"}`
-      : `Anchor family: ${family.domainName ?? "unknown"}`;
-    lines.push(overviewEntry(
-      `${label}  ${family.status}${family.currentStep === null || family.currentStep === undefined ? "" : `  step ${family.currentStep}`}${family.reservedDedicatedIndex == null ? "" : `  index ${family.reservedDedicatedIndex}`}`,
-      false,
-    ));
-  }
 
   for (const mutation of pendingMutations) {
     lines.push(overviewEntry(
@@ -659,11 +587,10 @@ export function formatDetailedWalletStatusReport(context: WalletReadContext): st
     return lines.join("\n");
   }
 
-  lines.push(`Wallet address: ${context.model.fundingIdentity?.address ?? "unavailable"}`);
-  lines.push(`Wallet script: spk:${context.model.fundingIdentity?.scriptPubKeyHex ?? "unavailable"}`);
-  lines.push("Controlled identities: 1");
+  lines.push(`Wallet address: ${context.model.walletAddress ?? "unavailable"}`);
+  lines.push(`Wallet script: spk:${context.model.walletScriptPubKeyHex ?? "unavailable"}`);
+  lines.push("Local wallet addresses: 1");
   lines.push(`Locally related domains: ${context.model.domains.length}`);
-  lines.push("Read-only identities: 0");
   appendPendingMutationSummary(lines, context);
 
   return lines.join("\n");
@@ -672,13 +599,13 @@ export function formatDetailedWalletStatusReport(context: WalletReadContext): st
 export function formatFundingAddressReport(context: WalletReadContext): string {
   const lines = ["BTC Wallet Address"];
 
-  if (context.model?.fundingIdentity === null || context.model === null) {
+  if (context.model === null) {
     appendWalletAvailability(lines, context);
     return lines.join("\n");
   }
 
-  lines.push(`Address: ${context.model.fundingIdentity.address ?? "unavailable"}`);
-  lines.push(`ScriptPubKey: spk:${context.model.fundingIdentity.scriptPubKeyHex}`);
+  lines.push(`Address: ${context.model.walletAddress ?? "unavailable"}`);
+  lines.push(`ScriptPubKey: spk:${context.model.walletScriptPubKeyHex}`);
 
   return lines.join("\n");
 }
@@ -697,27 +624,14 @@ export function formatIdentityListReport(
     return lines.join("\n");
   }
 
-  const identities = context.model.identities;
-
-  if (identities.length === 0) {
-    lines.push("No local wallet address is recorded yet.");
-    return lines.join("\n");
-  }
-
-  const limit = options.all ? null : options.limit ?? null;
-  const renderedIdentities = limit === null ? identities : identities.slice(0, limit);
-
-  for (const identity of renderedIdentities) {
-    const domains = identity.ownedDomainNames.length === 0 ? "none" : identity.ownedDomainNames.join(", ");
-    const balance = identity.observedCogBalance === null ? "unavailable" : formatCogAmount(identity.observedCogBalance);
-    lines.push(
-      `${identity.address ?? `spk:${identity.scriptPubKeyHex}`}  balance ${balance}  domains ${domains}`,
-    );
-  }
-
-  if (limit !== null && identities.length > limit) {
-    lines.push(`Showing first ${renderedIdentities.length} of ${identities.length}. Use --limit <n> or --all for more.`);
-  }
+  const domains = context.model.domains
+    .filter((domain) => domain.localRelationship === "local")
+    .map((domain) => domain.name)
+    .sort();
+  const balance = context.model.identities[0]?.observedCogBalance ?? null;
+  lines.push(
+    `${context.model.walletAddress ?? `spk:${context.model.walletScriptPubKeyHex}`}  balance ${balance === null ? "unavailable" : formatCogAmount(balance)}  domains ${domains.length === 0 ? "none" : domains.join(", ")}`,
+  );
 
   return lines.join("\n");
 }
@@ -736,18 +650,11 @@ export function formatBalanceReport(context: WalletReadContext): string {
   }
 
   const spendableTotal = context.model.identities.reduce((sum, identity) =>
-    identity.readOnly || identity.observedCogBalance === null
-      ? sum
-      : sum + identity.observedCogBalance,
+    identity.observedCogBalance === null ? sum : sum + identity.observedCogBalance,
   0n);
 
   lines.push(`Spendable total: ${formatCogAmount(spendableTotal)}`);
-
-  for (const identity of context.model.identities) {
-    lines.push(
-      `${identity.address ?? `spk:${identity.scriptPubKeyHex}`}  ${formatCogAmount(identity.observedCogBalance ?? 0n)}`,
-    );
-  }
+  lines.push(`${context.model.walletAddress ?? `spk:${context.model.walletScriptPubKeyHex}`}  ${formatCogAmount(spendableTotal)}`);
 
   for (const mutation of (context.localState.state?.pendingMutations ?? [])
     .filter((entry) =>
@@ -871,8 +778,6 @@ export function formatDomainsReport(
 
   for (const domain of renderedDomains) {
     const pending = listPendingDomainMutations(context, domain.name);
-    const pendingAnchors = listPendingAnchorFamilies(context, domain.name);
-    const pendingFieldFamilies = listPendingFieldFamilies(context, domain.name);
     const pendingFieldMutations = listPendingFieldMutations(context, domain.name);
     const pendingText = pending.length === 0
       ? ""
@@ -887,17 +792,11 @@ export function formatDomainsReport(
                 ? `miner-clear:${mutation.status}`
           : `${mutation.kind}:${mutation.status}`
       ).join(",")}`;
-    const pendingFieldsText = pendingFieldMutations.length === 0 && pendingFieldFamilies.length === 0
+    const pendingFieldsText = pendingFieldMutations.length === 0
       ? ""
-      : `  field-pending ${[
-        ...pendingFieldMutations.map((mutation) => `${mutation.fieldName}:${mutation.kind}:${mutation.status}`),
-        ...pendingFieldFamilies.map((family) => `${family.fieldName}:family:${family.status}${family.currentStep == null ? "" : `:${family.currentStep}`}`),
-      ].join(",")}`;
-    const anchorText = pendingAnchors.length === 0 && (domain.localAnchorIntent === null || domain.localAnchorIntent === "none")
-      ? ""
-      : `  anchor ${(domain.localAnchorIntent === null || domain.localAnchorIntent === "none")
-        ? pendingAnchors.map((family) => `${family.currentStep ?? "reserved"}:${family.status}`).join(",")
-        : domain.localAnchorIntent}`;
+      : `  field-pending ${pendingFieldMutations.map((mutation) =>
+        `${mutation.fieldName}:${mutation.kind}:${mutation.status}`
+      ).join(",")}`;
     lines.push(
       `${domain.name}  ${domain.chainStatus}  ${domain.localRelationship}  owner ${domain.ownerAddress ?? domain.ownerScriptPubKeyHex ?? "unknown"}  fields ${formatMaybe(domain.fieldCount)}${pendingText}${pendingFieldsText}`,
     );
@@ -942,17 +841,10 @@ export function formatDomainReport(context: WalletReadContext, domainName: strin
     lines.push(`Reputation total supported: ${view.domain.totalSupportedCogtoshi === null ? "unavailable" : formatCogAmount(view.domain.totalSupportedCogtoshi)}`);
     lines.push(`Reputation total revoked: ${view.domain.totalRevokedCogtoshi === null ? "unavailable" : formatCogAmount(view.domain.totalRevokedCogtoshi)}`);
   }
-  lines.push(`Local anchor intent: ${view.domain.localAnchorIntent ?? "none"}`);
   lines.push(`Delegate: ${view.domain.delegateScriptPubKeyHex ?? "none"}`);
   lines.push(`Designated miner: ${view.domain.minerScriptPubKeyHex ?? "none"}`);
   lines.push(`Endpoint: ${view.domain.endpointText ?? "none"}`);
   lines.push(`Founding message: ${view.domain.foundingMessageText ?? "none"}`);
-  for (const family of listPendingAnchorFamilies(context, domainName)) {
-    lines.push(`Pending anchor family: ${family.status}${family.currentStep == null ? "" : `  step ${family.currentStep}`}${family.reservedDedicatedIndex == null ? "" : `  index ${family.reservedDedicatedIndex}`}`);
-  }
-  for (const family of listPendingFieldFamilies(context, domainName)) {
-    lines.push(`Pending field family: ${family.fieldName ?? "unknown"}  ${family.status}${family.currentStep == null ? "" : `  step ${family.currentStep}`}`);
-  }
   for (const mutation of listPendingDomainShowMutations(context, domainName)) {
     lines.push(`Pending mutation: ${formatPendingMutationDomainLabel(mutation)}  ${mutation.status}`);
   }
@@ -1005,10 +897,6 @@ export function formatFieldsReport(
     lines.push(`Pending field mutation: ${mutation.fieldName ?? "unknown"}  ${mutation.kind}  ${mutation.status}`);
   }
 
-  for (const family of listPendingFieldFamilies(context, domainName)) {
-    lines.push(`Pending field family: ${family.fieldName ?? "unknown"}  ${family.status}${family.currentStep == null ? "" : `  step ${family.currentStep}`}`);
-  }
-
   if (!options.all && options.limit !== null && options.limit !== undefined && fields.length > options.limit) {
     lines.push(`Showing first ${renderedFields.length} of ${fields.length}. Use --limit <n> or --all for more.`);
   }
@@ -1026,8 +914,6 @@ export function formatFieldReport(context: WalletReadContext, domainName: string
 
   const field = findDomainField(context, domainName, fieldName);
   const pendingMutations = listPendingFieldMutations(context, domainName, fieldName);
-  const pendingFamilies = listPendingFieldFamilies(context, domainName)
-    .filter((family) => family.fieldName === fieldName);
 
   if (field === null) {
     lines.push("Field not found.");
@@ -1043,10 +929,6 @@ export function formatFieldReport(context: WalletReadContext, domainName: string
 
   for (const mutation of pendingMutations) {
     lines.push(`Pending field mutation: ${mutation.kind}  ${mutation.status}`);
-  }
-
-  for (const family of pendingFamilies) {
-    lines.push(`Pending field family: ${family.status}${family.currentStep == null ? "" : `  step ${family.currentStep}`}`);
   }
 
   return lines.join("\n");

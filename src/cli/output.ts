@@ -768,16 +768,15 @@ export function createCliErrorPresentation(
     return {
       what: "Pending anchor state is inconsistent.",
       why: "The domain still shows local pending anchor state, but the wallet could not find a matching clearable reserved anchor family.",
-      next: "Run `cogcoin repair`, then inspect the domain again before retrying `cogcoin anchor clear`.",
+      next: "Run `cogcoin repair`, then inspect the domain again with `cogcoin show <domain>`.",
     };
   }
 
   if (errorCode.startsWith("wallet_anchor_clear_force_required_")) {
-    const domainName = errorCode.slice("wallet_anchor_clear_force_required_".length) || "<domain>";
     return {
-      what: "Pending anchor requires forced local cancellation.",
-      why: "The wallet found same-domain anchor families beyond the local-only reserved stage, so a plain clear would not fully clean up the local anchor workflow state.",
-      next: `Run \`cogcoin anchor clear ${domainName} --force\` to cancel the local anchor workflow state for that domain.`,
+      what: "Pending anchor state requires repair.",
+      why: "The wallet found older same-domain anchor workflow state from the removed multi-identity model.",
+      next: "Run `cogcoin repair`, then inspect the domain again with `cogcoin show <domain>`.",
     };
   }
 
@@ -785,8 +784,8 @@ export function createCliErrorPresentation(
     const domainName = errorCode.slice("wallet_anchor_clear_pending_first_".length) || "<domain>";
     return {
       what: `A local pending anchor already exists for "${domainName}".`,
-      why: "The wallet found a same-domain anchor reservation that is still local-only and safely clearable, so it stopped before creating a conflicting family.",
-      next: `Run \`cogcoin anchor clear ${domainName}\`, then rerun \`cogcoin anchor ${domainName}\`.`,
+      why: "The wallet found older same-domain anchor workflow state from the removed multi-identity model, so it stopped before creating another pending anchor.",
+      next: `Run \`cogcoin repair\`, inspect \`${domainName}\` with \`cogcoin show ${domainName}\`, then rerun \`cogcoin anchor ${domainName}\`.`,
     };
   }
 
@@ -1276,9 +1275,6 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
     case "anchor":
     case "domain-anchor":
       return `cogcoin anchor ${args[0] ?? "<domain>"}`;
-    case "anchor-clear":
-    case "domain-anchor-clear":
-      return `cogcoin anchor clear ${args[0] ?? "<domain>"}`;
     case "register":
     case "domain-register":
       return `cogcoin register ${args[0] ?? "<domain>"}`;
@@ -1472,9 +1468,6 @@ export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string |
     case "anchor":
     case "domain-anchor":
       return "cogcoin/anchor/v1";
-    case "anchor-clear":
-    case "domain-anchor-clear":
-      return "cogcoin/anchor-clear/v1";
     case "register":
     case "domain-register":
       return "cogcoin/register/v1";
@@ -1556,9 +1549,7 @@ export function resolvePreviewJsonSchema(parsed: ParsedCliArgs): string | null {
     case "reset":
     case "repair":
     case "anchor":
-    case "anchor-clear":
     case "domain-anchor":
-    case "domain-anchor-clear":
     case "register":
     case "domain-register":
     case "transfer":

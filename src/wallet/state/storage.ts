@@ -46,6 +46,45 @@ async function readEnvelope(path: string): Promise<EncryptedEnvelopeV1> {
   return JSON.parse(raw) as EncryptedEnvelopeV1;
 }
 
+function serializeWalletState(state: WalletStateV1): Record<string, unknown> {
+  return {
+    schemaVersion: 3,
+    stateRevision: state.stateRevision,
+    lastWrittenAtUnixMs: state.lastWrittenAtUnixMs,
+    walletRootId: state.walletRootId,
+    network: state.network,
+    anchorValueSats: state.anchorValueSats,
+    localScriptPubKeyHexes: state.localScriptPubKeyHexes,
+    mnemonic: state.mnemonic,
+    keys: state.keys,
+    descriptor: state.descriptor,
+    funding: state.funding,
+    walletBirthTime: state.walletBirthTime,
+    managedCoreWallet: {
+      walletName: state.managedCoreWallet.walletName,
+      internalPassphrase: state.managedCoreWallet.internalPassphrase,
+      descriptorChecksum: state.managedCoreWallet.descriptorChecksum,
+      walletAddress: state.managedCoreWallet.walletAddress,
+      walletScriptPubKeyHex: state.managedCoreWallet.walletScriptPubKeyHex,
+      proofStatus: state.managedCoreWallet.proofStatus,
+      lastImportedAtUnixMs: state.managedCoreWallet.lastImportedAtUnixMs,
+      lastVerifiedAtUnixMs: state.managedCoreWallet.lastVerifiedAtUnixMs,
+    },
+    domains: state.domains.map((domain) => ({
+      name: domain.name,
+      domainId: domain.domainId,
+      currentOwnerScriptPubKeyHex: domain.currentOwnerScriptPubKeyHex,
+      canonicalChainStatus: domain.canonicalChainStatus,
+      currentCanonicalAnchorOutpoint: domain.currentCanonicalAnchorOutpoint,
+      foundingMessageText: domain.foundingMessageText,
+      birthTime: domain.birthTime,
+    })),
+    miningState: state.miningState,
+    hookClientState: state.hookClientState,
+    pendingMutations: state.pendingMutations,
+  };
+}
+
 export async function loadRawWalletStateEnvelope(
   paths: WalletStateStoragePaths,
 ): Promise<RawWalletStateEnvelope | null> {
@@ -112,12 +151,12 @@ export async function saveWalletState(
   }
 
   const envelope = typeof access === "string" || access instanceof Uint8Array
-    ? await encryptJsonWithPassphrase(state, access, {
+    ? await encryptJsonWithPassphrase(serializeWalletState(state), access, {
       format: "cogcoin-local-wallet-state",
       walletRootIdHint: state.walletRootId,
     })
     : await encryptJsonWithSecretProvider(
-      state,
+      serializeWalletState(state),
       access.provider,
       access.secretReference,
       {

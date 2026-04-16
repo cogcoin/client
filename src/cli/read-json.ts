@@ -232,11 +232,9 @@ function mapDomain(domain: WalletDomainView) {
     domainId: domain.domainId,
     anchored: domain.anchored,
     ownerScriptPubKeyHex: domain.ownerScriptPubKeyHex,
-    ownerLocalIndex: domain.ownerLocalIndex,
     ownerAddress: domain.ownerAddress,
     localRelationship: domain.localRelationship,
     chainStatus: domain.chainStatus,
-    localAnchorIntent: domain.localAnchorIntent,
     foundingMessageText: domain.foundingMessageText,
     endpointText: domain.endpointText,
     delegateScriptPubKeyHex: domain.delegateScriptPubKeyHex,
@@ -410,11 +408,10 @@ export function buildStatusJson(context: WalletReadContext): ReadJsonResult<{
       },
       domains: {
         relatedCount: context.model?.domains.length ?? null,
-        readOnlyIdentityCount: context.model?.readOnlyIdentityCount ?? null,
+        readOnlyIdentityCount: 0,
         pendingMutationCount: (context.localState.state?.pendingMutations ?? []).filter((mutation) =>
           mutation.status !== "confirmed" && mutation.status !== "canceled").length ?? null,
-        pendingFamilyCount: context.localState.state?.proactiveFamilies.filter((family) =>
-          family.status !== "confirmed" && family.status !== "canceled").length ?? null,
+        pendingFamilyCount: 0,
       },
       mining: context.mining === undefined ? null : buildMiningStatusData(context.mining),
       hooks: context.mining === undefined
@@ -439,20 +436,19 @@ export function buildAddressJson(context: WalletReadContext): ReadJsonResult<{
   availability: Record<string, JsonAvailabilityEntry>;
 }> {
   const messages = createBaseMessages(context);
-  const fundingIdentity = context.model?.fundingIdentity ?? null;
   return {
     ...messages,
     explanations: dedupeStrings([
       ...messages.explanations,
-      ...(fundingIdentity?.address == null ? [] : [getFundingQuickstartGuidance()]),
+      ...(context.model?.walletAddress == null ? [] : [getFundingQuickstartGuidance()]),
     ]),
     nextSteps: dedupeStrings([
       ...messages.nextSteps,
-      ...getAddressNextSteps(context, fundingIdentity?.address),
+      ...getAddressNextSteps(context, context.model?.walletAddress ?? null),
     ]),
     data: {
-      address: fundingIdentity?.address ?? null,
-      scriptPubKeyHex: fundingIdentity?.scriptPubKeyHex ?? null,
+      address: context.model?.walletAddress ?? null,
+      scriptPubKeyHex: context.model?.walletScriptPubKeyHex ?? null,
       network: context.localState.state?.network ?? context.nodeStatus?.chain ?? null,
       availability: buildAvailability(context),
     },
@@ -491,7 +487,6 @@ export function buildWalletStatusJson(context: WalletReadContext): ReadJsonResul
   availability: Record<string, JsonAvailabilityEntry>;
 }> {
   const messages = createBaseMessages(context);
-  const fundingIdentity = context.model?.fundingIdentity ?? null;
   const lockState = context.localState.availability === "ready" && context.localState.unlockUntilUnixMs !== null
     ? "unlocked"
     : context.localState.availability;
@@ -500,8 +495,8 @@ export function buildWalletStatusJson(context: WalletReadContext): ReadJsonResul
     data: {
       lockState,
       unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
-      walletAddress: fundingIdentity?.address ?? null,
-      walletScriptPubKeyHex: fundingIdentity?.scriptPubKeyHex ?? null,
+      walletAddress: context.model?.walletAddress ?? null,
+      walletScriptPubKeyHex: context.model?.walletScriptPubKeyHex ?? null,
       availability: buildAvailability(context),
     },
   };
@@ -702,7 +697,8 @@ export function buildMineLogJson(
 export function buildBalanceJson(context: WalletReadContext): ReadJsonResult<{
   assetLabel: string;
   totalCogtoshi: string | null;
-  identities: ReturnType<typeof mapIdentity>[] | null;
+  walletAddress: string | null;
+  walletScriptPubKeyHex: string | null;
   pending: ReturnType<typeof mapPendingMutation>[];
   availability: Record<string, JsonAvailabilityEntry>;
 }> {
@@ -710,7 +706,7 @@ export function buildBalanceJson(context: WalletReadContext): ReadJsonResult<{
   const total = context.model === null || context.snapshot === null
     ? null
     : context.model.identities.reduce((sum, identity) =>
-      identity.readOnly || identity.observedCogBalance === null ? sum : sum + identity.observedCogBalance,
+      identity.observedCogBalance === null ? sum : sum + identity.observedCogBalance,
     0n);
 
   return {
@@ -718,7 +714,8 @@ export function buildBalanceJson(context: WalletReadContext): ReadJsonResult<{
     data: {
       assetLabel: "COG",
       totalCogtoshi: decimalOrNull(total),
-      identities: context.model?.identities.map(mapIdentity) ?? null,
+      walletAddress: context.model?.walletAddress ?? null,
+      walletScriptPubKeyHex: context.model?.walletScriptPubKeyHex ?? null,
       pending: (context.localState.state?.pendingMutations ?? [])
         .filter((mutation) =>
           (mutation.kind === "send" || mutation.kind === "lock" || mutation.kind === "claim")
@@ -801,18 +798,6 @@ export function buildShowJson(
         : {
           ...mapDomain(found.domain),
           pendingMutations: listPendingMutationsForDomain(context, domainName).map(mapPendingMutation),
-          pendingFamilies: (context.localState.state?.proactiveFamilies ?? [])
-            .filter((family) =>
-              family.domainName === domainName
-              && family.status !== "confirmed"
-              && family.status !== "canceled")
-            .map((family) => ({
-              type: family.type,
-              status: family.status,
-              step: family.currentStep ?? null,
-              reservedDedicatedIndex: family.reservedDedicatedIndex ?? null,
-              fieldName: family.fieldName ?? null,
-            })),
         },
       availability: buildAvailability(context),
     },

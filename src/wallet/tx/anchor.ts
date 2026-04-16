@@ -25,6 +25,7 @@ import type {
   DomainRecord,
   LocalIdentityRecord,
   OutpointRecord,
+  PendingMutationRecord,
   ProactiveFamilyStateRecord,
   ProactiveFamilyTransactionRecord,
   WalletStateV1,
@@ -52,9 +53,11 @@ import {
   type FixedWalletInput,
   inputMatchesOutpoint,
   type MutationSender,
+  updateMutationRecord,
   type WalletMutationRpcClient,
 } from "./common.js";
 import { confirmYesNo } from "./confirm.js";
+import { findPendingMutationByIntent, upsertPendingMutation } from "./journal.js";
 
 interface WalletAnchorRpcClient extends WalletMutationRpcClient {
   getBlockchainInfo(): Promise<{ blocks: number }>;
@@ -1812,6 +1815,306 @@ function ensureSameTipHeight(context: WalletReadContext, bestHeight: number, err
   }
 }
 
+interface DirectAnchorPlan {
+  fixedInputs: FixedWalletInput[];
+  outputs: unknown[];
+  changeAddress: string;
+  changePosition: number;
+  expectedOpReturnScriptHex: string;
+  expectedAnchorScriptHex: string;
+  expectedAnchorValueSats: bigint;
+  allowedFundingScriptPubKeyHex: string;
+  eligibleFundingOutpointKeys: Set<string>;
+}
+
+function buildDirectAnchorPlan(options: {
+  state: WalletStateV1;
+  allUtxos: RpcListUnspentEntry[];
+  domainId: number;
+  foundingMessagePayloadHex: string | null;
+}): DirectAnchorPlan {
+  const fundingUtxos = sortUtxos(options.allUtxos.filter((entry) =>
+    entry.scriptPubKey === options.state.funding.scriptPubKeyHex
+    && isSpendableConfirmedUtxo(entry)
+  ));
+  const foundingPayload = options.foundingMessagePayloadHex === null
+    ? undefined
+    : Buffer.from(options.foundingMessagePayloadHex, "hex");
+  const opReturnData = serializeDomainAnchor(options.domainId, foundingPayload).opReturnData;
+
+  return {
+    fixedInputs: [],
+    outputs: [
+      { data: Buffer.from(opReturnData).toString("hex") },
+      { [options.state.funding.address]: satsToBtcNumber(BigInt(options.state.anchorValueSats)) },
+    ],
+    changeAddress: options.state.funding.address,
+    changePosition: 2,
+    expectedOpReturnScriptHex: encodeOpReturnScript(opReturnData),
+    expectedAnchorScriptHex: options.state.funding.scriptPubKeyHex,
+    expectedAnchorValueSats: BigInt(options.state.anchorValueSats),
+    allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
+  };
+}
+
+function validateDirectAnchorDraft(
+  decoded: RpcDecodedPsbt,
+  funded: BuiltWalletMutationTransaction["funded"],
+  plan: DirectAnchorPlan,
+): void {
+  const outputs = decoded.tx.vout;
+
+  if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
+    throw new Error("wallet_anchor_opreturn_mismatch");
+  }
+
+  if (outputs[1]?.scriptPubKey?.hex !== plan.expectedAnchorScriptHex) {
+    throw new Error("wallet_anchor_anchor_output_mismatch");
+  }
+
+  if (valueToSats(outputs[1]?.value ?? 0) !== plan.expectedAnchorValueSats) {
+    throw new Error("wallet_anchor_anchor_value_mismatch");
+  }
+
+  if (funded.changepos === -1) {
+    if (outputs.length !== 2) {
+      throw new Error("wallet_anchor_unexpected_output_count");
+    }
+    return;
+  }
+
+  if (funded.changepos !== plan.changePosition || outputs.length !== 3) {
+    throw new Error("wallet_anchor_change_position_mismatch");
+  }
+
+  if (outputs[funded.changepos]?.scriptPubKey?.hex !== plan.allowedFundingScriptPubKeyHex) {
+    throw new Error("wallet_anchor_change_output_mismatch");
+  }
+}
+
+function createDraftAnchorMutation(options: {
+  state: WalletStateV1;
+  domainName: string;
+  intentFingerprintHex: string;
+  nowUnixMs: number;
+  existing?: PendingMutationRecord | null;
+}): PendingMutationRecord {
+  const existing = options.existing ?? null;
+  if (existing !== null) {
+    return {
+      ...existing,
+      kind: "anchor",
+      domainName: options.domainName,
+      parentDomainName: null,
+      senderScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+      senderLocalIndex: 0,
+      intentFingerprintHex: options.intentFingerprintHex,
+      status: "draft",
+      lastUpdatedAtUnixMs: options.nowUnixMs,
+      attemptedTxid: null,
+      attemptedWtxid: null,
+      temporaryBuilderLockedOutpoints: [],
+    };
+  }
+
+  return {
+    mutationId: randomBytes(12).toString("hex"),
+    kind: "anchor",
+    domainName: options.domainName,
+    parentDomainName: null,
+    senderScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    senderLocalIndex: 0,
+    intentFingerprintHex: options.intentFingerprintHex,
+    status: "draft",
+    createdAtUnixMs: options.nowUnixMs,
+    lastUpdatedAtUnixMs: options.nowUnixMs,
+    attemptedTxid: null,
+    attemptedWtxid: null,
+    temporaryBuilderLockedOutpoints: [],
+  };
+}
+
+function upsertAnchoredDomainRecord(options: {
+  state: WalletStateV1;
+  domainName: string;
+  domainId: number;
+  txid: string;
+  foundingMessageText: string | null;
+}): WalletStateV1 {
+  const domains = options.state.domains.slice();
+  const existingIndex = domains.findIndex((entry) => entry.name === options.domainName);
+  const current = existingIndex >= 0 ? domains[existingIndex]! : null;
+  const nextRecord: DomainRecord = {
+    name: options.domainName,
+    domainId: options.domainId,
+    dedicatedIndex: null,
+    currentOwnerScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    currentOwnerLocalIndex: 0,
+    canonicalChainStatus: "anchored",
+    localAnchorIntent: "none",
+    currentCanonicalAnchorOutpoint: {
+      txid: options.txid,
+      vout: 1,
+      valueSats: options.state.anchorValueSats,
+    },
+    foundingMessageText: options.foundingMessageText ?? current?.foundingMessageText ?? null,
+    birthTime: current?.birthTime ?? options.state.lastWrittenAtUnixMs,
+  };
+
+  if (existingIndex >= 0) {
+    domains[existingIndex] = nextRecord;
+  } else {
+    domains.push(nextRecord);
+  }
+
+  return {
+    ...options.state,
+    domains,
+  };
+}
+
+function anchorConfirmedOnSnapshot(options: {
+  snapshot: NonNullable<WalletReadContext["snapshot"]>;
+  state: WalletStateV1;
+  domainName: string;
+}): boolean {
+  const chainDomain = lookupDomain(options.snapshot.state, options.domainName);
+  if (chainDomain === null || !chainDomain.anchored) {
+    return false;
+  }
+
+  const ownerHex = Buffer.from(chainDomain.ownerScriptPubKey).toString("hex");
+  return ownerHex === options.state.funding.scriptPubKeyHex
+    || (options.state.localScriptPubKeyHexes ?? []).includes(ownerHex);
+}
+
+async function reconcilePendingAnchorMutation(options: {
+  state: WalletStateV1;
+  mutation: PendingMutationRecord;
+  provider: WalletSecretProvider;
+  unlockUntilUnixMs: number;
+  nowUnixMs: number;
+  paths: WalletRuntimePaths;
+  rpc: WalletAnchorRpcClient;
+  walletName: string;
+  context: WalletReadContext;
+  foundingMessageText: string | null;
+}): Promise<{
+  state: WalletStateV1;
+  mutation: PendingMutationRecord;
+  resolution: "confirmed" | "live" | "repair-required" | "not-seen" | "continue";
+}> {
+  if (options.mutation.status === "repair-required") {
+    return {
+      state: options.state,
+      mutation: options.mutation,
+      resolution: "repair-required",
+    };
+  }
+
+  if (options.context.snapshot !== null && anchorConfirmedOnSnapshot({
+    snapshot: options.context.snapshot,
+    state: options.state,
+    domainName: options.mutation.domainName,
+  })) {
+    await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.mutation.temporaryBuilderLockedOutpoints);
+    const confirmedMutation = updateMutationRecord(options.mutation, "confirmed", options.nowUnixMs, {
+      temporaryBuilderLockedOutpoints: [],
+    });
+    const chainDomain = lookupDomain(options.context.snapshot.state, options.mutation.domainName);
+    const nextState = upsertAnchoredDomainRecord({
+      state: upsertPendingMutation(options.state, confirmedMutation),
+      domainName: options.mutation.domainName,
+      domainId: chainDomain?.domainId ?? 0,
+      txid: options.mutation.attemptedTxid ?? "unknown",
+      foundingMessageText: options.foundingMessageText,
+    });
+    await saveState(nextState, options.provider, options.unlockUntilUnixMs, options.nowUnixMs, options.paths);
+    return {
+      state: nextState,
+      mutation: confirmedMutation,
+      resolution: "confirmed",
+    };
+  }
+
+  if (options.mutation.attemptedTxid !== null) {
+    const mempool: string[] = await options.rpc.getRawMempool().catch(() => []);
+    if (mempool.includes(options.mutation.attemptedTxid)) {
+      await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.mutation.temporaryBuilderLockedOutpoints);
+      const liveMutation = updateMutationRecord(options.mutation, "live", options.nowUnixMs, {
+        temporaryBuilderLockedOutpoints: [],
+      });
+      const domainId = (options.context.snapshot === null
+        ? null
+        : lookupDomain(options.context.snapshot.state, options.mutation.domainName)?.domainId)
+        ?? options.state.domains.find((domain) => domain.name === options.mutation.domainName)?.domainId
+        ?? 0;
+      const nextState = upsertAnchoredDomainRecord({
+        state: upsertPendingMutation(options.state, liveMutation),
+        domainName: options.mutation.domainName,
+        domainId,
+        txid: options.mutation.attemptedTxid,
+        foundingMessageText: options.foundingMessageText,
+      });
+      await saveState(nextState, options.provider, options.unlockUntilUnixMs, options.nowUnixMs, options.paths);
+      return {
+        state: nextState,
+        mutation: liveMutation,
+        resolution: "live",
+      };
+    }
+  }
+
+  if (
+    options.mutation.status === "broadcast-unknown"
+    || options.mutation.status === "live"
+    || options.mutation.status === "draft"
+    || options.mutation.status === "broadcasting"
+  ) {
+    await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.mutation.temporaryBuilderLockedOutpoints);
+    const canceledMutation = updateMutationRecord(options.mutation, "canceled", options.nowUnixMs, {
+      temporaryBuilderLockedOutpoints: [],
+    });
+    const nextState = upsertPendingMutation(options.state, canceledMutation);
+    await saveState(nextState, options.provider, options.unlockUntilUnixMs, options.nowUnixMs, options.paths);
+    return {
+      state: nextState,
+      mutation: canceledMutation,
+      resolution: "not-seen",
+    };
+  }
+
+  return {
+    state: options.state,
+    mutation: options.mutation,
+    resolution: "continue",
+  };
+}
+
+async function confirmDirectAnchor(
+  prompter: WalletPrompter,
+  options: {
+    domainName: string;
+    walletAddress: string;
+    foundingMessageText: string | null;
+  },
+): Promise<void> {
+  prompter.writeLine(`You are anchoring "${options.domainName}".`);
+  prompter.writeLine(`Wallet address: ${options.walletAddress}`);
+  prompter.writeLine("Anchoring publishes a standalone DOMAIN_ANCHOR from the local wallet address.");
+
+  if (options.foundingMessageText !== null) {
+    prompter.writeLine("The founding message bytes will be public in mempool and on-chain.");
+    prompter.writeLine(`Founding message: ${options.foundingMessageText}`);
+  }
+
+  const answer = (await prompter.prompt("Type the domain name to continue: ")).trim();
+  if (answer !== options.domainName) {
+    throw new Error("wallet_anchor_confirmation_rejected");
+  }
+}
+
 export async function anchorDomain(options: AnchorDomainOptions): Promise<AnchorDomainResult> {
   if (!options.prompter.isInteractive) {
     throw new Error("wallet_anchor_requires_tty");
@@ -1831,11 +2134,6 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
       paths,
       reason: "wallet-anchor",
     });
-    const message = await resolveFoundingMessage({
-      foundingMessageText: options.foundingMessageText,
-      promptForFoundingMessageWhenMissing: options.promptForFoundingMessageWhenMissing,
-      prompter: options.prompter,
-    });
     const readContext = await (options.openReadContext ?? openWalletReadContext)({
       dataDir: options.dataDir,
       databasePath: options.databasePath,
@@ -1845,235 +2143,221 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
     });
 
     try {
-      let operation = resolveAnchorOperation(
-        readContext,
+      assertWalletMutationContextReady(readContext, "wallet_anchor");
+      const message = await resolveFoundingMessage({
+        foundingMessageText: options.foundingMessageText,
+        promptForFoundingMessageWhenMissing: options.promptForFoundingMessageWhenMissing,
+        prompter: options.prompter,
+      });
+      const state = readContext.localState.state;
+      const unlockUntilUnixMs = readContext.localState.unlockUntilUnixMs;
+      const chainDomain = lookupDomain(readContext.snapshot.state, normalizedDomainName);
+
+      if (chainDomain === null) {
+        throw new Error("wallet_anchor_domain_not_found");
+      }
+      if (chainDomain.anchored) {
+        throw new Error("wallet_anchor_domain_already_anchored");
+      }
+
+      const ownerHex = Buffer.from(chainDomain.ownerScriptPubKey).toString("hex");
+      const localScriptHexes = new Set([
+        state.funding.scriptPubKeyHex,
+        ...(state.localScriptPubKeyHexes ?? []),
+      ]);
+
+      if (!localScriptHexes.has(ownerHex)) {
+        throw new Error("wallet_anchor_owner_not_locally_controlled");
+      }
+
+      if (state.funding.address.trim() === "") {
+        throw new Error("wallet_anchor_owner_identity_not_supported");
+      }
+
+      const intentFingerprintHex = createIntentFingerprint([
+        "anchor",
+        state.walletRootId,
         normalizedDomainName,
-        message.text,
-        message.payloadHex,
-      );
-      const initialFamily = createDraftAnchorFamily(operation, nowUnixMs);
-      const existingFamily = findAnchorFamilyByIntent(operation.state, initialFamily.intentFingerprintHex);
-      const conflictingFamilies = findActiveAnchorFamiliesByDomain(operation.state, normalizedDomainName);
-      const clearableConflictingFamily = conflictingFamilies.find(isClearableReservedAnchorFamilyRecord) ?? null;
-      const conflictingFamily = conflictingFamilies[0] ?? null;
-
-      if (existingFamily === null && clearableConflictingFamily !== null && conflictingFamilies.length === 1) {
-        throw new Error(`wallet_anchor_clear_pending_first_${clearableConflictingFamily.domainName}`);
-      }
-
-      if (existingFamily === null && conflictingFamily !== null) {
-        throw new Error("wallet_anchor_prior_family_unresolved");
-      }
-
+        state.funding.scriptPubKeyHex,
+        message.payloadHex ?? "",
+      ]);
       const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
-        walletRootId: operation.state.walletRootId,
+        walletRootId: state.walletRootId,
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-      const walletName = operation.state.managedCoreWallet.walletName;
+      const walletName = state.managedCoreWallet.walletName;
+      const existingMutation = findPendingMutationByIntent(state, intentFingerprintHex);
+      let workingState = state;
 
-      let resumedFamily: ProactiveFamilyStateRecord | null = null;
-      let resumedExisting = false;
-      let workingState = operation.state;
-
-      if (existingFamily !== null) {
-        const existingReservedIndex = existingFamily.reservedDedicatedIndex ?? operation.targetIdentity.localIndex;
-        const existingTargetIdentity = deriveAnchorTargetIdentityForIndex(
-          operation.state,
-          existingReservedIndex,
-        );
-        const reconciled = await reconcileAnchorFamily({
-          state: operation.state,
-          family: existingFamily,
-          operation: {
-            ...operation,
-            targetIdentity: existingTargetIdentity,
-          },
+      if (existingMutation !== null) {
+        const reconciled = await reconcilePendingAnchorMutation({
+          state,
+          mutation: existingMutation,
           provider,
+          unlockUntilUnixMs,
           nowUnixMs,
           paths,
-          unlockUntilUnixMs: operation.unlockUntilUnixMs,
           rpc,
           walletName,
+          context: readContext,
+          foundingMessageText: message.text,
         });
         workingState = reconciled.state;
 
         if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
           return {
             domainName: normalizedDomainName,
-            txid: reconciled.family.tx2?.attemptedTxid ?? reconciled.family.tx1?.attemptedTxid ?? "unknown",
-            tx1Txid: reconciled.family.tx1?.attemptedTxid ?? "unknown",
-            tx2Txid: reconciled.family.tx2?.attemptedTxid ?? "unknown",
-            dedicatedIndex: reconciled.family.reservedDedicatedIndex ?? existingTargetIdentity.localIndex,
+            txid: reconciled.mutation.attemptedTxid ?? "unknown",
+            tx1Txid: reconciled.mutation.attemptedTxid ?? "unknown",
+            tx2Txid: reconciled.mutation.attemptedTxid ?? "unknown",
+            dedicatedIndex: 0,
             status: reconciled.resolution,
             reusedExisting: true,
-            foundingMessageText: reconciled.family.foundingMessageText,
+            foundingMessageText: message.text,
           };
         }
 
         if (reconciled.resolution === "repair-required") {
           throw new Error("wallet_anchor_repair_required");
         }
-
-        if (reconciled.resolution === "ready-for-tx2") {
-          operation = {
-            ...operation,
-            targetIdentity: existingTargetIdentity,
-          };
-          resumedFamily = reconciled.family;
-          resumedExisting = true;
-        }
       }
 
-      let nextState = workingState;
-      let family: ProactiveFamilyStateRecord;
-
-      if (resumedFamily !== null) {
-        family = resumedFamily;
-      } else {
-        await confirmAnchor(options.prompter, operation);
-
-        nextState = reserveAnchorFamilyState(nextState, initialFamily, operation.targetIdentity, operation.foundingMessageText);
-        nextState = await saveState(nextState, provider, operation.unlockUntilUnixMs, nowUnixMs, paths);
-
-        const tx1Plan = buildTx1Plan({
-          state: nextState,
-          allUtxos: await rpc.listUnspent(walletName, 1),
-          operation,
-        });
-        const builtTx1 = await buildTx1({
-          rpc,
-          walletName,
-          state: nextState,
-          plan: tx1Plan,
-        });
-
-        const broadcastingTx1: ProactiveFamilyTransactionRecord = createBroadcastingTxRecord(builtTx1);
-        family = {
-          ...(findAnchorFamilyByIntent(nextState, initialFamily.intentFingerprintHex) ?? initialFamily),
-          status: "broadcasting" as const,
-          currentStep: "tx1" as const,
-          lastUpdatedAtUnixMs: nowUnixMs,
-          tx1: broadcastingTx1,
-        };
-        nextState = updateAnchorFamilyState({
-          state: nextState,
-          family,
-          target: operation.targetIdentity,
-          status: "broadcasting",
-          localAnchorIntent: "reserved",
-          currentStep: "tx1",
-          nowUnixMs,
-          tx1: broadcastingTx1,
-        });
-        nextState = await saveState(nextState, provider, operation.unlockUntilUnixMs, nowUnixMs, paths);
-
-        ensureSameTipHeight(readContext, (await rpc.getBlockchainInfo()).blocks, "wallet_anchor_tip_mismatch");
-
-        try {
-          await rpc.sendRawTransaction(builtTx1.rawHex);
-        } catch (error) {
-          if (!isAlreadyAcceptedError(error)) {
-            if (isBroadcastUnknownError(error)) {
-              family = {
-                ...family,
-                status: "broadcast-unknown",
-                tx1: {
-                  ...broadcastingTx1,
-                  status: "broadcast-unknown",
-                },
-              };
-              nextState = updateAnchorFamilyState({
-                state: nextState,
-                family,
-                target: operation.targetIdentity,
-                status: "broadcast-unknown",
-                localAnchorIntent: "reserved",
-                currentStep: "tx1",
-                nowUnixMs,
-                tx1: family.tx1!,
-              });
-              await saveState(nextState, provider, operation.unlockUntilUnixMs, nowUnixMs, paths);
-              throw new Error("wallet_anchor_tx1_broadcast_unknown");
-            }
-
-            await unlockTemporaryBuilderLocks(rpc, walletName, builtTx1.temporaryBuilderLockedOutpoints);
-            family = {
-              ...family,
-              status: "canceled",
-              tx1: {
-                ...broadcastingTx1,
-                status: "canceled",
-                temporaryBuilderLockedOutpoints: [],
-              },
-            };
-            nextState = updateAnchorFamilyState({
-              state: nextState,
-              family,
-              target: operation.targetIdentity,
-              status: "canceled",
-              localAnchorIntent: "none",
-              currentStep: "tx1",
-              nowUnixMs,
-              tx1: family.tx1!,
-            });
-            await saveState(nextState, provider, operation.unlockUntilUnixMs, nowUnixMs, paths);
-            throw error;
-          }
-        }
-
-        await unlockTemporaryBuilderLocks(rpc, walletName, builtTx1.temporaryBuilderLockedOutpoints);
-        family = {
-          ...family,
-          status: "live",
-          currentStep: "tx1",
-          tx1: {
-            ...broadcastingTx1,
-            status: "live",
-            temporaryBuilderLockedOutpoints: [],
-          },
-        };
-        nextState = updateAnchorFamilyState({
-          state: nextState,
-          family,
-          target: operation.targetIdentity,
-          status: "live",
-          localAnchorIntent: "tx1-live",
-          currentStep: "tx1",
-          nowUnixMs,
-          tx1: family.tx1!,
-          listingCancelCommitted: operation.hadListing,
-          moveOwnershipToTarget: true,
-        });
-        nextState = await saveState(nextState, provider, operation.unlockUntilUnixMs, nowUnixMs, paths);
-
-        if (operation.sourceAnchorOutpoint !== null) {
-          await relockAnchorOutpoint(rpc, walletName, {
-            txid: builtTx1.txid,
-            vout: 2,
-          });
-        }
-      }
-
-      const result = await submitTx2({
-        state: nextState,
-        family,
-        operation,
-        readContext: operation.readContext,
-        provider,
-        rpc,
-        walletName,
-        nowUnixMs,
-        paths,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
+      await confirmDirectAnchor(options.prompter, {
+        domainName: normalizedDomainName,
+        walletAddress: state.funding.address,
+        foundingMessageText: message.text,
       });
 
+      let nextState = upsertPendingMutation(
+        workingState,
+        createDraftAnchorMutation({
+          state: workingState,
+          domainName: normalizedDomainName,
+          intentFingerprintHex,
+          nowUnixMs,
+          existing: existingMutation ?? null,
+        }),
+      );
+      nextState = await saveState(nextState, provider, unlockUntilUnixMs, nowUnixMs, paths);
+
+      const built = await buildWalletMutationTransactionWithReserveFallback({
+        rpc,
+        walletName,
+        state: nextState,
+        plan: buildDirectAnchorPlan({
+          state: nextState,
+          allUtxos: await rpc.listUnspent(walletName, 1),
+          domainId: chainDomain.domainId,
+          foundingMessagePayloadHex: message.payloadHex,
+        }),
+        validateFundedDraft: validateDirectAnchorDraft,
+        finalizeErrorCode: "wallet_anchor_finalize_failed",
+        mempoolRejectPrefix: "wallet_anchor_mempool_rejected",
+        reserveCandidates: [],
+      });
+
+      const currentMutation = nextState.pendingMutations?.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)
+        ?? createDraftAnchorMutation({
+          state: nextState,
+          domainName: normalizedDomainName,
+          intentFingerprintHex,
+          nowUnixMs,
+        });
+      const broadcastingMutation = updateMutationRecord(
+        currentMutation,
+        "broadcasting",
+        nowUnixMs,
+        {
+          attemptedTxid: built.txid,
+          attemptedWtxid: built.wtxid,
+          temporaryBuilderLockedOutpoints: built.temporaryBuilderLockedOutpoints,
+        },
+      );
+      nextState = await saveState(
+        upsertPendingMutation(nextState, broadcastingMutation),
+        provider,
+        unlockUntilUnixMs,
+        nowUnixMs,
+        paths,
+      );
+
+      ensureSameTipHeight(readContext, (await rpc.getBlockchainInfo()).blocks, "wallet_anchor_tip_mismatch");
+
+      let accepted = false;
+      try {
+        await rpc.sendRawTransaction(built.rawHex);
+        accepted = true;
+      } catch (error) {
+        if (isAlreadyAcceptedError(error)) {
+          accepted = true;
+        } else if (isBroadcastUnknownError(error)) {
+          const unknownMutation = updateMutationRecord(broadcastingMutation, "broadcast-unknown", nowUnixMs, {
+            attemptedTxid: built.txid,
+            attemptedWtxid: built.wtxid,
+            temporaryBuilderLockedOutpoints: built.temporaryBuilderLockedOutpoints,
+          });
+          nextState = await saveState(
+            upsertPendingMutation(nextState, unknownMutation),
+            provider,
+            unlockUntilUnixMs,
+            nowUnixMs,
+            paths,
+          );
+          throw new Error("wallet_anchor_broadcast_unknown");
+        } else {
+          await unlockTemporaryBuilderLocks(rpc, walletName, built.temporaryBuilderLockedOutpoints);
+          const canceledMutation = updateMutationRecord(broadcastingMutation, "canceled", nowUnixMs, {
+            attemptedTxid: built.txid,
+            attemptedWtxid: built.wtxid,
+            temporaryBuilderLockedOutpoints: [],
+          });
+          nextState = await saveState(
+            upsertPendingMutation(nextState, canceledMutation),
+            provider,
+            unlockUntilUnixMs,
+            nowUnixMs,
+            paths,
+          );
+          throw error;
+        }
+      }
+
+      if (!accepted) {
+        throw new Error("wallet_anchor_broadcast_failed");
+      }
+
+      await unlockTemporaryBuilderLocks(rpc, walletName, built.temporaryBuilderLockedOutpoints);
+      const finalStatus = anchorConfirmedOnSnapshot({
+        snapshot: readContext.snapshot,
+        state: nextState,
+        domainName: normalizedDomainName,
+      }) ? "confirmed" : "live";
+      const finalMutation = updateMutationRecord(broadcastingMutation, finalStatus, nowUnixMs, {
+        attemptedTxid: built.txid,
+        attemptedWtxid: built.wtxid,
+        temporaryBuilderLockedOutpoints: [],
+      });
+      nextState = upsertAnchoredDomainRecord({
+        state: upsertPendingMutation(nextState, finalMutation),
+        domainName: normalizedDomainName,
+        domainId: chainDomain.domainId,
+        txid: built.txid,
+        foundingMessageText: message.text,
+      });
+      nextState = await saveState(nextState, provider, unlockUntilUnixMs, nowUnixMs, paths);
+
       return {
-        ...result,
-        reusedExisting: resumedExisting,
-        foundingMessageText: result.foundingMessageText ?? operation.foundingMessageText,
+        domainName: normalizedDomainName,
+        txid: built.txid,
+        tx1Txid: built.txid,
+        tx2Txid: built.txid,
+        dedicatedIndex: 0,
+        status: finalStatus,
+        reusedExisting: false,
+        foundingMessageText: message.text,
       };
     } finally {
       await readContext.close();
@@ -2087,165 +2371,6 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
 export async function clearPendingAnchor(
   options: ClearPendingAnchorOptions,
 ): Promise<ClearPendingAnchorResult> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const force = options.force ?? false;
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: "wallet-anchor-clear",
-    walletRootId: null,
-  });
-  const normalizedDomainName = normalizeDomainName(options.domainName);
-
-  try {
-    const miningPreemption = await pauseMiningForWalletMutation({
-      paths,
-      reason: "wallet-anchor-clear",
-    });
-    const readContext = await (options.openReadContext ?? openWalletReadContext)({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      secretProvider: provider,
-      walletControlLockHeld: true,
-      paths,
-    });
-
-    try {
-      assertWalletMutationContextReady(readContext, "wallet_anchor_clear");
-      const summary = summarizeAnchorClearFamilies({
-        state: readContext.localState.state,
-        domainName: normalizedDomainName,
-      });
-      const domain = readContext.localState.state.domains.find((entry) =>
-        entry.name === normalizedDomainName
-      ) ?? null;
-      const previousLocalAnchorIntent = domain?.localAnchorIntent ?? null;
-      const previousDedicatedIndex = domain?.dedicatedIndex ?? null;
-
-      if (domain === null && summary.families.length === 0) {
-        throw new Error("wallet_anchor_clear_domain_not_found");
-      }
-
-      if (summary.clearableReserved.length === 0 && summary.activeNonReserved.length === 0) {
-        if (domain === null) {
-          throw new Error("wallet_anchor_clear_domain_not_found");
-        }
-
-        if (domain.localAnchorIntent !== "none") {
-          throw new Error("wallet_anchor_clear_inconsistent_state");
-        }
-
-        return {
-          domainName: normalizedDomainName,
-          cleared: false,
-          previousFamilyStatus: null,
-          previousFamilyStep: null,
-          releasedDedicatedIndex: null,
-          forced: force,
-          clearedReservedFamilies: 0,
-          canceledActiveFamilies: 0,
-          releasedDedicatedIndices: [],
-          affectedFamilies: [],
-          previousLocalAnchorIntent,
-          previousDedicatedIndex,
-          resultingLocalAnchorIntent: previousLocalAnchorIntent,
-          resultingDedicatedIndex: previousDedicatedIndex,
-        };
-      }
-
-      const invalidReservedFamily = summary.clearableReserved.find((family) =>
-        family.reservedDedicatedIndex === null
-        || family.tx1?.attemptedTxid !== null
-        || family.tx2?.attemptedTxid !== null
-      ) ?? null;
-      if (invalidReservedFamily !== null) {
-        throw new Error("wallet_anchor_clear_inconsistent_state");
-      }
-
-      if (!force && summary.activeNonReserved.length > 0) {
-        throw new Error(`wallet_anchor_clear_force_required_${normalizedDomainName}`);
-      }
-
-      const affectedFamilies: AnchorClearFamilyActionSummary[] = [
-        ...summary.clearableReserved.map((family) => ({
-          familyId: family.familyId,
-          previousStatus: family.status,
-          previousStep: family.currentStep ?? null,
-          action: "cleared" as const,
-        })),
-        ...summary.activeNonReserved.map((family) => ({
-          familyId: family.familyId,
-          previousStatus: family.status,
-          previousStep: family.currentStep ?? null,
-          action: "canceled" as const,
-        })),
-      ];
-      const reservedDedicatedIndicesBefore = [...new Set(summary.clearableReserved
-        .map((family) => family.reservedDedicatedIndex)
-        .filter((value): value is number => value !== null && value !== undefined))]
-        .sort((left, right) => left - right);
-      const canceledActiveFamilies = force ? summary.activeNonReserved.length : 0;
-      const familiesToCancel = force
-        ? [...summary.clearableReserved, ...summary.activeNonReserved]
-        : [...summary.clearableReserved];
-      let nextState = readContext.localState.state;
-
-      for (const family of familiesToCancel) {
-        nextState = upsertProactiveFamily(nextState, cancelAnchorFamilyRecord(family, nowUnixMs));
-      }
-      nextState = recomputeDomainAfterAnchorClear({
-        state: nextState,
-        snapshot: readContext.snapshot,
-        domainName: normalizedDomainName,
-      });
-      const resultingDomain = nextState.domains.find((entry) => entry.name === normalizedDomainName) ?? null;
-      const releasedDedicatedIndices = reservedDedicatedIndicesBefore
-        .filter((index) => resultingDomain?.dedicatedIndex !== index);
-
-      await confirmAnchorClear(
-        {
-          prompter: options.prompter,
-          domainName: normalizedDomainName,
-          releasedDedicatedIndices,
-          clearedReservedFamilies: summary.clearableReserved.length,
-          canceledActiveFamilies,
-          forced: force,
-          assumeYes: options.assumeYes ?? false,
-        },
-      );
-      await saveWalletStatePreservingUnlock({
-        state: {
-          ...nextState,
-          stateRevision: nextState.stateRevision + 1,
-          lastWrittenAtUnixMs: nowUnixMs,
-        },
-        provider,
-        unlockUntilUnixMs: readContext.localState.unlockUntilUnixMs,
-        nowUnixMs,
-        paths,
-      });
-
-      return {
-        domainName: normalizedDomainName,
-        cleared: true,
-        previousFamilyStatus: affectedFamilies[0]?.previousStatus ?? null,
-        previousFamilyStep: affectedFamilies[0]?.previousStep ?? null,
-        releasedDedicatedIndex: releasedDedicatedIndices[0] ?? null,
-        forced: force,
-        clearedReservedFamilies: summary.clearableReserved.length,
-        canceledActiveFamilies,
-        releasedDedicatedIndices,
-        affectedFamilies,
-        previousLocalAnchorIntent,
-        previousDedicatedIndex,
-        resultingLocalAnchorIntent: resultingDomain?.localAnchorIntent ?? null,
-        resultingDedicatedIndex: resultingDomain?.dedicatedIndex ?? null,
-      };
-    } finally {
-      await readContext.close();
-      await miningPreemption.release();
-    }
-  } finally {
-    await controlLock.release();
-  }
+  void options;
+  throw new Error("cli_anchor_clear_removed");
 }

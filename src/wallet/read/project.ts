@@ -72,7 +72,10 @@ export function createWalletReadModel(
     scriptPubKeyHex: walletState.funding.scriptPubKeyHex,
     address: walletState.funding.address,
     selectors: [],
-    assignedDomainNames: (walletState.identities[0]?.assignedDomainNames ?? []).slice().sort((left, right) => left.localeCompare(right)),
+    assignedDomainNames: (walletState.domains ?? [])
+      .filter((domain) => domain.currentOwnerScriptPubKeyHex === walletState.funding.scriptPubKeyHex)
+      .map((domain) => domain.name)
+      .sort((left, right) => left.localeCompare(right)),
     localStatus: "funding",
     effectiveStatus: "funding",
     canonicalDomainId,
@@ -87,7 +90,7 @@ export function createWalletReadModel(
   for (const domain of walletState.domains) {
     domainNames.add(domain.name);
   }
-  for (const name of fundingIdentity.ownedDomainNames) {
+  for (const name of ownedDomains.map((domain) => domain.name)) {
     domainNames.add(name);
   }
 
@@ -105,9 +108,7 @@ export function createWalletReadModel(
 
       let localRelationship: WalletDomainView["localRelationship"] = "external";
       if (ownerIsLocal) {
-        localRelationship = "owned";
-      } else if (localRecord !== null) {
-        localRelationship = "tracked";
+        localRelationship = "local";
       } else if (ownerScriptPubKeyHex === null) {
         localRelationship = "unknown";
       }
@@ -144,6 +145,8 @@ export function createWalletReadModel(
 
   return {
     walletRootId: walletState.walletRootId,
+    walletAddress: walletState.funding.address,
+    walletScriptPubKeyHex: walletState.funding.scriptPubKeyHex,
     fundingIdentity,
     identities: [fundingIdentity],
     domains,
@@ -166,9 +169,6 @@ export function listWalletLocks(context: WalletReadContext): WalletLockView[] | 
     return null;
   }
 
-  const localScriptToIndex = new Map(
-    context.model.identities.map((identity) => [identity.scriptPubKeyHex, identity.index] as const),
-  );
   const localDomainIds = new Set(
     context.model.domains
       .map((domain) => domain.domainId)
@@ -183,19 +183,18 @@ export function listWalletLocks(context: WalletReadContext): WalletLockView[] | 
   const locks = [...context.snapshot.state.consensus.locks.values()]
     .filter((lock) => {
       const lockerHex = bytesToHex(lock.lockerScriptPubKey);
-      return (lockerHex !== null && localScriptToIndex.has(lockerHex)) || localDomainIds.has(lock.recipientDomainId);
+      return (lockerHex !== null && lockerHex === context.model!.walletScriptPubKeyHex) || localDomainIds.has(lock.recipientDomainId);
     })
     .sort((left, right) => left.timeoutHeight - right.timeoutHeight || left.lockId - right.lockId);
 
   return locks.map((lock) => {
     const lockerScriptPubKeyHex = bytesToHex(lock.lockerScriptPubKey);
-    const lockerLocalIndex = lockerScriptPubKeyHex === null ? null : localScriptToIndex.get(lockerScriptPubKeyHex) ?? null;
     const recipientDomain = context.snapshot!.state.consensus.domainsById.get(lock.recipientDomainId) ?? null;
     const recipientOwnerHex = recipientDomain === null ? null : bytesToHex(recipientDomain.ownerScriptPubKey);
     const claimableNow = currentHeight !== null
       && currentHeight < lock.timeoutHeight
       && recipientOwnerHex !== null
-      && localScriptToIndex.has(recipientOwnerHex);
+      && recipientOwnerHex === context.model!.walletScriptPubKeyHex;
 
     return {
       lockId: lock.lockId,
@@ -203,12 +202,15 @@ export function listWalletLocks(context: WalletReadContext): WalletLockView[] | 
       amountCogtoshi: lock.amount,
       timeoutHeight: lock.timeoutHeight,
       lockerScriptPubKeyHex: lockerScriptPubKeyHex ?? "",
-      lockerLocalIndex,
+      lockerLocal: lockerScriptPubKeyHex === context.model!.walletScriptPubKeyHex,
+      lockerLocalIndex: lockerScriptPubKeyHex === context.model!.walletScriptPubKeyHex ? 0 : null,
       recipientDomainId: lock.recipientDomainId,
       recipientDomainName: domainsById.get(lock.recipientDomainId) ?? null,
       recipientLocal: localDomainIds.has(lock.recipientDomainId),
       claimableNow,
-      reclaimableNow: currentHeight !== null && currentHeight >= lock.timeoutHeight && lockerLocalIndex !== null,
+      reclaimableNow: currentHeight !== null
+        && currentHeight >= lock.timeoutHeight
+        && lockerScriptPubKeyHex === context.model!.walletScriptPubKeyHex,
     };
   });
 }

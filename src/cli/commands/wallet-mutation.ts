@@ -5,7 +5,6 @@ import {
 } from "../../wallet/tx/index.js";
 import {
   buildAnchorMutationData,
-  buildAnchorClearMutationData,
   buildCogMutationData,
   buildDomainAdminMutationData,
   buildDomainMarketMutationData,
@@ -15,7 +14,6 @@ import {
 } from "../mutation-json.js";
 import {
   buildAnchorPreviewData,
-  buildAnchorClearPreviewData,
   buildCogPreviewData,
   buildDomainAdminPreviewData,
   buildDomainMarketPreviewData,
@@ -24,7 +22,6 @@ import {
   buildReputationPreviewData,
 } from "../preview-json.js";
 import {
-  isAnchorClearMutationCommand,
   isAnchorMutationCommand,
   isBuyMutationCommand,
   isClaimMutationCommand,
@@ -130,54 +127,6 @@ export async function runWalletMutationCommand(
       const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
       const prompter = createCommandPrompter(parsed, context);
       const interactive = prompter.isInteractive;
-
-      if (isAnchorClearMutationCommand(parsed.command)) {
-        const result = await context.clearPendingAnchor({
-          domainName: parsed.args[0]!,
-          dataDir,
-          databasePath: dbPath,
-          provider: context.walletSecretProvider,
-          prompter,
-          assumeYes: parsed.assumeYes,
-          force: parsed.force,
-          paths: runtimePaths,
-        });
-        const nextSteps = result.cleared && result.canceledActiveFamilies === 0
-          ? workflowMutationNextSteps([`cogcoin show ${result.domainName}`, `cogcoin anchor ${result.domainName}`])
-          : commandMutationNextSteps(`cogcoin show ${result.domainName}`);
-        const heading = !result.cleared
-          ? "No pending anchor to clear."
-          : result.canceledActiveFamilies > 0
-            ? "Pending anchor workflow canceled."
-            : "Pending anchor cleared.";
-        return writeMutationCommandSuccess(parsed, context, {
-          data: buildAnchorClearMutationData(result),
-          previewData: buildAnchorClearPreviewData(result),
-          reusedExisting: false,
-          reusedMessage: "",
-          interactive,
-          outcome: result.cleared ? "cleared" : "noop",
-          nextSteps,
-          text: {
-            heading,
-            fields: [
-              { label: "Domain", value: result.domainName },
-              { label: "Cleared", value: result.cleared ? "yes" : "no" },
-              { label: "Forced", value: result.forced ? "yes" : "no", when: result.cleared || parsed.force },
-              { label: "Cleared reserved families", value: String(result.clearedReservedFamilies), when: result.cleared },
-              { label: "Canceled active families", value: String(result.canceledActiveFamilies), when: result.cleared },
-              { label: "Previous status", value: result.previousFamilyStatus ?? "", when: result.previousFamilyStatus !== null },
-              { label: "Previous step", value: result.previousFamilyStep ?? "", when: result.previousFamilyStep !== null },
-              { label: "Released dedicated index", value: String(result.releasedDedicatedIndex), when: result.releasedDedicatedIndex !== null },
-              {
-                label: "Released dedicated indices",
-                value: result.releasedDedicatedIndices.join(", "),
-                when: result.releasedDedicatedIndices.length > 1,
-              },
-            ],
-          },
-        });
-      }
 
       if (isAnchorMutationCommand(parsed.command)) {
         const result = await context.anchorDomain({

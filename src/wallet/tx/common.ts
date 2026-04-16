@@ -317,9 +317,6 @@ export async function reconcilePersistentPolicyLocks(options: {
     rpc: options.rpc,
     walletName: options.walletName,
     state: options.state,
-    fixedInputs: options.fixedInputs,
-    temporarilyUnlockedOutpoints: options.temporarilyUnlockedOutpoints,
-    cleanupInactiveTemporaryBuilderLocks: options.cleanupInactiveTemporaryBuilderLocks,
   });
 }
 

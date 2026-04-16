@@ -150,9 +150,7 @@ export async function runCli(
 
     if (
       parsed.command === "anchor"
-      || parsed.command === "anchor-clear"
       || parsed.command === "domain-anchor"
-      || parsed.command === "domain-anchor-clear"
       || parsed.command === "register"
       || parsed.command === "domain-register"
       || parsed.command === "transfer"

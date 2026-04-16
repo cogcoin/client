@@ -19,6 +19,7 @@ export type PendingMutationStatus =
 export interface PendingMutationRecord {
   mutationId: string;
   kind:
+    | "anchor"
     | "register"
     | "transfer"
     | "sell"
@@ -195,7 +196,7 @@ export interface ProactiveFamilyStateRecord {
 }
 
 export interface WalletStateV1 {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   stateRevision: number;
   lastWrittenAtUnixMs: number;
   walletRootId: string;
@@ -234,8 +235,8 @@ export interface WalletStateV1 {
     descriptorChecksum: string | null;
     walletAddress?: string | null;
     walletScriptPubKeyHex?: ScriptPubKeyHex | null;
-    fundingAddress0: string | null;
-    fundingScriptPubKeyHex0: ScriptPubKeyHex | null;
+    fundingAddress0?: string | null;
+    fundingScriptPubKeyHex0?: ScriptPubKeyHex | null;
     proofStatus: "not-proven" | "ready" | "missing" | "mismatch";
     lastImportedAtUnixMs: number | null;
     lastVerifiedAtUnixMs: number | null;
@@ -251,16 +252,16 @@ export interface WalletStateV1 {
 }
 
 export interface PortableWalletArchivePayloadV1 {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   exportedAtUnixMs: number;
   walletRootId: string;
   network: WalletNetwork;
   anchorValueSats: number;
   localScriptPubKeyHexes?: ScriptPubKeyHex[];
-  proactiveReserveSats: number;
-  proactiveReserveOutpoints: OutpointRecord[];
-  nextDedicatedIndex: number;
-  fundingIndex: 0;
+  proactiveReserveSats?: number;
+  proactiveReserveOutpoints?: OutpointRecord[];
+  nextDedicatedIndex?: number;
+  fundingIndex?: 0;
   mnemonic: {
     phrase: string;
     language: WalletMnemonicLanguage;
@@ -275,17 +276,17 @@ export interface PortableWalletArchivePayloadV1 {
     safetyMargin: number;
     walletAddress?: string;
     walletScriptPubKeyHex?: ScriptPubKeyHex;
-    fundingAddress0: string;
-    fundingScriptPubKeyHex0: ScriptPubKeyHex;
+    fundingAddress0?: string;
+    fundingScriptPubKeyHex0?: ScriptPubKeyHex;
     walletBirthTime: number;
   };
-  identities: LocalIdentityRecord[];
+  identities?: LocalIdentityRecord[];
   domains: DomainRecord[];
   miningState: MiningStateRecord;
   hookClientState: {
     mining: HookClientStateRecord;
   };
-  proactiveFamilies: ProactiveFamilyStateRecord[];
+  proactiveFamilies?: ProactiveFamilyStateRecord[];
 }
 
 export interface Argon2EnvelopeParams {

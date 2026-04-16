@@ -124,7 +124,6 @@ async function prepareDomainMarketBuildState(options: {
     rpc: options.rpc,
     walletName: options.walletName,
     state: options.state,
-    fixedInputs: [],
   });
   const nextState = reconciled.changed
     ? {

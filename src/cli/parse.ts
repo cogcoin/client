@@ -150,8 +150,6 @@ function supportsYesFlag(command: CommandName | null): boolean {
     case "follow":
     case "repair":
     case "wallet-delete":
-    case "anchor-clear":
-    case "domain-anchor-clear":
     case "register":
     case "domain-register":
     case "transfer":
@@ -192,9 +190,7 @@ function supportsSeedFlag(command: CommandName | null): boolean {
     case "status":
     case "unlock":
     case "anchor":
-    case "anchor-clear":
     case "domain-anchor":
-    case "domain-anchor-clear":
     case "register":
     case "domain-register":
     case "transfer":
@@ -822,9 +818,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
           const action = argv[index + 2] ?? null;
 
           if (action === "clear") {
-            command = "domain-anchor-clear";
-            index += 2;
-            continue;
+            throw new Error("cli_anchor_clear_removed");
           }
 
           command = "domain-anchor";
@@ -1106,9 +1100,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
   if (
     (command === "anchor"
-      || command === "domain-anchor"
-      || command === "anchor-clear"
-      || command === "domain-anchor-clear")
+      || command === "domain-anchor")
     && args.length !== 1
   ) {
     throw new Error("cli_missing_domain_argument");

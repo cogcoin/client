@@ -18,13 +18,13 @@ function assertPortableWalletArchivePayload(
 ): PortableWalletArchivePayloadV1 {
   const normalized = normalizePortableWalletArchivePayload(payload);
   if (
-    normalized.schemaVersion !== 1
+    normalized.schemaVersion !== 3
     || normalized.walletRootId.trim() === ""
     || normalized.mnemonic.phrase.trim() === ""
     || normalized.expected.accountPath.trim() === ""
     || normalized.expected.publicExternalDescriptor.trim() === ""
-    || normalized.expected.fundingAddress0.trim() === ""
-    || normalized.expected.fundingScriptPubKeyHex0.trim() === ""
+    || (normalized.expected.walletAddress ?? "").trim() === ""
+    || (normalized.expected.walletScriptPubKeyHex ?? "").trim() === ""
   ) {
     throw new Error("wallet_archive_payload_invalid");
   }

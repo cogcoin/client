@@ -51,110 +51,200 @@ function uniqueOutpoints(values: readonly OutpointRecord[] | null | undefined): 
   return normalized;
 }
 
-function normalizeAssignedDomains(state: WalletStateV1): string[] {
-  return (state.domains ?? [])
-    .filter((domain) => domain.currentOwnerScriptPubKeyHex === state.funding.scriptPubKeyHex)
-    .map((domain) => domain.name)
-    .sort((left, right) => left.localeCompare(right));
-}
+type LegacyManagedCoreWallet = {
+  walletAddress?: string | null;
+  walletScriptPubKeyHex?: string | null;
+  fundingAddress0?: string | null;
+  fundingScriptPubKeyHex0?: string | null;
+  walletName?: string;
+  internalPassphrase?: string;
+  descriptorChecksum?: string | null;
+  proofStatus?: "not-proven" | "ready" | "missing" | "mismatch";
+  lastImportedAtUnixMs?: number | null;
+  lastVerifiedAtUnixMs?: number | null;
+};
 
-function normalizeDomainLocalIndex(state: WalletStateV1, scriptHexes: readonly string[]): WalletStateV1["domains"] {
-  return (state.domains ?? []).map((domain) => ({
-    ...domain,
-    dedicatedIndex: null,
-    currentOwnerLocalIndex: scriptHexes.includes(domain.currentOwnerScriptPubKeyHex ?? "")
-      ? 0
-      : null,
-    localAnchorIntent: "none",
-  }));
-}
+type LegacyWalletStateRecord = Partial<WalletStateV1> & {
+  schemaVersion?: number;
+  localScriptPubKeyHexes?: string[] | null;
+  funding?: { address?: string | null; scriptPubKeyHex?: string | null } | null;
+  identities?: Array<{ scriptPubKeyHex?: string | null }> | null;
+  managedCoreWallet?: LegacyManagedCoreWallet | null;
+  domains?: Array<Partial<WalletStateV1["domains"][number]> & {
+    name?: string | null;
+    domainId?: number | null;
+    currentOwnerScriptPubKeyHex?: string | null;
+    canonicalChainStatus?: WalletStateV1["domains"][number]["canonicalChainStatus"];
+    currentCanonicalAnchorOutpoint?: WalletStateV1["domains"][number]["currentCanonicalAnchorOutpoint"];
+    foundingMessageText?: string | null;
+    birthTime?: number | null;
+  }> | null;
+  pendingMutations?: WalletStateV1["pendingMutations"] | null;
+};
 
-export function normalizeWalletStateRecord(state: WalletStateV1): WalletStateV1 {
-  const localScriptPubKeyHexes = uniqueStrings([
-    state.funding.scriptPubKeyHex,
-    ...((state.localScriptPubKeyHexes ?? [])),
-    ...((state.identities ?? []).map((identity) => identity.scriptPubKeyHex)),
+function uniqueLocalScriptPubKeyHexes(state: LegacyWalletStateRecord): string[] {
+  return uniqueStrings([
+    state.funding?.scriptPubKeyHex ?? "",
+    ...(state.localScriptPubKeyHexes ?? []),
+    ...((state.identities ?? []).map((identity) => identity?.scriptPubKeyHex ?? "")),
   ]);
+}
+
+function normalizeDomains(rawDomains: LegacyWalletStateRecord["domains"]): WalletStateV1["domains"] {
+  return (rawDomains ?? [])
+    .filter((domain): domain is NonNullable<LegacyWalletStateRecord["domains"]>[number] =>
+      typeof domain?.name === "string" && domain.name.trim().length > 0
+    )
+    .map((domain) => ({
+      name: domain.name!.trim().toLowerCase(),
+      domainId: domain.domainId ?? null,
+      dedicatedIndex: null,
+      currentOwnerScriptPubKeyHex: domain.currentOwnerScriptPubKeyHex ?? null,
+      currentOwnerLocalIndex: domain.currentOwnerScriptPubKeyHex != null
+        && domain.currentOwnerScriptPubKeyHex.length > 0
+        ? 0
+        : null,
+      canonicalChainStatus: domain.canonicalChainStatus ?? "unknown",
+      localAnchorIntent: "none" as const,
+      currentCanonicalAnchorOutpoint: domain.currentCanonicalAnchorOutpoint ?? null,
+      foundingMessageText: domain.foundingMessageText ?? null,
+      birthTime: domain.birthTime ?? null,
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function normalizeWalletStateRecord(rawState: LegacyWalletStateRecord): WalletStateV1 {
+  const fundingAddress = rawState.funding?.address
+    ?? rawState.managedCoreWallet?.walletAddress
+    ?? rawState.managedCoreWallet?.fundingAddress0
+    ?? "";
+  const fundingScriptPubKeyHex = rawState.funding?.scriptPubKeyHex
+    ?? rawState.managedCoreWallet?.walletScriptPubKeyHex
+    ?? rawState.managedCoreWallet?.fundingScriptPubKeyHex0
+    ?? "";
+  const localScriptPubKeyHexes = uniqueLocalScriptPubKeyHexes(rawState);
+  const pendingMutations = (rawState.pendingMutations ?? [])
+    .filter((mutation) => mutation.status === "confirmed" || mutation.status === "canceled")
+    .map((mutation) => ({
+      ...mutation,
+      senderLocalIndex: mutation.senderScriptPubKeyHex === fundingScriptPubKeyHex ? 0 : null,
+      senderScriptPubKeyHex: mutation.senderScriptPubKeyHex === ""
+        ? fundingScriptPubKeyHex
+        : mutation.senderScriptPubKeyHex,
+      temporaryBuilderLockedOutpoints: [],
+    }));
 
   return {
-    ...state,
-    schemaVersion: 2,
+    schemaVersion: 3,
+    stateRevision: rawState.stateRevision ?? 1,
+    lastWrittenAtUnixMs: rawState.lastWrittenAtUnixMs ?? 0,
+    walletRootId: rawState.walletRootId ?? "",
+    network: rawState.network ?? "mainnet",
+    anchorValueSats: rawState.anchorValueSats ?? 2_000,
     localScriptPubKeyHexes,
     proactiveReserveSats: 0,
     proactiveReserveOutpoints: [],
     nextDedicatedIndex: 1,
     fundingIndex: 0,
+    mnemonic: {
+      phrase: rawState.mnemonic?.phrase ?? "",
+      language: rawState.mnemonic?.language ?? "english",
+    },
+    keys: {
+      masterFingerprintHex: rawState.keys?.masterFingerprintHex ?? "",
+      accountPath: rawState.keys?.accountPath ?? "",
+      accountXprv: rawState.keys?.accountXprv ?? "",
+      accountXpub: rawState.keys?.accountXpub ?? "",
+    },
+    descriptor: {
+      privateExternal: rawState.descriptor?.privateExternal ?? "",
+      publicExternal: rawState.descriptor?.publicExternal ?? "",
+      checksum: rawState.descriptor?.checksum ?? null,
+      rangeEnd: rawState.descriptor?.rangeEnd ?? 0,
+      safetyMargin: rawState.descriptor?.safetyMargin ?? 0,
+    },
+    funding: {
+      address: fundingAddress,
+      scriptPubKeyHex: fundingScriptPubKeyHex,
+    },
+    walletBirthTime: rawState.walletBirthTime ?? 0,
     managedCoreWallet: {
-      ...state.managedCoreWallet,
-      walletAddress: state.funding.address,
-      walletScriptPubKeyHex: state.funding.scriptPubKeyHex,
-      fundingAddress0: state.funding.address,
-      fundingScriptPubKeyHex0: state.funding.scriptPubKeyHex,
+      walletName: rawState.managedCoreWallet?.walletName ?? "",
+      internalPassphrase: rawState.managedCoreWallet?.internalPassphrase ?? "",
+      descriptorChecksum: rawState.managedCoreWallet?.descriptorChecksum ?? null,
+      walletAddress: rawState.managedCoreWallet?.walletAddress ?? fundingAddress,
+      walletScriptPubKeyHex: rawState.managedCoreWallet?.walletScriptPubKeyHex ?? fundingScriptPubKeyHex,
+      proofStatus: rawState.managedCoreWallet?.proofStatus ?? "not-proven",
+      lastImportedAtUnixMs: rawState.managedCoreWallet?.lastImportedAtUnixMs ?? null,
+      lastVerifiedAtUnixMs: rawState.managedCoreWallet?.lastVerifiedAtUnixMs ?? null,
     },
     identities: [{
       index: 0,
-      scriptPubKeyHex: state.funding.scriptPubKeyHex,
-      address: state.funding.address,
+      scriptPubKeyHex: fundingScriptPubKeyHex,
+      address: fundingAddress,
       status: "funding",
-      assignedDomainNames: normalizeAssignedDomains(state),
+      assignedDomainNames: normalizeDomains(rawState.domains)
+        .filter((domain) => domain.currentOwnerScriptPubKeyHex === fundingScriptPubKeyHex)
+        .map((domain) => domain.name),
     }],
-    domains: normalizeDomainLocalIndex(state, localScriptPubKeyHexes),
-    proactiveFamilies: (state.proactiveFamilies ?? []).filter((family) =>
-      family.status === "confirmed" || family.status === "canceled"
-    ),
-    pendingMutations: (state.pendingMutations ?? []).filter((mutation) =>
-      mutation.status === "confirmed" || mutation.status === "canceled"
-    ).map((mutation) => ({
-      ...mutation,
-      senderLocalIndex: mutation.senderScriptPubKeyHex === state.funding.scriptPubKeyHex ? 0 : null,
-      senderScriptPubKeyHex: state.funding.scriptPubKeyHex,
-      temporaryBuilderLockedOutpoints: [],
-    })),
+    domains: normalizeDomains(rawState.domains),
+    miningState: rawState.miningState!,
+    hookClientState: rawState.hookClientState!,
+    proactiveFamilies: [],
+    pendingMutations,
   };
 }
 
 export function normalizePortableWalletArchivePayload(
-  payload: PortableWalletArchivePayloadV1,
+  payload: Partial<PortableWalletArchivePayloadV1> & {
+    schemaVersion?: number;
+    localScriptPubKeyHexes?: string[] | null;
+    expected?: Partial<PortableWalletArchivePayloadV1["expected"]> & {
+      fundingAddress0?: string;
+      fundingScriptPubKeyHex0?: string;
+    };
+    identities?: Array<{ scriptPubKeyHex?: string | null }> | null;
+    domains?: LegacyWalletStateRecord["domains"];
+  },
 ): PortableWalletArchivePayloadV1 {
-  const walletScriptPubKeyHex = payload.expected.walletScriptPubKeyHex ?? payload.expected.fundingScriptPubKeyHex0;
-  const walletAddress = payload.expected.walletAddress ?? payload.expected.fundingAddress0;
+  const walletScriptPubKeyHex = payload.expected?.walletScriptPubKeyHex
+    ?? payload.expected?.fundingScriptPubKeyHex0
+    ?? "";
+  const walletAddress = payload.expected?.walletAddress
+    ?? payload.expected?.fundingAddress0
+    ?? "";
   const localScriptPubKeyHexes = uniqueStrings([
     walletScriptPubKeyHex,
     ...((payload.localScriptPubKeyHexes ?? [])),
-    ...((payload.identities ?? []).map((identity) => identity.scriptPubKeyHex)),
+    ...((payload.identities ?? []).map((identity) => identity.scriptPubKeyHex ?? "")),
   ]);
 
   return {
-    ...payload,
-    schemaVersion: 2,
+    schemaVersion: 3,
+    exportedAtUnixMs: payload.exportedAtUnixMs ?? 0,
+    walletRootId: payload.walletRootId ?? "",
+    network: payload.network ?? "mainnet",
+    anchorValueSats: payload.anchorValueSats ?? 2_000,
     localScriptPubKeyHexes,
-    proactiveReserveSats: 0,
-    proactiveReserveOutpoints: [],
-    nextDedicatedIndex: 1,
-    fundingIndex: 0,
+    mnemonic: {
+      phrase: payload.mnemonic?.phrase ?? "",
+      language: payload.mnemonic?.language ?? "english",
+    },
     expected: {
-      ...payload.expected,
+      masterFingerprintHex: payload.expected?.masterFingerprintHex ?? "",
+      accountPath: payload.expected?.accountPath ?? "",
+      accountXpub: payload.expected?.accountXpub ?? "",
+      publicExternalDescriptor: payload.expected?.publicExternalDescriptor ?? "",
+      descriptorChecksum: payload.expected?.descriptorChecksum ?? null,
+      rangeEnd: payload.expected?.rangeEnd ?? 0,
+      safetyMargin: payload.expected?.safetyMargin ?? 0,
       walletAddress,
       walletScriptPubKeyHex,
-      fundingAddress0: walletAddress,
-      fundingScriptPubKeyHex0: walletScriptPubKeyHex,
+      walletBirthTime: payload.expected?.walletBirthTime ?? 0,
     },
-    identities: [{
-      index: 0,
-      scriptPubKeyHex: walletScriptPubKeyHex,
-      address: walletAddress,
-      status: "funding",
-      assignedDomainNames: [],
-    }],
-    domains: (payload.domains ?? []).map((domain) => ({
-      ...domain,
-      dedicatedIndex: null,
-      currentOwnerLocalIndex: null,
-      localAnchorIntent: "none",
-    })),
-    proactiveFamilies: (payload.proactiveFamilies ?? []).filter((family) =>
-      family.status === "confirmed" || family.status === "canceled"
-    ),
+    domains: normalizeDomains(payload.domains),
+    miningState: payload.miningState!,
+    hookClientState: payload.hookClientState!,
   };
 }
 

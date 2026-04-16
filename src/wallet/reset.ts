@@ -394,39 +394,21 @@ function createEntropyRetainedWalletState(
 ): WalletStateV1 {
   const material = deriveWalletMaterialFromMnemonic(previousState.mnemonic.phrase);
   const walletRootId = createWalletRootId();
-  const preservedIndices = collectMnemonicDerivedIdentityIndices(previousState);
-  const identities = preservedIndices.map((index) => {
-    if (index === previousState.fundingIndex) {
-      return {
-        index,
-        scriptPubKeyHex: material.funding.scriptPubKeyHex,
-        address: material.funding.address,
-        status: "funding" as const,
-        assignedDomainNames: [],
-      };
-    }
-
-    const identityMaterial = deriveWalletIdentityMaterial(material.keys.accountXprv, index);
-    return {
-      index,
-      scriptPubKeyHex: identityMaterial.scriptPubKeyHex,
-      address: identityMaterial.address,
-      status: "dedicated" as const,
-      assignedDomainNames: [],
-    };
-  });
+  void collectMnemonicDerivedIdentityIndices;
+  void deriveWalletIdentityMaterial;
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 3,
     stateRevision: 1,
     lastWrittenAtUnixMs: nowUnixMs,
     walletRootId,
     network: previousState.network,
     anchorValueSats: previousState.anchorValueSats,
-    proactiveReserveSats: previousState.proactiveReserveSats,
-    proactiveReserveOutpoints: previousState.proactiveReserveOutpoints,
-    nextDedicatedIndex: previousState.nextDedicatedIndex,
-    fundingIndex: previousState.fundingIndex,
+    localScriptPubKeyHexes: [material.funding.scriptPubKeyHex],
+    proactiveReserveSats: 0,
+    proactiveReserveOutpoints: [],
+    nextDedicatedIndex: 1,
+    fundingIndex: 0,
     mnemonic: {
       phrase: previousState.mnemonic.phrase,
       language: previousState.mnemonic.language,
@@ -453,13 +435,21 @@ function createEntropyRetainedWalletState(
       walletName: sanitizeWalletName(walletRootId),
       internalPassphrase: createInternalCoreWalletPassphrase(),
       descriptorChecksum: null,
+      walletAddress: null,
+      walletScriptPubKeyHex: null,
       fundingAddress0: null,
       fundingScriptPubKeyHex0: null,
       proofStatus: "not-proven",
       lastImportedAtUnixMs: null,
       lastVerifiedAtUnixMs: null,
     },
-    identities,
+    identities: [{
+      index: 0,
+      scriptPubKeyHex: material.funding.scriptPubKeyHex,
+      address: material.funding.address,
+      status: "funding",
+      assignedDomainNames: [],
+    }],
     domains: [],
     miningState: {
       runMode: "stopped",
@@ -575,6 +565,8 @@ async function recreateManagedCoreWalletReplicaForReset(options: {
       ...options.state.managedCoreWallet,
       walletName,
       descriptorChecksum: normalizedDescriptors.checksum,
+      walletAddress: options.state.funding.address,
+      walletScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
       fundingAddress0: options.state.funding.address,
       fundingScriptPubKeyHex0: options.state.funding.scriptPubKeyHex,
       proofStatus: "ready",

@@ -9,7 +9,7 @@ import type {
 } from "../../bitcoind/types.js";
 import type { ClientTip } from "../../types.js";
 import type { MiningControlPlaneView } from "../mining/index.js";
-import type { DomainRecord as LocalDomainRecord, LocalIdentityRecord, WalletStateV1 } from "../types.js";
+import type { DomainRecord as LocalDomainRecord, WalletStateV1 } from "../types.js";
 
 export type WalletStateAvailability =
   | "uninitialized"
@@ -87,14 +87,14 @@ export interface WalletIdentityView {
   address: string | null;
   selectors: string[];
   assignedDomainNames: string[];
-  localStatus: LocalIdentityRecord["status"];
-  effectiveStatus: LocalIdentityRecord["status"];
+  localStatus: "funding";
+  effectiveStatus: "funding";
   canonicalDomainId: number | null;
   canonicalDomainName: string | null;
   ownedDomainNames: string[];
   anchoredOwnedDomainNames: string[];
   observedCogBalance: bigint | null;
-  readOnly: boolean;
+  readOnly: false;
 }
 
 export interface WalletDomainView {
@@ -108,7 +108,7 @@ export interface WalletDomainView {
   localRecord: LocalDomainRecord | null;
   chainFound: boolean;
   chainStatus: LocalDomainRecord["canonicalChainStatus"];
-  localAnchorIntent: LocalDomainRecord["localAnchorIntent"] | null;
+  localAnchorIntent: null;
   foundingMessageText: string | null;
   endpointText: string | null;
   delegateScriptPubKeyHex: string | null;
@@ -122,15 +122,15 @@ export interface WalletDomainView {
   totalRevokedCogtoshi: bigint | null;
   readOnly: boolean;
   localRelationship:
-    | "owned"
-    | "read-only"
-    | "tracked"
+    | "local"
     | "external"
     | "unknown";
 }
 
 export interface WalletReadModel {
   walletRootId: string;
+  walletAddress: string | null;
+  walletScriptPubKeyHex: string;
   fundingIdentity: WalletIdentityView | null;
   identities: WalletIdentityView[];
   domains: WalletDomainView[];
@@ -158,6 +158,7 @@ export interface WalletLockView {
   amountCogtoshi: bigint;
   timeoutHeight: number;
   lockerScriptPubKeyHex: string;
+  lockerLocal?: boolean;
   lockerLocalIndex: number | null;
   recipientDomainId: number;
   recipientDomainName: string | null;

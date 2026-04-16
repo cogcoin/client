@@ -20,26 +20,18 @@ export function isMineableWalletDomain(
   domain: WalletDomainView,
 ): boolean {
   const state = context.localState.state;
-  const model = context.model;
   const snapshot = context.snapshot;
 
-  if (state === null || model === null || snapshot === null) {
+  if (state === null || context.model === null || snapshot === null) {
     return false;
   }
 
-  if (!isRootDomainName(domain.name) || domain.anchored !== true || domain.readOnly || domain.ownerLocalIndex === null || domain.domainId === null) {
+  if (!isRootDomainName(domain.name) || domain.anchored !== true || domain.readOnly || domain.localRelationship !== "local" || domain.domainId === null) {
     return false;
   }
 
   const localRecord = state.domains.find((entry) => entry.name === domain.name);
-  const ownerIdentity = model.identities.find((identity) => identity.index === domain.ownerLocalIndex);
-
-  if (
-    localRecord?.currentCanonicalAnchorOutpoint === null
-    || localRecord?.currentCanonicalAnchorOutpoint === undefined
-    || ownerIdentity?.address == null
-    || ownerIdentity.readOnly
-  ) {
+  if (localRecord?.currentCanonicalAnchorOutpoint == null) {
     return false;
   }
 
