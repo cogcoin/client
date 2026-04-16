@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { access, constants, mkdir, readFile, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { resolveWalletRuntimePathsForTesting } from "../runtime.js";
@@ -86,6 +86,10 @@ function createLinuxSecretToolAttributes(keyId: string): string[] {
 }
 
 function createLinuxSecretToolError(message: string, cause?: unknown): Error {
+  return cause === undefined ? new Error(message) : new Error(message, { cause });
+}
+
+function createWalletSecretProviderError(message: string, cause?: unknown): Error {
   return cause === undefined ? new Error(message) : new Error(message, { cause });
 }
 
@@ -336,16 +340,58 @@ class LinuxSecretToolWalletSecretProvider implements WalletSecretProvider {
   }
 }
 
-class LinuxLocalFileWalletSecretProvider implements WalletSecretProvider {
-  readonly kind = "linux-local-file";
+class LocalFileWalletSecretProvider implements WalletSecretProvider {
+  readonly kind: string;
   readonly #directoryPath: string;
+  readonly #runtimeErrorCode: string;
+  readonly #legacyUnsupportedErrorCode: string | null;
+  readonly #legacyFileExtension: string | null;
 
-  constructor(directoryPath: string) {
-    this.#directoryPath = directoryPath;
+  constructor(options: {
+    directoryPath: string;
+    kind: string;
+    legacyFileExtension?: string;
+    legacyUnsupportedErrorCode?: string;
+    runtimeErrorCode: string;
+  }) {
+    this.kind = options.kind;
+    this.#directoryPath = options.directoryPath;
+    this.#runtimeErrorCode = options.runtimeErrorCode;
+    this.#legacyUnsupportedErrorCode = options.legacyUnsupportedErrorCode ?? null;
+    this.#legacyFileExtension = options.legacyFileExtension ?? null;
   }
 
   #resolveSecretPath(keyId: string): string {
     return join(this.#directoryPath, `${sanitizeSecretKeyId(keyId)}.secret`);
+  }
+
+  #resolveLegacySecretPath(keyId: string): string | null {
+    return this.#legacyFileExtension === null
+      ? null
+      : join(this.#directoryPath, `${sanitizeSecretKeyId(keyId)}${this.#legacyFileExtension}`);
+  }
+
+  async #throwMissingSecretError(keyId: string): Promise<never> {
+    const legacyPath = this.#resolveLegacySecretPath(keyId);
+
+    if (legacyPath !== null && this.#legacyUnsupportedErrorCode !== null) {
+      try {
+        await access(legacyPath, constants.F_OK);
+        throw new Error(this.#legacyUnsupportedErrorCode);
+      } catch (error) {
+        if (error instanceof Error && error.message === this.#legacyUnsupportedErrorCode) {
+          throw error;
+        }
+
+        if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new Error(`wallet_secret_missing_${keyId}`);
+        }
+
+        throw createWalletSecretProviderError(this.#runtimeErrorCode, error);
+      }
+    }
+
+    throw new Error(`wallet_secret_missing_${keyId}`);
   }
 
   async hasSecret(keyId: string): Promise<boolean> {
@@ -363,10 +409,10 @@ class LinuxLocalFileWalletSecretProvider implements WalletSecretProvider {
       return base64ToBytes(encoded.trim());
     } catch (error) {
       if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new Error(`wallet_secret_missing_${keyId}`);
+        await this.#throwMissingSecretError(keyId);
       }
 
-      throw createLinuxSecretToolError("wallet_secret_provider_linux_runtime_error", error);
+      throw createWalletSecretProviderError(this.#runtimeErrorCode, error);
     }
   }
 
@@ -375,23 +421,32 @@ class LinuxLocalFileWalletSecretProvider implements WalletSecretProvider {
       await mkdir(this.#directoryPath, { recursive: true, mode: 0o700 });
       await writeFileAtomic(this.#resolveSecretPath(keyId), `${bytesToBase64(secret)}\n`, { mode: 0o600 });
     } catch (error) {
-      throw createLinuxSecretToolError("wallet_secret_provider_linux_runtime_error", error);
+      throw createWalletSecretProviderError(this.#runtimeErrorCode, error);
     }
   }
 
   async deleteSecret(keyId: string): Promise<void> {
-    await rm(this.#resolveSecretPath(keyId), { force: true }).catch(() => undefined);
+    const secretPaths = [this.#resolveSecretPath(keyId)];
+    const legacyPath = this.#resolveLegacySecretPath(keyId);
+
+    if (legacyPath !== null) {
+      secretPaths.push(legacyPath);
+    }
+
+    await Promise.allSettled(secretPaths.map(async (secretPath) => {
+      await rm(secretPath, { force: true }).catch(() => undefined);
+    }));
   }
 }
 
 class LinuxFallbackWalletSecretProvider implements WalletSecretProvider {
   readonly kind = "linux-secret-service-fallback";
   readonly #secretService: LinuxSecretToolWalletSecretProvider;
-  readonly #fileProvider: LinuxLocalFileWalletSecretProvider;
+  readonly #fileProvider: LocalFileWalletSecretProvider;
 
   constructor(options: {
     secretService: LinuxSecretToolWalletSecretProvider;
-    fileProvider: LinuxLocalFileWalletSecretProvider;
+    fileProvider: LocalFileWalletSecretProvider;
   }) {
     this.#secretService = options.secretService;
     this.#fileProvider = options.fileProvider;
@@ -466,50 +521,6 @@ class LinuxFallbackWalletSecretProvider implements WalletSecretProvider {
   }
 }
 
-class WindowsDpapiWalletSecretProvider implements WalletSecretProvider {
-  readonly kind = "windows-dpapi";
-  readonly #directoryPath: string;
-
-  constructor(directoryPath: string) {
-    this.#directoryPath = directoryPath;
-  }
-
-  #resolveSecretPath(keyId: string): string {
-    const fileId = keyId.replace(/[^a-zA-Z0-9._-]+/g, "-");
-    return join(this.#directoryPath, `${fileId}.dpapi`);
-  }
-
-  async loadSecret(keyId: string): Promise<Uint8Array> {
-    const secretPath = this.#resolveSecretPath(keyId);
-    const encoded = await readFile(secretPath, "utf8");
-    const { stdout } = await execFileAsync("powershell.exe", [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "$data=[Convert]::FromBase64String($args[0]);$value=[System.Security.Cryptography.ProtectedData]::Unprotect($data,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser);[Console]::Out.Write([Convert]::ToBase64String($value));",
-      encoded.trim(),
-    ]);
-    return base64ToBytes(stdout.trim());
-  }
-
-  async storeSecret(keyId: string, secret: Uint8Array): Promise<void> {
-    const secretPath = this.#resolveSecretPath(keyId);
-    await mkdir(dirname(secretPath), { recursive: true });
-    const { stdout } = await execFileAsync("powershell.exe", [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "$data=[Convert]::FromBase64String($args[0]);$value=[System.Security.Cryptography.ProtectedData]::Protect($data,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser);[Console]::Out.Write([Convert]::ToBase64String($value));",
-      bytesToBase64(secret),
-    ]);
-    await writeFileAtomic(secretPath, `${stdout.trim()}\n`, { mode: 0o600 });
-  }
-
-  async deleteSecret(keyId: string): Promise<void> {
-    await rm(this.#resolveSecretPath(keyId), { force: true }).catch(() => undefined);
-  }
-}
-
 function createWalletSecretProviderForPlatform(
   platform: NodeJS.Platform,
   options: DefaultWalletSecretProviderFactoryOptions = {},
@@ -519,15 +530,23 @@ function createWalletSecretProviderForPlatform(
   }
 
   if (platform === "win32") {
-    return new WindowsDpapiWalletSecretProvider(
-      resolveSecretDirectoryPath(options),
-    );
+    return new LocalFileWalletSecretProvider({
+      directoryPath: resolveSecretDirectoryPath(options),
+      kind: "windows-local-file",
+      legacyFileExtension: ".dpapi",
+      legacyUnsupportedErrorCode: "wallet_secret_provider_windows_legacy_dpapi_unsupported",
+      runtimeErrorCode: "wallet_secret_provider_windows_runtime_error",
+    });
   }
 
   if (platform === "linux") {
     return new LinuxFallbackWalletSecretProvider({
       secretService: new LinuxSecretToolWalletSecretProvider(options.linuxSecretToolRunner),
-      fileProvider: new LinuxLocalFileWalletSecretProvider(resolveSecretDirectoryPath(options)),
+      fileProvider: new LocalFileWalletSecretProvider({
+        directoryPath: resolveSecretDirectoryPath(options),
+        kind: "linux-local-file",
+        runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
+      }),
     });
   }
 

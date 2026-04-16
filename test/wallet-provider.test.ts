@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -86,6 +86,10 @@ function createInMemoryLinuxSecretToolRunner(): LinuxSecretToolRunner {
 
 async function createTempStateRoot(prefix: string): Promise<string> {
   return await mkdtemp(join(tmpdir(), prefix));
+}
+
+function sanitizeSecretKeyIdForTest(keyId: string): string {
+  return keyId.replace(/[^a-zA-Z0-9._-]+/g, "-");
 }
 
 test("Linux default secret provider stores, loads, and deletes secrets through the secret-tool contract", async () => {
@@ -238,4 +242,60 @@ test("Linux default secret provider deletes both Secret Service and local fallba
     () => provider.loadSecret(keyId),
     /wallet_secret_missing_wallet-state:wallet-root-test/,
   );
+});
+
+test("Windows default secret provider stores, loads, and deletes local secret files", async () => {
+  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-win32-local-file-");
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "win32",
+    stateRoot,
+  });
+  const keyId = createWalletSecretReference("wallet-root-test").keyId;
+  const secret = Buffer.alloc(32, 23);
+  const secretPath = join(stateRoot, "secrets", `${sanitizeSecretKeyIdForTest(keyId)}.secret`);
+
+  await provider.storeSecret(keyId, secret);
+
+  assert.equal(await readFile(secretPath, "utf8"), `${secret.toString("base64")}\n`);
+  assert.deepEqual(await provider.loadSecret(keyId), new Uint8Array(secret));
+
+  await provider.deleteSecret(keyId);
+  await assert.rejects(() => provider.loadSecret(keyId), /wallet_secret_missing_wallet-state:wallet-root-test/);
+});
+
+test("Windows default secret provider reports unsupported legacy DPAPI secrets when no .secret file exists", async () => {
+  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-win32-legacy-dpapi-");
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "win32",
+    stateRoot,
+  });
+  const keyId = createWalletSecretReference("wallet-root-test").keyId;
+  const legacyPath = join(stateRoot, "secrets", `${sanitizeSecretKeyIdForTest(keyId)}.dpapi`);
+
+  await mkdir(join(stateRoot, "secrets"), { recursive: true });
+  await writeFile(legacyPath, "Zm9v\n");
+
+  await assert.rejects(
+    () => provider.loadSecret(keyId),
+    /wallet_secret_provider_windows_legacy_dpapi_unsupported/,
+  );
+});
+
+test("Windows default secret provider prefers .secret files over legacy .dpapi leftovers", async () => {
+  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-win32-legacy-precedence-");
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "win32",
+    stateRoot,
+  });
+  const keyId = createWalletSecretReference("wallet-root-test").keyId;
+  const secret = Buffer.alloc(32, 29);
+  const legacyPath = join(stateRoot, "secrets", `${sanitizeSecretKeyIdForTest(keyId)}.dpapi`);
+
+  await provider.storeSecret(keyId, secret);
+  await writeFile(legacyPath, "YmFy\n");
+
+  assert.deepEqual(await provider.loadSecret(keyId), new Uint8Array(secret));
+
+  await provider.deleteSecret(keyId);
+  await assert.rejects(() => provider.loadSecret(keyId), /wallet_secret_missing_wallet-state:wallet-root-test/);
 });

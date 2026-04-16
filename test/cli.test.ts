@@ -35,3 +35,12 @@ test("CLI error text uses wallet-address wording", () => {
   assert.match(notLocal.join("\n"), /wallet that controls the owner/);
   assert.doesNotMatch(notLocal.join("\n"), /owner identity|anchored owner identity/);
 });
+
+test("CLI error text explains the legacy Windows DPAPI break", () => {
+  const formatted = formatCliTextError(new Error("wallet_secret_provider_windows_legacy_dpapi_unsupported")) ?? [];
+  const rendered = formatted.join("\n");
+
+  assert.match(rendered, /legacy Windows/i);
+  assert.match(rendered, /\.dpapi/);
+  assert.match(rendered, /recover|reimport/i);
+});

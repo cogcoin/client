@@ -86,6 +86,10 @@ function describeLockedWalletMessage(options: {
     return "Wallet state exists but requires the local wallet-state passphrase.";
   }
 
+  if (message === "wallet_secret_provider_windows_legacy_dpapi_unsupported") {
+    return "Wallet state exists but still depends on a legacy Windows `.dpapi` secret. This version no longer reads that secret-store format; recover or reimport the wallet because the old Windows secret is not auto-migrated.";
+  }
+
   if (message.startsWith("wallet_secret_provider_")) {
     return "Wallet state exists but the local secret provider is unavailable.";
   }

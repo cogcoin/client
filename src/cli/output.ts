@@ -452,6 +452,8 @@ function isBlockedError(message: string): boolean {
     || message === "wallet_secret_provider_linux_secret_tool_missing"
     || message === "wallet_secret_provider_linux_secret_service_unavailable"
     || message === "wallet_secret_provider_linux_runtime_error"
+    || message === "wallet_secret_provider_windows_runtime_error"
+    || message === "wallet_secret_provider_windows_legacy_dpapi_unsupported"
   ) {
     return true;
   }
@@ -869,6 +871,22 @@ export function createCliErrorPresentation(
       what: "Linux secret-store operation failed.",
       why: "`secret-tool` ran but did not complete a usable wallet-secret operation for this command.",
       next: "Check that Secret Service is running correctly on this machine, then retry.",
+    };
+  }
+
+  if (errorCode === "wallet_secret_provider_windows_runtime_error") {
+    return {
+      what: "Windows local wallet-secret access failed.",
+      why: "Cogcoin could not read or write the local wallet secret file for this Windows account.",
+      next: "Check that the Cogcoin state directory is readable and writable for this Windows user, then retry.",
+    };
+  }
+
+  if (errorCode === "wallet_secret_provider_windows_legacy_dpapi_unsupported") {
+    return {
+      what: "Legacy Windows `.dpapi` wallet secrets are no longer supported.",
+      why: "This wallet still points at an older Windows secret-store entry, but this version now uses local `.secret` files only and does not auto-migrate the old secret material.",
+      next: "Recover or reimport the wallet on this version, then retry the command.",
     };
   }
 
