@@ -1,9 +1,10 @@
 import { dirname } from "node:path";
 
 import { formatManagedSyncErrorMessage } from "../../bitcoind/errors.js";
+import { FileLockBusyError, acquireFileLock } from "../../wallet/fs/lock.js";
 import { resolveWalletRootIdFromLocalArtifacts } from "../../wallet/root-resolution.js";
 import { writeLine } from "../io.js";
-import { classifyCliError } from "../output.js";
+import { classifyCliError, formatCliTextError } from "../output.js";
 import { createStopSignalWatcher, waitForCompletionOrStop } from "../signals.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 
@@ -13,18 +14,36 @@ export async function runSyncCommand(
 ): Promise<number> {
   const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
   const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-  const walletRoot = await resolveWalletRootIdFromLocalArtifacts({
-    paths: context.resolveWalletRuntimePaths(),
-    provider: context.walletSecretProvider,
-    loadRawWalletStateEnvelope: context.loadRawWalletStateEnvelope,
-    loadUnlockSession: context.loadUnlockSession,
-    loadWalletExplicitLock: context.loadWalletExplicitLock,
-  });
-  await context.ensureDirectory(dirname(dbPath));
-  const store = await context.openSqliteStore({ filename: dbPath });
+  const runtimePaths = context.resolveWalletRuntimePaths();
+  let controlLock: Awaited<ReturnType<typeof acquireFileLock>> | null = null;
+  let store: Awaited<ReturnType<typeof context.openSqliteStore>> | null = null;
   let storeOwned = true;
 
   try {
+    const walletRoot = await resolveWalletRootIdFromLocalArtifacts({
+      paths: runtimePaths,
+      provider: context.walletSecretProvider,
+      loadRawWalletStateEnvelope: context.loadRawWalletStateEnvelope,
+      loadUnlockSession: context.loadUnlockSession,
+      loadWalletExplicitLock: context.loadWalletExplicitLock,
+    });
+
+    try {
+      controlLock = await acquireFileLock(runtimePaths.walletControlLockPath, {
+        purpose: "managed-sync",
+        walletRootId: walletRoot.walletRootId,
+      });
+    } catch (error) {
+      if (error instanceof FileLockBusyError) {
+        throw new Error("wallet_control_lock_busy");
+      }
+
+      throw error;
+    }
+
+    await context.ensureDirectory(dirname(dbPath));
+    store = await context.openSqliteStore({ filename: dbPath });
+
     const client = await context.openManagedBitcoindClient({
       store,
       databasePath: dbPath,
@@ -33,7 +52,13 @@ export async function runSyncCommand(
       progressOutput: parsed.progressOutput,
     });
     storeOwned = false;
-    const stopWatcher = createStopSignalWatcher(context.signalSource, context.stderr, client, context.forceExit);
+    const stopWatcher = createStopSignalWatcher(
+      context.signalSource,
+      context.stderr,
+      client,
+      context.forceExit,
+      [runtimePaths.walletControlLockPath],
+    );
 
     try {
       const syncOutcome = await waitForCompletionOrStop(client.syncToTip(), stopWatcher);
@@ -65,11 +90,28 @@ export async function runSyncCommand(
       await client.close();
     }
   } catch (error) {
-    const message = formatManagedSyncErrorMessage(error instanceof Error ? error.message : String(error));
-    writeLine(context.stderr, `sync failed: ${message}`);
-    if (storeOwned) {
+    const classified = classifyCliError(error);
+
+    if (classified.errorCode === "wallet_control_lock_busy") {
+      const formatted = formatCliTextError(error);
+
+      if (formatted !== null) {
+        for (const line of formatted) {
+          writeLine(context.stderr, line);
+        }
+      } else {
+        writeLine(context.stderr, classified.message);
+      }
+    } else {
+      const message = formatManagedSyncErrorMessage(error instanceof Error ? error.message : String(error));
+      writeLine(context.stderr, `sync failed: ${message}`);
+    }
+
+    if (storeOwned && store !== null) {
       await store.close().catch(() => undefined);
     }
-    return classifyCliError(error).exitCode;
+    return classified.exitCode;
+  } finally {
+    await controlLock?.release().catch(() => undefined);
   }
 }

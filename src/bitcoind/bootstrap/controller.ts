@@ -33,6 +33,8 @@ async function loadSnapshotIntoNode(
   return rpc.loadTxOutSet(snapshotPath);
 }
 
+type ResumeDisplayMode = "sync" | "follow";
+
 export class AssumeUtxoBootstrapController {
   readonly #rpc: BitcoinRpcClient;
   readonly #paths: BootstrapPaths;
@@ -71,7 +73,11 @@ export class AssumeUtxoBootstrapController {
   async ensureReady(
     indexedTip: ClientTip | null,
     expectedChain: "main" | "regtest",
-    options: { signal?: AbortSignal; retryState?: ManagedRpcRetryState } = {},
+    options: {
+      signal?: AbortSignal;
+      retryState?: ManagedRpcRetryState;
+      resumeDisplayMode?: ResumeDisplayMode;
+    } = {},
   ): Promise<void> {
     if (expectedChain !== "main") {
       await this.#progress.setPhase("paused", {
@@ -82,11 +88,13 @@ export class AssumeUtxoBootstrapController {
     }
 
     if (indexedTip !== null) {
-      await this.#progress.setPhase("follow_tip", {
-        blocks: indexedTip.height,
-        targetHeight: indexedTip.height,
-        message: "Resuming from the persisted Cogcoin indexed tip.",
-      });
+      if ((options.resumeDisplayMode ?? "sync") === "follow") {
+        await this.#progress.setPhase("follow_tip", {
+          blocks: indexedTip.height,
+          targetHeight: indexedTip.height,
+          message: "Resuming from the persisted Cogcoin indexed tip.",
+        });
+      }
       return;
     }
 

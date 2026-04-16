@@ -420,6 +420,13 @@ export function classifyCliError(error: unknown): {
 
 function isBlockedError(message: string): boolean {
   if (
+    message === "wallet_control_lock_busy"
+    || message.startsWith("file_lock_busy_")
+  ) {
+    return true;
+  }
+
+  if (
     message === "wallet_locked"
     || message === "wallet_uninitialized"
     || message === "local-state-corrupt"
@@ -486,6 +493,14 @@ export function createCliErrorPresentation(
       what: "Wallet is locked.",
       why: "This command needs access to the unlocked local wallet state before it can continue. Provider-backed wallets unlock on demand unless they were explicitly locked or the local secret store is unavailable.",
       next: "Run `cogcoin unlock --for 15m` and retry.",
+    };
+  }
+
+  if (errorCode === "wallet_control_lock_busy") {
+    return {
+      what: "Another Cogcoin command is already controlling this wallet.",
+      why: "Commands that sync, follow, or mutate the local index take an exclusive wallet control lock so they do not write the same sqlite store concurrently.",
+      next: "Wait for the other Cogcoin command to finish, or stop it cleanly before retrying.",
     };
   }
 

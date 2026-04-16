@@ -185,7 +185,7 @@ export function resolveStatusFieldText(
     case "follow_tip":
       return `Waiting for next block to be mined${animateStatusEllipsis(now)}`;
     case "complete":
-      return `Syncing Cogcoin Blocks${animateStatusEllipsis(now)}`;
+      return `Sync complete${animateStatusEllipsis(now)}`;
     case "error":
       return progress.lastError === null
         ? progress.message

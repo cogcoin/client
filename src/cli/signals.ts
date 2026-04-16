@@ -13,6 +13,7 @@ export function createStopSignalWatcher(
   stderr: WritableLike,
   client: ManagedClientLike,
   forceExit: (code: number) => never | void,
+  lockPaths: readonly string[] = [],
 ): StopSignalWatcher {
   let closing = false;
   let resolved = false;
@@ -34,18 +35,28 @@ export function createStopSignalWatcher(
       resolve(code);
     };
 
+    const releaseOwnedLocks = async (): Promise<void> => {
+      await Promise.allSettled(
+        [...new Set(lockPaths)].map(async (lockPath) => {
+          await clearLockIfOwnedByCurrentProcess(lockPath);
+        }),
+      );
+    };
+
     const onFirstSignal = (): void => {
       closing = true;
       writeLine(stderr, "Detaching from managed Cogcoin client and resuming background indexer follow...");
       void client.close().then(
-        () => {
+        async () => {
+          await releaseOwnedLocks();
           if (resolved) {
             return;
           }
           writeLine(stderr, "Detached cleanly; background indexer follow resumed.");
           settle(0);
         },
-        () => {
+        async () => {
+          await releaseOwnedLocks();
           if (resolved) {
             return;
           }
@@ -62,7 +73,13 @@ export function createStopSignalWatcher(
       }
 
       settle(130);
-      forceExit(130);
+      if (lockPaths.length === 0) {
+        forceExit(130);
+        return;
+      }
+      void releaseOwnedLocks().finally(() => {
+        forceExit(130);
+      });
     };
   });
 

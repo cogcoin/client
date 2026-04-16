@@ -136,16 +136,26 @@ function createProgressRecorder(initialPhase: BootstrapPhase = "paused"): {
 function createSyncDependencies(options: {
   startHeight: number;
   progressPhase?: BootstrapPhase;
+  initialTip?: ClientTip | null;
+  targetHeightCap?: number | null;
   getblockArchiveEndHeight?: number | null;
   validate?: () => Promise<void>;
-  ensureReady?: () => Promise<void>;
+  ensureReady?: (
+    indexedTip: ClientTip | null,
+    expectedChain: "main" | "regtest",
+    options?: {
+      signal?: AbortSignal;
+      retryState?: unknown;
+      resumeDisplayMode?: "sync" | "follow";
+    },
+  ) => Promise<void>;
   getBlockchainInfo: () => Promise<RpcBlockchainInfo>;
   getBlockHash?: (height: number) => Promise<string>;
   getBlock?: (hash: string) => Promise<RpcBlock>;
   isFollowing?: boolean;
   loadVisibleFollowBlockTimes?: (tip: ClientTip | null) => Promise<Record<number, number>>;
 }) {
-  let tip: ClientTip | null = null;
+  let tip: ClientTip | null = options.initialTip ?? null;
   const appliedHeights: number[] = [];
   const { progress, phases, messages, lastErrors } = createProgressRecorder(options.progressPhase);
 
@@ -223,11 +233,20 @@ function createSyncDependencies(options: {
       },
       progress,
       bootstrap: {
-        async ensureReady() {
-          await (options.ensureReady?.() ?? Promise.resolve());
+        async ensureReady(
+          indexedTip: ClientTip | null,
+          expectedChain: "main" | "regtest",
+          ensureOptions?: {
+            signal?: AbortSignal;
+            retryState?: unknown;
+            resumeDisplayMode?: "sync" | "follow";
+          },
+        ) {
+          await (options.ensureReady?.(indexedTip, expectedChain, ensureOptions) ?? Promise.resolve());
         },
       },
       startHeight: options.startHeight,
+      targetHeightCap: options.targetHeightCap ?? null,
       bitcoinRateTracker: createBlockRateTracker(),
       cogcoinRateTracker: createBlockRateTracker(),
       abortSignal: undefined,
@@ -263,6 +282,74 @@ test("syncToTip retries a transient managed RPC timeout during bitcoin sync poll
   assert.ok(messages.includes("Managed Bitcoin RPC temporarily unavailable; retrying until canceled."));
   assert.match(lastErrors[0] ?? "", /getblockchaininfo failed/);
   assert.equal(phases.includes("error"), false);
+});
+
+test("syncToTip suppresses follow_tip when resuming an indexed tip during sync", async () => {
+  const resumeDisplayModes: Array<"sync" | "follow" | undefined> = [];
+  const { dependencies, appliedHeights, phases } = createSyncDependencies({
+    startHeight: 100,
+    initialTip: {
+      height: 100,
+      blockHashHex: "64".repeat(32),
+      previousHashHex: "63".repeat(32),
+      stateHashHex: null,
+    },
+    ensureReady: async (_indexedTip, _expectedChain, options) => {
+      resumeDisplayModes.push(options?.resumeDisplayMode);
+    },
+    async getBlockchainInfo() {
+      return createBlockchainInfo(101, 101);
+    },
+    async getBlock(hash: string) {
+      return createRpcBlock(101, hash, "64".repeat(32));
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.deepEqual(resumeDisplayModes, ["sync"]);
+  assert.deepEqual(appliedHeights, [101]);
+  assert.equal(result.endingHeight, 101);
+  assert.equal(phases.includes("follow_tip"), false);
+  assert.deepEqual(phases, [
+    "cogcoin_sync",
+    "cogcoin_sync",
+    "complete",
+  ]);
+});
+
+test("syncToTip still uses follow_tip when resuming an indexed tip during follow mode", async () => {
+  const resumeDisplayModes: Array<"sync" | "follow" | undefined> = [];
+  const { dependencies, phases } = createSyncDependencies({
+    startHeight: 100,
+    initialTip: {
+      height: 100,
+      blockHashHex: "64".repeat(32),
+      previousHashHex: "63".repeat(32),
+      stateHashHex: null,
+    },
+    isFollowing: true,
+    ensureReady: async (indexedTip, _expectedChain, options) => {
+      resumeDisplayModes.push(options?.resumeDisplayMode);
+      if (options?.resumeDisplayMode === "follow" && indexedTip !== null) {
+        await dependencies.progress.setPhase("follow_tip", {
+          blocks: indexedTip.height,
+          targetHeight: indexedTip.height,
+          message: "Resuming from the persisted Cogcoin indexed tip.",
+        });
+      }
+    },
+    async getBlockchainInfo() {
+      return createBlockchainInfo(100, 100);
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.deepEqual(resumeDisplayModes, ["follow"]);
+  assert.equal(result.endingHeight, 100);
+  assert.ok(phases.includes("follow_tip"));
+  assert.equal(phases.at(-1), "follow_tip");
 });
 
 test("syncToTip keeps the progress phase on cogcoin_sync while Bitcoin advances during replay", async () => {
@@ -303,6 +390,152 @@ test("syncToTip keeps the progress phase on cogcoin_sync while Bitcoin advances 
     "cogcoin_sync",
     "cogcoin_sync",
     "complete",
+  ]);
+});
+
+test("syncToTip does not immediately flip back to bitcoin_sync when Cogcoin just caught up to the current block tip", async () => {
+  const blockchainInfoSequence = [
+    createBlockchainInfo(100, 101),
+    createBlockchainInfo(100, 101),
+    createBlockchainInfo(101, 101),
+    createBlockchainInfo(101, 101),
+  ];
+  let blockchainInfoIndex = 0;
+
+  const { dependencies, appliedHeights, phases } = createSyncDependencies({
+    startHeight: 100,
+    async getBlockchainInfo() {
+      const info = blockchainInfoSequence[Math.min(blockchainInfoIndex, blockchainInfoSequence.length - 1)]!;
+      blockchainInfoIndex += 1;
+      return info;
+    },
+    async getBlock(hash: string) {
+      const height = Number.parseInt(hash.slice(0, 2), 16);
+      const previousHeight = height - 1;
+      return createRpcBlock(
+        height,
+        hash,
+        previousHeight >= 100 ? `${previousHeight.toString(16).padStart(2, "0")}`.repeat(32) : undefined,
+      );
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.deepEqual(appliedHeights, [100, 101]);
+  assert.equal(result.endingHeight, 101);
+  assert.deepEqual(phases, [
+    "cogcoin_sync",
+    "cogcoin_sync",
+    "cogcoin_sync",
+    "cogcoin_sync",
+    "complete",
+  ]);
+});
+
+test("syncToTip does not re-enter bitcoin_sync during a brief idle poll before the next replay block arrives", async () => {
+  const blockchainInfoSequence = [
+    createBlockchainInfo(100, 101),
+    createBlockchainInfo(100, 101),
+    createBlockchainInfo(100, 101),
+    createBlockchainInfo(101, 101),
+    createBlockchainInfo(101, 101),
+    createBlockchainInfo(101, 101),
+  ];
+  let blockchainInfoIndex = 0;
+
+  const { dependencies, appliedHeights, phases } = createSyncDependencies({
+    startHeight: 100,
+    progressPhase: "cogcoin_sync",
+    initialTip: {
+      height: 100,
+      blockHashHex: "64".repeat(32),
+      previousHashHex: "63".repeat(32),
+      stateHashHex: null,
+    },
+    async getBlockchainInfo() {
+      const info = blockchainInfoSequence[Math.min(blockchainInfoIndex, blockchainInfoSequence.length - 1)]!;
+      blockchainInfoIndex += 1;
+      return info;
+    },
+    async getBlock(hash: string) {
+      const height = Number.parseInt(hash.slice(0, 2), 16);
+      const previousHeight = height - 1;
+      return createRpcBlock(
+        height,
+        hash,
+        previousHeight >= 100 ? `${previousHeight.toString(16).padStart(2, "0")}`.repeat(32) : undefined,
+      );
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.deepEqual(appliedHeights, [101]);
+  assert.equal(result.endingHeight, 101);
+  assert.equal(phases.includes("bitcoin_sync"), false);
+  assert.deepEqual(phases, [
+    "cogcoin_sync",
+    "cogcoin_sync",
+    "complete",
+  ]);
+});
+
+test("syncToTip does not emit complete for an internal capped pass", async () => {
+  const { dependencies, appliedHeights, phases } = createSyncDependencies({
+    startHeight: 100,
+    targetHeightCap: 100,
+    async getBlockchainInfo() {
+      return createBlockchainInfo(100, 101);
+    },
+    async getBlock(hash: string) {
+      return createRpcBlock(100, hash, "63".repeat(32));
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.deepEqual(appliedHeights, [100]);
+  assert.equal(result.endingHeight, 100);
+  assert.equal(result.bestHeight, 100);
+  assert.equal(phases.includes("complete"), false);
+  assert.deepEqual(phases, [
+    "cogcoin_sync",
+    "cogcoin_sync",
+  ]);
+});
+
+test("syncToTip does not alternate between bitcoin_sync and follow_tip across capped sync passes", async () => {
+  const resumeDisplayModes: Array<"sync" | "follow" | undefined> = [];
+  const { dependencies, appliedHeights, phases } = createSyncDependencies({
+    startHeight: 100,
+    initialTip: {
+      height: 100,
+      blockHashHex: "64".repeat(32),
+      previousHashHex: "63".repeat(32),
+      stateHashHex: null,
+    },
+    targetHeightCap: 101,
+    ensureReady: async (_indexedTip, _expectedChain, options) => {
+      resumeDisplayModes.push(options?.resumeDisplayMode);
+    },
+    async getBlockchainInfo() {
+      return createBlockchainInfo(101, 102);
+    },
+    async getBlock(hash: string) {
+      return createRpcBlock(101, hash, "64".repeat(32));
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.deepEqual(resumeDisplayModes, ["sync"]);
+  assert.deepEqual(appliedHeights, [101]);
+  assert.equal(result.endingHeight, 101);
+  assert.equal(phases.includes("follow_tip"), false);
+  assert.deepEqual(phases, [
+    "cogcoin_sync",
+    "cogcoin_sync",
   ]);
 });
 

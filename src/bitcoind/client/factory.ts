@@ -7,7 +7,11 @@ import {
   DEFAULT_SNAPSHOT_METADATA,
   resolveBootstrapPathsForTesting,
 } from "../bootstrap.js";
-import { attachOrStartIndexerDaemon } from "../indexer-daemon.js";
+import {
+  attachOrStartIndexerDaemon,
+  stopIndexerDaemonService,
+  type IndexerDaemonClient,
+} from "../indexer-daemon.js";
 import { createRpcClient } from "../node.js";
 import {
   assertCogcoinProcessingStartHeight,
@@ -24,6 +28,53 @@ import type {
 import { DefaultManagedBitcoindClient } from "./managed-client.js";
 
 const DEFAULT_SYNC_DEBOUNCE_MS = 250;
+
+function isRecoverableIndexerDaemonPauseError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  if (
+    error.message === "indexer_daemon_request_timeout"
+    || error.message === "indexer_daemon_connection_closed"
+    || error.message === "indexer_daemon_protocol_error"
+  ) {
+    return true;
+  }
+
+  if ("code" in error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ECONNREFUSED" || code === "ECONNRESET";
+  }
+
+  return false;
+}
+
+export async function pauseIndexerDaemonForForegroundClientForTesting(options: {
+  daemon: IndexerDaemonClient;
+  dataDir: string;
+  walletRootId: string;
+  shutdownTimeoutMs?: number;
+  stopDaemon?: typeof stopIndexerDaemonService;
+}): Promise<IndexerDaemonClient | null> {
+  try {
+    await options.daemon.pauseBackgroundFollow();
+    return options.daemon;
+  } catch (error) {
+    await options.daemon.close().catch(() => undefined);
+
+    if (!isRecoverableIndexerDaemonPauseError(error)) {
+      throw error;
+    }
+
+    await (options.stopDaemon ?? stopIndexerDaemonService)({
+      dataDir: options.dataDir,
+      walletRootId: options.walletRootId,
+      shutdownTimeoutMs: options.shutdownTimeoutMs,
+    });
+    return null;
+  }
+}
 
 async function createManagedBitcoindClient(
   options: InternalManagedBitcoindOptions,
@@ -73,15 +124,18 @@ async function createManagedBitcoindClient(
       snapshotInterval: options.snapshotInterval,
     });
     const indexerDaemon = options.databasePath
-      ? await attachOrStartIndexerDaemon({
+      ? await pauseIndexerDaemonForForegroundClientForTesting({
+        daemon: await attachOrStartIndexerDaemon({
+          dataDir,
+          databasePath: options.databasePath,
+          walletRootId: options.walletRootId,
+          startupTimeoutMs: options.startupTimeoutMs,
+        }),
         dataDir,
-        databasePath: options.databasePath,
-        walletRootId: options.walletRootId,
-        startupTimeoutMs: options.startupTimeoutMs,
+        walletRootId,
+        shutdownTimeoutMs: options.shutdownTimeoutMs,
       })
       : null;
-
-    await indexerDaemon?.pauseBackgroundFollow();
 
     // The persistent service may already exist from a non-processing attach path
     // that used startHeight 0. Cogcoin replay still begins at the requested

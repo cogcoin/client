@@ -1237,13 +1237,13 @@ test("interactive text commands print cached update notices to stderr without to
   try {
     await writeUpdateCheckCache(cachePath, {
       lastCheckedAtUnixMs: 2_000_000_000_000,
-      latestVersion: "0.5.12",
+      latestVersion: "0.5.13",
     });
 
     const code = await runCli(["wallet", "show-mnemonic"], {
       stdout,
       stderr,
-      readPackageVersion: async () => "0.5.11",
+      readPackageVersion: async () => "0.5.12",
       now: () => 2_000_000_000_000,
       resolveUpdateCheckStatePath: () => cachePath,
       fetchImpl: async () => {
@@ -1280,7 +1280,7 @@ test("structured output commands skip update checks for json and preview-json", 
   try {
     await writeUpdateCheckCache(cachePath, {
       lastCheckedAtUnixMs: 2_000_000_000_000,
-      latestVersion: "0.5.12",
+      latestVersion: "0.5.13",
     });
 
     const jsonStdout = new MemoryStream(true);
@@ -1289,7 +1289,7 @@ test("structured output commands skip update checks for json and preview-json", 
       stdout: jsonStdout,
       stderr: jsonStderr,
       openWalletReadContext: async () => readyContext,
-      readPackageVersion: async () => "0.5.11",
+      readPackageVersion: async () => "0.5.12",
       now: () => 2_000_000_000_000,
       resolveUpdateCheckStatePath: () => cachePath,
       fetchImpl: async () => {
@@ -1308,7 +1308,7 @@ test("structured output commands skip update checks for json and preview-json", 
     const previewCode = await runCli(["wallet", "lock", "--output", "preview-json"], {
       stdout: previewStdout,
       stderr: previewStderr,
-      readPackageVersion: async () => "0.5.11",
+      readPackageVersion: async () => "0.5.12",
       now: () => 2_000_000_000_000,
       resolveUpdateCheckStatePath: () => cachePath,
       fetchImpl: async () => {
@@ -1358,7 +1358,7 @@ test("help and version skip update checks", async () => {
       stderr: versionStderr,
       readPackageVersion: async () => {
         readVersionCalls += 1;
-        return "0.5.11";
+        return "0.5.12";
       },
       now: () => 2_000_000_000_000,
       resolveUpdateCheckStatePath: () => cachePath,
@@ -1375,7 +1375,7 @@ test("help and version skip update checks", async () => {
     assert.equal(helpStderr.toString(), "");
     assert.equal(versionStderr.toString(), "");
     assert.match(helpStdout.toString(), /wallet show-mnemonic/);
-    assert.equal(versionStdout.toString(), "0.5.11\n");
+    assert.equal(versionStdout.toString(), "0.5.12\n");
   } finally {
     await removeTempDirectory(root);
   }
@@ -1396,12 +1396,12 @@ test("stale update cache refreshes from npm and persists the result", async () =
     const code = await runCli(["wallet", "show-mnemonic"], {
       stdout,
       stderr,
-      readPackageVersion: async () => "0.5.11",
+      readPackageVersion: async () => "0.5.12",
       now: () => 2_000_000_000_000,
       resolveUpdateCheckStatePath: () => cachePath,
       fetchImpl: async () => {
         fetchCalls += 1;
-        return new Response(JSON.stringify({ version: "0.5.12" }), { status: 200 });
+        return new Response(JSON.stringify({ version: "0.5.13" }), { status: 200 });
       },
       createPrompter: () => ({
         isInteractive: true,
@@ -1421,9 +1421,9 @@ test("stale update cache refreshes from npm and persists the result", async () =
 
     const cache = await readUpdateCheckCache(cachePath);
     assert.equal(cache.lastCheckedAtUnixMs, 2_000_000_000_000);
-    assert.equal(cache.latestVersion, "0.5.12");
-    assert.equal(cache.lastNotifiedCurrentVersion, "0.5.11");
-    assert.equal(cache.lastNotifiedLatestVersion, "0.5.12");
+    assert.equal(cache.latestVersion, "0.5.13");
+    assert.equal(cache.lastNotifiedCurrentVersion, "0.5.12");
+    assert.equal(cache.lastNotifiedLatestVersion, "0.5.13");
     assert.equal(cache.lastNotifiedAtUnixMs, 2_000_000_000_000);
     assert.equal(cache.lastCheckErrorKind, undefined);
   } finally {
@@ -1442,7 +1442,7 @@ test("update check failures back off silently and persist the error kind", async
     const code = await runCli(["wallet", "show-mnemonic"], {
       stdout,
       stderr,
-      readPackageVersion: async () => "0.5.11",
+      readPackageVersion: async () => "0.5.12",
       now: () => 2_000_000_000_000,
       resolveUpdateCheckStatePath: () => cachePath,
       fetchImpl: async () => {
@@ -1488,12 +1488,12 @@ test("update check opt-out skips network and cache writes", async () => {
       env: {
         COGCOIN_DISABLE_UPDATE_CHECK: "yes",
       },
-      readPackageVersion: async () => "0.5.11",
+      readPackageVersion: async () => "0.5.12",
       now: () => 2_000_000_000_000,
       resolveUpdateCheckStatePath: () => cachePath,
       fetchImpl: async () => {
         fetchCalls += 1;
-        return new Response(JSON.stringify({ version: "0.5.12" }), { status: 200 });
+        return new Response(JSON.stringify({ version: "0.5.13" }), { status: 200 });
       },
       createPrompter: () => ({
         isInteractive: true,
@@ -1526,16 +1526,16 @@ test("identical notified version pairs are suppressed until the notice window ex
   try {
     await writeUpdateCheckCache(cachePath, {
       lastCheckedAtUnixMs: 2_000_000_000_000 - 1_000,
-      latestVersion: "0.5.12",
-      lastNotifiedCurrentVersion: "0.5.11",
-      lastNotifiedLatestVersion: "0.5.12",
+      latestVersion: "0.5.13",
+      lastNotifiedCurrentVersion: "0.5.12",
+      lastNotifiedLatestVersion: "0.5.13",
       lastNotifiedAtUnixMs: 2_000_000_000_000 - 1_000,
     });
 
     const code = await runCli(["wallet", "show-mnemonic"], {
       stdout,
       stderr,
-      readPackageVersion: async () => "0.5.11",
+      readPackageVersion: async () => "0.5.12",
       now: () => 2_000_000_000_000,
       resolveUpdateCheckStatePath: () => cachePath,
       fetchImpl: async () => {
@@ -1572,16 +1572,16 @@ test("changing the installed version resets update notice suppression", async ()
   try {
     await writeUpdateCheckCache(cachePath, {
       lastCheckedAtUnixMs: 2_000_000_000_000 - 1_000,
-      latestVersion: "0.5.12",
+      latestVersion: "0.5.13",
       lastNotifiedCurrentVersion: "0.5.10",
-      lastNotifiedLatestVersion: "0.5.12",
+      lastNotifiedLatestVersion: "0.5.13",
       lastNotifiedAtUnixMs: 2_000_000_000_000 - 1_000,
     });
 
     const code = await runCli(["wallet", "show-mnemonic"], {
       stdout,
       stderr,
-      readPackageVersion: async () => "0.5.11",
+      readPackageVersion: async () => "0.5.12",
       now: () => 2_000_000_000_000,
       resolveUpdateCheckStatePath: () => cachePath,
       fetchImpl: async () => {
@@ -8423,14 +8423,86 @@ test("sync uses resolved defaults and prints a concise summary", async () => {
   assert.match(stdout.toString(), /Node best height: 910010/);
 });
 
+test("sync refuses to start while another Cogcoin writer holds the wallet control lock", async () => {
+  const root = createTempDirectory("cogcoin-cli-sync-lock-busy");
+  const stderr = new MemoryStream();
+  const runtimePaths = createTempWalletPaths(root);
+
+  try {
+    const heldLock = await acquireFileLock(runtimePaths.walletControlLockPath, {
+      purpose: "managed-sync",
+      walletRootId: "wallet-root-sync",
+    });
+
+    try {
+      const code = await runCli(["sync"], {
+        stdout: new MemoryStream(),
+        stderr,
+        resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-client.sqlite",
+        resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+        resolveWalletRuntimePaths: () => runtimePaths,
+        loadRawWalletStateEnvelope: async () => ({
+          source: "primary",
+          envelope: {
+            format: "cogcoin-local-wallet-state",
+            cipher: "aes-256-gcm",
+            nonce: "nonce",
+            ciphertext: "ciphertext",
+            authTag: "auth-tag",
+            walletRootIdHint: "wallet-root-sync",
+          } as never,
+        }),
+        loadUnlockSession: async () => {
+          throw new Error("should-not-read-unlock-session");
+        },
+        loadWalletExplicitLock: async () => {
+          throw new Error("should-not-read-explicit-lock");
+        },
+        ensureDirectory: async () => {},
+        openSqliteStore: async () => createNoopStore(),
+        openManagedBitcoindClient: async () => {
+          throw new Error("should-not-open-managed-client");
+        },
+      });
+
+      assert.equal(code, 4);
+      assert.match(stderr.toString(), /Another Cogcoin command is already controlling this wallet\./);
+      assert.match(stderr.toString(), /Wait for the other Cogcoin command to finish, or stop it cleanly before retrying\./);
+    } finally {
+      await heldLock.release();
+    }
+  } finally {
+    await removeTempDirectory(root);
+  }
+});
+
 test("sync prints next-step instructions for known managed-sync failures", async () => {
   const stderr = new MemoryStream();
+  const runtimePaths = createTempWalletPaths("/tmp/cogcoin-cli-sync-known-failure");
 
   const code = await runCli(["sync"], {
     stdout: new MemoryStream(),
     stderr,
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-client.sqlite",
     resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveWalletRuntimePaths: () => runtimePaths,
+    loadRawWalletStateEnvelope: async () => ({
+      source: "primary",
+      envelope: {
+        format: "cogcoin-local-wallet-state",
+        cipher: "aes-256-gcm",
+        nonce: "nonce",
+        ciphertext: "ciphertext",
+        authTag: "auth-tag",
+        walletRootIdHint: "wallet-root-sync",
+      } as never,
+    }),
+    loadUnlockSession: async () => {
+      throw new Error("should-not-read-unlock-session");
+    },
+    loadWalletExplicitLock: async () => {
+      throw new Error("should-not-read-explicit-lock");
+    },
     ensureDirectory: async () => {},
     openSqliteStore: async () => createNoopStore(),
     openManagedBitcoindClient: async () => ({
@@ -8454,12 +8526,31 @@ test("sync prints next-step instructions for known managed-sync failures", async
 
 test("sync explains missing RPC cookie files as a stopped managed node", async () => {
   const stderr = new MemoryStream();
+  const runtimePaths = createTempWalletPaths("/tmp/cogcoin-cli-sync-cookie-missing");
 
   const code = await runCli(["sync"], {
     stdout: new MemoryStream(),
     stderr,
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-client.sqlite",
     resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+    resolveWalletRuntimePaths: () => runtimePaths,
+    loadRawWalletStateEnvelope: async () => ({
+      source: "primary",
+      envelope: {
+        format: "cogcoin-local-wallet-state",
+        cipher: "aes-256-gcm",
+        nonce: "nonce",
+        ciphertext: "ciphertext",
+        authTag: "auth-tag",
+        walletRootIdHint: "wallet-root-sync",
+      } as never,
+    }),
+    loadUnlockSession: async () => {
+      throw new Error("should-not-read-unlock-session");
+    },
+    loadWalletExplicitLock: async () => {
+      throw new Error("should-not-read-explicit-lock");
+    },
     ensureDirectory: async () => {},
     openSqliteStore: async () => createNoopStore(),
     openManagedBitcoindClient: async () => ({
@@ -8485,50 +8576,75 @@ test("sync shuts down the managed bitcoind client on SIGTERM", async () => {
   const stdout = new MemoryStream();
   const stderr = new MemoryStream();
   const signals = new FakeSignalSource();
+  const root = createTempDirectory("cogcoin-cli-sync-signal-lock");
+  const runtimePaths = createTempWalletPaths(root);
   let closed = false;
   let releaseSyncReady!: () => void;
   const syncReady = new Promise<void>((resolve) => {
     releaseSyncReady = resolve;
   });
 
-  const syncPromise = runCli(["sync"], {
-    stdout,
-    stderr,
-    signalSource: signals,
-    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-client.sqlite",
-    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
-    ensureDirectory: async () => {},
-    openSqliteStore: async () => createNoopStore(),
-    openManagedBitcoindClient: async () => ({
-      async syncToTip() {
-        releaseSyncReady();
-        return await new Promise<{
-          appliedBlocks: number;
-          rewoundBlocks: number;
-          endingHeight: number | null;
-          bestHeight: number;
-        }>(() => {});
+  try {
+    const syncPromise = runCli(["sync"], {
+      stdout,
+      stderr,
+      signalSource: signals,
+      resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-client.sqlite",
+      resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-bitcoin",
+      resolveWalletRuntimePaths: () => runtimePaths,
+      loadRawWalletStateEnvelope: async () => ({
+        source: "primary",
+        envelope: {
+          format: "cogcoin-local-wallet-state",
+          cipher: "aes-256-gcm",
+          nonce: "nonce",
+          ciphertext: "ciphertext",
+          authTag: "auth-tag",
+          walletRootIdHint: "wallet-root-sync",
+        } as never,
+      }),
+      loadUnlockSession: async () => {
+        throw new Error("should-not-read-unlock-session");
       },
-      async startFollowingTip() {
-        throw new Error("unreachable");
+      loadWalletExplicitLock: async () => {
+        throw new Error("should-not-read-explicit-lock");
       },
-      async getNodeStatus() {
-        throw new Error("unreachable");
-      },
-      async close() {
-        closed = true;
-      },
-    }),
-  });
+      ensureDirectory: async () => {},
+      openSqliteStore: async () => createNoopStore(),
+      openManagedBitcoindClient: async () => ({
+        async syncToTip() {
+          releaseSyncReady();
+          return await new Promise<{
+            appliedBlocks: number;
+            rewoundBlocks: number;
+            endingHeight: number | null;
+            bestHeight: number;
+          }>(() => {});
+        },
+        async startFollowingTip() {
+          throw new Error("unreachable");
+        },
+        async getNodeStatus() {
+          throw new Error("unreachable");
+        },
+        async close() {
+          closed = true;
+        },
+      }),
+    });
 
-  await syncReady;
-  signals.emit("SIGTERM");
-  const code = await syncPromise;
+    await syncReady;
+    signals.emit("SIGTERM");
+    const code = await syncPromise;
 
-  assert.equal(code, 0);
-  assert.equal(closed, true);
-  assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
-  assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+    assert.equal(code, 0);
+    assert.equal(closed, true);
+    assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
+    assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+    await waitForMissingPath(runtimePaths.walletControlLockPath);
+  } finally {
+    await removeTempDirectory(root);
+  }
 });
 
 test("stop watcher force-exits on a second signal without printing a late success line", async () => {
@@ -8665,7 +8781,8 @@ test("follow stays active until signal and shuts down cleanly", async () => {
   const stdout = new MemoryStream();
   const stderr = new MemoryStream();
   const signals = new FakeSignalSource();
-  const runtimePaths = createTempWalletPaths("/tmp/cogcoin-cli-follow-root");
+  const root = createTempDirectory("cogcoin-cli-follow-root");
+  const runtimePaths = createTempWalletPaths(root);
   let started = false;
   let closed = false;
   let walletRootId: string | undefined;
@@ -8674,69 +8791,74 @@ test("follow stays active until signal and shuts down cleanly", async () => {
     releaseFollowReady = resolve;
   });
 
-  const followPromise = runCli(["follow"], {
-    stdout,
-    stderr,
-    signalSource: signals,
-    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-follow.sqlite",
-    resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-follow-bitcoin",
-    ensureDirectory: async () => {},
-    resolveWalletRuntimePaths: () => runtimePaths,
-    loadRawWalletStateEnvelope: async () => ({
-      source: "primary",
-      envelope: {
-        format: "cogcoin-local-wallet-state",
-        cipher: "aes-256-gcm",
-        nonce: "nonce",
-        ciphertext: "ciphertext",
-        authTag: "auth-tag",
-        walletRootIdHint: "wallet-root-follow",
-      } as never,
-    }),
-    loadUnlockSession: async () => {
-      throw new Error("should-not-read-unlock-session");
-    },
-    loadWalletExplicitLock: async () => {
-      throw new Error("should-not-read-explicit-lock");
-    },
-    openSqliteStore: async () => createNoopStore(),
-    openManagedBitcoindClient: async ({ walletRootId: resolvedWalletRootId }) => ({
-      async syncToTip() {
-        return {
-          appliedBlocks: 0,
-          rewoundBlocks: 0,
-          endingHeight: null,
-          bestHeight: 0,
-        };
+  try {
+    const followPromise = runCli(["follow"], {
+      stdout,
+      stderr,
+      signalSource: signals,
+      resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-follow.sqlite",
+      resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-follow-bitcoin",
+      ensureDirectory: async () => {},
+      resolveWalletRuntimePaths: () => runtimePaths,
+      loadRawWalletStateEnvelope: async () => ({
+        source: "primary",
+        envelope: {
+          format: "cogcoin-local-wallet-state",
+          cipher: "aes-256-gcm",
+          nonce: "nonce",
+          ciphertext: "ciphertext",
+          authTag: "auth-tag",
+          walletRootIdHint: "wallet-root-follow",
+        } as never,
+      }),
+      loadUnlockSession: async () => {
+        throw new Error("should-not-read-unlock-session");
       },
-      async startFollowingTip() {
-        walletRootId = resolvedWalletRootId;
-        started = true;
-        releaseFollowReady();
+      loadWalletExplicitLock: async () => {
+        throw new Error("should-not-read-explicit-lock");
       },
-      async getNodeStatus() {
-        return {
-          indexedTip: null,
-          nodeBestHeight: null,
-        };
-      },
-      async close() {
-        closed = true;
-      },
-    }),
-  });
+      openSqliteStore: async () => createNoopStore(),
+      openManagedBitcoindClient: async ({ walletRootId: resolvedWalletRootId }) => ({
+        async syncToTip() {
+          return {
+            appliedBlocks: 0,
+            rewoundBlocks: 0,
+            endingHeight: null,
+            bestHeight: 0,
+          };
+        },
+        async startFollowingTip() {
+          walletRootId = resolvedWalletRootId;
+          started = true;
+          releaseFollowReady();
+        },
+        async getNodeStatus() {
+          return {
+            indexedTip: null,
+            nodeBestHeight: null,
+          };
+        },
+        async close() {
+          closed = true;
+        },
+      }),
+    });
 
-  await followReady;
-  signals.emit("SIGINT");
-  const code = await followPromise;
+    await followReady;
+    signals.emit("SIGINT");
+    const code = await followPromise;
 
-  assert.equal(code, 0);
-  assert.equal(started, true);
-  assert.equal(closed, true);
-  assert.equal(walletRootId, "wallet-root-follow");
-  assert.match(stdout.toString(), /Following managed Cogcoin tip/);
-  assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
-  assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+    assert.equal(code, 0);
+    assert.equal(started, true);
+    assert.equal(closed, true);
+    assert.equal(walletRootId, "wallet-root-follow");
+    assert.match(stdout.toString(), /Following managed Cogcoin tip/);
+    assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
+    assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+    await waitForMissingPath(runtimePaths.walletControlLockPath);
+  } finally {
+    await removeTempDirectory(root);
+  }
 });
 
 test("follow emits the update notice before later stderr lifecycle lines", async () => {
@@ -8745,6 +8867,7 @@ test("follow emits the update notice before later stderr lifecycle lines", async
   const stdout = new MemoryStream();
   const stderr = new MemoryStream(true);
   const signals = new FakeSignalSource();
+  const runtimePaths = createTempWalletPaths(root);
   let releaseFollowReady!: () => void;
   const followReady = new Promise<void>((resolve) => {
     releaseFollowReady = resolve;
@@ -8753,18 +8876,36 @@ test("follow emits the update notice before later stderr lifecycle lines", async
   try {
     await writeUpdateCheckCache(cachePath, {
       lastCheckedAtUnixMs: 2_000_000_000_000,
-      latestVersion: "0.5.12",
+      latestVersion: "0.5.13",
     });
 
     const followPromise = runCli(["follow"], {
       stdout,
       stderr,
       signalSource: signals,
-      readPackageVersion: async () => "0.5.11",
+      readPackageVersion: async () => "0.5.12",
       now: () => 2_000_000_000_000,
       resolveUpdateCheckStatePath: () => cachePath,
       resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-follow-update.sqlite",
       resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-follow-update-bitcoin",
+      resolveWalletRuntimePaths: () => runtimePaths,
+      loadRawWalletStateEnvelope: async () => ({
+        source: "primary",
+        envelope: {
+          format: "cogcoin-local-wallet-state",
+          cipher: "aes-256-gcm",
+          nonce: "nonce",
+          ciphertext: "ciphertext",
+          authTag: "auth-tag",
+          walletRootIdHint: "wallet-root-follow",
+        } as never,
+      }),
+      loadUnlockSession: async () => {
+        throw new Error("should-not-read-unlock-session");
+      },
+      loadWalletExplicitLock: async () => {
+        throw new Error("should-not-read-explicit-lock");
+      },
       ensureDirectory: async () => {},
       openSqliteStore: async () => createNoopStore(),
       openManagedBitcoindClient: async () => ({
@@ -8798,7 +8939,7 @@ test("follow emits the update notice before later stderr lifecycle lines", async
     assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.11 -> 0\.5\.12/);
     assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
     assert.ok(stderr.toString().startsWith(
-      "Update available: Cogcoin 0.5.11 -> 0.5.12\nRun: npm install -g @cogcoin/client\n",
+      "Update available: Cogcoin 0.5.12 -> 0.5.13\nRun: npm install -g @cogcoin/client\n",
     ));
   } finally {
     await removeTempDirectory(root);
@@ -8809,6 +8950,7 @@ test("follow does not print a startup line when tty progress is active", async (
   const stdout = new MemoryStream();
   const stderr = new MemoryStream(true);
   const signals = new FakeSignalSource();
+  const runtimePaths = createTempWalletPaths("/tmp/cogcoin-cli-follow-tty-root");
   let releaseFollowReady!: () => void;
   const followReady = new Promise<void>((resolve) => {
     releaseFollowReady = resolve;
@@ -8820,6 +8962,24 @@ test("follow does not print a startup line when tty progress is active", async (
     signalSource: signals,
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin-follow-tty.sqlite",
     resolveDefaultBitcoindDataDir: () => "/tmp/cogcoin-follow-tty-bitcoin",
+    resolveWalletRuntimePaths: () => runtimePaths,
+    loadRawWalletStateEnvelope: async () => ({
+      source: "primary",
+      envelope: {
+        format: "cogcoin-local-wallet-state",
+        cipher: "aes-256-gcm",
+        nonce: "nonce",
+        ciphertext: "ciphertext",
+        authTag: "auth-tag",
+        walletRootIdHint: "wallet-root-follow",
+      } as never,
+    }),
+    loadUnlockSession: async () => {
+      throw new Error("should-not-read-unlock-session");
+    },
+    loadWalletExplicitLock: async () => {
+      throw new Error("should-not-read-explicit-lock");
+    },
     ensureDirectory: async () => {},
     openSqliteStore: async () => createNoopStore(),
     openManagedBitcoindClient: async () => ({

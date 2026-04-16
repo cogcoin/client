@@ -42,7 +42,7 @@ import {
   waitForHeadersForTesting,
 } from "../src/bitcoind/testing.js";
 import { MANAGED_RPC_RETRY_MESSAGE } from "../src/bitcoind/retryable-rpc.js";
-import type { SnapshotChunkManifest, SnapshotMetadata, WritingQuote } from "../src/bitcoind/types.js";
+import type { BootstrapPhase, SnapshotChunkManifest, SnapshotMetadata, WritingQuote } from "../src/bitcoind/types.js";
 import { createTempDirectory, removeTempDirectory } from "./bitcoind-helpers.js";
 
 const execFileAsync = promisify(execFile);
@@ -1335,6 +1335,71 @@ test("bootstrap recovers when loadtxoutset times out after the snapshot finished
   }
 });
 
+test("bootstrap resume keeps sync mode out of follow_tip when an indexed tip already exists", async () => {
+  const rootDir = createTempDirectory("cogcoin-client-bootstrap-resume-sync");
+
+  try {
+    const phases: string[] = [];
+    const controller = new AssumeUtxoBootstrapController({
+      rpc: {} as ConstructorParameters<typeof AssumeUtxoBootstrapController>[0]["rpc"],
+      dataDir: rootDir,
+      progress: {
+        async setPhase(phase: BootstrapPhase) {
+          phases.push(phase);
+        },
+      } as unknown as ConstructorParameters<typeof AssumeUtxoBootstrapController>[0]["progress"],
+      snapshot: DEFAULT_SNAPSHOT_METADATA,
+    });
+
+    await controller.ensureReady({
+      height: 910_000,
+      blockHashHex: "aa".repeat(32),
+      previousHashHex: "bb".repeat(32),
+      stateHashHex: null,
+    }, "main", {
+      resumeDisplayMode: "sync",
+    });
+
+    assert.deepEqual(phases, []);
+  } finally {
+    await removeTempDirectory(rootDir);
+  }
+});
+
+test("bootstrap resume still enters follow_tip when follow mode resumes an indexed tip", async () => {
+  const rootDir = createTempDirectory("cogcoin-client-bootstrap-resume-follow");
+
+  try {
+    const phases: string[] = [];
+    const messages: string[] = [];
+    const controller = new AssumeUtxoBootstrapController({
+      rpc: {} as ConstructorParameters<typeof AssumeUtxoBootstrapController>[0]["rpc"],
+      dataDir: rootDir,
+      progress: {
+        async setPhase(phase: BootstrapPhase, patch: { message?: string } = {}) {
+          phases.push(phase);
+          messages.push(patch.message ?? "");
+        },
+      } as unknown as ConstructorParameters<typeof AssumeUtxoBootstrapController>[0]["progress"],
+      snapshot: DEFAULT_SNAPSHOT_METADATA,
+    });
+
+    await controller.ensureReady({
+      height: 910_000,
+      blockHashHex: "aa".repeat(32),
+      previousHashHex: "bb".repeat(32),
+      stateHashHex: null,
+    }, "main", {
+      resumeDisplayMode: "follow",
+    });
+
+    assert.deepEqual(phases, ["follow_tip"]);
+    assert.deepEqual(messages, ["Resuming from the persisted Cogcoin indexed tip."]);
+  } finally {
+    await removeTempDirectory(rootDir);
+  }
+});
+
 test("intro scene starts as an empty scroll frame before the train enters", () => {
   const progress = createBootstrapProgressForTesting("snapshot_download", DEFAULT_SNAPSHOT_METADATA);
   const statusField = resolveStatusFieldTextForTesting(progress, DEFAULT_SNAPSHOT_METADATA.height);
@@ -1989,6 +2054,11 @@ test("status field text maps bootstrap phases to the requested copy", () => {
     DEFAULT_SNAPSHOT_METADATA.height,
     1_500,
   );
+  const complete = resolveStatusFieldTextForTesting(
+    createBootstrapProgressForTesting("complete", DEFAULT_SNAPSHOT_METADATA),
+    DEFAULT_SNAPSHOT_METADATA.height,
+    1_500,
+  );
 
   assert.equal(download, "Downloading snapshot to 910000   ");
   assert.equal(downloadMid, "Downloading snapshot to 910000.  ");
@@ -1998,6 +2068,7 @@ test("status field text maps bootstrap phases to the requested copy", () => {
   assert.equal(waitHeadersRpc, "Waiting for Bitcoin headers to reach the snapshot height...");
   assert.equal(bitcoin, "Syncing Bitcoin Blocks...");
   assert.equal(cogcoin, "Waiting for next block to be mined...");
+  assert.equal(complete, "Sync complete...");
 });
 
 test("status field keeps its centered anchor fixed while ellipsis animates", () => {

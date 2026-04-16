@@ -1,5 +1,6 @@
 export { openManagedBitcoindClientInternal } from "./client.js";
 export { DefaultManagedBitcoindClient } from "./client/managed-client.js";
+export { pauseIndexerDaemonForForegroundClientForTesting } from "./client/factory.js";
 export {
   attachOrStartIndexerDaemon,
   readIndexerDaemonStatusForTesting,

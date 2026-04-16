@@ -19,6 +19,7 @@ import {
   DefaultManagedBitcoindClient,
   normalizeRpcBlock,
   openManagedBitcoindClientInternal,
+  pauseIndexerDaemonForForegroundClientForTesting,
   readIndexerDaemonStatusForTesting,
   readManagedBitcoindServiceStatusForTesting,
   stopIndexerDaemonService,
@@ -804,6 +805,154 @@ test("managed client close reattaches the indexer daemon when background follow 
   assert.equal(nodeStopCalls, 1);
   assert.equal(clientCloseCalls, 1);
   assert.equal(progressCloseCalls, 1);
+});
+
+test("managed client close reattaches the indexer daemon when no daemon handle is attached", async () => {
+  let replacementResumeCalls = 0;
+  let reattachCalls = 0;
+  let nodeStopCalls = 0;
+  let clientCloseCalls = 0;
+  let progressCloseCalls = 0;
+
+  const managedClient = new DefaultManagedBitcoindClient(
+    {
+      async getTip() {
+        return null;
+      },
+      async getState() {
+        throw new Error("unreachable");
+      },
+      async applyBlock() {
+        throw new Error("unreachable");
+      },
+      async rewindToHeight() {
+        throw new Error("unreachable");
+      },
+      async close() {
+        clientCloseCalls += 1;
+      },
+    } as never,
+    {} as never,
+    {
+      rpc: {} as never,
+      zmq: {} as never,
+      pid: null,
+      expectedChain: "main",
+      startHeight: 0,
+      dataDir: "/tmp/cogcoin-managed-client-reattach-missing",
+      getblockArchiveEndHeight: null,
+      getblockArchiveSha256: null,
+      async validate() {},
+      async stop() {
+        nodeStopCalls += 1;
+      },
+    },
+    {} as never,
+    {
+      async start() {},
+      async close() {
+        progressCloseCalls += 1;
+      },
+      getStatusSnapshot() {
+        return {
+          bootstrapPhase: null,
+          bootstrapProgress: null,
+          cogcoinSyncHeight: null,
+          cogcoinSyncTargetHeight: null,
+          currentQuote: null,
+          snapshot: null,
+        };
+      },
+      async playCompletionScene() {},
+    } as never,
+    {} as never,
+    null,
+    async () => {
+      reattachCalls += 1;
+      return {
+        async getStatus() {
+          throw new Error("unreachable");
+        },
+        async openSnapshot() {
+          throw new Error("unreachable");
+        },
+        async readSnapshot() {
+          throw new Error("unreachable");
+        },
+        async closeSnapshot() {
+          throw new Error("unreachable");
+        },
+        async pauseBackgroundFollow() {
+          throw new Error("unreachable");
+        },
+        async resumeBackgroundFollow() {
+          replacementResumeCalls += 1;
+        },
+        async close() {},
+      };
+    },
+    0,
+    50,
+    "/tmp/cogcoin-managed-client-reattach-missing",
+    "wallet-root-test",
+    undefined,
+    undefined,
+    undefined,
+  );
+
+  await managedClient.close();
+
+  assert.equal(reattachCalls, 1);
+  assert.equal(replacementResumeCalls, 1);
+  assert.equal(nodeStopCalls, 1);
+  assert.equal(clientCloseCalls, 1);
+  assert.equal(progressCloseCalls, 1);
+});
+
+test("pauseIndexerDaemonForForegroundClientForTesting stops a timed-out daemon and returns null", async () => {
+  let closeCalls = 0;
+  let stopCalls = 0;
+
+  const result = await pauseIndexerDaemonForForegroundClientForTesting({
+    daemon: {
+      async getStatus() {
+        throw new Error("unreachable");
+      },
+      async openSnapshot() {
+        throw new Error("unreachable");
+      },
+      async readSnapshot() {
+        throw new Error("unreachable");
+      },
+      async closeSnapshot() {
+        throw new Error("unreachable");
+      },
+      async pauseBackgroundFollow() {
+        throw new Error("indexer_daemon_request_timeout");
+      },
+      async resumeBackgroundFollow() {
+        throw new Error("unreachable");
+      },
+      async close() {
+        closeCalls += 1;
+      },
+    },
+    dataDir: "/tmp/cogcoin-indexer-daemon-recovery",
+    walletRootId: "wallet-root-timeout",
+    stopDaemon: async ({ dataDir, walletRootId }) => {
+      stopCalls += 1;
+      assert.equal(dataDir, "/tmp/cogcoin-indexer-daemon-recovery");
+      assert.equal(walletRootId, "wallet-root-timeout");
+      return {
+        status: "stopped",
+        walletRootId,
+      };
+    },
+  });
+
+  assert.equal(result, null);
+  assert.equal(closeCalls, 1);
+  assert.equal(stopCalls, 1);
 });
 
 test("indexer daemon keeps following in the background after sync client close", async (t) => {

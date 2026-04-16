@@ -16,6 +16,7 @@ import type { BitcoinSyncProgressDependencies, SyncEngineDependencies, SyncPassR
 import { estimateEtaSeconds } from "./rate-tracker.js";
 
 const DEFAULT_SYNC_CATCH_UP_POLL_MS = 2_000;
+const BITCOIN_SYNC_PHASE_DEBOUNCE_MS = DEFAULT_SYNC_CATCH_UP_POLL_MS * 3;
 
 function createAbortError(signal?: AbortSignal): Error {
   const reason = signal?.reason;
@@ -98,6 +99,17 @@ function hasPendingCogcoinReplay(
   }
 
   return resolveIndexedHeightForReplayWindow(tip, startHeight) < bestHeight;
+}
+
+function shouldPreserveCogcoinSyncPhase(
+  dependencies: Pick<SyncEngineDependencies, "progress">,
+): boolean {
+  const status = dependencies.progress.getStatusSnapshot();
+
+  // Keep the TTY on Cogcoin replay through brief idle gaps so it does not
+  // bounce back to Bitcoin sync between closely spaced replay passes.
+  return status.bootstrapPhase === "cogcoin_sync"
+    && Date.now() - status.bootstrapProgress.updatedAt < BITCOIN_SYNC_PHASE_DEBOUNCE_MS;
 }
 
 async function setRetryingProgress(
@@ -246,6 +258,7 @@ export async function syncToTip(
     await runRpc(() => dependencies.bootstrap.ensureReady(indexedTipBeforeBootstrap, dependencies.node.expectedChain, {
       signal: dependencies.abortSignal,
       retryState,
+      resumeDisplayMode: dependencies.isFollowing() ? "follow" : "sync",
     }));
 
     if (
@@ -281,7 +294,10 @@ export async function syncToTip(
         : Math.min(startInfo.blocks, dependencies.targetHeightCap);
       const tipBeforePass = await dependencies.client.getTip();
 
-      if (!hasPendingCogcoinReplay(tipBeforePass, dependencies.startHeight, cappedBestHeight)) {
+      if (
+        !hasPendingCogcoinReplay(tipBeforePass, dependencies.startHeight, cappedBestHeight)
+        && !shouldPreserveCogcoinSyncPhase(dependencies)
+      ) {
         await setBitcoinSyncProgress(dependencies, startInfo, dependencies.targetHeightCap ?? null);
       }
 
@@ -306,8 +322,11 @@ export async function syncToTip(
       aggregate.bestHeight = endBestHeight;
       aggregate.bestHashHex = endInfo.bestblockhash;
 
-      if ((dependencies.targetHeightCap !== null && dependencies.targetHeightCap !== undefined && caughtUpCogcoin)
-        || (endInfo.blocks === endInfo.headers && caughtUpCogcoin)) {
+      if (dependencies.targetHeightCap !== null && dependencies.targetHeightCap !== undefined && caughtUpCogcoin) {
+        return aggregate;
+      }
+
+      if (endInfo.blocks === endInfo.headers && caughtUpCogcoin) {
         if (dependencies.isFollowing()) {
           dependencies.progress.replaceFollowBlockTimes(await runRpc(() =>
             dependencies.loadVisibleFollowBlockTimes(finalTip)));
@@ -330,7 +349,9 @@ export async function syncToTip(
         continue;
       }
 
-      await setBitcoinSyncProgress(dependencies, endInfo, dependencies.targetHeightCap ?? null);
+      if (!shouldPreserveCogcoinSyncPhase(dependencies)) {
+        await setBitcoinSyncProgress(dependencies, endInfo, dependencies.targetHeightCap ?? null);
+      }
 
       await sleep(DEFAULT_SYNC_CATCH_UP_POLL_MS, dependencies.abortSignal);
     }

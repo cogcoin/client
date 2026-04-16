@@ -375,7 +375,10 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
   async #ensureBootstrapReady(signal: AbortSignal): Promise<void> {
     await this.#node.validate();
     const indexedTipBeforeBootstrap = await this.#client.getTip();
-    await this.#bootstrap.ensureReady(indexedTipBeforeBootstrap, this.#node.expectedChain, { signal });
+    await this.#bootstrap.ensureReady(indexedTipBeforeBootstrap, this.#node.expectedChain, {
+      signal,
+      resumeDisplayMode: this.#following ? "follow" : "sync",
+    });
   }
 
   async #restartManagedNodeWithRange(
@@ -477,20 +480,28 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
   }
 
   async #resumeIndexerBackgroundFollow(): Promise<void> {
-    if (this.#indexerDaemon === null) {
+    if (this.#indexerDaemon === null && this.#reattachIndexerDaemon === null) {
       return;
     }
 
-    try {
-      await this.#indexerDaemon.resumeBackgroundFollow();
-      return;
-    } catch (error) {
-      if (this.#reattachIndexerDaemon === null) {
-        throw error;
+    if (this.#indexerDaemon !== null) {
+      try {
+        await this.#indexerDaemon.resumeBackgroundFollow();
+        return;
+      } catch (error) {
+        if (this.#reattachIndexerDaemon === null) {
+          throw error;
+        }
       }
     }
 
-    const replacementDaemon = await this.#reattachIndexerDaemon();
+    const reattachIndexerDaemon = this.#reattachIndexerDaemon;
+
+    if (reattachIndexerDaemon === null) {
+      return;
+    }
+
+    const replacementDaemon = await reattachIndexerDaemon();
     this.#indexerDaemon = replacementDaemon;
     await replacementDaemon?.resumeBackgroundFollow();
   }
