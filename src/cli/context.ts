@@ -78,9 +78,28 @@ import { createTerminalPrompter } from "./prompt.js";
 import type { CliRunnerContext, RequiredCliRunnerContext } from "./types.js";
 
 export async function readPackageVersionFromDisk(): Promise<string> {
-  const raw = await readFile(new URL("../../package.json", import.meta.url), "utf8");
-  const parsed = JSON.parse(raw) as { version?: string };
-  return parsed.version ?? "0.0.0";
+  const packageUrls = [
+    new URL("../../package.json", import.meta.url),
+    new URL("../../../package.json", import.meta.url),
+  ];
+
+  for (const packageUrl of packageUrls) {
+    try {
+      const raw = await readFile(packageUrl, "utf8");
+      const parsed = JSON.parse(raw) as { version?: string };
+      return parsed.version ?? "0.0.0";
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : null;
+
+      if (code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  return "0.0.0";
 }
 
 export function createDefaultContext(overrides: CliRunnerContext = {}): RequiredCliRunnerContext {

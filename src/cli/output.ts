@@ -422,6 +422,7 @@ function isBlockedError(message: string): boolean {
   if (
     message === "wallet_control_lock_busy"
     || message.startsWith("file_lock_busy_")
+    || message.startsWith("wallet_anchor_clear_pending_first_")
   ) {
     return true;
   }
@@ -720,6 +721,15 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode.startsWith("wallet_anchor_clear_pending_first_")) {
+    const domainName = errorCode.slice("wallet_anchor_clear_pending_first_".length) || "<domain>";
+    return {
+      what: `A local pending anchor already exists for "${domainName}".`,
+      why: "The wallet found a same-domain anchor reservation that is still local-only and safely clearable, so it stopped before creating a conflicting family.",
+      next: `Run \`cogcoin anchor clear ${domainName}\`, then rerun \`cogcoin anchor ${domainName}\`.`,
+    };
+  }
+
   if (errorCode.startsWith("wallet_anchor_clear_not_clearable_")) {
     return {
       what: "Pending anchor cannot be cleared safely.",
@@ -773,6 +783,19 @@ export function createCliErrorPresentation(
       what: "Confirmation was declined.",
       why: "The command requires explicit approval before it will publish a state-changing action.",
       next: "Rerun the command and confirm it. If this command uses a plain yes/no path, you can also add `--yes`.",
+    };
+  }
+
+  if (errorCode === "wallet_anchor_invalid_message" || errorCode.startsWith("wallet_anchor_invalid_message_")) {
+    const reason = errorCode.startsWith("wallet_anchor_invalid_message_")
+      ? errorCode.slice("wallet_anchor_invalid_message_".length).trim()
+      : null;
+    return {
+      what: "Founding message cannot be encoded in canonical Coglex.",
+      why: reason === null || reason === ""
+        ? "The supplied founding message could not be encoded into the canonical on-chain Coglex sentence format."
+        : reason,
+      next: "Retry with a different founding message, or rerun `cogcoin anchor <domain>` without `--message` to skip it.",
     };
   }
 

@@ -631,9 +631,9 @@ function getOverviewNextStep(context: WalletReadContext): string | null {
   return getMutationRecommendation(context);
 }
 
-export function formatWalletOverviewReport(context: WalletReadContext): string {
+export function formatWalletOverviewReport(context: WalletReadContext, version: string): string {
   const parts = [
-    "\n⛭ Cogcoin Status ⛭",
+    `\n⛭ Cogcoin Status v${version} ⛭`,
     formatOverviewSection("Paths", buildOverviewPathsSection(context)),
     formatOverviewSection("Wallet", buildOverviewWalletSection(context)),
     formatOverviewSection("Services", buildOverviewServicesSection(context)),

@@ -37,7 +37,7 @@ export async function runStatusCommand(
       return 0;
     }
 
-    writeLine(context.stdout, formatWalletOverviewReport(readContext));
+    writeLine(context.stdout, formatWalletOverviewReport(readContext, await context.readPackageVersion()));
     return 0;
   } finally {
     await readContext.close();

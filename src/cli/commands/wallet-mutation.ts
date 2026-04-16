@@ -169,6 +169,7 @@ export async function runWalletMutationCommand(
         const result = await context.anchorDomain({
           domainName: parsed.args[0]!,
           foundingMessageText: parsed.anchorMessage,
+          promptForFoundingMessageWhenMissing: parsed.anchorMessage === null,
           dataDir,
           databasePath: dbPath,
           provider: context.walletSecretProvider,
@@ -178,10 +179,10 @@ export async function runWalletMutationCommand(
         const nextSteps = getAnchorNextSteps(result.domainName);
         return writeMutationCommandSuccess(parsed, context, {
           data: buildAnchorMutationData(result, {
-            foundingMessageText: parsed.anchorMessage,
+            foundingMessageText: result.foundingMessageText ?? parsed.anchorMessage,
           }),
           previewData: buildAnchorPreviewData(result, {
-            foundingMessageText: parsed.anchorMessage,
+            foundingMessageText: result.foundingMessageText ?? parsed.anchorMessage,
           }),
           reusedExisting: result.reusedExisting,
           reusedMessage: "The existing anchor family was reconciled instead of creating a duplicate.",

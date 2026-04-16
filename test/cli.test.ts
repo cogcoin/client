@@ -3069,6 +3069,53 @@ test("anchor dispatches through the wallet mutation hook", async () => {
   assert.doesNotMatch(stdout.toString(), new RegExp(`View at: https://mempool\\.space/tx/${"66".repeat(32)}`));
 });
 
+test("anchor recommends clearing a conflicting local pending reservation first", async () => {
+  const stderr = new MemoryStream();
+  const code = await runCli(["anchor", "weatherbot", "--message", "hello"], {
+    stdout: new MemoryStream(),
+    stderr,
+    walletSecretProvider: {} as never,
+    createPrompter: () => ({
+      isInteractive: true,
+      writeLine() {},
+      async prompt() {
+        return "weatherbot";
+      },
+    }),
+    anchorDomain: async () => {
+      throw new Error("wallet_anchor_clear_pending_first_weatherbot");
+    },
+  });
+
+  assert.equal(code, 4);
+  assert.match(stderr.toString(), /A local pending anchor already exists for "weatherbot"/);
+  assert.match(stderr.toString(), /cogcoin anchor clear weatherbot/);
+});
+
+test("anchor invalid founding message errors explain the Coglex failure", async () => {
+  const stderr = new MemoryStream();
+  const code = await runCli(["anchor", "weatherbot", "--message", "zzzzzz"], {
+    stdout: new MemoryStream(),
+    stderr,
+    walletSecretProvider: {} as never,
+    createPrompter: () => ({
+      isInteractive: true,
+      writeLine() {},
+      async prompt() {
+        return "weatherbot";
+      },
+    }),
+    anchorDomain: async () => {
+      throw new Error("wallet_anchor_invalid_message_The sentence contains a word that is not present in the canonical Coglex vocabulary.");
+    },
+  });
+
+  assert.equal(code, 5);
+  assert.match(stderr.toString(), /Founding message cannot be encoded in canonical Coglex/);
+  assert.match(stderr.toString(), /not present in the canonical Coglex vocabulary/);
+  assert.match(stderr.toString(), /without `--message` to skip it/);
+});
+
 test("anchor clear dispatches through the wallet mutation hook", async () => {
   const stdout = new MemoryStream();
   const code = await runCli(["anchor", "clear", "weatherbot", "--yes"], {
@@ -6608,6 +6655,7 @@ test("status renders wallet-aware degraded output for an uninitialized wallet", 
       stdout,
       stderr,
       ensureDirectory: async () => {},
+      readPackageVersion: async () => "0.5.12",
       openWalletReadContext: async () => ({
         dataDir: "/tmp/bitcoin",
         databasePath: "/tmp/client.sqlite",
@@ -6645,7 +6693,7 @@ test("status renders wallet-aware degraded output for an uninitialized wallet", 
 
   assert.equal(code, 0);
   const output = stdout.toString();
-  assert.match(output, /\n⛭ Cogcoin Status ⛭\n\nPaths\n✓ DB path: \/tmp\/client\.sqlite\n✓ Bitcoin datadir: \/tmp\/bitcoin\n\nWallet\n✗ State: uninitialized\n✗ Root: none\n✗ Unlock: locked\n✗ Note: Wallet state has not been initialized yet\./u);
+  assert.match(output, /\n⛭ Cogcoin Status v0\.5\.12 ⛭\n\nPaths\n✓ DB path: \/tmp\/client\.sqlite\n✓ Bitcoin datadir: \/tmp\/bitcoin\n\nWallet\n✗ State: uninitialized\n✗ Root: none\n✗ Unlock: locked\n✗ Note: Wallet state has not been initialized yet\./u);
   assert.match(output, /\n\nServices\n✗ Managed bitcoind: starting\n✗ Managed bitcoind note: Managed bitcoind service is still starting\.\n✗ Bitcoin service: starting\n✗ Bitcoin note: Bitcoin service is starting\.\n✗ Indexer service: starting\n✗ Indexer truth source: none\n✗ Indexer tip height: unavailable\n✗ Indexer note: Indexer daemon is still starting\./u);
   assert.match(output, /\n\nLocal Inventory\n✗ Status: Wallet-derived sections unavailable\n\nPending Work\n✓ Status: none\n\nNext step: Run `cogcoin init` to create a new local wallet root\.\n$/u);
   assert.doesNotMatch(output, /Recommended next step:/);
@@ -6747,14 +6795,14 @@ test("status renders explicit reorging output and reorg depth", async () => {
 });
 
 test("formatWalletOverviewReport renders sectioned status layout and omits next step when none is needed", async () => {
-  const report = formatWalletOverviewReport(await createReadyWalletReadContext());
+  const report = formatWalletOverviewReport(await createReadyWalletReadContext(), "0.5.12");
   const sections = report.split("\n\n");
 
   assert.deepEqual(
     sections.map((section) => section.split("\n")[0]),
     ["", "Paths", "Wallet", "Services", "Local Inventory", "Pending Work"],
   );
-  assert.equal(sections[0], "\n⛭ Cogcoin Status ⛭");
+  assert.equal(sections[0], "\n⛭ Cogcoin Status v0.5.12 ⛭");
   assert.match(sections[1] ?? "", /^Paths\n✓ DB path: \/tmp\/cogcoin-client\.sqlite\n✓ Bitcoin datadir: \/tmp\/cogcoin-bitcoin$/u);
   assert.match(sections[2] ?? "", /^Wallet\n✓ State: ready\n✓ Root: wallet-root-test\n✓ Unlock: unlocked until /u);
   assert.match(sections[3] ?? "", /^Services\n✓ Managed bitcoind: ready/u);
@@ -6788,7 +6836,7 @@ test("formatWalletOverviewReport shows only the highest-priority next step at th
   mutationContext.nodeHealth = "starting";
   mutationContext.nodeMessage = "Bitcoin service is starting.";
 
-  const mutationReport = formatWalletOverviewReport(mutationContext);
+  const mutationReport = formatWalletOverviewReport(mutationContext, "0.5.12");
   assert.match(
     mutationReport,
     /\n\nNext step: Run `cogcoin sync` to bootstrap assumeutxo and the managed Bitcoin\/indexer state\.$/,
@@ -6816,7 +6864,7 @@ test("formatWalletOverviewReport shows only the highest-priority next step at th
   repairContext.bitcoind.health = "failed";
   repairContext.bitcoind.message = "Managed bitcoind stopped unexpectedly.";
 
-  const repairReport = formatWalletOverviewReport(repairContext);
+  const repairReport = formatWalletOverviewReport(repairContext, "0.5.12");
   assert.match(
     repairReport,
     /\n\nNext step: Run `cogcoin repair` to recover the managed bitcoind service and Core wallet replica\.$/,

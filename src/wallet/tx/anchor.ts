@@ -110,6 +110,7 @@ interface AnchorOperation {
 export interface AnchorDomainOptions {
   domainName: string;
   foundingMessageText?: string | null;
+  promptForFoundingMessageWhenMissing?: boolean;
   dataDir: string;
   databasePath: string;
   provider?: WalletSecretProvider;
@@ -129,6 +130,7 @@ export interface AnchorDomainResult {
   dedicatedIndex: number;
   status: "live" | "confirmed";
   reusedExisting: boolean;
+  foundingMessageText?: string | null;
 }
 
 export interface ClearPendingAnchorOptions {
@@ -296,6 +298,17 @@ function findActiveAnchorFamilyByDomain(
   ) ?? null;
 }
 
+function isClearableReservedAnchorFamily(
+  family: ProactiveFamilyStateRecord | null,
+): family is ProactiveFamilyStateRecord & {
+  status: "draft";
+  currentStep: "reserved";
+} {
+  return family?.type === "anchor"
+    && family.status === "draft"
+    && family.currentStep === "reserved";
+}
+
 function findAnchorFamilyById(
   state: WalletStateV1,
   familyId: string,
@@ -439,6 +452,50 @@ function encodeFoundingMessage(
     .catch((error) => {
       throw new Error(error instanceof Error ? `wallet_anchor_invalid_message_${error.message}` : "wallet_anchor_invalid_message");
     });
+}
+
+function extractAnchorInvalidMessageReason(
+  error: unknown,
+): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (message === "wallet_anchor_invalid_message") {
+    return null;
+  }
+
+  if (!message.startsWith("wallet_anchor_invalid_message_")) {
+    return null;
+  }
+
+  const reason = message.slice("wallet_anchor_invalid_message_".length).trim();
+  return reason === "" ? null : reason;
+}
+
+async function resolveFoundingMessage(
+  options: {
+    foundingMessageText: string | null | undefined;
+    promptForFoundingMessageWhenMissing?: boolean;
+    prompter: WalletPrompter;
+  },
+): Promise<{ text: string | null; payloadHex: string | null }> {
+  if (!options.promptForFoundingMessageWhenMissing || options.foundingMessageText != null) {
+    return encodeFoundingMessage(options.foundingMessageText ?? null);
+  }
+
+  for (;;) {
+    const answer = await options.prompter.prompt("Founding message (optional, press Enter to skip): ");
+
+    try {
+      return await encodeFoundingMessage(answer);
+    } catch (error) {
+      const reason = extractAnchorInvalidMessageReason(error);
+
+      options.prompter.writeLine("Founding message cannot be encoded in canonical Coglex.");
+      if (reason !== null) {
+        options.prompter.writeLine(`Reason: ${reason}`);
+      }
+    }
+  }
 }
 
 function resolveAnchorOutpointForSender(
@@ -1553,6 +1610,7 @@ async function submitTx2(options: {
     dedicatedIndex: options.operation.targetIdentity.localIndex,
     status: finalStatus,
     reusedExisting: false,
+    foundingMessageText: options.operation.foundingMessageText,
   };
 }
 
@@ -1581,7 +1639,11 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
       paths,
       reason: "wallet-anchor",
     });
-    const message = await encodeFoundingMessage(options.foundingMessageText ?? null);
+    const message = await resolveFoundingMessage({
+      foundingMessageText: options.foundingMessageText,
+      promptForFoundingMessageWhenMissing: options.promptForFoundingMessageWhenMissing,
+      prompter: options.prompter,
+    });
     const readContext = await (options.openReadContext ?? openWalletReadContext)({
       dataDir: options.dataDir,
       databasePath: options.databasePath,
@@ -1600,6 +1662,10 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
       const initialFamily = createDraftAnchorFamily(operation, nowUnixMs);
       const existingFamily = findAnchorFamilyByIntent(operation.state, initialFamily.intentFingerprintHex);
       const conflictingFamily = findActiveAnchorFamilyByDomain(operation.state, normalizedDomainName);
+
+      if (existingFamily === null && isClearableReservedAnchorFamily(conflictingFamily)) {
+        throw new Error(`wallet_anchor_clear_pending_first_${conflictingFamily.domainName}`);
+      }
 
       if (existingFamily === null && conflictingFamily !== null) {
         throw new Error("wallet_anchor_prior_family_unresolved");
@@ -1649,6 +1715,7 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
             dedicatedIndex: reconciled.family.reservedDedicatedIndex ?? existingTargetIdentity.localIndex,
             status: reconciled.resolution,
             reusedExisting: true,
+            foundingMessageText: reconciled.family.foundingMessageText,
           };
         }
 
@@ -1812,6 +1879,7 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
       return {
         ...result,
         reusedExisting: resumedExisting,
+        foundingMessageText: result.foundingMessageText ?? operation.foundingMessageText,
       };
     } finally {
       await readContext.close();
