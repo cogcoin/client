@@ -1,6 +1,7 @@
 import type {
   RpcListUnspentEntry,
   RpcLockedUnspent,
+  RpcWalletTransaction,
 } from "../bitcoind/types.js";
 import { saveUnlockSession } from "./state/session.js";
 import { persistWalletStateUpdate } from "./descriptor-normalization.js";
@@ -20,6 +21,7 @@ export interface WalletCoinControlRpc {
   listUnspent(walletName: string, minConf?: number): Promise<RpcListUnspentEntry[]>;
   listLockUnspent(walletName: string): Promise<RpcLockedUnspent[]>;
   lockUnspent(walletName: string, unlock: boolean, outputs: RpcLockedUnspent[]): Promise<boolean>;
+  getTransaction?(walletName: string, txid: string): Promise<RpcWalletTransaction>;
 }
 
 function btcNumberToSats(value: number): bigint {
@@ -422,6 +424,89 @@ function collectPersistentPolicyLockedOutpoints(
   return outpoints;
 }
 
+function collectManagedScriptPubKeyHexes(state: WalletStateV1): Set<string> {
+  const scripts = new Set<string>();
+  const add = (scriptPubKeyHex: string | null | undefined) => {
+    if (typeof scriptPubKeyHex === "string" && scriptPubKeyHex.length > 0) {
+      scripts.add(scriptPubKeyHex);
+    }
+  };
+
+  add(state.funding.scriptPubKeyHex);
+
+  for (const identity of state.identities) {
+    add(identity.scriptPubKeyHex);
+  }
+
+  for (const domain of state.domains) {
+    add(domain.currentOwnerScriptPubKeyHex);
+  }
+
+  for (const family of state.proactiveFamilies) {
+    add(family.sourceSenderScriptPubKeyHex);
+    add(family.reservedScriptPubKeyHex);
+  }
+
+  add(state.miningState.currentSenderScriptPubKeyHex);
+
+  return scripts;
+}
+
+function findWalletTransactionOutputScriptPubKeyHex(
+  transaction: RpcWalletTransaction | null,
+  vout: number,
+): string | null {
+  const decodedScriptPubKeyHex = transaction?.decoded?.vout.find((output) => output.n === vout)?.scriptPubKey?.hex;
+  return typeof decodedScriptPubKeyHex === "string" && decodedScriptPubKeyHex.length > 0
+    ? decodedScriptPubKeyHex
+    : null;
+}
+
+async function collectManagedInspectionUnlocks(options: {
+  rpc: WalletCoinControlRpc;
+  walletName: string;
+  state: WalletStateV1;
+  lockedOutpoints: readonly RpcLockedUnspent[];
+  fixedInputKeys: ReadonlySet<string>;
+  temporarilyUnlockedKeys: ReadonlySet<string>;
+}): Promise<OutpointRecord[]> {
+  if (options.rpc.getTransaction === undefined) {
+    return [];
+  }
+
+  const managedScripts = collectManagedScriptPubKeyHexes(options.state);
+  if (managedScripts.size === 0 || options.lockedOutpoints.length === 0) {
+    return [];
+  }
+
+  const transactionCache = new Map<string, Promise<RpcWalletTransaction | null>>();
+  const inspectionUnlocks: OutpointRecord[] = [];
+
+  const loadTransaction = (txid: string): Promise<RpcWalletTransaction | null> => {
+    let cached = transactionCache.get(txid);
+    if (cached === undefined) {
+      cached = options.rpc.getTransaction?.(options.walletName, txid).catch(() => null) ?? Promise.resolve(null);
+      transactionCache.set(txid, cached);
+    }
+    return cached;
+  };
+
+  for (const outpoint of options.lockedOutpoints) {
+    const key = outpointKey(outpoint);
+    if (options.fixedInputKeys.has(key) || options.temporarilyUnlockedKeys.has(key)) {
+      continue;
+    }
+
+    const transaction = await loadTransaction(outpoint.txid);
+    const scriptPubKeyHex = findWalletTransactionOutputScriptPubKeyHex(transaction, outpoint.vout);
+    if (scriptPubKeyHex !== null && managedScripts.has(scriptPubKeyHex)) {
+      inspectionUnlocks.push({ txid: outpoint.txid, vout: outpoint.vout });
+    }
+  }
+
+  return inspectionUnlocks;
+}
+
 export async function reconcilePersistentPolicyLocks(options: {
   rpc: WalletCoinControlRpc;
   walletName: string;
@@ -458,11 +543,24 @@ export async function reconcilePersistentPolicyLocks(options: {
     const key = outpointKey(outpoint);
     return lockedBeforeReserveInspectionKeys.has(key) && !fixedInputKeys.has(key);
   });
-  if (reserveInspectionUnlocks.length > 0) {
-    await options.rpc.lockUnspent(options.walletName, true, reserveInspectionUnlocks).catch(() => undefined);
+  const managedInspectionUnlocks = await collectManagedInspectionUnlocks({
+    rpc: options.rpc,
+    walletName: options.walletName,
+    state,
+    lockedOutpoints: lockedBeforeReserveInspection,
+    fixedInputKeys,
+    temporarilyUnlockedKeys,
+  });
+  const inspectionUnlockMap = new Map<string, OutpointRecord>();
+  for (const outpoint of [...reserveInspectionUnlocks, ...managedInspectionUnlocks]) {
+    inspectionUnlockMap.set(outpointKey(outpoint), outpoint);
+  }
+  const inspectionUnlocks = [...inspectionUnlockMap.values()];
+  if (inspectionUnlocks.length > 0) {
+    await options.rpc.lockUnspent(options.walletName, true, inspectionUnlocks).catch(() => undefined);
   }
 
-  const spendableUtxos = reserveInspectionUnlocks.length > 0 || options.spendableUtxos === undefined
+  const spendableUtxos = inspectionUnlocks.length > 0 || options.spendableUtxos === undefined
     ? await options.rpc.listUnspent(options.walletName, 0).catch(() => [])
     : options.spendableUtxos;
   const previouslyProtectedUniverse = collectPersistentPolicyLockedOutpoints(state, spendableUtxos);

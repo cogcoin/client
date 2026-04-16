@@ -9,6 +9,7 @@ import type {
   RpcTransaction,
   RpcVin,
   RpcWalletCreateFundedPsbtResult,
+  RpcWalletTransaction,
   RpcWalletProcessPsbtResult,
 } from "../../bitcoind/types.js";
 import { saveUnlockSession } from "../state/session.js";
@@ -40,6 +41,7 @@ export interface WalletMutationRpcClient {
   listUnspent(walletName: string, minConf?: number): Promise<RpcListUnspentEntry[]>;
   listLockUnspent(walletName: string): Promise<RpcLockedUnspent[]>;
   lockUnspent(walletName: string, unlock: boolean, outputs: RpcLockedUnspent[]): Promise<boolean>;
+  getTransaction?(walletName: string, txid: string): Promise<RpcWalletTransaction>;
   walletCreateFundedPsbt(
     walletName: string,
     inputs: Array<{ txid: string; vout: number }>,
@@ -532,14 +534,26 @@ export async function buildWalletMutationTransactionWithReserveFallback<TPlan>(o
   feeRate?: number;
   reserveCandidates: readonly OutpointRecord[];
 }): Promise<BuiltWalletMutationTransaction> {
+  const preflightReconciled = options.reserveCandidates.length > 0
+    ? null
+    : await reconcileWalletCoinControlLocks({
+      rpc: options.rpc,
+      walletName: options.walletName,
+      state: options.state,
+      fixedInputs: options.plan.fixedInputs,
+    });
+  const effectiveState = preflightReconciled?.state ?? options.state;
+  const reserveCandidates = options.reserveCandidates.length > 0
+    ? [...options.reserveCandidates]
+    : [...effectiveState.proactiveReserveOutpoints];
   let unlockedReserveOutpoints: OutpointRecord[] = [];
   let lastError: unknown = null;
 
-  for (let attempt = 0; attempt <= options.reserveCandidates.length; attempt += 1) {
+  for (let attempt = 0; attempt <= reserveCandidates.length; attempt += 1) {
     if (attempt > 0) {
       unlockedReserveOutpoints = [
         ...unlockedReserveOutpoints,
-        options.reserveCandidates[attempt - 1]!,
+        reserveCandidates[attempt - 1]!,
       ];
     }
 
@@ -547,7 +561,7 @@ export async function buildWalletMutationTransactionWithReserveFallback<TPlan>(o
       return await buildWalletMutationTransaction({
         rpc: options.rpc,
         walletName: options.walletName,
-        state: options.state,
+        state: effectiveState,
         plan: options.plan,
         validateFundedDraft: options.validateFundedDraft,
         finalizeErrorCode: options.finalizeErrorCode,
@@ -557,7 +571,7 @@ export async function buildWalletMutationTransactionWithReserveFallback<TPlan>(o
       });
     } catch (error) {
       lastError = error;
-      if ((!isInsufficientFundsError(error) && !isReserveFloorFundingError(error)) || attempt === options.reserveCandidates.length) {
+      if ((!isInsufficientFundsError(error) && !isReserveFloorFundingError(error)) || attempt === reserveCandidates.length) {
         throw error;
       }
     }

@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { RpcDecodedPsbt, RpcListUnspentEntry, RpcLockedUnspent, RpcTransaction } from "../src/bitcoind/types.js";
+import type {
+  RpcDecodedPsbt,
+  RpcListUnspentEntry,
+  RpcLockedUnspent,
+  RpcTransaction,
+  RpcWalletTransaction,
+} from "../src/bitcoind/types.js";
 import { buildWalletMutationTransactionWithReserveFallback } from "../src/wallet/tx/common.js";
 import type { WalletStateV1 } from "../src/wallet/types.js";
 
@@ -191,6 +197,26 @@ function createReserveHarness(changeValueSats: number) {
         }
         return true;
       },
+      async getTransaction(_walletName: string, txid: string): Promise<RpcWalletTransaction> {
+        if (txid !== RESERVE_OUTPOINT.txid) {
+          throw new Error("transaction_not_found");
+        }
+        return {
+          txid,
+          confirmations: RESERVE_ENTRY.confirmations,
+          decoded: {
+            txid,
+            vin: [],
+            vout: [{
+              n: RESERVE_OUTPOINT.vout,
+              value: RESERVE_ENTRY.amount,
+              scriptPubKey: {
+                hex: RESERVE_ENTRY.scriptPubKey,
+              },
+            }],
+          },
+        };
+      },
       async walletCreateFundedPsbt(): Promise<{ psbt: string; fee: number; changepos: number }> {
         const reserveUnlocked = !locked.some((entry) => entry.txid === RESERVE_OUTPOINT.txid && entry.vout === RESERVE_OUTPOINT.vout);
         if (!reserveUnlocked) {
@@ -297,6 +323,43 @@ test("buildWalletMutationTransactionWithReserveFallback rejects drafts that woul
     [TEMP_LOCK_OUTPOINT],
   ]);
   assert.deepEqual(harness.calls.lockCalls, [
+    [RESERVE_OUTPOINT],
+    [RESERVE_OUTPOINT],
+  ]);
+});
+
+test("buildWalletMutationTransactionWithReserveFallback discovers reserve candidates from reconciled state when the persisted reserve set is empty", async () => {
+  const state = createWalletState({
+    proactiveReserveOutpoints: [],
+  });
+  const harness = createReserveHarness(2_000);
+
+  const built = await buildWalletMutationTransactionWithReserveFallback({
+    rpc: harness.rpc,
+    walletName: state.managedCoreWallet.walletName,
+    state,
+    plan: {
+      fixedInputs: [],
+      outputs: [{ data: "00" }],
+      changeAddress: state.funding.address,
+      changePosition: 1,
+      allowedFundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+      eligibleFundingOutpointKeys: new Set<string>(),
+    },
+    validateFundedDraft() {},
+    finalizeErrorCode: "wallet_test_finalize_failed",
+    mempoolRejectPrefix: "wallet_test_mempool_rejected",
+    reserveCandidates: state.proactiveReserveOutpoints,
+  });
+
+  assert.equal(built.txid, "66".repeat(32));
+  assert.deepEqual(harness.calls.unlockCalls, [
+    [RESERVE_OUTPOINT],
+    [RESERVE_OUTPOINT],
+    [RESERVE_OUTPOINT],
+  ]);
+  assert.deepEqual(harness.calls.lockCalls, [
+    [RESERVE_OUTPOINT],
     [RESERVE_OUTPOINT],
     [RESERVE_OUTPOINT],
   ]);

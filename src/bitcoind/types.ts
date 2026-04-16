@@ -387,6 +387,11 @@ export interface RpcWalletTransaction {
   blockheight?: number;
   time?: number;
   timereceived?: number;
+  details?: Array<{
+    address?: string;
+    vout?: number;
+  }>;
+  decoded?: RpcTransaction;
 }
 
 export interface RpcBlock {

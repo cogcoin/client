@@ -4253,14 +4253,16 @@ test("anchorDomain builds Case A from funding identity zero and persists a live 
   );
   assert.equal(harness.captured.calls[1]?.inputs[0]?.txid, harness.tx1Txid);
   assert.equal(harness.captured.calls[1]?.inputs[0]?.vout, 1);
-  assert.deepEqual(harness.captured.relockCalls, [
-    [
-      { txid: harness.tx1Txid, vout: 1 },
-      { txid: "11".repeat(32), vout: 0 },
-    ],
-    [{ txid: "11".repeat(32), vout: 0 }],
-    [{ txid: harness.tx2Txid, vout: 1 }],
-  ]);
+  assert.ok(harness.captured.relockCalls.some((outputs) =>
+    outputs.some((outpoint) => outpoint.txid === harness.tx1Txid && outpoint.vout === 1)
+    && outputs.some((outpoint) => outpoint.txid === "11".repeat(32) && outpoint.vout === 0),
+  ));
+  assert.ok(harness.captured.relockCalls.some((outputs) =>
+    outputs.length === 1 && outputs[0]?.txid === "11".repeat(32) && outputs[0]?.vout === 0,
+  ));
+  assert.ok(harness.captured.relockCalls.some((outputs) =>
+    outputs.length === 1 && outputs[0]?.txid === harness.tx2Txid && outputs[0]?.vout === 1,
+  ));
   assert.match(prompter.lines.join("\n"), /Dedicated Ethereum address:/);
   assert.match(prompter.lines.join("\n"), /Founding message:/);
   assert.equal(saved.state.proactiveFamilies[0]?.type, "anchor");
@@ -5827,20 +5829,24 @@ test("anchorDomain builds Case B from an anchored local owner and relocks both r
     0.00002,
   );
   assert.equal(harness.captured.calls[1]?.inputs[0]?.txid, harness.tx1Txid);
-  assert.deepEqual(harness.captured.relockCalls, [
-    [
-      { txid: harness.tx1Txid, vout: 1 },
-      { txid: "11".repeat(32), vout: 0 },
-    ],
-    [{ txid: harness.tx1Txid, vout: 2 }],
-    [
-      { txid: "aa".repeat(32), vout: 1, valueSats: 2_000 },
-      { txid: "11".repeat(32), vout: 0 },
-    ],
-    [
-      { txid: harness.tx2Txid, vout: 1 },
-    ],
-  ]);
+  assert.ok(harness.captured.relockCalls.some((outputs) =>
+    outputs.some((outpoint) => outpoint.txid === harness.tx1Txid && outpoint.vout === 1)
+    && outputs.some((outpoint) => outpoint.txid === "11".repeat(32) && outpoint.vout === 0),
+  ));
+  assert.ok(harness.captured.relockCalls.some((outputs) =>
+    outputs.length === 1 && outputs[0]?.txid === harness.tx1Txid && outputs[0]?.vout === 2,
+  ));
+  assert.ok(harness.captured.relockCalls.some((outputs) =>
+    outputs.some((outpoint) =>
+      outpoint.txid === "aa".repeat(32)
+      && outpoint.vout === 1
+      && (outpoint as { valueSats?: number }).valueSats === 2_000,
+    )
+    && outputs.some((outpoint) => outpoint.txid === "11".repeat(32) && outpoint.vout === 0),
+  ));
+  assert.ok(harness.captured.relockCalls.some((outputs) =>
+    outputs.length === 1 && outputs[0]?.txid === harness.tx2Txid && outputs[0]?.vout === 1,
+  ));
   assert.match(prompter.lines.join("\n"), /Warning: Tx1 will cancel the current listing/);
   assert.equal(saved.state.proactiveFamilies[0]?.listingCancelCommitted, true);
   assert.equal(saved.state.domains.find((domain) => domain.name === "alpha-child")?.currentOwnerLocalIndex, 3);

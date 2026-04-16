@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { RpcListUnspentEntry, RpcLockedUnspent } from "../src/bitcoind/types.js";
+import type { RpcListUnspentEntry, RpcLockedUnspent, RpcWalletTransaction } from "../src/bitcoind/types.js";
 import {
   DEFAULT_PROACTIVE_RESERVE_SATS,
   computeDesignatedProactiveReserveOutpoints,
@@ -160,6 +160,12 @@ function createMockRpc(options: {
   spendable: RpcListUnspentEntry[];
   locked?: RpcLockedUnspent[];
 }) {
+  const spendableByTxid = new Map<string, RpcListUnspentEntry[]>();
+  for (const entry of options.spendable) {
+    const bucket = spendableByTxid.get(entry.txid) ?? [];
+    bucket.push(entry);
+    spendableByTxid.set(entry.txid, bucket);
+  }
   let locked = [...(options.locked ?? [])];
   const unlockCalls: RpcLockedUnspent[][] = [];
   const lockCalls: RpcLockedUnspent[][] = [];
@@ -170,7 +176,10 @@ function createMockRpc(options: {
       lockCalls,
     },
     async listUnspent(): Promise<RpcListUnspentEntry[]> {
-      return options.spendable.map((entry) => ({ ...entry }));
+      const lockedKeys = new Set(locked.map((entry) => `${entry.txid}:${entry.vout}`));
+      return options.spendable
+        .filter((entry) => !lockedKeys.has(`${entry.txid}:${entry.vout}`))
+        .map((entry) => ({ ...entry }));
     },
     async listLockUnspent(): Promise<RpcLockedUnspent[]> {
       return locked.map((entry) => ({ ...entry }));
@@ -193,6 +202,27 @@ function createMockRpc(options: {
         }
       }
       return true;
+    },
+    async getTransaction(_walletName: string, txid: string): Promise<RpcWalletTransaction> {
+      const entries = spendableByTxid.get(txid);
+      if (entries === undefined) {
+        throw new Error("transaction_not_found");
+      }
+      return {
+        txid,
+        confirmations: Math.max(...entries.map((entry) => entry.confirmations)),
+        decoded: {
+          txid,
+          vin: [],
+          vout: entries.map((entry) => ({
+            value: entry.amount,
+            n: entry.vout,
+            scriptPubKey: {
+              hex: entry.scriptPubKey,
+            },
+          })),
+        },
+      };
     },
   };
 }
@@ -357,6 +387,7 @@ test("fixed inputs are exempt for the active build and restored by the next reco
   });
   assert.deepEqual(outpointStrings(rpc.calls.lockCalls).at(-1), [
     `${"aa".repeat(32)}:1`,
+    `${"dd".repeat(32)}:0`,
   ]);
 });
 
@@ -394,6 +425,58 @@ test("reconcilePersistentPolicyLocks migrates legacy reserve state and unlocks s
     `${"ee".repeat(32)}:0`,
   ].sort()]);
   assert.deepEqual(outpointStrings(rpc.calls.lockCalls), [[`${"dd".repeat(32)}:0`]]);
+});
+
+test("reconcilePersistentPolicyLocks unlocks orphaned managed funding locks that are no longer represented in state", async () => {
+  const state = createWalletState({
+    identities: [{
+      index: 0,
+      scriptPubKeyHex: "fund-script",
+      address: "bc1qfundingidentity0000000000000000000000000",
+      status: "funding",
+      assignedDomainNames: [],
+    }],
+    domains: [],
+    miningState: {
+      ...createWalletState().miningState,
+      sharedMiningConflictOutpoint: null,
+    },
+  });
+  const rpc = createMockRpc({
+    spendable: [
+      createFundingUtxo("dd", 0.00025, 1),
+      {
+        txid: "ff".repeat(32),
+        vout: 1,
+        scriptPubKey: "foreign-script",
+        amount: 0.5,
+        confirmations: 4,
+        spendable: true,
+        safe: true,
+      },
+    ],
+    locked: [
+      { txid: "dd".repeat(32), vout: 0 },
+      { txid: "ff".repeat(32), vout: 1 },
+    ],
+  });
+
+  const reconciled = await reconcilePersistentPolicyLocks({
+    rpc,
+    walletName: state.managedCoreWallet.walletName,
+    state,
+  });
+
+  assert.deepEqual(outpointStrings(rpc.calls.unlockCalls), [[
+    `${"dd".repeat(32)}:0`,
+  ]]);
+  assert.deepEqual(outpointStrings(rpc.calls.lockCalls), [[
+    `${"dd".repeat(32)}:0`,
+  ]]);
+  assert.deepEqual(
+    reconciled.spendableUtxos.map((entry) => `${entry.txid}:${entry.vout}`).sort(),
+    [`${"dd".repeat(32)}:0`],
+  );
 });
 
 test("cleanupInactiveTemporaryBuilderLocks clears stale tracked locks and preserves active family locks", async () => {
