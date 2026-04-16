@@ -125,7 +125,7 @@ export interface MiningRuntimeStatusV1 {
   currentCanonicalBlend: string | null;
   currentTxid: string | null;
   currentWtxid: string | null;
-  liveMiningFamilyInMempool: boolean | null;
+  livePublishInMempool: boolean | null;
   currentFeeRateSatVb: number | null;
   currentAbsoluteFeeSats: number | null;
   currentBlockFeeSpentSats: string;

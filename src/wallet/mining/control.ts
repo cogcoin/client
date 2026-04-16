@@ -345,7 +345,7 @@ async function buildMiningRuntimeSnapshot(options: {
     currentCanonicalBlend: state?.currentScore ?? existing?.currentCanonicalBlend ?? null,
     currentTxid: state?.currentTxid ?? existing?.currentTxid ?? null,
     currentWtxid: state?.currentWtxid ?? existing?.currentWtxid ?? null,
-    liveMiningFamilyInMempool: state?.liveMiningFamilyInMempool ?? existing?.liveMiningFamilyInMempool ?? null,
+    livePublishInMempool: state?.livePublishInMempool ?? existing?.livePublishInMempool ?? null,
     currentFeeRateSatVb: state?.currentFeeRateSatVb ?? existing?.currentFeeRateSatVb ?? null,
     currentAbsoluteFeeSats: state?.currentAbsoluteFeeSats ?? existing?.currentAbsoluteFeeSats ?? null,
     currentBlockFeeSpentSats: state?.currentBlockFeeSpentSats ?? existing?.currentBlockFeeSpentSats ?? "0",
@@ -389,10 +389,10 @@ async function buildMiningRuntimeSnapshot(options: {
                 : existing?.currentPhase === "waiting-bitcoin-network"
                   ? "Mining is waiting for the local Bitcoin node to become publishable."
         : state?.state === "repair-required"
-          ? "Mining is blocked until the current mining family is reconciled or `cogcoin repair` completes."
-          : state?.state === "paused-stale" && state.liveMiningFamilyInMempool
-            ? "A previously broadcast mining family is still in mempool for an older tip context. Wait for confirmation or rerun mining to replace it."
-            : state?.state === "paused" && state.liveMiningFamilyInMempool
+          ? "Mining is blocked until the current mining publish is reconciled or `cogcoin repair` completes."
+          : state?.state === "paused-stale" && state.livePublishInMempool
+            ? "A previously broadcast mining transaction is still in mempool for an older tip context. Wait for confirmation or rerun mining to replace it."
+            : state?.state === "paused" && state.livePublishInMempool
               ? "Mining is paused, but the last mining transaction may still confirm from mempool without further fee bumps."
               : state?.state === "paused"
                 ? "Mining is paused by another wallet command or local policy."

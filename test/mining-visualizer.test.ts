@@ -71,7 +71,7 @@ function createSnapshot(
     currentCanonicalBlend: null,
     currentTxid: null,
     currentWtxid: null,
-    liveMiningFamilyInMempool: false,
+    livePublishInMempool: false,
     currentFeeRateSatVb: null,
     currentAbsoluteFeeSats: null,
     currentBlockFeeSpentSats: "0",

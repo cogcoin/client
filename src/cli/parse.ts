@@ -38,13 +38,13 @@ Commands:
   register <domain>
                          Register a root domain or subdomain
   transfer <domain> --to <btc-target>
-                          Transfer an unanchored domain to another BTC identity
+                          Transfer an unanchored domain to another BTC address or script
   sell <domain> <price>   List an unanchored domain for sale in COG
   unsell <domain>         Clear an active domain listing
   buy <domain>
                          Buy an unanchored listed domain in COG
   send <amount> --to <btc-target>
-                         Send COG from one local identity to another BTC target
+                         Send COG from the wallet address to another BTC target
   claim <lock-id> --preimage <32-byte-hex>
                          Claim an active COG lock before timeout
   reclaim <lock-id>      Reclaim an expired COG lock as the original locker
@@ -61,7 +61,7 @@ Commands:
   wallet import <path>    Import a portable encrypted wallet archive
   address                 Show the BTC wallet address for this wallet
   ids                     Show the local wallet address
-  balance                 Show per-identity COG balances
+  balance                 Show local wallet COG balances
   locks                   Show locally related active COG locks
   domain list             Alias for domains
   domain show <domain>    Alias for show <domain>

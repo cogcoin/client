@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { writeRuntimeStatusFile } from "../fs/status-file.js";
-import { normalizeMiningFamilyStatus, normalizeMiningPublishState } from "./state.js";
+import { normalizeMiningLifecycleStatus, normalizeMiningPublishState } from "./state.js";
 import type { MiningEventRecord, MiningRuntimeStatusV1 } from "./types.js";
 
 const MAX_EVENT_LOG_BYTES = 10 * 1024 * 1024;
@@ -25,11 +25,14 @@ export async function loadMiningRuntimeStatus(
     const parsed = JSON.parse(raw) as MiningRuntimeStatusV1 & {
       currentPublishState?: string | null;
       miningState?: string | null;
+      livePublishInMempool?: boolean | null;
+      liveMiningFamilyInMempool?: boolean | null;
     };
     return {
       ...parsed,
-      miningState: normalizeMiningFamilyStatus(parsed.miningState),
+      miningState: normalizeMiningLifecycleStatus(parsed.miningState),
       currentPublishState: normalizeMiningPublishState(parsed.currentPublishState),
+      livePublishInMempool: parsed.livePublishInMempool ?? parsed.liveMiningFamilyInMempool ?? null,
       indexerReorgDepth: parsed.indexerReorgDepth ?? null,
       sameDomainCompetitorSuppressed: parsed.sameDomainCompetitorSuppressed ?? null,
       dedupedCompetitorDomainCount: parsed.dedupedCompetitorDomainCount ?? null,

@@ -29,7 +29,7 @@ function createMiningState() {
     currentBlockTargetHeight: null,
     currentReferencedBlockHashDisplay: null,
     currentIntentFingerprintHex: null,
-    liveMiningFamilyInMempool: null,
+    livePublishInMempool: null,
     currentPublishDecision: null,
     replacementCount: 0,
     currentBlockFeeSpentSats: "0",

@@ -86,7 +86,7 @@ export function describeMiningVisualizerStatus(
     return "Mempool gate indeterminate";
   }
 
-  if (snapshot.liveMiningFamilyInMempool) {
+  if (snapshot.livePublishInMempool) {
     return "Waiting for next block";
   }
 
@@ -115,7 +115,7 @@ export function describeMiningVisualizerProgress(
       return "Scoring mining candidates for the current tip.";
     case "publishing":
       return snapshot.currentPublishDecision === "fee-bump"
-        ? "Publishing a fee bump for the live mining family."
+        ? "Publishing a fee bump for the live mining transaction."
         : snapshot.currentPublishDecision === "replacing"
           || snapshot.currentPublishDecision === "replaced"
           ? "Replacing the live mining transaction for the current tip."

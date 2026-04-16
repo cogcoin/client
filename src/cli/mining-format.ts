@@ -28,7 +28,7 @@ export function formatMiningSummaryLine(mining: MiningControlPlaneView): string 
     ? "  next repair"
     : mining.runtime.miningState === "paused-stale"
       ? "  next wait-or-rerun"
-      : mining.runtime.miningState === "paused" && mining.runtime.liveMiningFamilyInMempool
+      : mining.runtime.miningState === "paused" && mining.runtime.livePublishInMempool
         ? "  next wait-or-rerun"
         : mining.runtime.pauseReason === "zero-reward"
           ? "  zero-reward"
@@ -145,9 +145,9 @@ export function formatMineStatusReport(mining: MiningControlPlaneView): string {
   } else if (mining.runtime.currentPhase === "resuming") {
     lines.push("Next: wait for mining to finish rechecking health after the local runtime resumed.");
   } else if (mining.runtime.miningState === "paused-stale") {
-    lines.push("Next: wait for the live mempool family to confirm, or rerun mining after the tip settles.");
-  } else if (mining.runtime.miningState === "paused" && mining.runtime.liveMiningFamilyInMempool) {
-    lines.push("Next: wait for the live mempool family to confirm, or rerun mining when you want replacements to resume.");
+    lines.push("Next: wait for the live mining publish to confirm, or rerun mining after the tip settles.");
+  } else if (mining.runtime.miningState === "paused" && mining.runtime.livePublishInMempool) {
+    lines.push("Next: wait for the live mining publish to confirm, or rerun mining when you want replacements to resume.");
   }
   return lines.join("\n");
 }

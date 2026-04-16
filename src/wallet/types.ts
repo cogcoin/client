@@ -130,61 +130,13 @@ export interface MiningStateRecord {
   currentBlockTargetHeight: number | null;
   currentReferencedBlockHashDisplay: string | null;
   currentIntentFingerprintHex: string | null;
-  liveMiningFamilyInMempool: boolean | null;
+  livePublishInMempool: boolean | null;
   currentPublishDecision: string | null;
   replacementCount: number;
   currentBlockFeeSpentSats: string;
   sessionFeeSpentSats: string;
   lifetimeFeeSpentSats: string;
   sharedMiningConflictOutpoint: { txid: string; vout: number } | null;
-}
-
-export interface ProactiveFamilyTransactionRecord {
-  status:
-    | "draft"
-    | "broadcasting"
-    | "broadcast-unknown"
-    | "live"
-    | "confirmed"
-    | "canceled"
-    | "repair-required";
-  attemptedTxid: string | null;
-  attemptedWtxid: string | null;
-  temporaryBuilderLockedOutpoints: OutpointRecord[];
-  rawHex: string | null;
-}
-
-export interface ProactiveFamilyStateRecord {
-  familyId: string;
-  type: "anchor" | "field" | string;
-  status:
-    | "draft"
-    | "broadcasting"
-    | "broadcast-unknown"
-    | "live"
-    | "confirmed"
-    | "canceled"
-    | "repair-required";
-  intentFingerprintHex: string;
-  createdAtUnixMs: number;
-  lastUpdatedAtUnixMs?: number;
-  domainName?: string | null;
-  domainId?: number | null;
-  sourceSenderLocalIndex?: number | null;
-  sourceSenderScriptPubKeyHex?: ScriptPubKeyHex | null;
-  reservedDedicatedIndex?: number | null;
-  reservedScriptPubKeyHex?: ScriptPubKeyHex | null;
-  foundingMessageText?: string | null;
-  foundingMessagePayloadHex?: string | null;
-  listingCancelCommitted?: boolean;
-  fieldName?: string | null;
-  expectedFieldId?: number | null;
-  fieldPermanent?: boolean | null;
-  fieldFormat?: number | null;
-  fieldValueHex?: string | null;
-  currentStep?: "reserved" | "tx1" | "tx2" | null;
-  tx1?: ProactiveFamilyTransactionRecord | null;
-  tx2?: ProactiveFamilyTransactionRecord | null;
 }
 
 export interface WalletStateV1 {

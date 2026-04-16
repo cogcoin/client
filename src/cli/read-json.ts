@@ -343,7 +343,7 @@ function buildMiningStatusData(mining: MiningControlPlaneView) {
         domainId: mining.runtime.currentDomainId,
         name: mining.runtime.currentDomainName,
       },
-    liveMiningFamilyInMempool: mining.runtime.liveMiningFamilyInMempool,
+    livePublishInMempool: mining.runtime.livePublishInMempool,
     publishDecision: mining.runtime.currentPublishDecision,
     fees: {
       currentFeeRateSatVb: mining.runtime.currentFeeRateSatVb,
@@ -589,7 +589,7 @@ export function buildMineStatusJson(mining: MiningControlPlaneView): ReadJsonRes
   tipHeight: number | null;
   referencedBlockHashDisplay: string | null;
   currentDomain: { domainId: number | null; name: string | null } | null;
-  liveMiningFamilyInMempool: boolean | null;
+  livePublishInMempool: boolean | null;
   publishDecision: string | null;
   phase: string;
   lastSuspendDetectedAtUnixMs: number | null;
@@ -609,7 +609,7 @@ export function buildMineStatusJson(mining: MiningControlPlaneView): ReadJsonRes
   } else if (mining.runtime.currentPhase === "resuming") {
     nextSteps.push("Wait for mining to finish rechecking health after the local runtime resumed.");
   } else if (mining.runtime.miningState === "paused-stale" || mining.runtime.miningState === "paused") {
-    nextSteps.push("Wait for the live mempool family to settle, or rerun mining when you want replacements to resume.");
+    nextSteps.push("Wait for the live mining publish to settle, or rerun mining when you want replacements to resume.");
   }
 
   if (mining.runtime.note !== null) {

@@ -407,7 +407,7 @@ function describeRegisterEconomicEffect(summary: RegisterResolvedSummary): strin
     return `send ${summary.economicEffect.amount.toString()} sats to the Cogcoin treasury.`;
   }
 
-  return `burn ${formatCogAmount(summary.economicEffect.amount)} from the parent-owner identity.`;
+  return `burn ${formatCogAmount(summary.economicEffect.amount)} from the parent owner.`;
 }
 
 function writeRegisterResolvedSummary(

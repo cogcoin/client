@@ -1,6 +1,7 @@
 import { saveUnlockSession } from "./state/session.js";
 import { persistWalletStateUpdate } from "./descriptor-normalization.js";
 import type { WalletRuntimePaths } from "./runtime.js";
+import { normalizeMiningStateRecord } from "./mining/state.js";
 import type {
   OutpointRecord,
   PortableWalletArchivePayloadV1,
@@ -169,7 +170,7 @@ export function normalizeWalletStateRecord(rawState: LegacyWalletStateRecord): W
       lastVerifiedAtUnixMs: rawState.managedCoreWallet?.lastVerifiedAtUnixMs ?? null,
     },
     domains: normalizeDomains(rawState.domains),
-    miningState: rawState.miningState!,
+    miningState: normalizeMiningStateRecord(rawState.miningState as WalletStateV1["miningState"]),
     hookClientState: rawState.hookClientState!,
     pendingMutations,
   };
@@ -223,7 +224,7 @@ export function normalizePortableWalletArchivePayload(
       walletBirthTime: payload.expected?.walletBirthTime ?? 0,
     },
     domains: normalizeDomains(payload.domains),
-    miningState: payload.miningState!,
+    miningState: normalizeMiningStateRecord(payload.miningState as WalletStateV1["miningState"]),
     hookClientState: payload.hookClientState!,
   };
 }

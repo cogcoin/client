@@ -79,8 +79,8 @@ import {
   requestMiningGenerationPreemption,
 } from "./coordination.js";
 import {
-  clearMiningFamilyState,
-  miningFamilyMayStillExist,
+  clearMiningPublishState,
+  miningPublishMayStillExist,
   normalizeMiningPublishState,
   normalizeMiningStateRecord,
 } from "./state.js";
@@ -155,7 +155,7 @@ interface MiningRunnerStatusOverrides {
   lastCompetitivenessGateAtUnixMs?: number | null;
   lastError?: string | null;
   note?: string | null;
-  liveMiningFamilyInMempool?: boolean | null;
+  livePublishInMempool?: boolean | null;
 }
 
 interface MiningCandidate {
@@ -850,7 +850,7 @@ function buildStatusSnapshot(
     lastCompetitivenessGateAtUnixMs: overrides.lastCompetitivenessGateAtUnixMs ?? view.runtime.lastCompetitivenessGateAtUnixMs,
     lastError: overrides.lastError ?? view.runtime.lastError,
     note: overrides.note ?? view.runtime.note,
-    liveMiningFamilyInMempool: overrides.liveMiningFamilyInMempool ?? view.runtime.liveMiningFamilyInMempool,
+    livePublishInMempool: overrides.livePublishInMempool ?? view.runtime.livePublishInMempool,
     updatedAtUnixMs: Date.now(),
   };
 }
@@ -1832,7 +1832,7 @@ function candidateNeedsFeeMaintenance(options: {
     && liveState.currentTxid !== null
     && liveState.currentFeeRateSatVb !== null
     && liveState.currentPublishState === "in-mempool"
-    && liveState.liveMiningFamilyInMempool === true;
+    && liveState.livePublishInMempool === true;
 }
 
 async function candidateWinsAgainstLive(options: {
@@ -1905,7 +1905,7 @@ async function reconcileLiveMiningState(options: {
   };
   const currentTxid = state.miningState.currentTxid;
 
-  if (currentTxid === null || !miningFamilyMayStillExist(state.miningState)) {
+  if (currentTxid === null || !miningPublishMayStillExist(state.miningState)) {
     await reconcilePersistentPolicyLocks({
       rpc: options.rpc,
       walletName: state.managedCoreWallet.walletName,
@@ -1929,7 +1929,7 @@ async function reconcileLiveMiningState(options: {
     state = {
       ...state,
       miningState: {
-        ...clearMiningFamilyState(state.miningState),
+        ...clearMiningPublishState(state.miningState),
         currentPublishDecision: "tx-confirmed-while-down",
       },
     };
@@ -1949,7 +1949,7 @@ async function reconcileLiveMiningState(options: {
       nodeBestHeight: options.nodeBestHeight,
     });
     state = defaultMiningStatePatch(state, {
-      liveMiningFamilyInMempool: true,
+      livePublishInMempool: true,
       currentPublishState: "in-mempool",
       state: stale
         ? "paused-stale"
@@ -1961,7 +1961,7 @@ async function reconcileLiveMiningState(options: {
         : state.miningState.runMode === "stopped"
           ? "user-stopped"
           : null,
-      currentPublishDecision: stale ? "paused-stale-mempool" : "restored-live-family",
+      currentPublishDecision: stale ? "paused-stale-mempool" : "restored-live-publish",
     });
     await reconcilePersistentPolicyLocks({
       rpc: options.rpc,
@@ -1978,7 +1978,7 @@ async function reconcileLiveMiningState(options: {
       pauseReason: state.miningState.currentPublishState === "broadcast-unknown"
         ? "broadcast-unknown-conflict"
         : "wallet-conflict-observed",
-      liveMiningFamilyInMempool: false,
+      livePublishInMempool: false,
       currentPublishDecision: state.miningState.currentPublishState === "broadcast-unknown"
         ? "repair-required-broadcast-conflict"
         : "repair-required-wallet-conflict",
@@ -1993,10 +1993,10 @@ async function reconcileLiveMiningState(options: {
   }
 
   state = defaultMiningStatePatch(state, {
-    ...clearMiningFamilyState(state.miningState),
+    ...clearMiningPublishState(state.miningState),
     currentPublishDecision: state.miningState.currentPublishState === "broadcast-unknown"
       ? "broadcast-unknown-not-seen"
-      : "live-family-not-seen",
+      : "live-publish-not-seen",
   });
   await reconcilePersistentPolicyLocks({
     rpc: options.rpc,
@@ -2062,7 +2062,7 @@ async function publishCandidate(options: {
 
   if (
     state.miningState.currentPublishState === "in-mempool"
-    && state.miningState.liveMiningFamilyInMempool === true
+    && state.miningState.livePublishInMempool === true
     && !shouldFeeBump
     && !await candidateWinsAgainstLive({
       liveState: state.miningState,
@@ -2071,10 +2071,10 @@ async function publishCandidate(options: {
   ) {
     return {
       state: defaultMiningStatePatch(state, {
-        currentPublishDecision: "kept-live-family",
+        currentPublishDecision: "kept-live-publish",
       }),
       txid: state.miningState.currentTxid,
-      decision: "kept-live-family",
+      decision: "kept-live-publish",
     };
   }
 
@@ -2112,7 +2112,7 @@ async function publishCandidate(options: {
     currentReferencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
     currentIntentFingerprintHex: intentFingerprintHex,
     sharedMiningConflictOutpoint: conflictOutpoint,
-    liveMiningFamilyInMempool: null,
+    livePublishInMempool: null,
     currentPublishDecision: priorMiningState.currentTxid === null
       ? "publishing"
       : shouldFeeBump
@@ -2133,7 +2133,7 @@ async function publishCandidate(options: {
     if (isAlreadyAcceptedError(error)) {
       state = defaultMiningStatePatch(state, {
         currentPublishState: "in-mempool",
-        liveMiningFamilyInMempool: true,
+        livePublishInMempool: true,
       });
       await saveWalletStatePreservingUnlock({
         state,
@@ -2213,7 +2213,7 @@ async function publishCandidate(options: {
     : priorMiningState.replacementCount + 1;
   state = defaultMiningStatePatch(state, {
     currentPublishState: "in-mempool",
-    liveMiningFamilyInMempool: true,
+    livePublishInMempool: true,
     currentPublishDecision: state.miningState.currentPublishDecision === "fee-bump"
       ? "fee-bump"
       : state.miningState.currentPublishDecision === "replacing"
@@ -2402,7 +2402,7 @@ async function performMiningCycle(options: {
         overrides: {
           runMode: options.runMode,
           currentPhase: "waiting",
-          note: "Mining is blocked until the current mining family is repaired or reconciled.",
+          note: "Mining is blocked until the current mining publish is repaired or reconciled.",
         },
         visualizer: options.visualizer,
       });
@@ -2437,7 +2437,7 @@ async function performMiningCycle(options: {
         overrides: {
           runMode: options.runMode,
           currentPhase: "waiting",
-          note: "Mining is paused while another wallet mutation family is active.",
+          note: "Mining is paused while another wallet mutation is active.",
         },
         visualizer: options.visualizer,
       });
@@ -2447,7 +2447,7 @@ async function performMiningCycle(options: {
     const preemptionRequest = await readMiningPreemptionRequest(options.paths);
     if (preemptionRequest !== null) {
       const nextState = defaultMiningStatePatch(effectiveReadContext.localState.state, {
-        state: effectiveReadContext.localState.state.miningState.liveMiningFamilyInMempool
+        state: effectiveReadContext.localState.state.miningState.livePublishInMempool
           && effectiveReadContext.localState.state.miningState.state === "paused-stale"
           ? "paused-stale"
           : "paused",
@@ -2955,13 +2955,13 @@ async function performMiningCycle(options: {
           lastMempoolSequence: gate.lastMempoolSequence,
           lastCompetitivenessGateAtUnixMs: Date.now(),
           note: published.txid === null
-            ? "Mining candidate was evaluated but the existing live family stayed in place."
+            ? "Mining candidate was evaluated but the existing live publish stayed in place."
             : `Mining candidate ${published.decision === "replaced"
               ? "replaced"
               : published.decision === "fee-bump"
                 ? "fee-bumped"
                 : "broadcast"} as ${published.txid}.`,
-          liveMiningFamilyInMempool: published.state.miningState.liveMiningFamilyInMempool,
+          livePublishInMempool: published.state.miningState.livePublishInMempool,
         },
         visualizer: options.visualizer,
       });
@@ -3035,14 +3035,14 @@ async function saveStopSnapshot(options: {
         });
         const stopState = defaultMiningStatePatch(reconciledState, {
           runMode: "stopped",
-          state: reconciledState.miningState.liveMiningFamilyInMempool
+          state: reconciledState.miningState.livePublishInMempool
             ? reconciledState.miningState.state === "paused-stale"
               ? "paused-stale"
               : "paused"
             : reconciledState.miningState.state === "repair-required"
               ? "repair-required"
               : "idle",
-          pauseReason: reconciledState.miningState.liveMiningFamilyInMempool
+          pauseReason: reconciledState.miningState.livePublishInMempool
             ? reconciledState.miningState.state === "paused-stale"
               ? "stale-block-context"
               : "user-stopped"
@@ -3371,7 +3371,7 @@ export async function stopBackgroundMining(options: StopBackgroundMiningOptions)
       runMode: "background",
       backgroundWorkerPid: snapshot.backgroundWorkerPid,
       backgroundWorkerRunId: snapshot.backgroundWorkerRunId,
-      note: snapshot.liveMiningFamilyInMempool
+      note: snapshot.livePublishInMempool
         ? "Background mining stopped. The last mining transaction may still confirm from mempool."
         : "Background mining stopped.",
     });

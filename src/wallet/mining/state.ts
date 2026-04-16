@@ -1,9 +1,14 @@
 import type { MiningStateRecord } from "../types.js";
 
-export type MiningFamilyStatus = MiningStateRecord["state"];
+type LegacyMiningStateRecord = MiningStateRecord & {
+  livePublishInMempool?: boolean | null;
+  liveMiningFamilyInMempool?: boolean | null;
+};
+
+export type MiningLifecycleStatus = MiningStateRecord["state"];
 export type MiningPublishState = MiningStateRecord["currentPublishState"];
 
-export function normalizeMiningFamilyStatus(raw: string | null | undefined): MiningFamilyStatus {
+export function normalizeMiningLifecycleStatus(raw: string | null | undefined): MiningLifecycleStatus {
   switch (raw) {
     case "live":
     case "paused":
@@ -37,15 +42,16 @@ export function normalizeMiningPublishState(raw: string | null | undefined): Min
   }
 }
 
-export function normalizeMiningStateRecord(state: MiningStateRecord): MiningStateRecord {
+export function normalizeMiningStateRecord(state: LegacyMiningStateRecord): MiningStateRecord {
   return {
     ...state,
-    state: normalizeMiningFamilyStatus(state.state),
+    state: normalizeMiningLifecycleStatus(state.state),
     currentPublishState: normalizeMiningPublishState(state.currentPublishState),
+    livePublishInMempool: state.livePublishInMempool ?? state.liveMiningFamilyInMempool ?? false,
   };
 }
 
-export function clearMiningFamilyState(state: MiningStateRecord): MiningStateRecord {
+export function clearMiningPublishState(state: MiningStateRecord): MiningStateRecord {
   return {
     ...normalizeMiningStateRecord(state),
     state: "idle",
@@ -67,19 +73,19 @@ export function clearMiningFamilyState(state: MiningStateRecord): MiningStateRec
     currentBlockTargetHeight: null,
     currentReferencedBlockHashDisplay: null,
     currentIntentFingerprintHex: null,
-    liveMiningFamilyInMempool: false,
+    livePublishInMempool: false,
     currentPublishDecision: null,
     replacementCount: 0,
     sharedMiningConflictOutpoint: null,
   };
 }
 
-export function miningFamilyMayStillExist(state: MiningStateRecord): boolean {
+export function miningPublishMayStillExist(state: MiningStateRecord): boolean {
   const normalized = normalizeMiningStateRecord(state);
   return normalized.currentTxid !== null
     && normalized.currentPublishState !== "none";
 }
 
-export function miningFamilyIsInMempool(state: MiningStateRecord): boolean {
+export function miningPublishIsInMempool(state: MiningStateRecord): boolean {
   return normalizeMiningStateRecord(state).currentPublishState === "in-mempool";
 }

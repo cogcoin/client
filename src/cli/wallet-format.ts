@@ -422,7 +422,7 @@ function isMiningOverviewOk(mining: NonNullable<WalletReadContext["mining"]>): b
     && mining.runtime.indexerHealth === "synced"
     && mining.runtime.miningState !== "repair-required"
     && mining.runtime.miningState !== "paused-stale"
-    && !(mining.runtime.miningState === "paused" && mining.runtime.liveMiningFamilyInMempool === true);
+    && !(mining.runtime.miningState === "paused" && mining.runtime.livePublishInMempool === true);
 }
 
 function buildOverviewPathsSection(context: WalletReadContext): OverviewEntry[] {

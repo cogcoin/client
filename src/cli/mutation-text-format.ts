@@ -17,7 +17,7 @@ export function formatRegisterEconomicEffect(result: RegisterDomainResult): stri
     return `send ${result.resolved.economicEffect.amount.toString()} sats to the Cogcoin treasury`;
   }
 
-  return `burn ${formatCogAmount(result.resolved.economicEffect.amount)} from the parent-owner identity`;
+  return `burn ${formatCogAmount(result.resolved.economicEffect.amount)} from the parent owner`;
 }
 
 export function formatBuyBuyerSummary(result: DomainMarketMutationResult): string {

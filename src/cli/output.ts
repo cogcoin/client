@@ -1003,8 +1003,8 @@ export function createCliErrorPresentation(
   if (errorCode.includes("insufficient")) {
     return {
       what: "Available funds are insufficient.",
-      why: "The selected wallet identity does not currently have enough spendable funds for this operation.",
-      next: "Choose a different identity or add more funds, then retry.",
+      why: "The wallet address does not currently have enough spendable funds for this operation.",
+      next: "Add more funds to the wallet address, then retry.",
     };
   }
 
@@ -1034,9 +1034,9 @@ export function createCliErrorPresentation(
 
   if (errorCode === "wallet_register_sender_read_only") {
     return {
-      what: "Selected sender is read-only.",
-      why: "This local identity is tracked for visibility only and cannot author new owner transactions.",
-      next: "Retry with a locally controlled non-read-only sender.",
+      what: "Wallet sender is not spendable.",
+      why: "This command needs the wallet address to author the transaction, but the local wallet sender is not spendable.",
+      next: "Check `cogcoin address`, restore the spendable wallet, and retry.",
     };
   }
 
@@ -1058,49 +1058,49 @@ export function createCliErrorPresentation(
 
   if (errorCode === "wallet_buy_sender_read_only") {
     return {
-      what: "Selected buyer is read-only.",
-      why: "The old multi-identity sender path is no longer supported under the single-wallet model.",
-      next: "Retry without `--from`.",
+      what: "Wallet sender is not spendable.",
+      why: "Buying now always uses the wallet address, but the local wallet sender is not spendable.",
+      next: "Check `cogcoin address`, restore the spendable wallet, and retry.",
     };
   }
 
   if (errorCode === "wallet_buy_sender_address_unavailable") {
     return {
-      what: "Selected buyer could not be displayed.",
-      why: "The selector resolved to a local identity, but the wallet does not have a usable display address for it.",
-      next: "Run `cogcoin ids` and retry with a different local buyer selector.",
+      what: "Wallet address is unavailable.",
+      why: "The wallet could not produce a usable display address for the local sender.",
+      next: "Inspect `cogcoin address` and retry.",
     };
   }
 
   if (errorCode === "wallet_buy_already_owner") {
     return {
-      what: "Selected buyer already owns the domain.",
-      why: "A buy mutation must come from a different local identity than the current domain owner.",
-      next: "Choose a different buyer with `--from`, or inspect the current owner with `cogcoin show <domain>`.",
+      what: "The wallet already owns the domain.",
+      why: "A buy mutation cannot target a domain already owned by this wallet address.",
+      next: "Inspect the current owner with `cogcoin show <domain>` and choose a different domain.",
     };
   }
 
   if (errorCode === "wallet_buy_insufficient_cog_balance") {
     return {
-      what: "Selected buyer does not have enough COG.",
-      why: "The chosen local identity does not currently have the listed domain price available in spendable COG balance.",
-      next: "Choose a different buyer or add more COG to that identity, then retry.",
+      what: "The wallet does not have enough COG.",
+      why: "The wallet address does not currently have the listed domain price available in spendable COG balance.",
+      next: "Add more COG to the wallet address, then retry.",
     };
   }
 
   if (errorCode === "wallet_transfer_owner_not_locally_controlled" || errorCode === "wallet_sell_owner_not_locally_controlled") {
     return {
       what: "Domain owner is not locally controlled.",
-      why: "This command must be authored by the current unanchored domain owner, and that owner identity is not available in this wallet with a usable address.",
-      next: "Inspect the current owner with `cogcoin show <domain>`, then retry from the wallet that controls that owner identity.",
+      why: "This command must be authored by the current unanchored domain owner, and that current owner script/address is not controlled by this wallet.",
+      next: "Inspect the current owner with `cogcoin show <domain>`, then retry from the wallet that controls the owner.",
     };
   }
 
   if (errorCode === "wallet_transfer_owner_read_only" || errorCode === "wallet_sell_owner_read_only") {
     return {
-      what: "Domain owner is read-only.",
-      why: "The current domain owner is tracked locally for visibility, but this wallet cannot author owner mutations from a read-only identity.",
-      next: "Use the wallet that controls the owner identity, or import the spendable owner into this wallet before retrying.",
+      what: "Domain owner is not spendable in this wallet.",
+      why: "The current domain owner is visible locally, but this wallet cannot author owner mutations from it.",
+      next: "Use the wallet that controls the owner, or import the spendable owner into this wallet before retrying.",
     };
   }
 
@@ -1111,8 +1111,8 @@ export function createCliErrorPresentation(
   ) {
     return {
       what: "Anchored field owner is not locally controlled.",
-      why: "Field mutations must be authored by the current anchored owner of the domain, and that owner identity is not available in this wallet with a usable address.",
-      next: "Inspect the current owner with `cogcoin show <domain>`, then retry from the wallet that controls that anchored owner identity.",
+      why: "Field mutations must be authored by the current anchored owner of the domain, and that current owner script/address is not controlled by this wallet.",
+      next: "Inspect the current owner with `cogcoin show <domain>`, then retry from the wallet that controls the owner.",
     };
   }
 
@@ -1122,9 +1122,9 @@ export function createCliErrorPresentation(
     || errorCode === "wallet_field_clear_owner_read_only"
   ) {
     return {
-      what: "Anchored field owner is read-only.",
-      why: "The current anchored owner is tracked locally for visibility, but this wallet cannot author field mutations from a read-only identity.",
-      next: "Use the wallet that controls the anchored owner identity, or import the spendable owner into this wallet before retrying.",
+      what: "Anchored field owner is not spendable in this wallet.",
+      why: "The current anchored owner is visible locally, but this wallet cannot author field mutations from it.",
+      next: "Use the wallet that controls the owner, or import the spendable owner into this wallet before retrying.",
     };
   }
 
@@ -1136,8 +1136,8 @@ export function createCliErrorPresentation(
   ) {
     return {
       what: "Anchored domain owner is not locally controlled.",
-      why: "This anchored domain-admin command must be authored by the current anchored owner, and that owner identity is not available in this wallet with a usable address.",
-      next: "Inspect the current owner with `cogcoin show <domain>`, then retry from the wallet that controls that anchored owner identity.",
+      why: "This anchored domain-admin command must be authored by the current anchored owner, and that current owner script/address is not controlled by this wallet.",
+      next: "Inspect the current owner with `cogcoin show <domain>`, then retry from the wallet that controls the owner.",
     };
   }
 
@@ -1148,9 +1148,9 @@ export function createCliErrorPresentation(
     || errorCode === "wallet_domain_canonical_owner_read_only"
   ) {
     return {
-      what: "Anchored domain owner is read-only.",
-      why: "The current anchored owner is tracked locally for visibility, but this wallet cannot author anchored admin mutations from a read-only identity.",
-      next: "Use the wallet that controls the anchored owner identity, or import the spendable owner into this wallet before retrying.",
+      what: "Anchored domain owner is not spendable in this wallet.",
+      why: "The current anchored owner is visible locally, but this wallet cannot author anchored admin mutations from it.",
+      next: "Use the wallet that controls the owner, or import the spendable owner into this wallet before retrying.",
     };
   }
 
@@ -1160,8 +1160,8 @@ export function createCliErrorPresentation(
   ) {
     return {
       what: "Anchored reputation source owner is not locally controlled.",
-      why: "Reputation mutations must be authored by the current anchored owner of the source domain, and that owner identity is not available in this wallet with a usable address.",
-      next: "Inspect the current source-domain owner with `cogcoin show <domain>`, then retry from the wallet that controls that anchored owner identity.",
+      why: "Reputation mutations must be authored by the current anchored owner of the source domain, and that current owner script/address is not controlled by this wallet.",
+      next: "Inspect the current source-domain owner with `cogcoin show <domain>`, then retry from the wallet that controls the owner.",
     };
   }
 
@@ -1170,17 +1170,17 @@ export function createCliErrorPresentation(
     || errorCode === "wallet_rep_revoke_source_owner_read_only"
   ) {
     return {
-      what: "Anchored reputation source owner is read-only.",
-      why: "The current anchored source-domain owner is tracked locally for visibility, but this wallet cannot author reputation mutations from a read-only identity.",
-      next: "Use the wallet that controls the anchored source-domain owner identity, or import the spendable owner into this wallet before retrying.",
+      what: "Anchored reputation source owner is not spendable in this wallet.",
+      why: "The current anchored source-domain owner is visible locally, but this wallet cannot author reputation mutations from it.",
+      next: "Use the wallet that controls the owner, or import the spendable owner into this wallet before retrying.",
     };
   }
 
   if (errorCode === "wallet_send_sender_address_unavailable" || errorCode === "wallet_lock_sender_address_unavailable") {
     return {
-      what: "Selected sender could not be displayed.",
-      why: "The wallet resolved a local sender identity, but it does not have a usable display address for that identity.",
-      next: "Run `cogcoin ids` and retry with a different local sender selector.",
+      what: "Wallet address is unavailable.",
+      why: "The wallet could not produce a usable display address for the local sender.",
+      next: "Inspect `cogcoin address` and retry.",
     };
   }
 
@@ -1188,23 +1188,23 @@ export function createCliErrorPresentation(
     return {
       what: "The claim sender is not locally controlled.",
       why: "Before timeout, the wallet may only claim as the current recipient-domain owner, and that owner is not available in this wallet.",
-      next: "Check the current recipient-domain owner with `cogcoin show <domain>` or use the wallet that controls that owner identity.",
+      next: "Check the current recipient-domain owner with `cogcoin show <domain>` or use the wallet that controls the owner.",
     };
   }
 
   if (errorCode === "wallet_reclaim_sender_not_local") {
     return {
       what: "The reclaim sender is not locally controlled.",
-      why: "After timeout, the wallet may only reclaim as the original locker, and that locker identity is not available in this wallet.",
-      next: "Use the wallet that controls the original locker identity, or inspect the lock details with `cogcoin locks`.",
+      why: "After timeout, the wallet may only reclaim as the original locker, and that locker is not controlled by this wallet.",
+      next: "Use the wallet that controls the original locker, or inspect the lock details with `cogcoin locks`.",
     };
   }
 
   if (errorCode.includes("ambiguous_sender") || errorCode.includes("no_eligible_sender")) {
     return {
       what: "Sender selection could not be resolved.",
-      why: "The wallet could not determine one eligible local sender for this command.",
-      next: "Inspect `cogcoin ids` and rerun the command with an explicit `--from` selector when supported.",
+      why: "The wallet could not determine a usable local sender for this command.",
+      next: "Inspect `cogcoin address` and `cogcoin status`, then retry.",
     };
   }
 

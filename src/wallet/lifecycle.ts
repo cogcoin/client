@@ -381,7 +381,7 @@ function createInitialWalletState(options: {
       currentBlockTargetHeight: null,
       currentReferencedBlockHashDisplay: null,
       currentIntentFingerprintHex: null,
-      liveMiningFamilyInMempool: null,
+      livePublishInMempool: null,
       currentPublishDecision: null,
       replacementCount: 0,
       currentBlockFeeSpentSats: "0",
@@ -1122,14 +1122,14 @@ function applyRepairStoppedMiningState(state: WalletStateV1): WalletStateV1 {
     miningState: {
       ...miningState,
       runMode: "stopped",
-      state: miningState.liveMiningFamilyInMempool
+      state: miningState.livePublishInMempool
         ? miningState.state === "paused-stale"
           ? "paused-stale"
           : "paused"
         : miningState.state === "repair-required"
           ? "repair-required"
           : "idle",
-      pauseReason: miningState.liveMiningFamilyInMempool
+      pauseReason: miningState.livePublishInMempool
         ? miningState.state === "paused-stale"
           ? "stale-block-context"
           : "wallet-repair"
@@ -1153,7 +1153,7 @@ function createStoppedBackgroundRuntimeSnapshot(
     backgroundWorkerHeartbeatAtUnixMs: null,
     backgroundWorkerHealth: null,
     currentPhase: "idle",
-    note: snapshot.liveMiningFamilyInMempool
+    note: snapshot.livePublishInMempool
       ? "Background mining stopped for wallet repair. The last mining transaction may still confirm from mempool."
       : "Background mining stopped for wallet repair.",
   };
