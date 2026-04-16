@@ -1264,7 +1264,7 @@ test("interactive text commands print cached update notices to stderr without to
     assert.equal(code, 0);
     assert.equal(fetchCalled, false);
     assert.equal(stdout.toString(), "");
-    assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.11 -> 0\.5\.12/);
+    assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.12 -> 0\.5\.13/);
     assert.match(stderr.toString(), /Run: npm install -g @cogcoin\/client/);
   } finally {
     await removeTempDirectory(root);
@@ -1417,7 +1417,7 @@ test("stale update cache refreshes from npm and persists the result", async () =
     assert.equal(code, 0);
     assert.equal(fetchCalls, 1);
     assert.equal(stdout.toString(), "");
-    assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.11 -> 0\.5\.12/);
+    assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.12 -> 0\.5\.13/);
 
     const cache = await readUpdateCheckCache(cachePath);
     assert.equal(cache.lastCheckedAtUnixMs, 2_000_000_000_000);
@@ -1602,7 +1602,7 @@ test("changing the installed version resets update notice suppression", async ()
     assert.equal(code, 0);
     assert.equal(fetchCalls, 0);
     assert.equal(stdout.toString(), "");
-    assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.11 -> 0\.5\.12/);
+    assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.12 -> 0\.5\.13/);
   } finally {
     await removeTempDirectory(root);
   }
@@ -8936,7 +8936,7 @@ test("follow emits the update notice before later stderr lifecycle lines", async
 
     assert.equal(code, 0);
     assert.equal(stdout.toString(), "");
-    assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.11 -> 0\.5\.12/);
+    assert.match(stderr.toString(), /Update available: Cogcoin 0\.5\.12 -> 0\.5\.13/);
     assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
     assert.ok(stderr.toString().startsWith(
       "Update available: Cogcoin 0.5.12 -> 0.5.13\nRun: npm install -g @cogcoin/client\n",
