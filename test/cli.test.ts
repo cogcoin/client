@@ -11,6 +11,7 @@ import {
   parseCliArgs,
   runCli,
 } from "../src/cli-runner.js";
+import { createStopSignalWatcher } from "../src/cli/signals.js";
 import { formatWalletOverviewReport } from "../src/cli/wallet-format.js";
 import { createTerminalPrompter } from "../src/cli/prompt.js";
 import { describeCanonicalCommand, formatCliTextError } from "../src/cli/output.js";
@@ -8097,7 +8098,55 @@ test("sync shuts down the managed bitcoind client on SIGTERM", async () => {
 
   assert.equal(code, 0);
   assert.equal(closed, true);
-  assert.match(stderr.toString(), /Detaching from managed Cogcoin client/);
+  assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
+  assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+});
+
+test("stop watcher force-exits on a second signal without printing a late success line", async () => {
+  const stderr = new MemoryStream();
+  const signals = new FakeSignalSource();
+  let closeCalls = 0;
+  let forcedExitCode: number | null = null;
+  let releaseClose!: () => void;
+  const closePromise = new Promise<void>((resolve) => {
+    releaseClose = resolve;
+  });
+  const watcher = createStopSignalWatcher(
+    signals,
+    stderr,
+    {
+      async syncToTip() {
+        throw new Error("unreachable");
+      },
+      async startFollowingTip() {
+        throw new Error("unreachable");
+      },
+      async getNodeStatus() {
+        throw new Error("unreachable");
+      },
+      async close() {
+        closeCalls += 1;
+        await closePromise;
+      },
+    },
+    (code) => {
+      forcedExitCode = code;
+    },
+  );
+
+  signals.emit("SIGINT");
+  assert.equal(closeCalls, 1);
+  assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
+
+  signals.emit("SIGINT");
+  const code = await watcher.promise;
+  assert.equal(code, 130);
+  assert.equal(forcedExitCode, 130);
+  assert.doesNotMatch(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+
+  releaseClose();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.doesNotMatch(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
 });
 
 test("restore clears wallet-control.lock on SIGINT", async () => {
@@ -8257,7 +8306,8 @@ test("follow stays active until signal and shuts down cleanly", async () => {
   assert.equal(closed, true);
   assert.equal(walletRootId, "wallet-root-follow");
   assert.match(stdout.toString(), /Following managed Cogcoin tip/);
-  assert.match(stderr.toString(), /Detaching from managed Cogcoin client/);
+  assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
+  assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
 });
 
 test("follow does not print a startup line when tty progress is active", async () => {
@@ -8305,7 +8355,8 @@ test("follow does not print a startup line when tty progress is active", async (
 
   assert.equal(code, 0);
   assert.equal(stdout.toString(), "");
-  assert.match(stderr.toString(), /Detaching from managed Cogcoin client/);
+  assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
+  assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
 });
 
 test("formatStatusReport keeps live node claims passive", async () => {

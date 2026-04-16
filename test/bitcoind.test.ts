@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import test, { type TestContext } from "node:test";
@@ -7,6 +8,9 @@ import { join } from "node:path";
 import { deserializeIndexerState } from "@cogcoin/indexer";
 import { getBitcoinCliPath, getBitcoindPath } from "@cogcoin/bitcoin";
 
+import {
+  runCli,
+} from "../src/cli-runner.js";
 import {
   attachOrStartIndexerDaemon,
   attachOrStartManagedBitcoindService,
@@ -39,6 +43,33 @@ interface RegtestFixture {
   rootDir: string;
   dataDir: string;
   databasePath: string;
+}
+
+class MemoryStream {
+  readonly chunks: string[] = [];
+  isTTY?: boolean;
+
+  constructor(isTTY = false) {
+    this.isTTY = isTTY;
+  }
+
+  write(chunk: string): void {
+    this.chunks.push(chunk);
+  }
+
+  toString(): string {
+    return this.chunks.join("");
+  }
+}
+
+class FakeSignalSource extends EventEmitter {
+  override on(event: "SIGINT" | "SIGTERM", listener: () => void): this {
+    return super.on(event, listener);
+  }
+
+  override off(event: "SIGINT" | "SIGTERM", listener: () => void): this {
+    return super.off(event, listener);
+  }
 }
 
 type ManagedIndexerDaemonStatusFixture =
@@ -92,6 +123,22 @@ function createTempWalletPaths(root: string) {
       XDG_RUNTIME_DIR: join(root, "runtime"),
     },
   });
+}
+
+function createWalletStateEnvelopeStub(walletRootId: string) {
+  return {
+    source: "primary" as const,
+    envelope: {
+      format: "cogcoin-local-wallet-state",
+      version: 1 as const,
+      wrappedBy: "secret-provider",
+      cipher: "aes-256-gcm" as const,
+      walletRootIdHint: walletRootId,
+      nonce: "nonce",
+      tag: "tag",
+      ciphertext: "ciphertext",
+    },
+  };
 }
 
 async function cleanupManagedFixture(fixture: RegtestFixture, ...extraDataDirs: string[]): Promise<void> {
@@ -806,6 +853,119 @@ test("indexer daemon keeps following in the background after sync client close",
     }
   } finally {
     await client?.close().catch(() => undefined);
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("sync CLI resumes background indexer follow after a single SIGTERM detach", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-cli-sync-signal-detach");
+  const runtimePaths = createTempWalletPaths(join(fixture.rootDir, "wallet-home"));
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream();
+  const signals = new FakeSignalSource();
+  let forcedExitCode: number | null = null;
+  let releaseSyncReady!: () => void;
+  const syncReady = new Promise<void>((resolve) => {
+    releaseSyncReady = resolve;
+  });
+  let liveClient: Awaited<ReturnType<typeof openManagedBitcoindClientInternal>> | null = null;
+
+  try {
+    const node = await attachOrStartManagedBitcoindService({
+      dataDir: fixture.dataDir,
+      chain: "regtest",
+      startHeight: 0,
+    });
+    const descriptor = await getMiningDescriptor(fixture.dataDir, node.rpc.port);
+    await generateBlocks(fixture.dataDir, node.rpc.port, 250, descriptor);
+
+    const syncPromise = runCli(["sync"], {
+      stdout,
+      stderr,
+      signalSource: signals,
+      forceExit: (code) => {
+        forcedExitCode = code;
+      },
+      resolveDefaultClientDatabasePath: () => fixture.databasePath,
+      resolveDefaultBitcoindDataDir: () => fixture.dataDir,
+      resolveWalletRuntimePaths: () => runtimePaths,
+      loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub("wallet-root-sync-signal"),
+      loadUnlockSession: async () => {
+        throw new Error("should-not-read-unlock-session");
+      },
+      loadWalletExplicitLock: async () => {
+        throw new Error("should-not-read-explicit-lock");
+      },
+      openManagedBitcoindClient: async ({ store, progressOutput, walletRootId }) => {
+        liveClient = await openManagedBitcoindClientInternal({
+          store,
+          dataDir: fixture.dataDir,
+          databasePath: fixture.databasePath,
+          chain: "regtest",
+          startHeight: 0,
+          snapshotInterval: 2,
+          pollIntervalMs: 250,
+          syncDebounceMs: 50,
+          progressOutput,
+          walletRootId,
+        });
+
+        return {
+          async syncToTip() {
+            releaseSyncReady();
+            return liveClient!.syncToTip();
+          },
+          async startFollowingTip() {
+            await liveClient?.startFollowingTip();
+          },
+          async getNodeStatus() {
+            return liveClient!.getNodeStatus();
+          },
+          async close() {
+            const client = liveClient;
+            liveClient = null;
+            await client?.close();
+          },
+        };
+      },
+    });
+
+    await syncReady;
+    signals.emit("SIGTERM");
+    const code = await syncPromise;
+
+    assert.equal(code, 0);
+    assert.equal(forcedExitCode, null);
+    assert.equal(stdout.toString(), "");
+    assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
+    assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+
+    const daemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+    });
+
+    try {
+      await generateBlocks(fixture.dataDir, node.rpc.port, 1, descriptor);
+
+      await waitForCondition(async () => {
+        const status = await daemon.getStatus();
+        return status.appliedTipHeight === 251 && status.coreBestHeight === 251 && status.state === "synced";
+      }, 20_000, 100);
+
+      const status = await daemon.getStatus();
+      assert.equal(status.appliedTipHeight, 251);
+      assert.equal(status.coreBestHeight, 251);
+      assert.equal(status.state, "synced");
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    const danglingClient = liveClient as { close(): Promise<void> } | null;
+    if (danglingClient !== null) {
+      await danglingClient.close().catch(() => undefined);
+    }
     await cleanupManagedFixture(fixture);
   }
 });

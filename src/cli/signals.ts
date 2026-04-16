@@ -36,12 +36,20 @@ export function createStopSignalWatcher(
 
     const onFirstSignal = (): void => {
       closing = true;
-      writeLine(stderr, "Detaching from managed Cogcoin client...");
+      writeLine(stderr, "Detaching from managed Cogcoin client and resuming background indexer follow...");
       void client.close().then(
         () => {
+          if (resolved) {
+            return;
+          }
+          writeLine(stderr, "Detached cleanly; background indexer follow resumed.");
           settle(0);
         },
         () => {
+          if (resolved) {
+            return;
+          }
+          writeLine(stderr, "Detach failed before background indexer follow was confirmed.");
           settle(1);
         },
       );
@@ -151,6 +159,13 @@ export async function waitForCompletionOrStop<T>(
     }
 
     throw outcome.error;
+  }
+
+  if (stopWatcher.isStopping()) {
+    return {
+      kind: "stopped",
+      code: await stopWatcher.promise,
+    };
   }
 
   return outcome;
