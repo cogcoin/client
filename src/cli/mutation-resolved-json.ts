@@ -137,16 +137,10 @@ export function buildFieldResolvedJson(result: FieldMutationResult) {
         format: result.resolved.value.format,
         byteLength: result.resolved.value.byteLength,
       },
-    effect: result.resolved.effect.kind === "create-and-initialize-field"
-      ? {
-        kind: result.resolved.effect.kind,
-        tx1BurnCogtoshi: result.resolved.effect.tx1BurnCogtoshi,
-        tx2AdditionalBurnCogtoshi: result.resolved.effect.tx2AdditionalBurnCogtoshi,
-      }
-      : {
-        kind: result.resolved.effect.kind,
-        burnCogtoshi: result.resolved.effect.burnCogtoshi,
-      },
+    effect: {
+      kind: result.resolved.effect.kind,
+      burnCogtoshi: result.resolved.effect.burnCogtoshi,
+    },
   };
 }
 

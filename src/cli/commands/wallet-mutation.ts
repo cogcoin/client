@@ -148,18 +148,17 @@ export async function runWalletMutationCommand(
             foundingMessageText: result.foundingMessageText ?? parsed.anchorMessage,
           }),
           reusedExisting: result.reusedExisting,
-          reusedMessage: "The existing anchor family was reconciled instead of creating a duplicate.",
+          reusedMessage: "The existing pending anchor was reconciled instead of creating a duplicate.",
           interactive,
-          explorerTxid: result.tx2Txid,
-	          nextSteps: workflowMutationNextSteps(nextSteps),
-	          text: {
-	            heading: "Anchor submitted.",
-	            fields: [
-	              { label: "Domain", value: result.domainName },
-	              { label: "Status", value: result.status },
-	              { label: "Tx1", value: result.tx1Txid },
-	              { label: "Tx2", value: result.tx2Txid },
-	            ],
+          explorerTxid: result.txid,
+          nextSteps: workflowMutationNextSteps(nextSteps),
+          text: {
+            heading: "Anchor submitted.",
+            fields: [
+              { label: "Domain", value: result.domainName },
+              { label: "Status", value: result.status },
+              { label: "Txid", value: result.txid },
+            ],
           },
         });
       }
@@ -465,12 +464,6 @@ export async function runWalletMutationCommand(
         domainName: parsed.args[0]!,
         fieldName: parsed.args[1]!,
         permanent: parsed.fieldPermanent,
-        source: (parsed.endpointText !== null
-          || parsed.endpointJson !== null
-          || parsed.endpointBytes !== null
-          || parsed.fieldFormat !== null)
-          ? createFieldValueSource(parsed)
-          : null,
         dataDir,
         databasePath: dbPath,
         provider: context.walletSecretProvider,
@@ -482,14 +475,15 @@ export async function runWalletMutationCommand(
         data: buildFieldMutationData(result),
         previewData: buildFieldPreviewData(result),
         reusedExisting: result.reusedExisting,
-        reusedMessage: result.family
-          ? "The existing pending field family was reconciled instead of creating a duplicate."
-          : "The existing pending field creation was reconciled instead of creating a duplicate.",
+        reusedMessage: "The existing pending field creation was reconciled instead of creating a duplicate.",
         interactive,
-        explorerTxid: result.family ? (result.tx2Txid ?? null) : result.txid,
-        nextSteps: commandMutationNextSteps(`cogcoin field show ${result.domainName} ${result.fieldName}`),
+        explorerTxid: result.txid,
+        nextSteps: workflowMutationNextSteps([
+          `cogcoin field show ${result.domainName} ${result.fieldName}`,
+          `cogcoin field set ${result.domainName} ${result.fieldName} --text <value>`,
+        ]),
         text: {
-          heading: result.family ? "Field create+write family submitted." : "Field creation submitted.",
+          heading: "Field creation submitted.",
           fields: [
             { label: "Domain", value: result.domainName },
             { label: "Field", value: result.fieldName },
@@ -498,9 +492,7 @@ export async function runWalletMutationCommand(
             { label: "Value", value: formatFieldValueSummary(result), when: result.resolved?.value !== null && result.resolved?.value !== undefined },
             { label: "Effect", value: formatFieldEffect(result) },
             { label: "Status", value: result.status },
-            { label: "Tx1", value: result.tx1Txid ?? "unknown", when: result.family },
-            { label: "Tx2", value: result.tx2Txid ?? "unknown", when: result.family },
-            { label: "Txid", value: result.txid, when: !result.family },
+            { label: "Txid", value: result.txid },
           ],
         },
       });

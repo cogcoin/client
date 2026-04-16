@@ -174,8 +174,6 @@ export function formatFieldEffect(result: FieldMutationResult): string {
   switch (effect.kind) {
     case "create-empty-field":
       return `burn ${effect.burnCogtoshi} cogtoshi to create an empty field`;
-    case "create-and-initialize-field":
-      return `burn ${effect.tx1BurnCogtoshi} cogtoshi in Tx1 and ${effect.tx2AdditionalBurnCogtoshi} additional cogtoshi in Tx2`;
     case "write-field-value":
       return `burn ${effect.burnCogtoshi} cogtoshi to write the field value`;
     case "clear-field-value":

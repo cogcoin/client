@@ -50,35 +50,6 @@ export function buildSingleTxMutationPreviewData(options: {
   };
 }
 
-export function buildFamilyMutationPreviewData(options: {
-  familyKind: string;
-  familyStatus: string;
-  reusedExisting: boolean;
-  intent: Record<string, unknown>;
-  currentStep?: string | null;
-  tx1Txid?: string | null | undefined;
-  tx1Wtxid?: string | null | undefined;
-  tx2Txid?: string | null | undefined;
-  tx2Wtxid?: string | null | undefined;
-  intentFingerprintHex?: string | null;
-}) {
-  return {
-    resultType: "family-mutation" as const,
-    family: {
-      kind: options.familyKind,
-      localStatus: options.familyStatus,
-      reusedExisting: options.reusedExisting,
-      currentStep: options.currentStep ?? null,
-      intentFingerprintHex: options.intentFingerprintHex ?? null,
-    },
-    transactions: {
-      tx1: normalizeTxSummary(options.tx1Txid, options.tx1Wtxid),
-      tx2: normalizeTxSummary(options.tx2Txid, options.tx2Wtxid),
-    },
-    intent: options.intent,
-  };
-}
-
 export function buildStateChangePreviewData(options: {
   kind: string;
   state: Record<string, unknown>;
@@ -205,13 +176,11 @@ export function buildAnchorPreviewData(
     foundingMessageText: string | null;
   },
 ) {
-  return buildFamilyMutationPreviewData({
-    familyKind: "anchor",
-    familyStatus: result.status,
+  return buildSingleTxMutationPreviewData({
+    kind: "anchor",
+    localStatus: result.status,
+    txid: result.txid,
     reusedExisting: result.reusedExisting,
-    currentStep: result.status === "confirmed" ? "confirmed" : "submitted",
-    tx1Txid: result.tx1Txid,
-    tx2Txid: result.tx2Txid,
     intent: {
       domainName: result.domainName,
       foundingMessageIncluded: options.foundingMessageText !== null,
@@ -255,15 +224,12 @@ export function buildDomainAdminPreviewData(
 }
 
 export function buildFieldPreviewData(result: FieldMutationResult) {
-  if (result.family) {
-    return {
-      ...buildFamilyMutationPreviewData({
-      familyKind: "field",
-      familyStatus: result.status,
+  return {
+    ...buildSingleTxMutationPreviewData({
+      kind: result.kind,
+      localStatus: result.status,
+      txid: result.txid,
       reusedExisting: result.reusedExisting,
-      currentStep: result.status === "confirmed" ? "confirmed" : "submitted",
-      tx1Txid: result.tx1Txid ?? null,
-      tx2Txid: result.tx2Txid ?? null,
       intent: {
         domainName: result.domainName,
         fieldName: result.fieldName,
@@ -271,24 +237,6 @@ export function buildFieldPreviewData(result: FieldMutationResult) {
         permanent: result.permanent,
         format: result.format,
       },
-      }),
-      resolved: buildFieldResolvedJson(result),
-    };
-  }
-
-  return {
-    ...buildSingleTxMutationPreviewData({
-    kind: result.kind,
-    localStatus: result.status,
-    txid: result.txid,
-    reusedExisting: result.reusedExisting,
-    intent: {
-      domainName: result.domainName,
-      fieldName: result.fieldName,
-      fieldId: result.fieldId,
-      permanent: result.permanent,
-      format: result.format,
-    },
     }),
     resolved: buildFieldResolvedJson(result),
   };

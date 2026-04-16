@@ -71,7 +71,7 @@ Commands:
   fields <domain>         List current fields on a domain
   field <domain> <field>  Show one current field value
   field create <domain> <field>
-                         Create a new anchored field, optionally with an initial value
+                         Create a new empty anchored field
   field set <domain> <field>
                          Update an existing anchored field value
   field clear <domain> <field>
@@ -136,7 +136,7 @@ Examples:
   cogcoin register alpha-child
   cogcoin anchor alpha
   cogcoin buy alpha
-  cogcoin field create alpha bio --text "hello"
+  cogcoin field set alpha bio --text "hello"
   cogcoin rep give alpha beta 10 --review "great operator"
   cogcoin hooks status
   cogcoin mine setup --output json
@@ -1212,19 +1212,23 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_field_value_not_supported_for_command");
   }
 
-  if ((command === "field-create" || command === "field-set") && namedPayloadFlagCount > 0 && hasRawPayloadFlags) {
+  if (command === "field-create" && (namedPayloadFlagCount > 0 || hasRawPayloadFlags)) {
+    throw new Error("cli_field_create_initial_value_not_supported");
+  }
+
+  if (command === "field-set" && namedPayloadFlagCount > 0 && hasRawPayloadFlags) {
     throw new Error("cli_field_conflicting_payload_flags");
   }
 
-  if ((command === "field-create" || command === "field-set") && namedPayloadFlagCount > 1) {
+  if (command === "field-set" && namedPayloadFlagCount > 1) {
     throw new Error("cli_field_requires_exactly_one_named_payload_flag");
   }
 
-  if ((command === "field-create" || command === "field-set") && fieldFormat !== null && fieldValue === null) {
+  if (command === "field-set" && fieldFormat !== null && fieldValue === null) {
     throw new Error("cli_missing_field_value");
   }
 
-  if ((command === "field-create" || command === "field-set") && fieldFormat === null && fieldValue !== null) {
+  if (command === "field-set" && fieldFormat === null && fieldValue !== null) {
     throw new Error("cli_missing_field_format");
   }
 

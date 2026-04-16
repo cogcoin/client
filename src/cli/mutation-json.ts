@@ -58,35 +58,6 @@ export function buildSingleTxMutationData(options: {
   };
 }
 
-export function buildFamilyMutationData(options: {
-  familyKind: string;
-  familyStatus: string;
-  reusedExisting: boolean;
-  intent: Record<string, unknown>;
-  currentStep?: string | null;
-  tx1Txid?: string | null | undefined;
-  tx1Wtxid?: string | null | undefined;
-  tx2Txid?: string | null | undefined;
-  tx2Wtxid?: string | null | undefined;
-  intentFingerprintHex?: string | null;
-}) {
-  return {
-    resultType: "family-mutation" as const,
-    family: {
-      kind: options.familyKind,
-      localStatus: options.familyStatus,
-      reusedExisting: options.reusedExisting,
-      currentStep: options.currentStep ?? null,
-      intentFingerprintHex: options.intentFingerprintHex ?? null,
-    },
-    transactions: {
-      tx1: normalizeTxSummary(options.tx1Txid, options.tx1Wtxid),
-      tx2: normalizeTxSummary(options.tx2Txid, options.tx2Wtxid),
-    },
-    intent: options.intent,
-  };
-}
-
 export function buildStateChangeData(options: {
   kind: string;
   state: Record<string, unknown>;
@@ -213,13 +184,11 @@ export function buildAnchorMutationData(
     foundingMessageText: string | null;
   },
 ) {
-  return buildFamilyMutationData({
-    familyKind: "anchor",
-    familyStatus: result.status,
+  return buildSingleTxMutationData({
+    kind: "anchor",
+    localStatus: result.status,
+    txid: result.txid,
     reusedExisting: result.reusedExisting,
-    currentStep: result.status === "confirmed" ? "confirmed" : "submitted",
-    tx1Txid: result.tx1Txid,
-    tx2Txid: result.tx2Txid,
     intent: {
       domainName: result.domainName,
       foundingMessageIncluded: options.foundingMessageText !== null,
@@ -311,40 +280,19 @@ export function buildDomainAdminMutationData(
 }
 
 export function buildFieldMutationData(result: FieldMutationResult) {
-  if (result.family) {
-    return {
-      ...buildFamilyMutationData({
-      familyKind: "field",
-      familyStatus: result.status,
+  return {
+    ...buildSingleTxMutationData({
+      kind: result.kind,
+      localStatus: result.status,
+      txid: result.txid,
       reusedExisting: result.reusedExisting,
-      currentStep: result.status === "confirmed" ? "confirmed" : "submitted",
-      tx1Txid: result.tx1Txid ?? null,
-      tx2Txid: result.tx2Txid ?? null,
       intent: {
         domainName: result.domainName,
         fieldName: result.fieldName,
-        expectedFieldId: result.fieldId,
+        fieldId: result.fieldId,
         permanent: result.permanent,
         format: result.format,
       },
-      }),
-      resolved: buildFieldResolvedJson(result),
-    };
-  }
-
-  return {
-    ...buildSingleTxMutationData({
-    kind: result.kind,
-    localStatus: result.status,
-    txid: result.txid,
-    reusedExisting: result.reusedExisting,
-    intent: {
-      domainName: result.domainName,
-      fieldName: result.fieldName,
-      fieldId: result.fieldId,
-      permanent: result.permanent,
-      format: result.format,
-    },
     }),
     resolved: buildFieldResolvedJson(result),
   };

@@ -758,8 +758,16 @@ export function createCliErrorPresentation(
   if (errorCode === "cli_anchor_clear_removed") {
     return {
       what: "`anchor clear` is no longer available.",
-      why: "The wallet no longer reserves dedicated local identities for anchor workflows, so there is no separate anchor-family cleanup command.",
+      why: "Anchor is now a direct single-transaction wallet mutation, so there is no separate cleanup command for reserved local workflow state.",
       next: "Retry with `cogcoin anchor <domain>` or inspect the domain with `cogcoin show <domain>`.",
+    };
+  }
+
+  if (errorCode === "cli_field_create_initial_value_not_supported") {
+    return {
+      what: "`field create` no longer accepts an initial value.",
+      why: "Field creation is now always a single FIELD_REG transaction. Any field value must be written afterward with a separate `field set` command.",
+      next: "Create the field first, then run `cogcoin field set <domain> <field> ...`.",
     };
   }
 

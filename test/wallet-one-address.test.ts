@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { parseCliArgs } from "../src/cli/parse.js";
+import { buildAnchorMutationData, buildFieldMutationData } from "../src/cli/mutation-json.js";
+import { buildAnchorPreviewData, buildFieldPreviewData } from "../src/cli/preview-json.js";
 import { normalizePortableWalletArchivePayload, normalizeWalletStateRecord } from "../src/wallet/coin-control.js";
 import { createWalletReadModel } from "../src/wallet/read/project.js";
 
@@ -275,4 +277,74 @@ test("parseCliArgs rejects removed multi-identity flags and anchor-clear command
     () => parseCliArgs(["anchor", "clear", "alpha"]),
     /cli_anchor_clear_removed/,
   );
+});
+
+test("parseCliArgs rejects removed field-create initial-value flags", () => {
+  assert.throws(
+    () => parseCliArgs(["field", "create", "alpha", "bio", "--text", "hello"]),
+    /cli_field_create_initial_value_not_supported/,
+  );
+  assert.throws(
+    () => parseCliArgs(["field", "create", "alpha", "bio", "--json", "{\"ok\":true}"]),
+    /cli_field_create_initial_value_not_supported/,
+  );
+  assert.throws(
+    () => parseCliArgs(["field", "create", "alpha", "bio", "--bytes", "hex:00ff"]),
+    /cli_field_create_initial_value_not_supported/,
+  );
+  assert.throws(
+    () => parseCliArgs(["field", "create", "alpha", "bio", "--format", "raw:1", "--value", "utf8:hello"]),
+    /cli_field_create_initial_value_not_supported/,
+  );
+});
+
+test("anchor and field-create emit single-tx mutation envelopes", () => {
+  const anchorResult = {
+    domainName: "alpha",
+    txid: "aa".repeat(32),
+    status: "live" as const,
+    reusedExisting: false,
+    foundingMessageText: "hello",
+  };
+  const fieldResult = {
+    kind: "field-create" as const,
+    domainName: "alpha",
+    fieldName: "bio",
+    fieldId: 7,
+    txid: "bb".repeat(32),
+    permanent: false,
+    format: null,
+    status: "live" as const,
+    reusedExisting: false,
+    resolved: {
+      sender: {
+        selector: "wallet",
+        localIndex: 0,
+        scriptPubKeyHex: "0014" + "11".repeat(20),
+        address: "bc1qfunding",
+      },
+      path: "standalone-field-reg" as const,
+      value: null,
+      effect: {
+        kind: "create-empty-field" as const,
+        burnCogtoshi: "100" as const,
+      },
+    },
+  };
+
+  const anchorData = buildAnchorMutationData(anchorResult, {
+    foundingMessageText: anchorResult.foundingMessageText,
+  });
+  const anchorPreview = buildAnchorPreviewData(anchorResult, {
+    foundingMessageText: anchorResult.foundingMessageText,
+  });
+  const fieldData = buildFieldMutationData(fieldResult);
+  const fieldPreview = buildFieldPreviewData(fieldResult);
+
+  assert.equal(anchorData.resultType, "single-tx-mutation");
+  assert.equal(anchorPreview.resultType, "single-tx-mutation");
+  assert.equal(fieldData.resultType, "single-tx-mutation");
+  assert.equal(fieldPreview.resultType, "single-tx-mutation");
+  assert.deepEqual(anchorData.transaction, { txid: anchorResult.txid, wtxid: null });
+  assert.deepEqual(fieldData.transaction, { txid: fieldResult.txid, wtxid: null });
 });

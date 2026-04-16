@@ -41,10 +41,8 @@ import {
   type WalletReadContext,
 } from "../read/index.js";
 import {
-  assertFixedInputPrefixMatches,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
-  findSpendableFundingInputsFromTransaction,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
   outpointKey,
@@ -120,7 +118,6 @@ export interface CreateFieldOptions {
   domainName: string;
   fieldName: string;
   permanent?: boolean;
-  source?: FieldValueInputSource | null;
   dataDir: string;
   databasePath: string;
   provider?: WalletSecretProvider;
@@ -145,9 +142,6 @@ export interface FieldMutationResult {
   fieldName: string;
   fieldId: number | null;
   txid: string;
-  tx1Txid?: string | null;
-  tx2Txid?: string | null;
-  family: boolean;
   permanent: boolean | null;
   format: number | null;
   status: "live" | "confirmed";
@@ -164,7 +158,6 @@ export interface FieldResolvedSenderSummary {
 
 export type FieldResolvedPath =
   | "standalone-field-reg"
-  | "field-reg-plus-data-update"
   | "standalone-data-update"
   | "standalone-data-clear";
 
@@ -175,7 +168,6 @@ export interface FieldResolvedValueSummary {
 
 export type FieldResolvedEffect =
   | { kind: "create-empty-field"; burnCogtoshi: "100" }
-  | { kind: "create-and-initialize-field"; tx1BurnCogtoshi: "100"; tx2AdditionalBurnCogtoshi: "1" }
   | { kind: "write-field-value"; burnCogtoshi: "1" }
   | { kind: "clear-field-value"; burnCogtoshi: "0" };
 
@@ -212,23 +204,9 @@ function createResolvedFieldSummary(options: {
   sender: MutationSender;
   senderSelector: string;
   kind: FieldMutationKind;
-  family: boolean;
   value: FieldResolvedValueSummary | null;
 }): FieldResolvedSummary {
   if (options.kind === "field-create") {
-    if (options.family) {
-      return {
-        sender: createResolvedFieldSenderSummary(options.sender, options.senderSelector),
-        path: "field-reg-plus-data-update",
-        value: options.value,
-        effect: {
-          kind: "create-and-initialize-field",
-          tx1BurnCogtoshi: "100",
-          tx2AdditionalBurnCogtoshi: "1",
-        },
-      };
-    }
-
     return {
       sender: createResolvedFieldSenderSummary(options.sender, options.senderSelector),
       path: "standalone-field-reg",
@@ -279,8 +257,6 @@ function describeFieldEffect(effect: FieldResolvedEffect): string {
   switch (effect.kind) {
     case "create-empty-field":
       return `burn ${effect.burnCogtoshi} cogtoshi to create an empty field`;
-    case "create-and-initialize-field":
-      return `burn ${effect.tx1BurnCogtoshi} cogtoshi in Tx1 and ${effect.tx2AdditionalBurnCogtoshi} additional cogtoshi in Tx2`;
     case "write-field-value":
       return `burn ${effect.burnCogtoshi} cogtoshi to write the field value`;
     case "clear-field-value":
@@ -467,47 +443,6 @@ function buildAnchoredFieldPlan(options: {
   };
 }
 
-function buildFieldFamilyTx2Plan(options: {
-  state: WalletStateV1;
-  allUtxos: RpcListUnspentEntry[];
-  sender: MutationSender;
-  tx1Txid: string;
-  opReturnData: Uint8Array;
-}): FieldPlan {
-  const fundingUtxos = options.allUtxos.filter((entry) =>
-    entry.scriptPubKey === options.state.funding.scriptPubKeyHex
-    && entry.confirmations >= 1
-    && entry.spendable !== false
-    && entry.safe !== false
-  );
-  const tx1FundingChangeInputs = findSpendableFundingInputsFromTransaction({
-    allUtxos: options.allUtxos,
-    txid: options.tx1Txid,
-    fundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
-    minConf: 0,
-  });
-
-  return {
-    sender: options.sender,
-    changeAddress: options.state.funding.address,
-    fixedInputs: [
-      { txid: options.tx1Txid, vout: 1 },
-      ...tx1FundingChangeInputs,
-    ],
-    outputs: [
-      { data: Buffer.from(options.opReturnData).toString("hex") },
-      { [options.sender.address]: satsToBtcNumber(BigInt(options.state.anchorValueSats)) },
-    ],
-    changePosition: 2,
-    expectedOpReturnScriptHex: encodeOpReturnScript(options.opReturnData),
-    expectedAnchorScriptHex: options.sender.scriptPubKeyHex,
-    expectedAnchorValueSats: BigInt(options.state.anchorValueSats),
-    allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
-    eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
-    errorPrefix: "wallet_field_create_tx2",
-  };
-}
-
 function validateFieldDraft(
   decoded: RpcDecodedPsbt,
   funded: BuiltWalletMutationTransaction["funded"],
@@ -518,10 +453,6 @@ function validateFieldDraft(
 
   if (inputs.length === 0) {
     throw new Error(`${plan.errorPrefix}_missing_sender_input`);
-  }
-
-  if (plan.fixedInputs.length > 0) {
-    assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_required_input_mismatch`);
   }
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
@@ -882,7 +813,6 @@ async function confirmFieldCreate(
     domainName: string;
     fieldName: string;
     permanent: boolean;
-    value: NormalizedFieldValue | null;
     sender: FieldResolvedSenderSummary;
     assumeYes?: boolean;
   },
@@ -890,56 +820,13 @@ async function confirmFieldCreate(
   const fieldRef = `${options.domainName}:${options.fieldName}`;
   prompter.writeLine(`Creating field "${fieldRef}" as ${options.permanent ? "permanent" : "mutable"}.`);
   prompter.writeLine(`Resolved sender: ${options.sender.selector} (${options.sender.address})`);
-
-  if (options.value === null) {
-    prompter.writeLine("Path: standalone-field-reg");
-    prompter.writeLine(`Effect: ${describeFieldEffect({ kind: "create-empty-field", burnCogtoshi: "100" })}.`);
-    prompter.writeLine("This publishes a standalone FIELD_REG and burns 0.00000100 COG.");
-    await confirmYesNo(
-      prompter,
-      "The field will be created empty and the burn is not reversible.",
-      "wallet_field_create_confirmation_rejected",
-      {
-        assumeYes: options.assumeYes,
-        requiresTtyErrorCode: "wallet_field_create_requires_tty",
-      },
-    );
-    return;
-  }
-
-  prompter.writeLine("Path: field-reg-plus-data-update");
-  prompter.writeLine(`Effect: ${describeFieldEffect({
-    kind: "create-and-initialize-field",
-    tx1BurnCogtoshi: "100",
-    tx2AdditionalBurnCogtoshi: "1",
-  })}.`);
-  prompter.writeLine(`Value: format ${options.value.format}, ${options.value.value.length} bytes`);
-  prompter.writeLine(`Initial value format: ${options.value.formatLabel}`);
-  prompter.writeLine(`Initial value bytes: ${options.value.value.length}`);
-  prompter.writeLine("Warning: non-clear field values are public in the mempool and on-chain.");
-  prompter.writeLine("This publishes FIELD_REG followed immediately by DATA_UPDATE from the wallet address.");
-  prompter.writeLine("Tx1 burns 0.00000100 COG. Tx2 may burn an additional 0.00000001 COG.");
-  prompter.writeLine("Tx1 may confirm even if Tx2 later fails, and Cogcoin does not keep a resumable local family state for this path.");
-
-  if (options.permanent) {
-    prompter.writeLine("This is the first non-clear value write to a permanent field.");
-    await confirmTyped(
-      prompter,
-      fieldRef,
-      `Type ${fieldRef} to continue: `,
-      "wallet_field_create_confirmation_rejected",
-      {
-        assumeYes: options.assumeYes,
-        requiresTtyErrorCode: "wallet_field_create_requires_tty",
-        typedAckRequiredErrorCode: "wallet_field_create_typed_ack_required",
-      },
-    );
-    return;
-  }
+  prompter.writeLine("Path: standalone-field-reg");
+  prompter.writeLine(`Effect: ${describeFieldEffect({ kind: "create-empty-field", burnCogtoshi: "100" })}.`);
+  prompter.writeLine("This publishes a standalone FIELD_REG and burns 0.00000100 COG.");
 
   await confirmYesNo(
     prompter,
-    "This creates and initializes the field in the same block family.",
+    "The field will be created empty and the burn is not reversible.",
     "wallet_field_create_confirmation_rejected",
     {
       assumeYes: options.assumeYes,
@@ -1295,7 +1182,6 @@ async function submitStandaloneFieldMutation(options: {
             fieldName: normalizedFieldName,
             fieldId: reconciled.mutation.fieldId ?? existingObservedField?.fieldId ?? null,
             txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            family: false,
             permanent: reconciled.mutation.fieldPermanent ?? existingObservedField?.permanent ?? null,
             format: reconciled.mutation.fieldFormat ?? existingObservedField?.format ?? null,
             status: reconciled.resolution,
@@ -1304,7 +1190,6 @@ async function submitStandaloneFieldMutation(options: {
               sender: operation.sender,
               senderSelector: operation.senderSelector,
               kind: options.kind,
-              family: false,
               value: createResolvedFieldValueFromStoredData(
                 options.kind,
                 reconciled.mutation.fieldFormat ?? existingObservedField?.format ?? null,
@@ -1373,7 +1258,6 @@ async function submitStandaloneFieldMutation(options: {
         fieldName: normalizedFieldName,
         fieldId: final.mutation.fieldId ?? existingObservedField?.fieldId ?? null,
         txid: final.mutation.attemptedTxid ?? built.txid,
-        family: false,
         permanent: final.mutation.fieldPermanent ?? existingObservedField?.permanent ?? null,
         format: final.mutation.fieldFormat ?? existingObservedField?.format ?? null,
         status: "live",
@@ -1382,7 +1266,6 @@ async function submitStandaloneFieldMutation(options: {
           sender: operation.sender,
           senderSelector: operation.senderSelector,
           kind: options.kind,
-          family: false,
           value: createResolvedFieldValueFromStoredData(
             options.kind,
             planned.mutation.fieldFormat ?? existingObservedField?.format ?? null,
@@ -1399,290 +1282,10 @@ async function submitStandaloneFieldMutation(options: {
   }
 }
 
-async function submitDirectInitializedFieldCreate(options: {
-  domainName: string;
-  fieldName: string;
-  permanent: boolean;
-  value: NormalizedFieldValue;
-  dataDir: string;
-  databasePath: string;
-  provider?: WalletSecretProvider;
-  prompter: WalletPrompter;
-  assumeYes?: boolean;
-  nowUnixMs?: number;
-  paths?: WalletRuntimePaths;
-  openReadContext?: typeof openWalletReadContext;
-  attachService?: typeof attachOrStartManagedBitcoindService;
-  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => FieldRpcClient;
-}): Promise<FieldMutationResult> {
-  if (!options.prompter.isInteractive && options.assumeYes !== true) {
-    throw new Error("wallet_field_create_requires_tty");
-  }
-
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: "wallet_field_create",
-    walletRootId: null,
-  });
-
-  try {
-    const miningPreemption = await pauseMiningForWalletMutation({
-      paths,
-      reason: "wallet_field_create",
-    });
-    const readContext = await (options.openReadContext ?? openWalletReadContext)({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      secretProvider: provider,
-      walletControlLockHeld: true,
-      paths,
-    });
-
-    try {
-      const normalizedDomainName = normalizeDomainName(options.domainName);
-      const normalizedFieldName = normalizeFieldName(options.fieldName);
-      const operation = resolveAnchoredFieldOperation(readContext, normalizedDomainName, "wallet_field_create");
-      const existingField = getObservedFieldState(readContext, normalizedDomainName, normalizedFieldName);
-
-      if (existingField !== null) {
-        throw new Error("wallet_field_create_field_exists");
-      }
-
-      if (operation.chainDomain.nextFieldId === 0xffff_ffff) {
-        throw new Error("wallet_field_create_field_id_exhausted");
-      }
-
-      if (hex(operation.chainDomain.delegate) !== null) {
-        throw new Error("wallet_field_create_delegate_blocks_same_block_family");
-      }
-
-      const senderBalance = getBalance(operation.readContext.snapshot.state, Buffer.from(operation.sender.scriptPubKeyHex, "hex"));
-      if (senderBalance < 101n) {
-        throw new Error("wallet_field_create_insufficient_cog");
-      }
-
-      const createIntentFingerprintHex = createIntentFingerprint([
-        "field-create",
-        operation.state.walletRootId,
-        normalizedDomainName,
-        normalizedFieldName,
-        options.permanent ? 1 : 0,
-      ]);
-      const existingCreateMutation = (operation.state.pendingMutations ?? []).find((mutation) =>
-        mutation.kind === "field-create"
-        && mutation.domainName === normalizedDomainName
-        && isActiveMutationStatus(mutation.status)
-      ) ?? null;
-
-      if (existingCreateMutation !== null) {
-        throw new Error("wallet_field_create_registration_already_pending");
-      }
-
-      await confirmFieldCreate(options.prompter, {
-        domainName: normalizedDomainName,
-        fieldName: normalizedFieldName,
-        permanent: options.permanent,
-        value: options.value,
-        sender: createResolvedFieldSenderSummary(operation.sender, operation.senderSelector),
-        assumeYes: options.assumeYes,
-      });
-
-      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-        dataDir: options.dataDir,
-        chain: "main",
-        startHeight: 0,
-        walletRootId: operation.state.walletRootId,
-      });
-      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-      const walletName = operation.state.managedCoreWallet.walletName;
-      const expectedFieldId = operation.chainDomain.nextFieldId;
-
-      let nextState = upsertPendingMutation(
-        operation.state,
-        createStandaloneFieldMutation({
-          kind: "field-create",
-          domainName: normalizedDomainName,
-          fieldName: normalizedFieldName,
-          sender: operation.sender,
-          intentFingerprintHex: createIntentFingerprintHex,
-          nowUnixMs,
-          fieldId: expectedFieldId,
-          fieldPermanent: options.permanent,
-        }),
-      );
-      nextState = await saveUpdatedState({
-        state: nextState,
-        provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
-        nowUnixMs,
-        paths,
-      });
-
-      const tx1 = await buildFieldTransaction({
-        rpc,
-        walletName,
-        state: nextState,
-        plan: buildAnchoredFieldPlan({
-          state: nextState,
-          allUtxos: await rpc.listUnspent(walletName, 1),
-          sender: operation.sender,
-          anchorOutpoint: operation.anchorOutpoint,
-          opReturnData: serializeFieldReg(operation.chainDomain.domainId, options.permanent, normalizedFieldName).opReturnData,
-          errorPrefix: "wallet_field_create_tx1",
-        }),
-      });
-
-      const currentCreateMutation = nextState.pendingMutations?.find((mutation) => mutation.intentFingerprintHex === createIntentFingerprintHex)
-        ?? createStandaloneFieldMutation({
-          kind: "field-create",
-          domainName: normalizedDomainName,
-          fieldName: normalizedFieldName,
-          sender: operation.sender,
-          intentFingerprintHex: createIntentFingerprintHex,
-          nowUnixMs,
-          fieldId: expectedFieldId,
-          fieldPermanent: options.permanent,
-        });
-      const afterTx1 = await sendStandaloneMutation({
-        rpc,
-        walletName,
-        snapshotHeight: readContext.snapshot?.tip?.height ?? null,
-        built: tx1,
-        mutation: currentCreateMutation,
-        state: nextState,
-        provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
-        nowUnixMs,
-        paths,
-        errorPrefix: "wallet_field_create_tx1",
-      });
-
-      const tx1Txid = afterTx1.mutation.attemptedTxid ?? tx1.txid;
-      await rpc.getRawTransaction(tx1Txid, true);
-
-      const tx2IntentFingerprintHex = createIntentFingerprint([
-        "field-set",
-        operation.state.walletRootId,
-        normalizedDomainName,
-        expectedFieldId,
-        options.value.format,
-        options.value.valueHex,
-        tx1Txid,
-      ]);
-      nextState = upsertPendingMutation(
-        afterTx1.state,
-        createStandaloneFieldMutation({
-          kind: "field-set",
-          domainName: normalizedDomainName,
-          fieldName: normalizedFieldName,
-          sender: operation.sender,
-          intentFingerprintHex: tx2IntentFingerprintHex,
-          nowUnixMs,
-          fieldId: expectedFieldId,
-          fieldPermanent: options.permanent,
-          fieldFormat: options.value.format,
-          fieldValueHex: options.value.valueHex,
-        }),
-      );
-      nextState = await saveUpdatedState({
-        state: nextState,
-        provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
-        nowUnixMs,
-        paths,
-      });
-
-      const tx2 = await buildFieldTransaction({
-        rpc,
-        walletName,
-        state: nextState,
-        availableFundingMinConf: 0,
-        plan: buildFieldFamilyTx2Plan({
-          state: nextState,
-          allUtxos: await rpc.listUnspent(walletName, 0),
-          sender: operation.sender,
-          tx1Txid,
-          opReturnData: serializeDataUpdate(
-            operation.chainDomain.domainId,
-            expectedFieldId,
-            options.value.format,
-            options.value.value,
-          ).opReturnData,
-        }),
-      });
-
-      const currentSetMutation = nextState.pendingMutations?.find((mutation) => mutation.intentFingerprintHex === tx2IntentFingerprintHex)
-        ?? createStandaloneFieldMutation({
-          kind: "field-set",
-          domainName: normalizedDomainName,
-          fieldName: normalizedFieldName,
-          sender: operation.sender,
-          intentFingerprintHex: tx2IntentFingerprintHex,
-          nowUnixMs,
-          fieldId: expectedFieldId,
-          fieldPermanent: options.permanent,
-          fieldFormat: options.value.format,
-          fieldValueHex: options.value.valueHex,
-        });
-      const afterTx2 = await sendStandaloneMutation({
-        rpc,
-        walletName,
-        snapshotHeight: readContext.snapshot?.tip?.height ?? null,
-        built: tx2,
-        mutation: currentSetMutation,
-        state: nextState,
-        provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
-        nowUnixMs,
-        paths,
-        errorPrefix: "wallet_field_create_tx2",
-      });
-
-      return {
-        kind: "field-create",
-        domainName: normalizedDomainName,
-        fieldName: normalizedFieldName,
-        fieldId: expectedFieldId,
-        txid: afterTx2.mutation.attemptedTxid ?? tx2.txid,
-        tx1Txid,
-        tx2Txid: afterTx2.mutation.attemptedTxid ?? tx2.txid,
-        family: true,
-        permanent: options.permanent,
-        format: options.value.format,
-        status: "live",
-        reusedExisting: false,
-        resolved: createResolvedFieldSummary({
-          sender: operation.sender,
-          senderSelector: operation.senderSelector,
-          kind: "field-create",
-          family: true,
-          value: createResolvedFieldValueSummary(options.value.format, options.value.value),
-        }),
-      };
-    } finally {
-      await readContext.close();
-      await miningPreemption.release();
-    }
-  } finally {
-    await controlLock.release();
-  }
-}
-
 export async function createField(
   options: CreateFieldOptions,
 ): Promise<FieldMutationResult> {
-  const normalizedSource = options.source == null ? null : await loadFieldValue(options.source);
   const permanent = options.permanent ?? false;
-
-  if (normalizedSource !== null) {
-    return submitDirectInitializedFieldCreate({
-      ...options,
-      permanent,
-      value: normalizedSource,
-    });
-  }
 
   return submitStandaloneFieldMutation({
     kind: "field-create",
@@ -1748,7 +1351,6 @@ export async function createField(
         domainName: normalizeDomainName(options.domainName),
         fieldName: normalizeFieldName(options.fieldName),
         permanent,
-        value: null,
         sender: createResolvedFieldSenderSummary(operation.sender, operation.senderSelector),
         assumeYes: options.assumeYes,
       });

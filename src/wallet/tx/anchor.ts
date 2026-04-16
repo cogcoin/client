@@ -78,9 +78,6 @@ export interface AnchorDomainOptions {
 export interface AnchorDomainResult {
   domainName: string;
   txid: string;
-  tx1Txid: string;
-  tx2Txid: string;
-  dedicatedIndex: number;
   status: "live" | "confirmed";
   reusedExisting: boolean;
   foundingMessageText?: string | null;
@@ -632,9 +629,6 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
           return {
             domainName: normalizedDomainName,
             txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            tx1Txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            tx2Txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            dedicatedIndex: 0,
             status: reconciled.resolution,
             reusedExisting: true,
             foundingMessageText: message.text,
@@ -784,9 +778,6 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
       return {
         domainName: normalizedDomainName,
         txid: built.txid,
-        tx1Txid: built.txid,
-        tx2Txid: built.txid,
-        dedicatedIndex: 0,
         status: finalStatus,
         reusedExisting: false,
         foundingMessageText: message.text,
