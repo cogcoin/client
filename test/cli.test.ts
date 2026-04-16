@@ -2977,6 +2977,7 @@ test("register dispatches through the wallet mutation hook", async () => {
   assert.match(stdout.toString(), /Economic effect: send 100000 sats to the Cogcoin treasury/);
   assert.match(stdout.toString(), /Next step: cogcoin show weatherbot/);
   assert.match(stdout.toString(), /Next step: cogcoin anchor weatherbot once it confirms/);
+  assert.match(stdout.toString(), new RegExp(`\\n\\nView at: https://mempool\\.space/tx/${"55".repeat(32)}\\n$`));
 });
 
 test("subdomain registration keeps only the show follow-through", async () => {
@@ -3064,6 +3065,8 @@ test("anchor dispatches through the wallet mutation hook", async () => {
   assert.match(stdout.toString(), /Next step: cogcoin show weatherbot/);
   assert.match(stdout.toString(), /Next step: cogcoin mine$/m);
   assert.match(stdout.toString(), /Next step: cogcoin mine start/);
+  assert.match(stdout.toString(), new RegExp(`\\n\\nView at: https://mempool\\.space/tx/${"77".repeat(32)}\\n$`));
+  assert.doesNotMatch(stdout.toString(), new RegExp(`View at: https://mempool\\.space/tx/${"66".repeat(32)}`));
 });
 
 test("anchor clear dispatches through the wallet mutation hook", async () => {
@@ -3096,6 +3099,7 @@ test("anchor clear dispatches through the wallet mutation hook", async () => {
   assert.match(stdout.toString(), /Pending anchor cleared/);
   assert.match(stdout.toString(), /Released dedicated index: 2/);
   assert.match(stdout.toString(), /Next step: cogcoin anchor weatherbot/);
+  assert.doesNotMatch(stdout.toString(), /View at: https:\/\/mempool\.space\/tx\//);
 });
 
 test("anchor clear json output reports noop results cleanly", async () => {
@@ -3721,6 +3725,8 @@ test("field create, set, and clear dispatch through the wallet mutation hooks", 
   assert.match(createOut.toString(), /Path: field-reg-plus-data-update-family/);
   assert.match(createOut.toString(), /Value: format 2, 5 bytes/);
   assert.match(createOut.toString(), /Effect: burn 100 cogtoshi in Tx1 and 1 additional cogtoshi in Tx2/);
+  assert.match(createOut.toString(), new RegExp(`\\n\\nView at: https://mempool\\.space/tx/${"22".repeat(32)}\\n$`));
+  assert.doesNotMatch(createOut.toString(), new RegExp(`View at: https://mempool\\.space/tx/${"11".repeat(32)}`));
   assert.match(setOut.toString(), /Field update submitted/);
   assert.match(setOut.toString(), /Sender: id:1 \(bc1qalphaowner0000000000000000000000000000\)/);
   assert.match(setOut.toString(), /Value: format 7, 5 bytes/);

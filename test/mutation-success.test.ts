@@ -53,6 +53,8 @@ test("writeMutationCommandSuccess writes text output with shared reuse and next-
     data: { domainName: "alpha" },
     reusedExisting: true,
     reusedMessage: "The existing pending transfer was reconciled instead of creating a duplicate.",
+    interactive: true,
+    explorerTxid: "11".repeat(32),
     nextSteps: commandMutationNextSteps("cogcoin show alpha"),
     text: {
       heading: "Transfer submitted.",
@@ -69,6 +71,41 @@ test("writeMutationCommandSuccess writes text output with shared reuse and next-
     "Domain: alpha",
     "Status: pending",
     "The existing pending transfer was reconciled instead of creating a duplicate.",
+    "Next step: cogcoin show alpha",
+    "",
+    `View at: https://mempool.space/tx/${"11".repeat(32)}`,
+    "",
+  ].join("\n"));
+});
+
+test("writeMutationCommandSuccess skips explorer links for non-interactive text output", () => {
+  const stdout = new MemoryStream();
+  const parsed = {
+    command: "transfer",
+    args: ["alpha"],
+    outputMode: "text",
+  } as ParsedCliArgs;
+  const context = {
+    stdout,
+  } as unknown as RequiredCliRunnerContext;
+
+  const code = writeMutationCommandSuccess(parsed, context, {
+    data: { domainName: "alpha" },
+    reusedExisting: false,
+    reusedMessage: "",
+    interactive: false,
+    explorerTxid: "11".repeat(32),
+    nextSteps: commandMutationNextSteps("cogcoin show alpha"),
+    text: {
+      heading: "Transfer submitted.",
+      fields: [{ label: "Domain", value: "alpha" }],
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.equal(stdout.toString(), [
+    "Transfer submitted.",
+    "Domain: alpha",
     "Next step: cogcoin show alpha",
     "",
   ].join("\n"));
@@ -89,6 +126,8 @@ test("writeMutationCommandSuccess writes mutation json output with shared explan
     data: { domainName: "alpha" },
     reusedExisting: true,
     reusedMessage: "The existing pending transfer was reconciled instead of creating a duplicate.",
+    interactive: true,
+    explorerTxid: "11".repeat(32),
     nextSteps: commandMutationNextSteps("cogcoin show alpha"),
     text: {
       heading: "Transfer submitted.",

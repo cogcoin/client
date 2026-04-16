@@ -7,6 +7,10 @@ export interface MutationTextField {
   when?: boolean;
 }
 
+function mutationExplorerUrl(txid: string): string {
+  return `https://mempool.space/tx/${txid}`;
+}
+
 export function writeMutationTextResult(
   stream: WritableLike,
   options: {
@@ -15,6 +19,8 @@ export function writeMutationTextResult(
     reusedExisting?: boolean;
     reusedMessage?: string;
     trailerLines?: string[];
+    interactive?: boolean;
+    explorerTxid?: string | null;
   },
 ): void {
   writeLine(stream, options.heading);
@@ -32,5 +38,10 @@ export function writeMutationTextResult(
 
   for (const line of options.trailerLines ?? []) {
     writeLine(stream, line);
+  }
+
+  if (options.interactive === true && options.explorerTxid) {
+    writeLine(stream, "");
+    writeLine(stream, `View at: ${mutationExplorerUrl(options.explorerTxid)}`);
   }
 }

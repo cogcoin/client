@@ -53,6 +53,8 @@ export function writeMutationCommandSuccess(
     previewData?: unknown;
     reusedExisting: boolean;
     reusedMessage: string;
+    interactive?: boolean;
+    explorerTxid?: string | null;
     nextSteps: MutationSuccessNextSteps;
     outcome?: string;
     text: {
@@ -104,6 +106,8 @@ export function writeMutationCommandSuccess(
     reusedExisting: options.reusedExisting,
     reusedMessage: options.reusedMessage,
     trailerLines: options.nextSteps.text,
+    interactive: options.interactive,
+    explorerTxid: options.explorerTxid,
   });
   return 0;
 }

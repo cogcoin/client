@@ -129,6 +129,7 @@ export async function runWalletMutationCommand(
       const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
       const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
       const prompter = createCommandPrompter(parsed, context);
+      const interactive = prompter.isInteractive;
 
       if (isAnchorClearMutationCommand(parsed.command)) {
         const result = await context.clearPendingAnchor({
@@ -148,6 +149,7 @@ export async function runWalletMutationCommand(
           previewData: buildAnchorClearPreviewData(result),
           reusedExisting: false,
           reusedMessage: "",
+          interactive,
           outcome: result.cleared ? "cleared" : "noop",
           nextSteps,
           text: {
@@ -183,6 +185,8 @@ export async function runWalletMutationCommand(
           }),
           reusedExisting: result.reusedExisting,
           reusedMessage: "The existing anchor family was reconciled instead of creating a duplicate.",
+          interactive,
+          explorerTxid: result.tx2Txid,
           nextSteps: workflowMutationNextSteps(nextSteps),
           text: {
             heading: "Anchor family submitted.",
@@ -221,6 +225,8 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending registration was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: workflowMutationNextSteps(nextSteps),
         text: {
           heading: "Registration submitted.",
@@ -257,6 +263,8 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending transfer was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
         text: {
           heading: "Transfer submitted.",
@@ -295,6 +303,8 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending listing mutation was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
         text: {
           heading: result.listedPriceCogtoshi === 0n ? "Listing cancellation submitted." : "Listing submitted.",
@@ -344,6 +354,8 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending endpoint mutation was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
         text: {
           heading: parsed.command === "domain-endpoint-set" ? "Endpoint update submitted." : "Endpoint clear submitted.",
@@ -389,6 +401,8 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending delegate mutation was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
         text: {
           heading: parsed.command === "domain-delegate-set" ? "Delegate update submitted." : "Delegate clear submitted.",
@@ -434,6 +448,8 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending miner mutation was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
         text: {
           heading: parsed.command === "domain-miner-set" ? "Miner update submitted." : "Miner clear submitted.",
@@ -468,6 +484,8 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending canonical mutation was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
         text: {
           heading: "Canonical update submitted.",
@@ -507,6 +525,8 @@ export async function runWalletMutationCommand(
         reusedMessage: result.family
           ? "The existing pending field family was reconciled instead of creating a duplicate."
           : "The existing pending field creation was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.family ? (result.tx2Txid ?? null) : result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin field show ${result.domainName} ${result.fieldName}`),
         text: {
           heading: result.family ? "Field create+write family submitted." : "Field creation submitted.",
@@ -543,6 +563,8 @@ export async function runWalletMutationCommand(
         previewData: buildFieldPreviewData(result),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending field update was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin field show ${result.domainName} ${result.fieldName}`),
         text: {
           heading: "Field update submitted.",
@@ -575,6 +597,8 @@ export async function runWalletMutationCommand(
         previewData: buildFieldPreviewData(result),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending field clear was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin field show ${result.domainName} ${result.fieldName}`),
         text: {
           heading: "Field clear submitted.",
@@ -613,6 +637,8 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending COG transfer was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps("cogcoin balance"),
         text: {
           heading: "COG transfer submitted.",
@@ -659,6 +685,8 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending lock was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps("cogcoin locks"),
         text: {
           heading: "COG lock submitted.",
@@ -694,6 +722,8 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending claim was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps("cogcoin locks --claimable"),
         text: {
           heading: "Lock claim submitted.",
@@ -729,6 +759,8 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending reclaim was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps("cogcoin locks --reclaimable"),
         text: {
           heading: "Lock reclaim submitted.",
@@ -775,6 +807,8 @@ export async function runWalletMutationCommand(
         previewData: buildReputationPreviewData(result),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending reputation mutation was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.targetDomainName}`),
         text: {
           heading: parsed.command === "rep-give" ? "Reputation support submitted." : "Reputation revoke submitted.",
@@ -814,6 +848,8 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending purchase was reconciled instead of creating a duplicate.",
+        interactive,
+        explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
         text: {
           heading: "Purchase submitted.",
