@@ -12,6 +12,7 @@ import type {
 import { acquireFileLock } from "../fs/lock.js";
 import type { WalletPrompter } from "../lifecycle.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../runtime.js";
+import { reconcilePersistentPolicyLocks as reconcileWalletCoinControlLocks } from "../coin-control.js";
 import {
   createDefaultWalletSecretProvider,
   type WalletSecretProvider,
@@ -95,6 +96,56 @@ interface DomainOperationContext {
 interface BuyOperationContext extends DomainOperationContext {
   listingPriceCogtoshi: bigint;
   buyerSelector: string;
+}
+
+async function prepareDomainMarketBuildState(options: {
+  rpc: DomainMarketRpcClient;
+  walletName: string;
+  state: WalletStateV1;
+  provider: WalletSecretProvider;
+  unlockUntilUnixMs: number;
+  nowUnixMs: number;
+  paths: WalletRuntimePaths;
+  preflightCoinControl: boolean;
+}): Promise<{
+  state: WalletStateV1;
+  allUtxos: RpcListUnspentEntry[];
+}> {
+  if (!options.preflightCoinControl) {
+    return {
+      state: options.state,
+      allUtxos: (await options.rpc.listUnspent(options.walletName, 1)).slice(),
+    };
+  }
+
+  const reconciled = await reconcileWalletCoinControlLocks({
+    rpc: options.rpc,
+    walletName: options.walletName,
+    state: options.state,
+    fixedInputs: [],
+  });
+  const nextState = reconciled.changed
+    ? {
+      ...reconciled.state,
+      stateRevision: reconciled.state.stateRevision + 1,
+      lastWrittenAtUnixMs: options.nowUnixMs,
+    }
+    : reconciled.state;
+
+  if (reconciled.changed) {
+    await saveWalletStatePreservingUnlock({
+      state: nextState,
+      provider: options.provider,
+      unlockUntilUnixMs: options.unlockUntilUnixMs,
+      nowUnixMs: options.nowUnixMs,
+      paths: options.paths,
+    });
+  }
+
+  return {
+    state: nextState,
+    allUtxos: (await options.rpc.listUnspent(options.walletName, 1)).slice(),
+  };
 }
 
 export interface DomainMarketResolvedSenderSummary {
@@ -518,18 +569,48 @@ function buildPlanForDomainOperation(options: {
     && entry.spendable !== false
     && entry.safe !== false
   );
+  const senderUtxos = options.allUtxos
+    .filter((entry) =>
+      entry.scriptPubKey === options.sender.scriptPubKeyHex
+      && entry.confirmations >= 1
+      && entry.spendable !== false
+      && entry.safe !== false
+    )
+    .sort((left, right) =>
+      Number(left.amount) - Number(right.amount)
+      || left.txid.localeCompare(right.txid)
+      || left.vout - right.vout
+    );
   const outputs: unknown[] = [{ data: Buffer.from(options.opReturnData).toString("hex") }];
 
   if (options.anchorOutpoint === null) {
+    if (options.sender.scriptPubKeyHex !== options.state.funding.scriptPubKeyHex) {
+      outputs.push({
+        [options.sender.address]: satsToBtcNumber(options.anchorValueSats),
+      });
+    }
+    const senderUtxo = senderUtxos[0];
+    const fixedInputs = options.sender.scriptPubKeyHex === options.state.funding.scriptPubKeyHex
+      ? []
+      : (() => {
+        if (senderUtxo === undefined) {
+          throw new Error(`${options.errorPrefix}_sender_utxo_unavailable`);
+        }
+        return [{ txid: senderUtxo.txid, vout: senderUtxo.vout }];
+      })();
     return {
       sender: options.sender,
       changeAddress: options.state.funding.address,
-      fixedInputs: [],
+      fixedInputs,
       outputs,
-      changePosition: 1,
+      changePosition: options.sender.scriptPubKeyHex === options.state.funding.scriptPubKeyHex ? 1 : 2,
       expectedOpReturnScriptHex: encodeOpReturnScript(options.opReturnData),
-      expectedAnchorScriptHex: null,
-      expectedAnchorValueSats: null,
+      expectedAnchorScriptHex: options.sender.scriptPubKeyHex === options.state.funding.scriptPubKeyHex
+        ? null
+        : options.sender.scriptPubKeyHex,
+      expectedAnchorValueSats: options.sender.scriptPubKeyHex === options.state.funding.scriptPubKeyHex
+        ? null
+        : options.anchorValueSats,
       allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
       eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
       errorPrefix: options.errorPrefix,
@@ -1169,6 +1250,18 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
         nowUnixMs,
         paths,
       });
+      const buildPreparation = await prepareDomainMarketBuildState({
+        rpc,
+        walletName,
+        state: nextState,
+        provider,
+        unlockUntilUnixMs: operation.unlockUntilUnixMs,
+        nowUnixMs,
+        paths,
+        preflightCoinControl: operation.anchorOutpoint === null
+          && operation.sender.scriptPubKeyHex !== nextState.funding.scriptPubKeyHex,
+      });
+      nextState = buildPreparation.state;
 
       const built = await buildTransaction({
         rpc,
@@ -1176,7 +1269,7 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
         state: nextState,
         plan: buildPlanForDomainOperation({
           state: nextState,
-          allUtxos: await rpc.listUnspent(walletName, 1),
+          allUtxos: buildPreparation.allUtxos,
           sender: operation.sender,
           anchorOutpoint: operation.anchorOutpoint,
           opReturnData: serializeDomainTransfer(operation.chainDomain.domainId, Buffer.from(recipient.scriptPubKeyHex, "hex")).opReturnData,
@@ -1426,6 +1519,18 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
         nowUnixMs,
         paths,
       });
+      const buildPreparation = await prepareDomainMarketBuildState({
+        rpc,
+        walletName,
+        state: nextState,
+        provider,
+        unlockUntilUnixMs: operation.unlockUntilUnixMs,
+        nowUnixMs,
+        paths,
+        preflightCoinControl: operation.anchorOutpoint === null
+          && operation.sender.scriptPubKeyHex !== nextState.funding.scriptPubKeyHex,
+      });
+      nextState = buildPreparation.state;
 
       const built = await buildTransaction({
         rpc,
@@ -1433,7 +1538,7 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
         state: nextState,
         plan: buildPlanForDomainOperation({
           state: nextState,
-          allUtxos: await rpc.listUnspent(walletName, 1),
+          allUtxos: buildPreparation.allUtxos,
           sender: operation.sender,
           anchorOutpoint: operation.anchorOutpoint,
           opReturnData: serializeDomainSell(operation.chainDomain.domainId, options.listedPriceCogtoshi).opReturnData,
@@ -1693,6 +1798,18 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
         nowUnixMs,
         paths,
       });
+      const buildPreparation = await prepareDomainMarketBuildState({
+        rpc,
+        walletName,
+        state: nextState,
+        provider,
+        unlockUntilUnixMs: operation.unlockUntilUnixMs,
+        nowUnixMs,
+        paths,
+        preflightCoinControl: operation.anchorOutpoint === null
+          && operation.sender.scriptPubKeyHex !== nextState.funding.scriptPubKeyHex,
+      });
+      nextState = buildPreparation.state;
 
       const built = await buildTransaction({
         rpc,
@@ -1700,7 +1817,7 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
         state: nextState,
         plan: buildPlanForDomainOperation({
           state: nextState,
-          allUtxos: await rpc.listUnspent(walletName, 1),
+          allUtxos: buildPreparation.allUtxos,
           sender: operation.sender,
           anchorOutpoint: operation.anchorOutpoint,
           opReturnData: serializeDomainBuy(operation.chainDomain.domainId, operation.listingPriceCogtoshi).opReturnData,

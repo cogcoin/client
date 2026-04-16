@@ -1,3 +1,4 @@
+import { FileLockBusyError } from "../wallet/fs/lock.js";
 import type { CommandName, OutputMode, ParsedCliArgs, WritableLike } from "./types.js";
 
 export interface JsonAvailabilityEntry {
@@ -462,7 +463,7 @@ function isBlockedError(message: string): boolean {
 
 export function formatCliTextError(error: unknown): string[] | null {
   const classified = classifyCliError(error);
-  const presentation = createCliErrorPresentation(classified.errorCode, classified.message);
+  const presentation = createCliErrorPresentation(classified.errorCode, classified.message, error);
 
   if (presentation === null) {
     return null;
@@ -484,6 +485,7 @@ export function formatCliTextError(error: unknown): string[] | null {
 export function createCliErrorPresentation(
   errorCode: string,
   fallbackMessage: string,
+  error?: unknown,
 ): {
   what: string;
   why: string | null;
@@ -497,11 +499,44 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode.endsWith("_sender_utxo_unavailable")) {
+    return {
+      what: "Sender identity has no spendable confirmed BTC input.",
+      why: "This command preserves the Cogcoin sender identity in vin[0]. The selected sender currently has no confirmed spendable UTXO available for that role.",
+      next: "Wait for the sender's BTC output to confirm, or fund that sender identity and retry.",
+    };
+  }
+
   if (errorCode === "wallet_control_lock_busy") {
     return {
       what: "Another Cogcoin command is already controlling this wallet.",
       why: "Commands that sync, follow, or mutate the local index take an exclusive wallet control lock so they do not write the same sqlite store concurrently.",
       next: "Wait for the other Cogcoin command to finish, or stop it cleanly before retrying.",
+    };
+  }
+
+  if (errorCode.startsWith("file_lock_busy_")) {
+    const lockPath = errorCode.slice("file_lock_busy_".length);
+    const lockPurpose = error instanceof FileLockBusyError
+      ? error.existingMetadata?.purpose ?? null
+      : null;
+
+    if (lockPath.includes("wallet-control.lock")) {
+      return {
+        what: lockPurpose === null
+          ? "Wallet control lock is busy."
+          : `Wallet control lock is busy (purpose: ${lockPurpose}).`,
+        why: "Another Cogcoin command currently holds the exclusive wallet control lock for this wallet.",
+        next: "Wait for the other Cogcoin command to finish, or stop it cleanly before retrying.",
+      };
+    }
+
+    return {
+      what: lockPurpose === null
+        ? `Lock file is busy: ${lockPath}.`
+        : `Lock file is busy: ${lockPath} (purpose: ${lockPurpose}).`,
+      why: "The command was blocked by the current local wallet or service state.",
+      next: "Review `cogcoin status` and retry after the blocking condition is cleared.",
     };
   }
 
@@ -1626,7 +1661,7 @@ export function createCommandJsonErrorEnvelope(
   error: unknown,
 ): StableJsonErrorEnvelope | MutationJsonErrorEnvelope | PreviewJsonErrorEnvelope {
   const classified = classifyCliError(error);
-  const presentation = createCliErrorPresentation(classified.errorCode, classified.message);
+  const presentation = createCliErrorPresentation(classified.errorCode, classified.message, error);
   const humanMessage = presentation?.what ?? classified.message;
   const explanations = presentation?.why === null || presentation?.why === undefined ? [] : [presentation.why];
   const nextSteps = presentation?.next === null || presentation?.next === undefined ? [] : [presentation.next];

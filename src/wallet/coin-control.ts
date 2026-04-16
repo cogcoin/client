@@ -216,7 +216,65 @@ function deriveAuxiliaryDedicatedOutpoints(
       .filter((identity) => identity.status === "dedicated")
       .map((identity) => identity.scriptPubKeyHex),
   );
+  const registeredUnanchoredDedicatedOwnerScripts = new Set(
+    state.domains
+      .filter((domain) =>
+        domain.canonicalChainStatus === "registered-unanchored"
+        && domain.currentOwnerScriptPubKeyHex !== null
+        && dedicatedScriptSet.has(domain.currentOwnerScriptPubKeyHex),
+      )
+      .map((domain) => domain.currentOwnerScriptPubKeyHex as string),
+  );
+  // Some repair/cancellation paths can leave identity assignments intact while local
+  // domain records are absent or stale. Preserve one dedicated sender UTXO in that case
+  // so local owned-domain transfers can still use the identity input in vin[0].
+  for (const identity of state.identities) {
+    if (identity.status !== "dedicated" || identity.assignedDomainNames.length === 0) {
+      continue;
+    }
+    registeredUnanchoredDedicatedOwnerScripts.add(identity.scriptPubKeyHex);
+  }
   const liveProvisionalKeys = deriveLiveProvisionalOutpointKeys(state);
+  const designatedSenderKeys = new Set<string>();
+  const senderCandidatesByScript = new Map<string, RpcListUnspentEntry[]>();
+
+  for (const entry of spendableUtxos) {
+    if (
+      !isSpendableUtxo(entry)
+      || entry.confirmations < 1
+      || !registeredUnanchoredDedicatedOwnerScripts.has(entry.scriptPubKey)
+    ) {
+      continue;
+    }
+
+    const outpoint = { txid: entry.txid, vout: entry.vout };
+    const key = outpointKey(outpoint);
+    if (canonicalAnchorKeys.has(key) || liveProvisionalKeys.has(key)) {
+      continue;
+    }
+
+    const bucket = senderCandidatesByScript.get(entry.scriptPubKey) ?? [];
+    bucket.push(entry);
+    senderCandidatesByScript.set(entry.scriptPubKey, bucket);
+  }
+
+  for (const entries of senderCandidatesByScript.values()) {
+    const designated = entries.slice().sort((left, right) => {
+      const amount = btcNumberToSats(left.amount) - btcNumberToSats(right.amount);
+      if (amount !== 0n) {
+        return amount > 0n ? 1 : -1;
+      }
+      const txid = left.txid.localeCompare(right.txid);
+      if (txid !== 0) {
+        return txid;
+      }
+      return left.vout - right.vout;
+    })[0];
+    if (designated !== undefined) {
+      designatedSenderKeys.add(outpointKey({ txid: designated.txid, vout: designated.vout }));
+    }
+  }
+
   const auxiliary: OutpointRecord[] = [];
   const seen = new Set<string>();
 
@@ -227,7 +285,7 @@ function deriveAuxiliaryDedicatedOutpoints(
 
     const outpoint = { txid: entry.txid, vout: entry.vout };
     const key = outpointKey(outpoint);
-    if (canonicalAnchorKeys.has(key) || liveProvisionalKeys.has(key) || seen.has(key)) {
+    if (canonicalAnchorKeys.has(key) || liveProvisionalKeys.has(key) || designatedSenderKeys.has(key) || seen.has(key)) {
       continue;
     }
 

@@ -352,6 +352,66 @@ test("reconcilePersistentPolicyLocks locks canonical anchors, auxiliary dedicate
   ].sort()]);
 });
 
+test("reconcilePersistentPolicyLocks leaves one confirmed sender utxo unlocked for a registered-unanchored dedicated owner and locks only auxiliary dedicated value", async () => {
+  const baseState = createWalletState();
+  const state = createWalletState({
+    identities: baseState.identities.map((identity) =>
+      identity.index === 1
+        ? { ...identity, assignedDomainNames: ["cogdemo"] }
+        : identity
+    ),
+    domains: [
+      {
+        name: "cogdemo",
+        domainId: 10,
+        dedicatedIndex: 1,
+        currentOwnerScriptPubKeyHex: "ded-script",
+        currentOwnerLocalIndex: 1,
+        canonicalChainStatus: "registered-unanchored",
+        localAnchorIntent: "none",
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+    ],
+  });
+  const rpc = createMockRpc({
+    spendable: [
+      {
+        txid: "aa".repeat(32),
+        vout: 1,
+        scriptPubKey: "ded-script",
+        amount: 0.00002,
+        confirmations: 5,
+        spendable: true,
+        safe: true,
+      },
+      {
+        txid: "bb".repeat(32),
+        vout: 9,
+        scriptPubKey: "ded-script",
+        amount: 0.0005,
+        confirmations: 6,
+        spendable: true,
+        safe: true,
+      },
+      createFundingUtxo("dd", 0.0003, 1),
+    ],
+  });
+
+  await reconcilePersistentPolicyLocks({
+    rpc,
+    walletName: state.managedCoreWallet.walletName,
+    state,
+  });
+
+  assert.deepEqual(outpointStrings(rpc.calls.unlockCalls), []);
+  assert.deepEqual(outpointStrings(rpc.calls.lockCalls), [[
+    `${"bb".repeat(32)}:9`,
+    `${"dd".repeat(32)}:0`,
+  ].sort()]);
+});
+
 test("fixed inputs are exempt for the active build and restored by the next reconciliation", async () => {
   const state = createWalletState();
   const rpc = createMockRpc({

@@ -593,6 +593,58 @@ function createRegisterRpcHarness(options: {
             vout: [],
           };
         },
+        async getTransaction(_walletName: string, txid: string) {
+          const entries = [
+            {
+              txid: "11".repeat(32),
+              vout: 0,
+              scriptPubKey: options.fundingScriptPubKeyHex,
+              amount: 0.02,
+              confirmations: 12,
+            },
+            {
+              txid: "22".repeat(32),
+              vout: 0,
+              scriptPubKey: options.fundingScriptPubKeyHex,
+              amount: 0.01,
+              confirmations: 8,
+            },
+            {
+              txid: "aa".repeat(32),
+              vout: 1,
+              scriptPubKey: options.senderScriptPubKeyHex,
+              amount: 0.00002,
+              confirmations: 9,
+            },
+            {
+              txid: "44".repeat(32),
+              vout: 0,
+              scriptPubKey: options.senderScriptPubKeyHex,
+              amount: 0.00003,
+              confirmations: 10,
+            },
+          ].filter((entry) => entry.txid === txid);
+
+          if (entries.length === 0) {
+            throw new Error("transaction_not_found");
+          }
+
+          return {
+            txid,
+            confirmations: Math.max(...entries.map((entry) => entry.confirmations)),
+            decoded: {
+              txid,
+              vin: [],
+              vout: entries.map((entry) => ({
+                n: entry.vout,
+                value: entry.amount,
+                scriptPubKey: {
+                  hex: entry.scriptPubKey,
+                },
+              })),
+            },
+          };
+        },
         async testMempoolAccept() {
           return [{ allowed: true }];
         },
@@ -1028,6 +1080,8 @@ function createDomainMarketRpcHarness(options: {
   senderScriptPubKeyHex: string;
   senderAddress: string;
   includeAnchorUtxo?: boolean;
+  includeSenderUtxo?: boolean;
+  lockedOutpoints?: Array<{ txid: string; vout: number }>;
   mempoolTxids?: string[];
   sendError?: Error;
 }) {
@@ -1043,7 +1097,7 @@ function createDomainMarketRpcHarness(options: {
   } = {
     unlockCalls: [],
   };
-  const locked: Array<{ txid: string; vout: number }> = [];
+  const locked: Array<{ txid: string; vout: number }> = [...(options.lockedOutpoints ?? [])];
 
   return {
     rpcFactory() {
@@ -1052,6 +1106,7 @@ function createDomainMarketRpcHarness(options: {
           return { blocks: options.snapshotHeight };
         },
         async listUnspent() {
+          const lockedKeys = new Set(locked.map((entry) => `${entry.txid}:${entry.vout}`));
           const entries = [
             {
               txid: "11".repeat(32),
@@ -1086,7 +1141,10 @@ function createDomainMarketRpcHarness(options: {
               safe: true,
               address: options.senderAddress,
             });
-          } else if (options.senderScriptPubKeyHex !== options.fundingScriptPubKeyHex) {
+          } else if (
+            options.senderScriptPubKeyHex !== options.fundingScriptPubKeyHex
+            && options.includeSenderUtxo !== false
+          ) {
             entries.push({
               txid: "44".repeat(32),
               vout: 0,
@@ -1099,7 +1157,7 @@ function createDomainMarketRpcHarness(options: {
             });
           }
 
-          return entries;
+          return entries.filter((entry) => !lockedKeys.has(`${entry.txid}:${entry.vout}`));
         },
         async listLockUnspent() {
           return locked.slice();
@@ -1111,6 +1169,12 @@ function createDomainMarketRpcHarness(options: {
               const index = locked.findIndex((entry) => entry.txid === output.txid && entry.vout === output.vout);
               if (index >= 0) {
                 locked.splice(index, 1);
+              }
+            }
+          } else {
+            for (const output of outputs) {
+              if (!locked.some((entry) => entry.txid === output.txid && entry.vout === output.vout)) {
+                locked.push({ ...output });
               }
             }
           }
@@ -1130,18 +1194,24 @@ function createDomainMarketRpcHarness(options: {
           return {
             psbt: "funded-psbt",
             fee: 0.00001,
-            changepos: options.includeAnchorUtxo ? 2 : 1,
+            changepos: outputs.length,
           };
         },
         async decodePsbt() {
           const opReturnHex = String((captured.outputs?.[0] as { data: string }).data);
+          const senderOutputValue = typeof captured.outputs?.[1] === "object" && captured.outputs?.[1] !== null
+            ? Number((captured.outputs?.[1] as Record<string, number>)[options.senderAddress] ?? 0)
+            : 0;
+          const supplementalFundingCandidates = [
+            { txid: "11".repeat(32), vout: 0 },
+            { txid: "22".repeat(32), vout: 0 },
+            { txid: "44".repeat(32), vout: 0 },
+          ].filter((candidate) =>
+            !locked.some((entry) => entry.txid === candidate.txid && entry.vout === candidate.vout)
+          );
           const vinInputs = appendSupplementalFundingInputs(
             captured.inputs ?? [],
-            [
-              { txid: "11".repeat(32), vout: 0 },
-              { txid: "22".repeat(32), vout: 0 },
-              { txid: "44".repeat(32), vout: 0 },
-            ],
+            supplementalFundingCandidates,
           );
           const vin = vinInputs.map((input) => ({
             txid: input.txid,
@@ -1160,9 +1230,9 @@ function createDomainMarketRpcHarness(options: {
             { n: 0, value: 0, scriptPubKey: { hex: encodeOpReturnScript(opReturnHex) } },
           ];
 
-          if (options.includeAnchorUtxo) {
+          if (senderOutputValue > 0) {
             vout.push(
-              { n: 1, value: 0.00002, scriptPubKey: { hex: options.senderScriptPubKeyHex } },
+              { n: 1, value: senderOutputValue, scriptPubKey: { hex: options.senderScriptPubKeyHex } },
               { n: 2, value: 0.01899, scriptPubKey: { hex: options.fundingScriptPubKeyHex } },
             );
           } else {
@@ -1205,6 +1275,58 @@ function createDomainMarketRpcHarness(options: {
             hash: "66".repeat(32),
             vin: [],
             vout: [],
+          };
+        },
+        async getTransaction(_walletName: string, txid: string) {
+          const entries = [
+            {
+              txid: "11".repeat(32),
+              vout: 0,
+              scriptPubKey: options.fundingScriptPubKeyHex,
+              amount: 0.02,
+              confirmations: 12,
+            },
+            {
+              txid: "22".repeat(32),
+              vout: 0,
+              scriptPubKey: options.fundingScriptPubKeyHex,
+              amount: 0.01,
+              confirmations: 8,
+            },
+            {
+              txid: "aa".repeat(32),
+              vout: 1,
+              scriptPubKey: options.senderScriptPubKeyHex,
+              amount: 0.00002,
+              confirmations: 9,
+            },
+            {
+              txid: "44".repeat(32),
+              vout: 0,
+              scriptPubKey: options.senderScriptPubKeyHex,
+              amount: 0.00003,
+              confirmations: 10,
+            },
+          ].filter((entry) => entry.txid === txid);
+
+          if (entries.length === 0) {
+            throw new Error("transaction_not_found");
+          }
+
+          return {
+            txid,
+            confirmations: Math.max(...entries.map((entry) => entry.confirmations)),
+            decoded: {
+              txid,
+              vin: [],
+              vout: entries.map((entry) => ({
+                n: entry.vout,
+                value: entry.amount,
+                scriptPubKey: {
+                  hex: entry.scriptPubKey,
+                },
+              })),
+            },
           };
         },
         async testMempoolAccept() {
@@ -1609,7 +1731,7 @@ test("registerDomain builds a root registration, persists a live mutation, and r
   assert.equal(harness.captured.decoded?.vin[0]?.prevout?.scriptPubKey.hex, "0014ed495c1face9da3c7028519dbb36576c37f90e56");
   assert.equal((harness.captured.outputs?.[1] as Record<string, number>)["bc1qa4y4c8ava8drcupg2xwmkdjhdsmljrjk5ejp0t"], 0.001);
   assert.equal(harness.captured.options?.changePosition, 2);
-  assert.deepEqual(harness.captured.unlockCalls, [[{ txid: "33".repeat(32), vout: 1 }]]);
+  assert.deepEqual(harness.captured.unlockCalls.at(-1), [{ txid: "33".repeat(32), vout: 1 }]);
   assert.equal(saved.state.pendingMutations?.[0]?.status, "live");
   assert.equal(saved.state.pendingMutations?.[0]?.attemptedTxid, "55".repeat(32));
   assert.equal(saved.state.domains.some((domain) => domain.name === "weatherbot"), true);
@@ -2142,7 +2264,7 @@ test("transferDomain builds an unanchored transfer from the current local owner 
   });
   assert.equal(harness.captured.inputs?.[0]?.txid, "aa".repeat(32));
   assert.equal((harness.captured.outputs?.[1] as Record<string, number>)["bc1qalphaowner0000000000000000000000000000"], 0.00002);
-  assert.deepEqual(harness.captured.unlockCalls, [[{ txid: "33".repeat(32), vout: 1 }]]);
+  assert.deepEqual(harness.captured.unlockCalls.at(-1), [{ txid: "33".repeat(32), vout: 1 }]);
   assert.equal(saved.state.pendingMutations?.[0]?.kind, "transfer");
   assert.equal(saved.state.pendingMutations?.[0]?.status, "live");
   assert.equal(saved.state.domains.find((domain) => domain.name === "alpha-child")?.currentOwnerScriptPubKeyHex, "00141111111111111111111111111111111111111111");
@@ -2150,6 +2272,330 @@ test("transferDomain builds an unanchored transfer from the current local owner 
   assert.match(prompter.lines.join("\n"), /Resolved sender: id:1 \(bc1qalphaowner0000000000000000000000000000\)/);
   assert.match(prompter.lines.join("\n"), /Resolved recipient: /);
   assert.match(prompter.lines.join("\n"), /Economic effect: transfer domain ownership and clear any active listing\./);
+});
+
+test("transferDomain pins a sender utxo for an unanchored non-funding owner without an anchored identity proof", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-transfer-domain-unanchored-sender-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "cogdemo",
+    ownerScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state: createWalletState({
+      identities: createWalletState().identities.map((identity) =>
+        identity.index === 1
+          ? { ...identity, assignedDomainNames: ["cogdemo"] }
+          : identity.index === 2
+            ? { ...identity, assignedDomainNames: ["beta"] }
+            : identity
+      ),
+      domains: [
+        {
+          name: "beta",
+          domainId: 2,
+          dedicatedIndex: 2,
+          currentOwnerScriptPubKeyHex: "00145f5a03d6c7c88648b5f947459b769008ced5a020",
+          currentOwnerLocalIndex: 2,
+          canonicalChainStatus: "anchored" as const,
+          localAnchorIntent: "none" as const,
+          currentCanonicalAnchorOutpoint: {
+            txid: "bb".repeat(32),
+            vout: 1,
+            valueSats: 2_000,
+          },
+          foundingMessageText: "beta founded",
+          birthTime: 1_700_000_001,
+        },
+        {
+          name: "cogdemo",
+          domainId: 10,
+          dedicatedIndex: 1,
+          currentOwnerScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+          currentOwnerLocalIndex: 1,
+          canonicalChainStatus: "registered-unanchored" as const,
+          localAnchorIntent: "none" as const,
+          currentCanonicalAnchorOutpoint: null,
+          foundingMessageText: null,
+          birthTime: null,
+        },
+      ],
+    }),
+  });
+  const harness = createDomainMarketRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: "0014ed495c1face9da3c7028519dbb36576c37f90e56",
+    fundingAddress: "bc1qfundingidentity0000000000000000000000000",
+    senderScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+    senderAddress: "bc1qalphaowner0000000000000000000000000000",
+    includeAnchorUtxo: false,
+  });
+
+  const result = await transferDomain({
+    domainName: "cogdemo",
+    target: "spk:00141111111111111111111111111111111111111111",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["yes"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_301_000,
+  });
+
+  assert.equal(result.status, "live");
+  assert.deepEqual(harness.captured.inputs, [{ txid: "44".repeat(32), vout: 0 }]);
+  assert.equal((harness.captured.outputs?.[1] as Record<string, number>)["bc1qalphaowner0000000000000000000000000000"], 0.00002);
+});
+
+test("transferDomain preflights coin-control locks so a stale-locked dedicated sender utxo can still be used", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-transfer-domain-stale-locked-sender-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "cogdemo",
+    ownerScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state: createWalletState({
+      identities: createWalletState().identities.map((identity) =>
+        identity.index === 1
+          ? { ...identity, assignedDomainNames: ["cogdemo"] }
+          : identity.index === 2
+            ? { ...identity, assignedDomainNames: ["beta"] }
+            : identity
+      ),
+      domains: [
+        {
+          name: "beta",
+          domainId: 2,
+          dedicatedIndex: 2,
+          currentOwnerScriptPubKeyHex: "00145f5a03d6c7c88648b5f947459b769008ced5a020",
+          currentOwnerLocalIndex: 2,
+          canonicalChainStatus: "anchored" as const,
+          localAnchorIntent: "none" as const,
+          currentCanonicalAnchorOutpoint: {
+            txid: "bb".repeat(32),
+            vout: 1,
+            valueSats: 2_000,
+          },
+          foundingMessageText: "beta founded",
+          birthTime: 1_700_000_001,
+        },
+        {
+          name: "cogdemo",
+          domainId: 10,
+          dedicatedIndex: 1,
+          currentOwnerScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+          currentOwnerLocalIndex: 1,
+          canonicalChainStatus: "registered-unanchored" as const,
+          localAnchorIntent: "none" as const,
+          currentCanonicalAnchorOutpoint: null,
+          foundingMessageText: null,
+          birthTime: null,
+        },
+      ],
+    }),
+  });
+  const harness = createDomainMarketRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: "0014ed495c1face9da3c7028519dbb36576c37f90e56",
+    fundingAddress: "bc1qfundingidentity0000000000000000000000000",
+    senderScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+    senderAddress: "bc1qalphaowner0000000000000000000000000000",
+    includeAnchorUtxo: false,
+    lockedOutpoints: [{ txid: "44".repeat(32), vout: 0 }],
+  });
+
+  const result = await transferDomain({
+    domainName: "cogdemo",
+    target: "spk:00141111111111111111111111111111111111111111",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["yes"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_302_000,
+  });
+
+  assert.equal(result.status, "live");
+  assert.ok(harness.captured.unlockCalls.some((call) =>
+    call.some((entry) => entry.txid === "44".repeat(32) && entry.vout === 0),
+  ));
+  assert.deepEqual(harness.captured.inputs, [{ txid: "44".repeat(32), vout: 0 }]);
+});
+
+test("transferDomain preflights a stale-locked dedicated sender utxo even when local domain records are missing", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-transfer-domain-missing-local-domain-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "cogdemo",
+    ownerScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state: createWalletState({
+      identities: createWalletState().identities.map((identity) =>
+        identity.index === 1
+          ? { ...identity, assignedDomainNames: ["cogdemo"] }
+          : identity
+      ),
+      domains: [],
+    }),
+  });
+  const harness = createDomainMarketRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: "0014ed495c1face9da3c7028519dbb36576c37f90e56",
+    fundingAddress: "bc1qfundingidentity0000000000000000000000000",
+    senderScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+    senderAddress: "bc1qalphaowner0000000000000000000000000000",
+    includeAnchorUtxo: false,
+    lockedOutpoints: [{ txid: "44".repeat(32), vout: 0 }],
+  });
+
+  const result = await transferDomain({
+    domainName: "cogdemo",
+    target: "spk:00141111111111111111111111111111111111111111",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["yes"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_303_000,
+  });
+
+  assert.equal(result.status, "live");
+  assert.ok(harness.captured.unlockCalls.some((call) =>
+    call.some((entry) => entry.txid === "44".repeat(32) && entry.vout === 0),
+  ));
+  assert.deepEqual(harness.captured.inputs, [{ txid: "44".repeat(32), vout: 0 }]);
+});
+
+test("transferDomain fails clearly when an unanchored non-funding owner has no spendable sender utxo", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-transfer-domain-unanchored-missing-utxo-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "cogdemo",
+    ownerScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state: createWalletState({
+      identities: createWalletState().identities.map((identity) =>
+        identity.index === 1
+          ? { ...identity, assignedDomainNames: ["cogdemo"] }
+          : identity.index === 2
+            ? { ...identity, assignedDomainNames: ["beta"] }
+            : identity
+      ),
+      domains: [
+        {
+          name: "beta",
+          domainId: 2,
+          dedicatedIndex: 2,
+          currentOwnerScriptPubKeyHex: "00145f5a03d6c7c88648b5f947459b769008ced5a020",
+          currentOwnerLocalIndex: 2,
+          canonicalChainStatus: "anchored" as const,
+          localAnchorIntent: "none" as const,
+          currentCanonicalAnchorOutpoint: {
+            txid: "bb".repeat(32),
+            vout: 1,
+            valueSats: 2_000,
+          },
+          foundingMessageText: "beta founded",
+          birthTime: 1_700_000_001,
+        },
+        {
+          name: "cogdemo",
+          domainId: 10,
+          dedicatedIndex: 1,
+          currentOwnerScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+          currentOwnerLocalIndex: 1,
+          canonicalChainStatus: "registered-unanchored" as const,
+          localAnchorIntent: "none" as const,
+          currentCanonicalAnchorOutpoint: null,
+          foundingMessageText: null,
+          birthTime: null,
+        },
+      ],
+    }),
+  });
+  const harness = createDomainMarketRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: "0014ed495c1face9da3c7028519dbb36576c37f90e56",
+    fundingAddress: "bc1qfundingidentity0000000000000000000000000",
+    senderScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+    senderAddress: "bc1qalphaowner0000000000000000000000000000",
+    includeAnchorUtxo: false,
+    includeSenderUtxo: false,
+  });
+
+  await assert.rejects(() => transferDomain({
+    domainName: "cogdemo",
+    target: "spk:00141111111111111111111111111111111111111111",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["yes"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_302_000,
+  }), /wallet_transfer_sender_utxo_unavailable/);
 });
 
 test("transferDomain allows non-interactive approval with assumeYes on the plain yes/no path", async () => {

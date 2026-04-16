@@ -30,7 +30,7 @@ import {
 } from "../src/bitcoind/types.js";
 import { inspectPassiveClientStatus } from "../src/passive-status.js";
 import { openSqliteStore } from "../src/sqlite/index.js";
-import { acquireFileLock } from "../src/wallet/fs/lock.js";
+import { acquireFileLock, FileLockBusyError } from "../src/wallet/fs/lock.js";
 import type { MiningControlPlaneView } from "../src/wallet/mining/index.js";
 import { createWalletReadModel } from "../src/wallet/read/index.js";
 import type { WalletReadContext } from "../src/wallet/read/index.js";
@@ -7307,6 +7307,29 @@ test("cli error presentation explains indexer compatibility mismatches clearly",
   assert.ok(rootMismatch?.some((line) => line.includes("different wallet root")));
   assert.ok(rootMismatch?.some((line) => line.includes("cogcoin repair")));
   assert.ok(schemaMismatch?.some((line) => line.includes("incompatible sqlite schema")));
+});
+
+test("cli error presentation includes wallet-control lock purpose when available", () => {
+  const formatted = formatCliTextError(new FileLockBusyError(
+    "/tmp/Cogcoin/runtime/wallet-control.lock",
+    {
+      processId: 1234,
+      acquiredAtUnixMs: 1_700_000_000_000,
+      purpose: "managed-sync",
+      walletRootId: "wallet-root-test",
+    },
+  ));
+
+  assert.ok(formatted?.some((line) => line.includes("Wallet control lock is busy (purpose: managed-sync).")));
+  assert.ok(formatted?.some((line) => line.includes("exclusive wallet control lock")));
+});
+
+test("cli error presentation explains missing sender utxos clearly", () => {
+  const formatted = formatCliTextError(new Error("wallet_transfer_sender_utxo_unavailable"));
+
+  assert.ok(formatted?.some((line) => line.includes("Sender identity has no spendable confirmed BTC input.")));
+  assert.ok(formatted?.some((line) => line.includes("vin[0]")));
+  assert.ok(formatted?.some((line) => line.includes("Wait for the sender's BTC output to confirm")));
 });
 
 test("wallet-aware read commands render coherent snapshot-backed views", async () => {
