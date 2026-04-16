@@ -23,6 +23,11 @@ import type {
 import { openSqliteStore } from "../sqlite/index.js";
 import { readPortableWalletArchive, writePortableWalletArchive } from "./archive.js";
 import {
+  DEFAULT_PROACTIVE_RESERVE_SATS,
+  normalizeWalletStateRecord,
+  persistWalletCoinControlStateIfNeeded,
+} from "./coin-control.js";
+import {
   normalizeWalletDescriptorState,
   persistNormalizedWalletDescriptorStateIfNeeded,
   persistWalletStateUpdate,
@@ -322,6 +327,8 @@ function createInitialWalletState(options: {
     walletRootId: options.walletRootId,
     network: "mainnet",
     anchorValueSats: 2_000,
+    proactiveReserveSats: DEFAULT_PROACTIVE_RESERVE_SATS,
+    proactiveReserveOutpoints: [],
     nextDedicatedIndex: 1,
     fundingIndex: 0,
     mnemonic: {
@@ -480,6 +487,21 @@ async function normalizeUnlockedWalletStateIfNeeded(options: {
       state = normalized.state;
       session = normalized.session ?? session;
       source = normalized.changed ? "primary" : options.source;
+      const coinControl = await persistWalletCoinControlStateIfNeeded({
+        state,
+        access: {
+          provider: options.provider,
+          secretReference: createWalletSecretReference(state.walletRootId),
+        },
+        session,
+        paths: options.paths,
+        nowUnixMs: options.nowUnixMs,
+        replacePrimary: source === "backup",
+        rpc: createRpcClient(node.rpc),
+      });
+      state = coinControl.state;
+      session = coinControl.session ?? session;
+      source = coinControl.changed ? "primary" : source;
     } finally {
       await node.stop?.().catch(() => undefined);
     }
@@ -487,10 +509,10 @@ async function normalizeUnlockedWalletStateIfNeeded(options: {
 
   return {
     session,
-    state: {
+    state: normalizeWalletStateRecord({
       ...state,
       miningState: normalizeMiningStateRecord(state.miningState),
-    },
+    }),
     source,
   };
 }
@@ -505,6 +527,8 @@ function createPortableWalletArchivePayload(
     walletRootId: state.walletRootId,
     network: state.network,
     anchorValueSats: state.anchorValueSats,
+    proactiveReserveSats: state.proactiveReserveSats,
+    proactiveReserveOutpoints: state.proactiveReserveOutpoints,
     nextDedicatedIndex: state.nextDedicatedIndex,
     fundingIndex: state.fundingIndex,
     mnemonic: {
@@ -563,6 +587,8 @@ function createWalletStateFromPortableArchive(options: {
     walletRootId: options.payload.walletRootId,
     network: options.payload.network,
     anchorValueSats: options.payload.anchorValueSats,
+    proactiveReserveSats: options.payload.proactiveReserveSats,
+    proactiveReserveOutpoints: options.payload.proactiveReserveOutpoints,
     nextDedicatedIndex: options.payload.nextDedicatedIndex,
     fundingIndex: options.payload.fundingIndex,
     walletBirthTime: options.payload.expected.walletBirthTime,
@@ -2627,6 +2653,21 @@ export async function repairWallet(options: {
       if (normalizedDescriptorState.changed) {
         repairedState = normalizedDescriptorState.state;
         repairStateNeedsPersist = true;
+      }
+      const reconciledCoinControl = await persistWalletCoinControlStateIfNeeded({
+        state: repairedState,
+        access: {
+          provider,
+          secretReference,
+        },
+        paths,
+        nowUnixMs,
+        replacePrimary: recoveredFromBackup && !repairStateNeedsPersist,
+        rpc: createRpcClient(bitcoindHandle.rpc),
+      });
+      repairedState = reconciledCoinControl.state;
+      if (reconciledCoinControl.changed) {
+        repairStateNeedsPersist = false;
       }
 
       let replica = await verifyManagedCoreWalletReplica(repairedState, options.dataDir, {

@@ -16,6 +16,7 @@ import {
   deriveWalletIdentityMaterial,
   type WalletDerivedIdentity,
 } from "../material.js";
+import { computeDesignatedProactiveReserveOutpoints } from "../coin-control.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../runtime.js";
 import {
   createDefaultWalletSecretProvider,
@@ -39,7 +40,7 @@ import {
   assertFixedInputPrefixMatches,
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
-  buildWalletMutationTransaction,
+  buildWalletMutationTransactionWithReserveFallback,
   getDecodedInputScriptPubKeyHex,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
@@ -1035,7 +1036,11 @@ async function buildTx1(options: {
   state: WalletStateV1;
   plan: AnchorTxPlan;
 }): Promise<BuiltAnchorTransaction> {
-  return buildWalletMutationTransaction({
+  const reserveCandidates = computeDesignatedProactiveReserveOutpoints(
+    options.state,
+    await options.rpc.listUnspent(options.walletName, 1),
+  );
+  return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
     walletName: options.walletName,
     state: options.state,
@@ -1043,6 +1048,7 @@ async function buildTx1(options: {
     validateFundedDraft: validateTx1Draft,
     finalizeErrorCode: "wallet_anchor_tx1_finalize_failed",
     mempoolRejectPrefix: "wallet_anchor_tx1_mempool_rejected",
+    reserveCandidates,
   });
 }
 
@@ -1052,7 +1058,11 @@ async function buildTx2(options: {
   state: WalletStateV1;
   plan: AnchorTxPlan;
 }): Promise<BuiltAnchorTransaction> {
-  return buildWalletMutationTransaction({
+  const reserveCandidates = computeDesignatedProactiveReserveOutpoints(
+    options.state,
+    await options.rpc.listUnspent(options.walletName, 1),
+  );
+  return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
     walletName: options.walletName,
     state: options.state,
@@ -1060,6 +1070,7 @@ async function buildTx2(options: {
     validateFundedDraft: validateTx2Draft,
     finalizeErrorCode: "wallet_anchor_tx2_finalize_failed",
     mempoolRejectPrefix: "wallet_anchor_tx2_mempool_rejected",
+    reserveCandidates,
   });
 }
 

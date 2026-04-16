@@ -423,6 +423,8 @@ function createEntropyRetainedWalletState(
     walletRootId,
     network: previousState.network,
     anchorValueSats: previousState.anchorValueSats,
+    proactiveReserveSats: previousState.proactiveReserveSats,
+    proactiveReserveOutpoints: previousState.proactiveReserveOutpoints,
     nextDedicatedIndex: previousState.nextDedicatedIndex,
     fundingIndex: previousState.fundingIndex,
     mnemonic: {

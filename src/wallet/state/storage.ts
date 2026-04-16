@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { writeJsonFileAtomic } from "../fs/atomic.js";
 import type { EncryptedEnvelopeV1, WalletStateV1 } from "../types.js";
+import { normalizeWalletStateRecord } from "../coin-control.js";
 import {
   decryptJsonWithPassphrase,
   decryptJsonWithSecretProvider,
@@ -139,17 +140,17 @@ export async function loadWalletState(
   try {
     return {
       source: "primary",
-      state: typeof access === "string" || access instanceof Uint8Array
+      state: normalizeWalletStateRecord(typeof access === "string" || access instanceof Uint8Array
         ? await decryptJsonWithPassphrase<WalletStateV1>(await readEnvelope(paths.primaryPath), access)
-        : await decryptJsonWithSecretProvider<WalletStateV1>(await readEnvelope(paths.primaryPath), access.provider),
+        : await decryptJsonWithSecretProvider<WalletStateV1>(await readEnvelope(paths.primaryPath), access.provider)),
     };
   } catch (primaryError) {
     try {
       return {
         source: "backup",
-        state: typeof access === "string" || access instanceof Uint8Array
+        state: normalizeWalletStateRecord(typeof access === "string" || access instanceof Uint8Array
           ? await decryptJsonWithPassphrase<WalletStateV1>(await readEnvelope(paths.backupPath), access)
-          : await decryptJsonWithSecretProvider<WalletStateV1>(await readEnvelope(paths.backupPath), access.provider),
+          : await decryptJsonWithSecretProvider<WalletStateV1>(await readEnvelope(paths.backupPath), access.provider)),
       };
     } catch {
       throw primaryError;

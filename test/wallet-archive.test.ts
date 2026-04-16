@@ -23,6 +23,8 @@ function createPortableWalletArchivePayload(
     walletRootId: "wallet-root-test",
     network: "mainnet",
     anchorValueSats: 2_000,
+    proactiveReserveSats: 50_000,
+    proactiveReserveOutpoints: [],
     nextDedicatedIndex: 1,
     fundingIndex: 0,
     mnemonic: {

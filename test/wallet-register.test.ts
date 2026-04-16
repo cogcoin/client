@@ -113,6 +113,8 @@ function createWalletState(partial: Partial<WalletStateV1> = {}): WalletStateV1 
     walletRootId: "wallet-root-test",
     network: "mainnet",
     anchorValueSats: 2_000,
+    proactiveReserveSats: 50_000,
+    proactiveReserveOutpoints: [],
     nextDedicatedIndex: 3,
     fundingIndex: 0,
     mnemonic: {
@@ -4224,7 +4226,11 @@ test("anchorDomain builds Case A from funding identity zero and persists a live 
   );
   assert.equal(harness.captured.calls[1]?.inputs[0]?.txid, harness.tx1Txid);
   assert.equal(harness.captured.calls[1]?.inputs[0]?.vout, 1);
-  assert.deepEqual(harness.captured.relockCalls, [[{ txid: harness.tx2Txid, vout: 1 }]]);
+  assert.deepEqual(harness.captured.relockCalls, [
+    [{ txid: harness.tx1Txid, vout: 1 }],
+    [{ txid: "11".repeat(32), vout: 0 }],
+    [{ txid: harness.tx2Txid, vout: 1 }],
+  ]);
   assert.match(prompter.lines.join("\n"), /Dedicated Ethereum address:/);
   assert.match(prompter.lines.join("\n"), /Founding message:/);
   assert.equal(saved.state.proactiveFamilies[0]?.type, "anchor");
@@ -5391,9 +5397,18 @@ test("anchorDomain builds Case B from an anchored local owner and relocks both r
   );
   assert.equal(harness.captured.calls[1]?.inputs[0]?.txid, harness.tx1Txid);
   assert.deepEqual(harness.captured.relockCalls, [
+    [
+      { txid: harness.tx1Txid, vout: 1 },
+      { txid: "11".repeat(32), vout: 0 },
+    ],
     [{ txid: harness.tx1Txid, vout: 2 }],
-    [{ txid: "aa".repeat(32), vout: 1, valueSats: 2_000 }],
-    [{ txid: harness.tx2Txid, vout: 1 }],
+    [
+      { txid: "aa".repeat(32), vout: 1, valueSats: 2_000 },
+      { txid: "11".repeat(32), vout: 0 },
+    ],
+    [
+      { txid: harness.tx2Txid, vout: 1 },
+    ],
   ]);
   assert.match(prompter.lines.join("\n"), /Warning: Tx1 will cancel the current listing/);
   assert.equal(saved.state.proactiveFamilies[0]?.listingCancelCommitted, true);

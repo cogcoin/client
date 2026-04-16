@@ -28,6 +28,7 @@ import {
   outpointKey as walletMutationOutpointKey,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
+  reconcilePersistentPolicyLocks,
   saveWalletStatePreservingUnlock,
   type FixedWalletInput,
   type MutationSender,
@@ -1881,38 +1882,6 @@ function miningCandidateIsCurrent(options: {
     && options.state.currentBlockTargetHeight === (options.nodeBestHeight + 1);
 }
 
-async function rebuildPersistentAnchorLocks(options: {
-  state: WalletStateV1;
-  rpc: MiningRpcClient;
-}): Promise<void> {
-  const walletName = options.state.managedCoreWallet.walletName;
-  const [locked, spendable] = await Promise.all([
-    options.rpc.listLockUnspent(walletName).catch(() => []),
-    options.rpc.listUnspent(walletName, 0).catch(() => []),
-  ]);
-  const spendableKeys = new Set(spendable.map((entry) => `${entry.txid}:${entry.vout}`));
-  const expected = options.state.domains
-    .map((domain) => domain.currentCanonicalAnchorOutpoint)
-    .filter((outpoint): outpoint is NonNullable<WalletStateV1["domains"][number]["currentCanonicalAnchorOutpoint"]> => outpoint !== null)
-    .map((outpoint) => ({ txid: outpoint.txid, vout: outpoint.vout }))
-    .filter((outpoint) => spendableKeys.has(`${outpoint.txid}:${outpoint.vout}`));
-  const expectedKeys = new Set(expected.map((outpoint) => `${outpoint.txid}:${outpoint.vout}`));
-  const lockedKeys = new Set(locked.map((outpoint) => `${outpoint.txid}:${outpoint.vout}`));
-  const staleLocked = locked.filter((outpoint) =>
-    !expectedKeys.has(`${outpoint.txid}:${outpoint.vout}`)
-    || !spendableKeys.has(`${outpoint.txid}:${outpoint.vout}`),
-  );
-  const missingLocked = expected.filter((outpoint) => !lockedKeys.has(`${outpoint.txid}:${outpoint.vout}`));
-
-  if (staleLocked.length > 0) {
-    await options.rpc.lockUnspent(walletName, true, staleLocked).catch(() => undefined);
-  }
-
-  if (missingLocked.length > 0) {
-    await options.rpc.lockUnspent(walletName, false, missingLocked).catch(() => undefined);
-  }
-}
-
 async function reconcileLiveMiningState(options: {
   state: WalletStateV1;
   rpc: MiningRpcClient;
@@ -1926,7 +1895,12 @@ async function reconcileLiveMiningState(options: {
   const currentTxid = state.miningState.currentTxid;
 
   if (currentTxid === null || !miningFamilyMayStillExist(state.miningState)) {
-    await rebuildPersistentAnchorLocks({ state, rpc: options.rpc });
+    await reconcilePersistentPolicyLocks({
+      rpc: options.rpc,
+      walletName: state.managedCoreWallet.walletName,
+      state,
+      fixedInputs: [],
+    });
     return state;
   }
 
@@ -1948,7 +1922,12 @@ async function reconcileLiveMiningState(options: {
         currentPublishDecision: "tx-confirmed-while-down",
       },
     };
-    await rebuildPersistentAnchorLocks({ state, rpc: options.rpc });
+    await reconcilePersistentPolicyLocks({
+      rpc: options.rpc,
+      walletName: state.managedCoreWallet.walletName,
+      state,
+      fixedInputs: [],
+    });
     return state;
   }
 
@@ -1973,7 +1952,12 @@ async function reconcileLiveMiningState(options: {
           : null,
       currentPublishDecision: stale ? "paused-stale-mempool" : "restored-live-family",
     });
-    await rebuildPersistentAnchorLocks({ state, rpc: options.rpc });
+    await reconcilePersistentPolicyLocks({
+      rpc: options.rpc,
+      walletName: state.managedCoreWallet.walletName,
+      state,
+      fixedInputs: [],
+    });
     return state;
   }
 
@@ -1988,7 +1972,12 @@ async function reconcileLiveMiningState(options: {
         ? "repair-required-broadcast-conflict"
         : "repair-required-wallet-conflict",
     });
-    await rebuildPersistentAnchorLocks({ state, rpc: options.rpc });
+    await reconcilePersistentPolicyLocks({
+      rpc: options.rpc,
+      walletName: state.managedCoreWallet.walletName,
+      state,
+      fixedInputs: [],
+    });
     return state;
   }
 
@@ -1998,7 +1987,12 @@ async function reconcileLiveMiningState(options: {
       ? "broadcast-unknown-not-seen"
       : "live-family-not-seen",
   });
-  await rebuildPersistentAnchorLocks({ state, rpc: options.rpc });
+  await reconcilePersistentPolicyLocks({
+    rpc: options.rpc,
+    walletName: state.managedCoreWallet.walletName,
+    state,
+    fixedInputs: [],
+  });
   return state;
 }
 

@@ -201,6 +201,8 @@ export interface WalletStateV1 {
   walletRootId: string;
   network: WalletNetwork;
   anchorValueSats: number;
+  proactiveReserveSats: number;
+  proactiveReserveOutpoints: OutpointRecord[];
   nextDedicatedIndex: number;
   fundingIndex: 0;
   mnemonic: {
@@ -251,6 +253,8 @@ export interface PortableWalletArchivePayloadV1 {
   walletRootId: string;
   network: WalletNetwork;
   anchorValueSats: number;
+  proactiveReserveSats: number;
+  proactiveReserveOutpoints: OutpointRecord[];
   nextDedicatedIndex: number;
   fundingIndex: 0;
   mnemonic: {

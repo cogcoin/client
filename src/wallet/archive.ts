@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { writeJsonFileAtomic } from "./fs/atomic.js";
+import { normalizePortableWalletArchivePayload } from "./coin-control.js";
 import {
   decryptJsonWithPassphrase,
   encryptJsonWithPassphrase,
@@ -15,19 +16,20 @@ export const PORTABLE_WALLET_ARCHIVE_FORMAT = "cogcoin-portable-wallet-archive";
 function assertPortableWalletArchivePayload(
   payload: PortableWalletArchivePayloadV1,
 ): PortableWalletArchivePayloadV1 {
+  const normalized = normalizePortableWalletArchivePayload(payload);
   if (
-    payload.schemaVersion !== 1
-    || payload.walletRootId.trim() === ""
-    || payload.mnemonic.phrase.trim() === ""
-    || payload.expected.accountPath.trim() === ""
-    || payload.expected.publicExternalDescriptor.trim() === ""
-    || payload.expected.fundingAddress0.trim() === ""
-    || payload.expected.fundingScriptPubKeyHex0.trim() === ""
+    normalized.schemaVersion !== 1
+    || normalized.walletRootId.trim() === ""
+    || normalized.mnemonic.phrase.trim() === ""
+    || normalized.expected.accountPath.trim() === ""
+    || normalized.expected.publicExternalDescriptor.trim() === ""
+    || normalized.expected.fundingAddress0.trim() === ""
+    || normalized.expected.fundingScriptPubKeyHex0.trim() === ""
   ) {
     throw new Error("wallet_archive_payload_invalid");
   }
 
-  return payload;
+  return normalized;
 }
 
 export async function writePortableWalletArchive(

@@ -27,6 +27,7 @@ import {
   loadOrAutoUnlockWalletState,
   verifyManagedCoreWalletReplica,
 } from "../lifecycle.js";
+import { normalizeWalletStateRecord, persistWalletCoinControlStateIfNeeded } from "../coin-control.js";
 import { persistNormalizedWalletDescriptorStateIfNeeded } from "../descriptor-normalization.js";
 import { inspectMiningControlPlane } from "../mining/index.js";
 import { normalizeMiningStateRecord } from "../mining/state.js";
@@ -131,10 +132,18 @@ async function normalizeLoadedWalletStateForRead(options: {
       replacePrimary: options.loaded.source === "backup",
       rpc: createRpcClient(node.rpc),
     });
+    const coinControl = await persistWalletCoinControlStateIfNeeded({
+      state: normalized.state,
+      access,
+      paths: options.paths,
+      nowUnixMs: options.now,
+      replacePrimary: (normalized.changed ? "primary" : options.loaded.source) === "backup",
+      rpc: createRpcClient(node.rpc),
+    });
 
     return {
-      source: normalized.changed ? "primary" : options.loaded.source,
-      state: normalized.state,
+      source: coinControl.changed ? "primary" : normalized.changed ? "primary" : options.loaded.source,
+      state: coinControl.state,
     };
   } finally {
     await node.stop?.().catch(() => undefined);
@@ -255,10 +264,10 @@ async function inspectWalletLocalState(options: {
       return {
         availability: "ready",
         walletRootId: unlocked.state.walletRootId,
-        state: {
+        state: normalizeWalletStateRecord({
           ...unlocked.state,
           miningState: normalizeMiningStateRecord(unlocked.state.miningState),
-        },
+        }),
         source: unlocked.source,
         unlockUntilUnixMs: unlocked.session.unlockUntilUnixMs,
         hasPrimaryStateFile,
@@ -296,10 +305,10 @@ async function inspectWalletLocalState(options: {
     return {
       availability: "ready",
       walletRootId: loaded.state.walletRootId,
-      state: {
+      state: normalizeWalletStateRecord({
         ...loaded.state,
         miningState: normalizeMiningStateRecord(loaded.state.miningState),
-      },
+      }),
       source: loaded.source,
       unlockUntilUnixMs: null,
       hasPrimaryStateFile,
