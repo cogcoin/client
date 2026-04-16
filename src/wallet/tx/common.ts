@@ -201,13 +201,38 @@ export function diffTemporaryLockedOutpoints(
     }));
 }
 
-export function getDecodedInputScriptPubKeyHex(input: RpcVin): string | null {
-  return input.prevout?.scriptPubKey?.hex ?? null;
+export function getDecodedInputVout(input: RpcVin): number | null {
+  return typeof input.vout === "number" ? input.vout : null;
 }
 
-export function getDecodedInputVout(input: RpcVin): number | null {
-  const vout = (input as RpcVin & { vout?: unknown }).vout;
-  return typeof vout === "number" ? vout : null;
+export function getDecodedInputScriptPubKeyHex(decoded: RpcDecodedPsbt, inputIndex: number): string | null {
+  const input = decoded.tx.vin[inputIndex];
+  if (input === undefined) {
+    return null;
+  }
+
+  const prevoutScriptPubKeyHex = input.prevout?.scriptPubKey?.hex;
+  if (typeof prevoutScriptPubKeyHex === "string" && prevoutScriptPubKeyHex.length > 0) {
+    return prevoutScriptPubKeyHex;
+  }
+
+  const psbtInput = decoded.inputs?.[inputIndex];
+  const witnessScriptPubKeyHex = psbtInput?.witness_utxo?.scriptPubKey?.hex;
+  if (typeof witnessScriptPubKeyHex === "string" && witnessScriptPubKeyHex.length > 0) {
+    return witnessScriptPubKeyHex;
+  }
+
+  const vout = getDecodedInputVout(input);
+  if (vout === null) {
+    return null;
+  }
+
+  const nonWitnessScriptPubKeyHex = psbtInput?.non_witness_utxo?.vout
+    .find((output) => output.n === vout)
+    ?.scriptPubKey?.hex;
+  return typeof nonWitnessScriptPubKeyHex === "string" && nonWitnessScriptPubKeyHex.length > 0
+    ? nonWitnessScriptPubKeyHex
+    : null;
 }
 
 export function inputMatchesOutpoint(input: RpcVin, outpoint: OutpointRecord): boolean {
@@ -231,15 +256,15 @@ export function assertFixedInputPrefixMatches(
 }
 
 export function assertFundingInputsAfterFixedPrefix(options: {
-  inputs: RpcVin[];
+  decoded: RpcDecodedPsbt;
   fixedInputs: FixedWalletInput[];
   allowedFundingScriptPubKeyHex: string;
   eligibleFundingOutpointKeys: Set<string>;
   errorCode: string;
 }): void {
-  for (let index = options.fixedInputs.length; index < options.inputs.length; index += 1) {
-    const input = options.inputs[index]!;
-    const scriptPubKeyHex = getDecodedInputScriptPubKeyHex(input);
+  for (let index = options.fixedInputs.length; index < options.decoded.tx.vin.length; index += 1) {
+    const input = options.decoded.tx.vin[index]!;
+    const scriptPubKeyHex = getDecodedInputScriptPubKeyHex(options.decoded, index);
     const vout = getDecodedInputVout(input);
     if (scriptPubKeyHex !== options.allowedFundingScriptPubKeyHex || vout === null || typeof input.txid !== "string") {
       throw new Error(options.errorCode);
@@ -302,7 +327,7 @@ function isReserveFloorFundingError(error: unknown): boolean {
 }
 
 function computeRemainingFundingValueSats(options: {
-  transaction: RpcTransaction;
+  decoded: RpcDecodedPsbt;
   fundingScriptPubKeyHex: string;
   availableFundingValueByKey: Map<string, bigint>;
 }): bigint {
@@ -312,8 +337,8 @@ function computeRemainingFundingValueSats(options: {
     remaining += value;
   }
 
-  for (const input of options.transaction.vin) {
-    const scriptPubKeyHex = getDecodedInputScriptPubKeyHex(input);
+  for (const [index, input] of options.decoded.tx.vin.entries()) {
+    const scriptPubKeyHex = getDecodedInputScriptPubKeyHex(options.decoded, index);
     const vout = getDecodedInputVout(input);
     if (scriptPubKeyHex !== options.fundingScriptPubKeyHex || vout === null || typeof input.txid !== "string") {
       continue;
@@ -325,7 +350,7 @@ function computeRemainingFundingValueSats(options: {
     })) ?? 0n;
   }
 
-  for (const output of options.transaction.vout) {
+  for (const output of options.decoded.tx.vout) {
     if (output.scriptPubKey?.hex !== options.fundingScriptPubKeyHex) {
       continue;
     }
@@ -457,7 +482,7 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
     options.validateFundedDraft(decoded, funded, validationPlan);
     if (options.state.proactiveReserveSats > 0) {
       const remainingFundingValueSats = computeRemainingFundingValueSats({
-        transaction: decoded.tx,
+        decoded,
         fundingScriptPubKeyHex: options.plan.allowedFundingScriptPubKeyHex,
         availableFundingValueByKey,
       });

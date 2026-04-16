@@ -47,6 +47,7 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  getDecodedInputScriptPubKeyHex,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
   outpointKey,
@@ -587,12 +588,12 @@ function validateFieldDraft(
 
   assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_sender_input_mismatch`);
 
-  if (inputs[0]?.prevout?.scriptPubKey?.hex !== plan.sender.scriptPubKeyHex) {
+  if (getDecodedInputScriptPubKeyHex(decoded, 0) !== plan.sender.scriptPubKeyHex) {
     throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
   }
 
   assertFundingInputsAfterFixedPrefix({
-    inputs,
+    decoded,
     fixedInputs: plan.fixedInputs,
     allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
     eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,

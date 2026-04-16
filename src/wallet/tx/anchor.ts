@@ -961,7 +961,7 @@ function validateTx1Draft(
 
   assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_sender_input_mismatch`);
 
-  const firstInputScriptPubKeyHex = getDecodedInputScriptPubKeyHex(inputs[0]!);
+  const firstInputScriptPubKeyHex = getDecodedInputScriptPubKeyHex(decoded, 0);
   if (firstInputScriptPubKeyHex !== plan.sender.scriptPubKeyHex) {
     throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
   }
@@ -973,7 +973,7 @@ function validateTx1Draft(
   }
 
   assertFundingInputsAfterFixedPrefix({
-    inputs,
+    decoded,
     fixedInputs: plan.fixedInputs,
     allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
     eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
@@ -1033,14 +1033,14 @@ function validateTx2Draft(
 
   assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_provisional_input_mismatch`);
 
-  const firstInputScriptPubKeyHex = getDecodedInputScriptPubKeyHex(inputs[0]!);
+  const firstInputScriptPubKeyHex = getDecodedInputScriptPubKeyHex(decoded, 0);
   if (firstInputScriptPubKeyHex !== plan.sender.scriptPubKeyHex
     || !inputMatchesOutpoint(inputs[0]!, plan.requiredProvisionalOutpoint)) {
     throw new Error(`${plan.errorPrefix}_provisional_input_mismatch`);
   }
 
   assertFundingInputsAfterFixedPrefix({
-    inputs,
+    decoded,
     fixedInputs: plan.fixedInputs,
     allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
     eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,

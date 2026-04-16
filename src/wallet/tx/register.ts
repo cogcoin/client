@@ -37,6 +37,7 @@ import {
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
   formatCogAmount,
+  getDecodedInputScriptPubKeyHex,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
   outpointKey,
@@ -708,12 +709,12 @@ function validateFundedDraft(
 
   assertFixedInputPrefixMatches(inputs, plan.fixedInputs, "wallet_register_sender_input_mismatch");
 
-  if (inputs[0]?.prevout?.scriptPubKey?.hex !== plan.sender.scriptPubKeyHex) {
+  if (getDecodedInputScriptPubKeyHex(decoded, 0) !== plan.sender.scriptPubKeyHex) {
     throw new Error("wallet_register_sender_input_mismatch");
   }
 
   assertFundingInputsAfterFixedPrefix({
-    inputs,
+    decoded,
     fixedInputs: plan.fixedInputs,
     allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
     eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,

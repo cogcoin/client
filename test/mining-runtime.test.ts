@@ -12,9 +12,11 @@ import {
   type MiningControlPlaneView,
 } from "../src/wallet/mining/index.js";
 import {
+  createMiningPlanForTesting,
   handleDetectedMiningRuntimeResumeForTesting,
   performMiningCycleForTesting,
   shouldTreatCandidateAsFeeBumpForTesting,
+  validateMiningDraftForTesting,
 } from "../src/wallet/mining/runner.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
@@ -366,6 +368,95 @@ test("same-payload fee maintenance only applies to a live in-mempool family", ()
     },
     candidate,
   }), false);
+});
+
+test("validateMiningDraftForTesting accepts witness_utxo-backed sender and conflict inputs", () => {
+  const state = createWalletState();
+  const sender = {
+    localIndex: 1,
+    scriptPubKeyHex: "0014sender0000000000000000000000000000000000",
+    address: "bc1qsender000000000000000000000000000000000",
+  };
+  const conflictOutpoint = { txid: "bb".repeat(32), vout: 0 };
+  const plan = createMiningPlanForTesting({
+    state,
+    candidate: {
+      domainId: 7,
+      domainName: "alpha",
+      localIndex: sender.localIndex,
+      sender,
+      anchorOutpoint: { txid: "aa".repeat(32), vout: 1 },
+      sentence: "valid mining sentence",
+      encodedSentenceBytes: Buffer.alloc(60, 0x42),
+      bip39WordIndices: Array.from({ length: 12 }, (_, index) => index),
+      bip39Words: Array.from({ length: 12 }, () => "abandon"),
+      canonicalBlend: 1n,
+      referencedBlockHashDisplay: "11".repeat(32),
+      referencedBlockHashInternal: Buffer.alloc(32, 0x11),
+      targetBlockHeight: 101,
+    },
+    conflictOutpoint,
+    allUtxos: [
+      {
+        txid: conflictOutpoint.txid,
+        vout: conflictOutpoint.vout,
+        scriptPubKey: state.funding.scriptPubKeyHex,
+        amount: 0.00005,
+        confirmations: 2,
+        spendable: true,
+        safe: true,
+      },
+      {
+        txid: "cc".repeat(32),
+        vout: 0,
+        scriptPubKey: state.funding.scriptPubKeyHex,
+        amount: 0.0002,
+        confirmations: 2,
+        spendable: true,
+        safe: true,
+      },
+    ],
+    feeRateSatVb: 10,
+  });
+
+  assert.doesNotThrow(() => validateMiningDraftForTesting({
+    tx: {
+      txid: "dd".repeat(32),
+      vin: [
+        { txid: "aa".repeat(32), vout: 1 },
+        { txid: conflictOutpoint.txid, vout: conflictOutpoint.vout },
+      ],
+      vout: [
+        { n: 0, value: 0, scriptPubKey: { hex: plan.expectedOpReturnScriptHex } },
+        { n: 1, value: 0.00002, scriptPubKey: { hex: plan.expectedAnchorScriptHex } },
+        { n: 2, value: 0.00015, scriptPubKey: { hex: plan.allowedFundingScriptPubKeyHex } },
+      ],
+    },
+    inputs: [
+      {
+        witness_utxo: {
+          n: 1,
+          value: 0.00002,
+          scriptPubKey: {
+            hex: sender.scriptPubKeyHex,
+          },
+        },
+      },
+      {
+        witness_utxo: {
+          n: conflictOutpoint.vout,
+          value: 0.00005,
+          scriptPubKey: {
+            hex: plan.allowedFundingScriptPubKeyHex,
+          },
+        },
+      },
+    ],
+  }, {
+    psbt: "test-psbt",
+    fee: 0.00001,
+    changepos: plan.changePosition,
+  }, plan));
 });
 
 test("handleDetectedMiningRuntimeResumeForTesting persists resuming runtime state", async () => {

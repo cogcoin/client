@@ -347,6 +347,7 @@ export interface RpcPrevout {
 
 export interface RpcVin {
   txid?: string;
+  vout?: number;
   coinbase?: string;
   prevout?: RpcPrevout;
 }
@@ -508,6 +509,10 @@ export interface RpcListUnspentEntry {
 
 export interface RpcDecodedPsbt {
   tx: RpcTransaction;
+  inputs?: Array<{
+    witness_utxo?: RpcVout;
+    non_witness_utxo?: RpcTransaction;
+  }>;
 }
 
 export interface RpcFinalizePsbtResult {

@@ -8,7 +8,11 @@ import type {
   RpcTransaction,
   RpcWalletTransaction,
 } from "../src/bitcoind/types.js";
-import { buildWalletMutationTransactionWithReserveFallback } from "../src/wallet/tx/common.js";
+import {
+  assertFundingInputsAfterFixedPrefix,
+  buildWalletMutationTransactionWithReserveFallback,
+  getDecodedInputScriptPubKeyHex,
+} from "../src/wallet/tx/common.js";
 import type { WalletStateV1 } from "../src/wallet/types.js";
 
 const RESERVE_OUTPOINT = { txid: "11".repeat(32), vout: 0 };
@@ -123,18 +127,24 @@ function createWalletState(partial: Partial<WalletStateV1> = {}): WalletStateV1 
   };
 }
 
-function createDecodedTransaction(changeValueSats: number): RpcTransaction {
+type DecodedInputScriptSource = "prevout" | "witness_utxo" | "non_witness_utxo";
+
+function createDecodedTransaction(changeValueSats: number, includePrevout = true): RpcTransaction {
   return {
     txid: "44".repeat(32),
     hash: "55".repeat(32),
     vin: [{
       txid: RESERVE_OUTPOINT.txid,
       vout: RESERVE_OUTPOINT.vout,
-      prevout: {
-        scriptPubKey: {
-          hex: "fund-script",
-        },
-      },
+      ...(includePrevout
+        ? {
+          prevout: {
+            scriptPubKey: {
+              hex: "fund-script",
+            },
+          },
+        }
+        : {}),
     }],
     vout: [
       {
@@ -155,7 +165,41 @@ function createDecodedTransaction(changeValueSats: number): RpcTransaction {
   } as unknown as RpcTransaction;
 }
 
-function createReserveHarness(changeValueSats: number) {
+function createDecodedPsbt(changeValueSats: number, inputScriptSource: DecodedInputScriptSource): RpcDecodedPsbt {
+  return {
+    tx: createDecodedTransaction(changeValueSats, inputScriptSource === "prevout"),
+    inputs: [{
+      ...(inputScriptSource === "witness_utxo"
+        ? {
+          witness_utxo: {
+            value: RESERVE_ENTRY.amount,
+            n: RESERVE_OUTPOINT.vout,
+            scriptPubKey: {
+              hex: RESERVE_ENTRY.scriptPubKey,
+            },
+          },
+        }
+        : {}),
+      ...(inputScriptSource === "non_witness_utxo"
+        ? {
+          non_witness_utxo: {
+            txid: RESERVE_OUTPOINT.txid,
+            vin: [],
+            vout: [{
+              n: RESERVE_OUTPOINT.vout,
+              value: RESERVE_ENTRY.amount,
+              scriptPubKey: {
+                hex: RESERVE_ENTRY.scriptPubKey,
+              },
+            }],
+          },
+        }
+        : {}),
+    }],
+  };
+}
+
+function createReserveHarness(changeValueSats: number, inputScriptSource: DecodedInputScriptSource = "prevout") {
   let locked: RpcLockedUnspent[] = [RESERVE_OUTPOINT];
   const calls = {
     unlockCalls: [] as RpcLockedUnspent[][],
@@ -231,9 +275,7 @@ function createReserveHarness(changeValueSats: number) {
         };
       },
       async decodePsbt(): Promise<RpcDecodedPsbt> {
-        return {
-          tx: createDecodedTransaction(changeValueSats),
-        };
+        return createDecodedPsbt(changeValueSats, inputScriptSource);
       },
       async walletProcessPsbt(): Promise<{ psbt: string; complete: boolean }> {
         return {
@@ -260,6 +302,47 @@ function createReserveHarness(changeValueSats: number) {
     },
   };
 }
+
+test("getDecodedInputScriptPubKeyHex prefers prevout and falls back to witness_utxo and non_witness_utxo", () => {
+  const prevoutDecoded = createDecodedPsbt(2_000, "prevout");
+  const witnessDecoded = createDecodedPsbt(2_000, "witness_utxo");
+  const nonWitnessDecoded = createDecodedPsbt(2_000, "non_witness_utxo");
+
+  assert.equal(getDecodedInputScriptPubKeyHex(prevoutDecoded, 0), "fund-script");
+  assert.equal(getDecodedInputScriptPubKeyHex(witnessDecoded, 0), "fund-script");
+  assert.equal(getDecodedInputScriptPubKeyHex(nonWitnessDecoded, 0), "fund-script");
+  assert.equal(getDecodedInputScriptPubKeyHex({ tx: { txid: "00", vin: [{}], vout: [] } }, 0), null);
+});
+
+test("assertFundingInputsAfterFixedPrefix accepts witness_utxo-backed funding inputs when tx vin prevout is absent", () => {
+  const decoded: RpcDecodedPsbt = {
+    tx: {
+      txid: "44".repeat(32),
+      vin: [{
+        txid: RESERVE_OUTPOINT.txid,
+        vout: RESERVE_OUTPOINT.vout,
+      }],
+      vout: [],
+    },
+    inputs: [{
+      witness_utxo: {
+        n: RESERVE_OUTPOINT.vout,
+        value: RESERVE_ENTRY.amount,
+        scriptPubKey: {
+          hex: RESERVE_ENTRY.scriptPubKey,
+        },
+      },
+    }],
+  };
+
+  assert.doesNotThrow(() => assertFundingInputsAfterFixedPrefix({
+    decoded,
+    fixedInputs: [],
+    allowedFundingScriptPubKeyHex: RESERVE_ENTRY.scriptPubKey,
+    eligibleFundingOutpointKeys: new Set([`${RESERVE_OUTPOINT.txid}:${RESERVE_OUTPOINT.vout}`]),
+    errorCode: "wallet_test_unexpected_funding_input",
+  }));
+});
 
 test("buildWalletMutationTransactionWithReserveFallback unlocks a locked reserve outpoint, preserves the floor, and re-locks it", async () => {
   const state = createWalletState();
@@ -326,6 +409,29 @@ test("buildWalletMutationTransactionWithReserveFallback rejects drafts that woul
     [RESERVE_OUTPOINT],
     [RESERVE_OUTPOINT],
   ]);
+});
+
+test("buildWalletMutationTransactionWithReserveFallback still enforces the reserve floor when decodepsbt only exposes witness_utxo input scripts", async () => {
+  const state = createWalletState();
+  const harness = createReserveHarness(500, "witness_utxo");
+
+  await assert.rejects(() => buildWalletMutationTransactionWithReserveFallback({
+    rpc: harness.rpc,
+    walletName: state.managedCoreWallet.walletName,
+    state,
+    plan: {
+      fixedInputs: [],
+      outputs: [{ data: "00" }],
+      changeAddress: state.funding.address,
+      changePosition: 1,
+      allowedFundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+      eligibleFundingOutpointKeys: new Set<string>(),
+    },
+    validateFundedDraft() {},
+    finalizeErrorCode: "wallet_test_finalize_failed",
+    mempoolRejectPrefix: "wallet_test_mempool_rejected",
+    reserveCandidates: state.proactiveReserveOutpoints,
+  }), /wallet_mutation_insufficient_funding_after_reserve/);
 });
 
 test("buildWalletMutationTransactionWithReserveFallback discovers reserve candidates from reconciled state when the persisted reserve set is empty", async () => {

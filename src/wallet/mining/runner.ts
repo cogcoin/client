@@ -25,6 +25,7 @@ import {
   assertFixedInputPrefixMatches,
   assertFundingInputsAfterFixedPrefix,
   buildWalletMutationTransaction,
+  getDecodedInputScriptPubKeyHex,
   outpointKey as walletMutationOutpointKey,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
@@ -1089,18 +1090,18 @@ function validateMiningDraft(
 
   assertFixedInputPrefixMatches(inputs, plan.fixedInputs, "wallet_mining_missing_inputs");
 
-  if (inputs[0]?.prevout?.scriptPubKey?.hex !== plan.sender.scriptPubKeyHex) {
+  if (getDecodedInputScriptPubKeyHex(decoded, 0) !== plan.sender.scriptPubKeyHex) {
     throw new Error("wallet_mining_sender_input_mismatch");
   }
 
-  if (inputs[1]?.prevout?.scriptPubKey?.hex !== plan.allowedFundingScriptPubKeyHex
+  if (getDecodedInputScriptPubKeyHex(decoded, 1) !== plan.allowedFundingScriptPubKeyHex
     || inputs[1]?.txid !== plan.expectedConflictOutpoint.txid
-    || (inputs[1] as { vout?: unknown }).vout !== plan.expectedConflictOutpoint.vout) {
+    || inputs[1]?.vout !== plan.expectedConflictOutpoint.vout) {
     throw new Error("wallet_mining_conflict_input_mismatch");
   }
 
   assertFundingInputsAfterFixedPrefix({
-    inputs,
+    decoded,
     fixedInputs: plan.fixedInputs,
     allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
     eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
@@ -1140,6 +1141,38 @@ async function buildMiningTransaction(options: {
     mempoolRejectPrefix: "wallet_mining_mempool_rejected",
     feeRate: options.plan.feeRateSatVb,
   });
+}
+
+export function createMiningPlanForTesting(options: {
+  state: WalletStateV1;
+  candidate: {
+    domainId: number;
+    domainName: string;
+    localIndex: number;
+    sender: MutationSender;
+    anchorOutpoint: OutpointRecord;
+    sentence: string;
+    encodedSentenceBytes: Uint8Array;
+    bip39WordIndices: number[];
+    bip39Words: readonly string[];
+    canonicalBlend: bigint;
+    referencedBlockHashDisplay: string;
+    referencedBlockHashInternal: Uint8Array;
+    targetBlockHeight: number;
+  };
+  conflictOutpoint: OutpointRecord;
+  allUtxos: Awaited<ReturnType<MiningRpcClient["listUnspent"]>>;
+  feeRateSatVb: number;
+}) {
+  return createMiningPlan(options);
+}
+
+export function validateMiningDraftForTesting(
+  decoded: Awaited<ReturnType<MiningRpcClient["decodePsbt"]>>,
+  funded: Awaited<ReturnType<MiningRpcClient["walletCreateFundedPsbt"]>>,
+  plan: ReturnType<typeof createMiningPlan>,
+): void {
+  validateMiningDraft(decoded, funded, plan);
 }
 
 function resolveEligibleAnchoredRoots(context: WalletReadContext): Array<{

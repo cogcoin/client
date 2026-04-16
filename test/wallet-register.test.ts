@@ -398,6 +398,7 @@ function createRegisterRpcHarness(options: {
   senderScriptPubKeyHex?: string;
   senderAddress?: string;
   rootSenderKind?: "funding" | "anchored";
+  decodedPsbtInputSource?: "prevout" | "witness_utxo";
   treasuryScriptPubKeyHex: string;
   treasuryAddress: string;
   registerKind: "root" | "subdomain";
@@ -410,7 +411,7 @@ function createRegisterRpcHarness(options: {
     outputs?: unknown[];
     options?: Record<string, unknown>;
     decoded?: {
-      vin: Array<{ txid: string; vout: number; prevout: { scriptPubKey: { hex: string } } }>;
+      vin: Array<{ txid: string; vout: number; prevout?: { scriptPubKey: { hex: string } } }>;
       vout: Array<{ n: number; value: number; scriptPubKey: { hex: string } }>;
     };
     unlockCalls: Array<Array<{ txid: string; vout: number }>>;
@@ -508,17 +509,34 @@ function createRegisterRpcHarness(options: {
               { txid: "22".repeat(32), vout: 0 },
             ],
           );
+          const scriptPubKeyHexForInput = (input: { txid: string; vout: number }) =>
+            anchoredSender && input.txid === "aa".repeat(32) && input.vout === 1
+              ? options.senderScriptPubKeyHex!
+              : options.fundingScriptPubKeyHex;
           const vin = vinInputs.map((input) => ({
             txid: input.txid,
             vout: input.vout,
-            prevout: {
-              scriptPubKey: {
-                hex: anchoredSender && input.txid === "aa".repeat(32) && input.vout === 1
-                  ? options.senderScriptPubKeyHex!
-                  : options.fundingScriptPubKeyHex,
-              },
-            },
+            ...(options.decodedPsbtInputSource !== "witness_utxo"
+              ? {
+                prevout: {
+                  scriptPubKey: {
+                    hex: scriptPubKeyHexForInput(input),
+                  },
+                },
+              }
+              : {}),
           }));
+          const inputs = options.decodedPsbtInputSource === "witness_utxo"
+            ? vinInputs.map((input) => ({
+              witness_utxo: {
+                n: input.vout,
+                value: scriptPubKeyHexForInput(input) === options.fundingScriptPubKeyHex ? 0.02 : 0.00002,
+                scriptPubKey: {
+                  hex: scriptPubKeyHexForInput(input),
+                },
+              },
+            }))
+            : undefined;
           const vout = options.registerKind === "root" && options.rootSenderKind === "anchored"
             ? [
               { n: 0, value: 0, scriptPubKey: { hex: encodeOpReturnScript(opReturnHex) } },
@@ -546,6 +564,7 @@ function createRegisterRpcHarness(options: {
               vin,
               vout,
             },
+            inputs,
           };
         },
         async walletProcessPsbt() {
@@ -617,6 +636,7 @@ function createAnchorRpcHarness(options: {
   sourceAnchorOutpoint?: { txid: string; vout: number } | null;
   tx1MempoolVisible?: boolean;
   sendErrors?: [Error | undefined, Error | undefined];
+  decodedPsbtInputSourceByPhase?: Partial<Record<"tx1" | "tx2", "prevout" | "witness_utxo" | "non_witness_utxo">>;
   decodedVinOverrides?: Partial<Record<"tx1" | "tx2", Array<{
     txid: string;
     vout: number;
@@ -634,7 +654,7 @@ function createAnchorRpcHarness(options: {
       phase: "tx1" | "tx2";
     }>;
     decoded: Partial<Record<"tx1" | "tx2", {
-      vin: Array<{ txid: string; vout: number; prevout: { scriptPubKey: { hex: string } } }>;
+      vin: Array<{ txid: string; vout: number; prevout?: { scriptPubKey: { hex: string } } }>;
       vout: Array<{ n: number; value: number; scriptPubKey: { hex: string } }>;
     }>>;
     unlockCalls: Array<Array<{ txid: string; vout: number }>>;
@@ -665,14 +685,11 @@ function createAnchorRpcHarness(options: {
     const call = captured.calls[callIndex]!;
     const isTx2 = call.phase === "tx2";
     const changePos = Number(call.options.changePosition);
-    const vin = options.decodedVinOverrides?.[call.phase]?.map((input) => ({
+    const inputScriptSource = options.decodedPsbtInputSourceByPhase?.[call.phase] ?? "prevout";
+    const psbtInputs = options.decodedVinOverrides?.[call.phase]?.map((input) => ({
       txid: input.txid,
       vout: input.vout,
-      prevout: {
-        scriptPubKey: {
-          hex: input.scriptPubKeyHex,
-        },
-      },
+      scriptPubKeyHex: input.scriptPubKeyHex,
     })) ?? appendSupplementalFundingInputs(
       call.inputs,
       [
@@ -682,16 +699,52 @@ function createAnchorRpcHarness(options: {
     ).map((input) => ({
       txid: input.txid,
       vout: input.vout,
-      prevout: {
-        scriptPubKey: {
-          hex: isTx2 && input.txid === tx1Txid && input.vout === 1
-            ? options.targetScriptPubKeyHex
-            : !isTx2 && options.sourceAnchorOutpoint !== undefined && options.sourceAnchorOutpoint !== null && sameOutpoint(input, options.sourceAnchorOutpoint)
-              ? options.senderScriptPubKeyHex
-              : options.fundingScriptPubKeyHex,
-        },
-      },
+      scriptPubKeyHex: isTx2 && input.txid === tx1Txid && input.vout === 1
+        ? options.targetScriptPubKeyHex
+        : !isTx2 && options.sourceAnchorOutpoint !== undefined && options.sourceAnchorOutpoint !== null && sameOutpoint(input, options.sourceAnchorOutpoint)
+          ? options.senderScriptPubKeyHex
+          : options.fundingScriptPubKeyHex,
     }));
+    const vin = psbtInputs.map((input) => ({
+      txid: input.txid,
+      vout: input.vout,
+      ...(inputScriptSource === "prevout"
+        ? {
+          prevout: {
+            scriptPubKey: {
+              hex: input.scriptPubKeyHex,
+            },
+          },
+        }
+        : {}),
+    }));
+    const inputs = inputScriptSource === "prevout"
+      ? undefined
+      : psbtInputs.map((input) => ({
+        ...(inputScriptSource === "witness_utxo"
+          ? {
+            witness_utxo: {
+              n: input.vout,
+              value: isTx2 && input.txid === tx1Txid && input.vout === 1 ? 0.00002 : 0.02,
+              scriptPubKey: {
+                hex: input.scriptPubKeyHex,
+              },
+            },
+          }
+          : {
+            non_witness_utxo: {
+              txid: input.txid,
+              vin: [],
+              vout: [{
+                n: input.vout,
+                value: isTx2 && input.txid === tx1Txid && input.vout === 1 ? 0.00002 : 0.02,
+                scriptPubKey: {
+                  hex: input.scriptPubKeyHex,
+                },
+              }],
+            },
+          }),
+      }));
     const baseOutputs = call.outputs.map((output, index) => {
       if ("data" in (output as Record<string, unknown>)) {
         const hex = String((output as { data: string }).data);
@@ -716,6 +769,7 @@ function createAnchorRpcHarness(options: {
 
     return {
       vin,
+      inputs,
       vout: baseOutputs.map((output, index) => ({
         ...output,
         n: index,
@@ -824,12 +878,17 @@ function createAnchorRpcHarness(options: {
           const callIndex = Math.max(0, Number(psbt.match(/-(\d+)$/)?.[1] ?? "1") - 1);
           const phase = captured.calls[callIndex]?.phase ?? "tx1";
           const decoded = buildDecoded(callIndex);
-          captured.decoded[phase] = decoded;
+          captured.decoded[phase] = {
+            vin: decoded.vin,
+            vout: decoded.vout,
+          };
           return {
             tx: {
               txid: phase === "tx2" ? tx2Txid : tx1Txid,
-              ...decoded,
+              vin: decoded.vin,
+              vout: decoded.vout,
             },
+            inputs: decoded.inputs,
           };
         },
         async walletProcessPsbt(_walletName: string, psbt: string) {
@@ -850,11 +909,15 @@ function createAnchorRpcHarness(options: {
           const phase = hex === "feedface" ? "tx2" : "tx1";
           const callIndex = Math.max(0, captured.calls.findIndex((call) => call.phase === phase));
           const decoded = buildDecoded(callIndex);
-          captured.decoded[phase] = decoded;
+          captured.decoded[phase] = {
+            vin: decoded.vin,
+            vout: decoded.vout,
+          };
           return {
             txid: phase === "tx2" ? tx2Txid : tx1Txid,
             hash: (phase === "tx2" ? "88" : "66").repeat(32),
-            ...decoded,
+            vin: decoded.vin,
+            vout: decoded.vout,
           };
         },
         async testMempoolAccept() {
@@ -1469,7 +1532,7 @@ test("registerDomain builds a root registration, persists a live mutation, and r
   assert.equal(result.resolved.economicEffect.kind, "treasury-payment");
   assert.equal(result.status, "live");
   assert.equal(harness.captured.inputs?.length ?? 0, 0);
-  assert.equal(harness.captured.decoded?.vin[0]?.prevout.scriptPubKey.hex, "0014ed495c1face9da3c7028519dbb36576c37f90e56");
+  assert.equal(harness.captured.decoded?.vin[0]?.prevout?.scriptPubKey.hex, "0014ed495c1face9da3c7028519dbb36576c37f90e56");
   assert.equal((harness.captured.outputs?.[1] as Record<string, number>)["bc1qa4y4c8ava8drcupg2xwmkdjhdsmljrjk5ejp0t"], 0.001);
   assert.equal(harness.captured.options?.changePosition, 2);
   assert.deepEqual(harness.captured.unlockCalls, [[{ txid: "33".repeat(32), vout: 1 }]]);
@@ -1482,6 +1545,51 @@ test("registerDomain builds a root registration, persists a live mutation, and r
     "Resolved sender: id:0 (bc1qfundingidentity0000000000000000000000000)",
     "Economic effect: send 100000 sats to the Cogcoin treasury.",
   ]);
+});
+
+test("registerDomain accepts a root registration decode when the sender script is present only in witness_utxo metadata", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-register-root-witness-utxo-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = await createSnapshotState();
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state: createWalletState(),
+  });
+  const harness = createRegisterRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: "0014ed495c1face9da3c7028519dbb36576c37f90e56",
+    fundingAddress: "bc1qfundingidentity0000000000000000000000000",
+    treasuryScriptPubKeyHex: "0014ed495c1face9da3c7028519dbb36576c37f90e56",
+    treasuryAddress: "bc1qa4y4c8ava8drcupg2xwmkdjhdsmljrjk5ejp0t",
+    registerKind: "root",
+    domainName: "weatherbot",
+    decodedPsbtInputSource: "witness_utxo",
+  });
+
+  const result = await registerDomain({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["weatherbot"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_100_500,
+  });
+
+  assert.equal(result.status, "live");
+  assert.equal(harness.captured.inputs?.length ?? 0, 0);
+  assert.equal(harness.captured.decoded?.vin[0]?.prevout, undefined);
 });
 
 test("registerDomain preserves the plain root builder shape when --from id:0 is selected", async () => {
@@ -1527,7 +1635,7 @@ test("registerDomain preserves the plain root builder shape when --from id:0 is 
   assert.equal(result.senderSelector, "id:0");
   assert.equal(result.resolved.sender.selector, "id:0");
   assert.equal(harness.captured.inputs?.length ?? 0, 0);
-  assert.equal(harness.captured.decoded?.vin[0]?.prevout.scriptPubKey.hex, "0014ed495c1face9da3c7028519dbb36576c37f90e56");
+  assert.equal(harness.captured.decoded?.vin[0]?.prevout?.scriptPubKey.hex, "0014ed495c1face9da3c7028519dbb36576c37f90e56");
   assert.equal(harness.captured.options?.changePosition, 2);
   assert.equal(harness.captured.outputs?.length, 2);
 });
@@ -4246,7 +4354,7 @@ test("anchorDomain builds Case A from funding identity zero and persists a live 
   assert.equal(harness.captured.calls[0]?.options.add_inputs, true);
   assert.equal(harness.captured.calls[1]?.options.add_inputs, true);
   assert.equal(harness.captured.calls[0]?.inputs.length ?? 0, 0);
-  assert.equal(harness.captured.decoded.tx1?.vin[0]?.prevout.scriptPubKey.hex, weatherbotState.funding.scriptPubKeyHex);
+  assert.equal(harness.captured.decoded.tx1?.vin[0]?.prevout?.scriptPubKey.hex, weatherbotState.funding.scriptPubKeyHex);
   assert.equal(
     (harness.captured.calls[0]?.outputs[1] as Record<string, number>)[targetIdentity.address],
     0.00002,
@@ -4542,7 +4650,88 @@ test("anchorDomain treats a funding-owned Tx1 as funding-sent even if fundingInd
   assert.equal(result.status, "live");
   assert.equal(harness.captured.calls[0]?.options.add_inputs, true);
   assert.equal(harness.captured.calls[0]?.inputs.length ?? 0, 0);
-  assert.equal(harness.captured.decoded.tx1?.vin[0]?.prevout.scriptPubKey.hex, state.funding.scriptPubKeyHex);
+  assert.equal(harness.captured.decoded.tx1?.vin[0]?.prevout?.scriptPubKey.hex, state.funding.scriptPubKeyHex);
+});
+
+test("anchorDomain accepts a funding-owner Tx1 decode when the sender script is present only in witness_utxo metadata", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-case-a-witness-utxo-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const state = {
+    ...baseState,
+    identities: baseState.identities.map((identity) =>
+      identity.index === 0
+        ? {
+          ...identity,
+          assignedDomainNames: ["weatherbot"],
+        }
+        : identity
+    ),
+    domains: [
+      ...baseState.domains,
+      {
+        name: "weatherbot",
+        domainId: 10,
+        dedicatedIndex: 0,
+        currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        currentOwnerLocalIndex: 0,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "none" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+    ],
+  } satisfies WalletStateV1;
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "weatherbot",
+    ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
+  });
+
+  const targetIdentity = deriveWalletIdentityMaterial(state.keys.accountXprv, 3);
+  const harness = createAnchorRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    fundingAddress: state.funding.address,
+    senderScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    senderAddress: state.funding.address,
+    targetScriptPubKeyHex: targetIdentity.scriptPubKeyHex,
+    targetAddress: targetIdentity.address,
+    decodedPsbtInputSourceByPhase: {
+      tx1: "witness_utxo",
+    },
+  });
+
+  const result = await anchorDomain({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["weatherbot"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_404_250,
+  });
+
+  assert.equal(result.status, "live");
+  assert.equal(harness.captured.decoded.tx1?.vin[0]?.prevout, undefined);
 });
 
 test("anchorDomain rejects a funding-owner Tx1 decode when vin[0] no longer matches the funding sender identity", async () => {
@@ -5909,6 +6098,9 @@ test("anchorDomain rejects an anchored-owner Tx1 decode when the source anchor s
     sourceAnchorOutpoint: {
       txid: "aa".repeat(32),
       vout: 1,
+    },
+    decodedPsbtInputSourceByPhase: {
+      tx1: "witness_utxo",
     },
     decodedVinOverrides: {
       tx1: [
