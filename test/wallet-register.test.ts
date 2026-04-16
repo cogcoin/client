@@ -641,6 +641,8 @@ function createAnchorRpcHarness(options: {
   targetAddress: string;
   sourceAnchorOutpoint?: { txid: string; vout: number } | null;
   tx1MempoolVisible?: boolean;
+  onlyTx1ChangeFundingForTx2?: boolean;
+  resumeFromLiveTx1ForTx2?: boolean;
   sendErrors?: [Error | undefined, Error | undefined];
   decodedPsbtInputSourceByPhase?: Partial<Record<"tx1" | "tx2", "prevout" | "witness_utxo" | "non_witness_utxo">>;
   decodedVinOverrides?: Partial<Record<"tx1" | "tx2", Array<{
@@ -652,6 +654,8 @@ function createAnchorRpcHarness(options: {
   const tx1Txid = "55".repeat(32);
   const tx2Txid = "77".repeat(32);
   const temporaryLockTxids = ["aa".repeat(32), "bb".repeat(32)];
+  const tx1FundingChangeVout = options.sourceAnchorOutpoint == null ? 2 : 3;
+  const tx1FundingChangeAmount = 0.01899;
   const captured: {
     calls: Array<{
       inputs: Array<{ txid: string; vout: number }>;
@@ -692,16 +696,24 @@ function createAnchorRpcHarness(options: {
     const isTx2 = call.phase === "tx2";
     const changePos = Number(call.options.changePosition);
     const inputScriptSource = options.decodedPsbtInputSourceByPhase?.[call.phase] ?? "prevout";
+    const tx1AlreadyBuiltForTx2 = captured.calls.some((entry) => entry.phase === "tx1")
+      || options.resumeFromLiveTx1ForTx2 === true;
+    const tx2ShouldUseOnlyTx1Change = options.onlyTx1ChangeFundingForTx2 === true
+      && isTx2
+      && tx1AlreadyBuiltForTx2;
+    const supplementalFundingCandidates = tx2ShouldUseOnlyTx1Change
+      ? []
+      : [
+        { txid: "11".repeat(32), vout: 0 },
+        { txid: "22".repeat(32), vout: 0 },
+      ];
     const psbtInputs = options.decodedVinOverrides?.[call.phase]?.map((input) => ({
       txid: input.txid,
       vout: input.vout,
       scriptPubKeyHex: input.scriptPubKeyHex,
     })) ?? appendSupplementalFundingInputs(
       call.inputs,
-      [
-        { txid: "11".repeat(32), vout: 0 },
-        { txid: "22".repeat(32), vout: 0 },
-      ],
+      supplementalFundingCandidates,
     ).map((input) => ({
       txid: input.txid,
       vout: input.vout,
@@ -731,7 +743,11 @@ function createAnchorRpcHarness(options: {
           ? {
             witness_utxo: {
               n: input.vout,
-              value: isTx2 && input.txid === tx1Txid && input.vout === 1 ? 0.00002 : 0.02,
+              value: isTx2 && input.txid === tx1Txid && input.vout === 1
+                ? 0.00002
+                : isTx2 && input.txid === tx1Txid && input.scriptPubKeyHex === options.fundingScriptPubKeyHex
+                  ? tx1FundingChangeAmount
+                  : 0.02,
               scriptPubKey: {
                 hex: input.scriptPubKeyHex,
               },
@@ -743,7 +759,11 @@ function createAnchorRpcHarness(options: {
               vin: [],
               vout: [{
                 n: input.vout,
-                value: isTx2 && input.txid === tx1Txid && input.vout === 1 ? 0.00002 : 0.02,
+                value: isTx2 && input.txid === tx1Txid && input.vout === 1
+                  ? 0.00002
+                  : isTx2 && input.txid === tx1Txid && input.scriptPubKeyHex === options.fundingScriptPubKeyHex
+                    ? tx1FundingChangeAmount
+                    : 0.02,
                 scriptPubKey: {
                   hex: input.scriptPubKeyHex,
                 },
@@ -790,28 +810,45 @@ function createAnchorRpcHarness(options: {
           return { blocks: options.snapshotHeight };
         },
         async listUnspent(_walletName: string, minConf = 1) {
-          const entries = [
-            {
-              txid: "11".repeat(32),
-              vout: 0,
-              scriptPubKey: options.fundingScriptPubKeyHex,
-              amount: 0.02,
-              confirmations: 12,
-              spendable: true,
-              safe: true,
-              address: options.fundingAddress,
-            },
-            {
-              txid: "22".repeat(32),
-              vout: 0,
-              scriptPubKey: options.fundingScriptPubKeyHex,
-              amount: 0.01,
-              confirmations: 8,
-              spendable: true,
-              safe: true,
-              address: options.fundingAddress,
-            },
-          ];
+          const tx1AlreadyBuiltForTx2 = captured.calls.some((call) => call.phase === "tx1")
+            || options.resumeFromLiveTx1ForTx2 === true;
+          const tx2ShouldUseOnlyTx1Change = options.onlyTx1ChangeFundingForTx2 === true
+            && tx1AlreadyBuiltForTx2;
+          const entries = [] as Array<{
+            txid: string;
+            vout: number;
+            scriptPubKey: string;
+            amount: number;
+            confirmations: number;
+            spendable: boolean;
+            safe: boolean;
+            address: string;
+          }>;
+
+          if (!tx2ShouldUseOnlyTx1Change) {
+            entries.push(
+              {
+                txid: "11".repeat(32),
+                vout: 0,
+                scriptPubKey: options.fundingScriptPubKeyHex,
+                amount: 0.02,
+                confirmations: 12,
+                spendable: true,
+                safe: true,
+                address: options.fundingAddress,
+              },
+              {
+                txid: "22".repeat(32),
+                vout: 0,
+                scriptPubKey: options.fundingScriptPubKeyHex,
+                amount: 0.01,
+                confirmations: 8,
+                spendable: true,
+                safe: true,
+                address: options.fundingAddress,
+              },
+            );
+          }
 
           if (options.sourceAnchorOutpoint !== undefined && options.sourceAnchorOutpoint !== null) {
             entries.push({
@@ -837,6 +874,19 @@ function createAnchorRpcHarness(options: {
               safe: true,
               address: options.targetAddress,
             });
+
+            if (tx2ShouldUseOnlyTx1Change) {
+              entries.push({
+                txid: tx1Txid,
+                vout: tx1FundingChangeVout,
+                scriptPubKey: options.fundingScriptPubKeyHex,
+                amount: tx1FundingChangeAmount,
+                confirmations: 0,
+                spendable: true,
+                safe: true,
+                address: options.fundingAddress,
+              });
+            }
           }
 
           return entries;
@@ -3051,6 +3101,64 @@ test("createField with an initial value builds the FIELD_REG -> DATA_UPDATE fami
   assert.equal(saved.state.proactiveFamilies?.[0]?.type, "field");
   assert.equal(saved.state.proactiveFamilies?.[0]?.fieldName, "tagline");
   assert.equal(saved.state.proactiveFamilies?.[0]?.status, "live");
+});
+
+test("createField family carries Tx1 funding change into Tx2 when no confirmed funding remains", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-field-create-family-tx1-change-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = await createSnapshotState();
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state: createWalletState(),
+  });
+  const harness = createAnchorRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: "0014ed495c1face9da3c7028519dbb36576c37f90e56",
+    fundingAddress: "bc1qfundingidentity0000000000000000000000000",
+    senderScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+    senderAddress: "bc1qalphaowner0000000000000000000000000000",
+    targetScriptPubKeyHex: "001400a654e135b542d1a605d607c08e2218a178788d",
+    targetAddress: "bc1qalphaowner0000000000000000000000000000",
+    sourceAnchorOutpoint: {
+      txid: "aa".repeat(32),
+      vout: 1,
+    },
+    tx1MempoolVisible: true,
+    onlyTx1ChangeFundingForTx2: true,
+  });
+
+  const result = await createField({
+    domainName: "alpha",
+    fieldName: "tagline",
+    permanent: true,
+    source: {
+      kind: "text",
+      value: "hello",
+    },
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["alpha:tagline"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_300_500,
+  });
+
+  assert.equal(result.family, true);
+  assert.deepEqual(harness.captured.calls[1]?.inputs, [
+    { txid: harness.tx1Txid, vout: 1 },
+    { txid: harness.tx1Txid, vout: 3 },
+  ]);
 });
 
 test("setField builds a standalone DATA_UPDATE and persists the pending field mutation", async () => {
@@ -6862,4 +6970,118 @@ test("anchorDomain continues into Tx2 when a prior Tx1 becomes visible on retry"
   assert.equal(saved.state.proactiveFamilies[0]?.status, "live");
   assert.equal(saved.state.proactiveFamilies[0]?.currentStep, "tx2");
   assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.localAnchorIntent, "tx2-live");
+});
+
+test("anchorDomain resumes Tx2 using Tx1 funding change when no confirmed funding remains", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-retry-tx1-change-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const state = {
+    ...baseState,
+    identities: baseState.identities.map((identity) =>
+      identity.index === 0
+        ? {
+          ...identity,
+          assignedDomainNames: ["weatherbot"],
+        }
+        : identity
+    ),
+    domains: [
+      ...baseState.domains,
+      {
+        name: "weatherbot",
+        domainId: 10,
+        dedicatedIndex: 0,
+        currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        currentOwnerLocalIndex: 0,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "none" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+    ],
+  } satisfies WalletStateV1;
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "weatherbot",
+    ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
+  });
+
+  const targetIdentity = deriveWalletIdentityMaterial(state.keys.accountXprv, 3);
+  const firstHarness = createAnchorRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    fundingAddress: state.funding.address,
+    senderScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    senderAddress: state.funding.address,
+    targetScriptPubKeyHex: targetIdentity.scriptPubKeyHex,
+    targetAddress: targetIdentity.address,
+    sendErrors: [new Error("The managed Bitcoin RPC request timed out."), undefined],
+  });
+
+  await assert.rejects(() => anchorDomain({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["weatherbot"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: firstHarness.rpcFactory,
+    nowUnixMs: 1_700_000_800_000,
+  }), /wallet_anchor_tx1_broadcast_unknown/);
+
+  const retryHarness = createAnchorRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    fundingAddress: state.funding.address,
+    senderScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    senderAddress: state.funding.address,
+    targetScriptPubKeyHex: targetIdentity.scriptPubKeyHex,
+    targetAddress: targetIdentity.address,
+    tx1MempoolVisible: true,
+    onlyTx1ChangeFundingForTx2: true,
+    resumeFromLiveTx1ForTx2: true,
+  });
+
+  const retried = await anchorDomain({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["weatherbot"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: retryHarness.rpcFactory,
+    nowUnixMs: 1_700_000_810_000,
+  });
+
+  assert.equal(retried.status, "live");
+  assert.deepEqual(retryHarness.captured.calls[0]?.inputs, [
+    { txid: retryHarness.tx1Txid, vout: 1 },
+    { txid: retryHarness.tx1Txid, vout: 2 },
+  ]);
 });

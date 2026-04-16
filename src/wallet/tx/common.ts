@@ -152,11 +152,37 @@ export function outpointKey(outpoint: OutpointRecord): string {
   return `${outpoint.txid}:${outpoint.vout}`;
 }
 
-function isSpendableConfirmedFundingUtxo(entry: RpcListUnspentEntry, fundingScriptPubKeyHex: string): boolean {
+function isSpendableFundingUtxo(
+  entry: RpcListUnspentEntry,
+  fundingScriptPubKeyHex: string,
+  minConf: number,
+): boolean {
   return entry.scriptPubKey === fundingScriptPubKeyHex
-    && entry.confirmations >= 1
+    && entry.confirmations >= minConf
     && entry.spendable !== false
     && entry.safe !== false;
+}
+
+export function findSpendableFundingInputsFromTransaction(options: {
+  allUtxos: RpcListUnspentEntry[];
+  txid: string;
+  fundingScriptPubKeyHex: string;
+  minConf?: number;
+}): FixedWalletInput[] {
+  const minConf = options.minConf ?? 0;
+  return options.allUtxos
+    .filter((entry) =>
+      entry.txid === options.txid
+      && isSpendableFundingUtxo(entry, options.fundingScriptPubKeyHex, minConf)
+    )
+    .sort((left, right) =>
+      left.vout - right.vout
+      || left.txid.localeCompare(right.txid)
+    )
+    .map((entry) => ({
+      txid: entry.txid,
+      vout: entry.vout,
+    }));
 }
 
 export function updateMutationRecord(
@@ -434,6 +460,7 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
   finalizeErrorCode: string;
   mempoolRejectPrefix: string;
   feeRate?: number;
+  availableFundingMinConf?: number;
   temporarilyUnlockedPolicyOutpoints?: readonly OutpointRecord[];
 }): Promise<BuiltWalletMutationTransaction> {
   await reconcilePersistentPolicyLocks({
@@ -443,8 +470,13 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
     fixedInputs: options.plan.fixedInputs,
     temporarilyUnlockedOutpoints: options.temporarilyUnlockedPolicyOutpoints,
   });
-  const availableFundingUtxos = (await options.rpc.listUnspent(options.walletName, 1))
-    .filter((entry) => isSpendableConfirmedFundingUtxo(entry, options.plan.allowedFundingScriptPubKeyHex));
+  const availableFundingMinConf = options.availableFundingMinConf ?? 1;
+  const availableFundingUtxos = (await options.rpc.listUnspent(options.walletName, availableFundingMinConf))
+    .filter((entry) => isSpendableFundingUtxo(
+      entry,
+      options.plan.allowedFundingScriptPubKeyHex,
+      availableFundingMinConf,
+    ));
   const availableFundingValueByKey = new Map(
     availableFundingUtxos.map((entry) => [
       outpointKey({ txid: entry.txid, vout: entry.vout }),
@@ -572,6 +604,7 @@ export async function buildWalletMutationTransactionWithReserveFallback<TPlan>(o
   finalizeErrorCode: string;
   mempoolRejectPrefix: string;
   feeRate?: number;
+  availableFundingMinConf?: number;
   reserveCandidates: readonly OutpointRecord[];
 }): Promise<BuiltWalletMutationTransaction> {
   const preflightReconciled = options.reserveCandidates.length > 0
@@ -607,6 +640,7 @@ export async function buildWalletMutationTransactionWithReserveFallback<TPlan>(o
         finalizeErrorCode: options.finalizeErrorCode,
         mempoolRejectPrefix: options.mempoolRejectPrefix,
         feeRate: options.feeRate,
+        availableFundingMinConf: options.availableFundingMinConf,
         temporarilyUnlockedPolicyOutpoints: unlockedReserveOutpoints,
       });
     } catch (error) {

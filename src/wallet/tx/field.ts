@@ -47,6 +47,7 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  findSpendableFundingInputsFromTransaction,
   getDecodedInputScriptPubKeyHex,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
@@ -555,11 +556,20 @@ function buildFieldFamilyTx2Plan(options: {
     && entry.spendable !== false
     && entry.safe !== false
   );
+  const tx1FundingChangeInputs = findSpendableFundingInputsFromTransaction({
+    allUtxos: options.allUtxos,
+    txid: options.tx1Txid,
+    fundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    minConf: 0,
+  });
 
   return {
     sender: options.sender,
     changeAddress: options.state.funding.address,
-    fixedInputs: [{ txid: options.tx1Txid, vout: 1 }],
+    fixedInputs: [
+      { txid: options.tx1Txid, vout: 1 },
+      ...tx1FundingChangeInputs,
+    ],
     outputs: [
       { data: Buffer.from(options.opReturnData).toString("hex") },
       { [options.sender.address]: satsToBtcNumber(BigInt(options.state.anchorValueSats)) },
@@ -633,6 +643,7 @@ async function buildFieldTransaction(options: {
   walletName: string;
   state: WalletStateV1;
   plan: FieldPlan;
+  availableFundingMinConf?: number;
 }): Promise<BuiltWalletMutationTransaction> {
   return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
@@ -642,6 +653,7 @@ async function buildFieldTransaction(options: {
     validateFundedDraft: validateFieldDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
+    availableFundingMinConf: options.availableFundingMinConf,
     reserveCandidates: options.state.proactiveReserveOutpoints,
   });
 }
@@ -2224,9 +2236,10 @@ async function submitFieldCreateFamily(options: {
         rpc,
         walletName,
         state: workingState,
+        availableFundingMinConf: 0,
         plan: buildFieldFamilyTx2Plan({
           state: workingState,
-          allUtxos: await rpc.listUnspent(walletName, 1),
+          allUtxos: await rpc.listUnspent(walletName, 0),
           sender: operation.sender,
           tx1Txid,
           opReturnData: serializeDataUpdate(

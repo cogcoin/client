@@ -40,6 +40,7 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  findSpendableFundingInputsFromTransaction,
   getDecodedInputScriptPubKeyHex,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
@@ -913,6 +914,12 @@ function buildTx2Plan(options: {
     entry.scriptPubKey === options.state.funding.scriptPubKeyHex
     && isSpendableConfirmedUtxo(entry)
   ));
+  const tx1FundingChangeInputs = findSpendableFundingInputsFromTransaction({
+    allUtxos: options.allUtxos,
+    txid: tx1Txid,
+    fundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    minConf: 0,
+  });
   const foundingPayload = options.operation.foundingMessagePayloadHex === null
     ? undefined
     : Buffer.from(options.operation.foundingMessagePayloadHex, "hex");
@@ -925,7 +932,10 @@ function buildTx2Plan(options: {
       address: options.operation.targetIdentity.address,
     },
     changeAddress: options.state.funding.address,
-    fixedInputs: [{ txid: provisional.txid, vout: provisional.vout }],
+    fixedInputs: [
+      { txid: provisional.txid, vout: provisional.vout },
+      ...tx1FundingChangeInputs,
+    ],
     outputs: [
       { data: Buffer.from(opReturnData).toString("hex") },
       { [options.operation.targetIdentity.address]: satsToBtcNumber(BigInt(options.state.anchorValueSats)) },
@@ -1108,6 +1118,7 @@ async function buildTx2(options: {
     validateFundedDraft: validateTx2Draft,
     finalizeErrorCode: "wallet_anchor_tx2_finalize_failed",
     mempoolRejectPrefix: "wallet_anchor_tx2_mempool_rejected",
+    availableFundingMinConf: 0,
     reserveCandidates: options.state.proactiveReserveOutpoints,
   });
 }
