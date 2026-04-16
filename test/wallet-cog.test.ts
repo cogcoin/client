@@ -319,7 +319,12 @@ function createCogRpcHarness(options: {
   }
 
   function buildDecoded() {
-    const inputs = captured.inputs ?? [];
+    const fixedInputs = captured.inputs ?? [];
+    const supplementalFundingInputs = [
+      { txid: "11".repeat(32), vout: 0 },
+      { txid: "22".repeat(32), vout: 0 },
+    ].filter((input) => !fixedInputs.some((entry) => entry.txid === input.txid && entry.vout === input.vout));
+    const inputs = fixedInputs.concat(supplementalFundingInputs.slice(0, 1));
     const outputs = (captured.outputs ?? []).map((output) => renderOutput(output));
     const changePosition = Number(captured.options?.changePosition ?? 0);
     const withChange = outputs.slice();
@@ -330,6 +335,8 @@ function createCogRpcHarness(options: {
       },
     });
     const vin = inputs.map((input) => ({
+      txid: input.txid,
+      vout: input.vout,
       prevout: {
         scriptPubKey: {
           hex: input.txid === options.anchorOutpoint?.txid && input.vout === options.anchorOutpoint.vout

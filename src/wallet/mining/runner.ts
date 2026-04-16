@@ -22,10 +22,14 @@ import { COG_OPCODES, COG_PREFIX } from "../cogop/constants.js";
 import { extractOpReturnPayloadFromScriptHex } from "../tx/register.js";
 import {
   DEFAULT_WALLET_MUTATION_FEE_RATE_SAT_VB,
+  assertFixedInputPrefixMatches,
+  assertFundingInputsAfterFixedPrefix,
   buildWalletMutationTransaction,
+  outpointKey as walletMutationOutpointKey,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
   saveWalletStatePreservingUnlock,
+  type FixedWalletInput,
   type MutationSender,
   type WalletMutationRpcClient,
 } from "../tx/common.js";
@@ -1019,7 +1023,7 @@ function createMiningPlan(options: {
   feeRateSatVb: number;
 }): {
   sender: MutationSender;
-  inputs: Array<{ txid: string; vout: number }>;
+  fixedInputs: FixedWalletInput[];
   outputs: unknown[];
   changeAddress: string;
   changePosition: number;
@@ -1027,6 +1031,7 @@ function createMiningPlan(options: {
   expectedAnchorScriptHex: string;
   expectedAnchorValueSats: bigint;
   allowedFundingScriptPubKeyHex: string;
+  eligibleFundingOutpointKeys: Set<string>;
   expectedConflictOutpoint: OutpointRecord;
   feeRateSatVb: number;
 } {
@@ -1049,10 +1054,9 @@ function createMiningPlan(options: {
 
   return {
     sender: options.candidate.sender,
-    inputs: [
+    fixedInputs: [
       options.candidate.anchorOutpoint,
       options.conflictOutpoint,
-      ...fundingUtxos.map((entry) => ({ txid: entry.txid, vout: entry.vout })),
     ],
     outputs: [
       { data: Buffer.from(opReturnData).toString("hex") },
@@ -1064,6 +1068,7 @@ function createMiningPlan(options: {
     expectedAnchorScriptHex: options.candidate.sender.scriptPubKeyHex,
     expectedAnchorValueSats: BigInt(options.state.anchorValueSats),
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => walletMutationOutpointKey({ txid: entry.txid, vout: entry.vout }))),
     expectedConflictOutpoint: options.conflictOutpoint,
     feeRateSatVb: options.feeRateSatVb,
   };
@@ -1081,19 +1086,25 @@ function validateMiningDraft(
     throw new Error("wallet_mining_missing_inputs");
   }
 
+  assertFixedInputPrefixMatches(inputs, plan.fixedInputs, "wallet_mining_missing_inputs");
+
   if (inputs[0]?.prevout?.scriptPubKey?.hex !== plan.sender.scriptPubKeyHex) {
     throw new Error("wallet_mining_sender_input_mismatch");
   }
 
-  if (inputs[1]?.prevout?.scriptPubKey?.hex !== plan.allowedFundingScriptPubKeyHex) {
+  if (inputs[1]?.prevout?.scriptPubKey?.hex !== plan.allowedFundingScriptPubKeyHex
+    || inputs[1]?.txid !== plan.expectedConflictOutpoint.txid
+    || (inputs[1] as { vout?: unknown }).vout !== plan.expectedConflictOutpoint.vout) {
     throw new Error("wallet_mining_conflict_input_mismatch");
   }
 
-  for (let index = 2; index < inputs.length; index += 1) {
-    if (inputs[index]?.prevout?.scriptPubKey?.hex !== plan.allowedFundingScriptPubKeyHex) {
-      throw new Error("wallet_mining_unexpected_funding_input");
-    }
-  }
+  assertFundingInputsAfterFixedPrefix({
+    inputs,
+    fixedInputs: plan.fixedInputs,
+    allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
+    eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
+    errorCode: "wallet_mining_unexpected_funding_input",
+  });
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error("wallet_mining_opreturn_mismatch");
@@ -1115,22 +1126,18 @@ function validateMiningDraft(
 async function buildMiningTransaction(options: {
   rpc: MiningRpcClient;
   walletName: string;
+  state: WalletStateV1;
   plan: ReturnType<typeof createMiningPlan>;
 }) {
   return buildWalletMutationTransaction({
     rpc: options.rpc,
     walletName: options.walletName,
+    state: options.state,
     plan: options.plan,
     validateFundedDraft: validateMiningDraft,
     finalizeErrorCode: "wallet_mining_finalize_failed",
     mempoolRejectPrefix: "wallet_mining_mempool_rejected",
     feeRate: options.plan.feeRateSatVb,
-    builderOptions: {
-      addInputs: true,
-      includeUnsafe: true,
-      minConf: 0,
-      lockUnspents: true,
-    },
   });
 }
 
@@ -2076,6 +2083,7 @@ async function publishCandidate(options: {
   const built = await buildMiningTransaction({
     rpc,
     walletName: state.managedCoreWallet.walletName,
+    state,
     plan,
   });
   const intentFingerprintHex = computeIntentFingerprint(state, options.candidate);

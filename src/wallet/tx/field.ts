@@ -43,15 +43,19 @@ import {
   type WalletReadContext,
 } from "../read/index.js";
 import {
+  assertFixedInputPrefixMatches,
+  assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransaction,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
+  outpointKey,
   pauseMiningForWalletMutation,
   saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
   type BuiltWalletMutationTransaction,
+  type FixedWalletInput,
   type MutationSender,
   type WalletMutationRpcClient,
 } from "./common.js";
@@ -79,13 +83,14 @@ interface FieldRpcClient extends WalletMutationRpcClient {
 interface FieldPlan {
   sender: MutationSender;
   changeAddress: string;
-  inputs: Array<{ txid: string; vout: number }>;
+  fixedInputs: FixedWalletInput[];
   outputs: unknown[];
   changePosition: number;
   expectedOpReturnScriptHex: string;
   expectedAnchorScriptHex: string;
   expectedAnchorValueSats: bigint;
   allowedFundingScriptPubKeyHex: string;
+  eligibleFundingOutpointKeys: Set<string>;
   errorPrefix: string;
 }
 
@@ -519,9 +524,8 @@ function buildAnchoredFieldPlan(options: {
   return {
     sender: options.sender,
     changeAddress: options.state.funding.address,
-    inputs: [
+    fixedInputs: [
       { txid: anchorUtxo.txid, vout: anchorUtxo.vout },
-      ...fundingUtxos.map((entry) => ({ txid: entry.txid, vout: entry.vout })),
     ],
     outputs: [
       { data: Buffer.from(options.opReturnData).toString("hex") },
@@ -532,6 +536,7 @@ function buildAnchoredFieldPlan(options: {
     expectedAnchorScriptHex: options.sender.scriptPubKeyHex,
     expectedAnchorValueSats: BigInt(options.state.anchorValueSats),
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
     errorPrefix: options.errorPrefix,
   };
 }
@@ -553,10 +558,7 @@ function buildFieldFamilyTx2Plan(options: {
   return {
     sender: options.sender,
     changeAddress: options.state.funding.address,
-    inputs: [
-      { txid: options.tx1Txid, vout: 1 },
-      ...fundingUtxos.map((entry) => ({ txid: entry.txid, vout: entry.vout })),
-    ],
+    fixedInputs: [{ txid: options.tx1Txid, vout: 1 }],
     outputs: [
       { data: Buffer.from(options.opReturnData).toString("hex") },
       { [options.sender.address]: satsToBtcNumber(BigInt(options.state.anchorValueSats)) },
@@ -566,6 +568,7 @@ function buildFieldFamilyTx2Plan(options: {
     expectedAnchorScriptHex: options.sender.scriptPubKeyHex,
     expectedAnchorValueSats: BigInt(options.state.anchorValueSats),
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
     errorPrefix: "wallet_field_create_tx2",
   };
 }
@@ -582,15 +585,19 @@ function validateFieldDraft(
     throw new Error(`${plan.errorPrefix}_missing_sender_input`);
   }
 
+  assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_sender_input_mismatch`);
+
   if (inputs[0]?.prevout?.scriptPubKey?.hex !== plan.sender.scriptPubKeyHex) {
     throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
   }
 
-  for (let index = 1; index < inputs.length; index += 1) {
-    if (inputs[index]?.prevout?.scriptPubKey?.hex !== plan.allowedFundingScriptPubKeyHex) {
-      throw new Error(`${plan.errorPrefix}_unexpected_funding_input`);
-    }
-  }
+  assertFundingInputsAfterFixedPrefix({
+    inputs,
+    fixedInputs: plan.fixedInputs,
+    allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
+    eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
+    errorCode: `${plan.errorPrefix}_unexpected_funding_input`,
+  });
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
@@ -623,20 +630,17 @@ function validateFieldDraft(
 async function buildFieldTransaction(options: {
   rpc: FieldRpcClient;
   walletName: string;
+  state: WalletStateV1;
   plan: FieldPlan;
-  builderOptions?: {
-    includeUnsafe?: boolean;
-    minConf?: number;
-  };
 }): Promise<BuiltWalletMutationTransaction> {
   return buildWalletMutationTransaction({
     rpc: options.rpc,
     walletName: options.walletName,
+    state: options.state,
     plan: options.plan,
     validateFundedDraft: validateFieldDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
-    builderOptions: options.builderOptions,
   });
 }
 
@@ -1937,6 +1941,7 @@ async function submitStandaloneFieldMutation(options: {
       const built = await buildFieldTransaction({
         rpc,
         walletName,
+        state: nextState,
         plan: buildAnchoredFieldPlan({
           state: nextState,
           allUtxos: await rpc.listUnspent(walletName, 1),
@@ -2179,6 +2184,7 @@ async function submitFieldCreateFamily(options: {
         const tx1 = await buildFieldTransaction({
           rpc,
           walletName,
+          state: nextState,
           plan: buildAnchoredFieldPlan({
             state: nextState,
             allUtxos: await rpc.listUnspent(walletName, 1),
@@ -2215,6 +2221,7 @@ async function submitFieldCreateFamily(options: {
       const tx2 = await buildFieldTransaction({
         rpc,
         walletName,
+        state: workingState,
         plan: buildFieldFamilyTx2Plan({
           state: workingState,
           allUtxos: await rpc.listUnspent(walletName, 1),
@@ -2227,10 +2234,6 @@ async function submitFieldCreateFamily(options: {
             options.value.value,
           ).opReturnData,
         }),
-        builderOptions: {
-          includeUnsafe: true,
-          minConf: 0,
-        },
       });
 
       const final = await sendFamilyTx2({

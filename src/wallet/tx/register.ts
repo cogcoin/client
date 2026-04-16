@@ -32,16 +32,20 @@ import type {
 import { computeRootRegistrationPriceSats, serializeDomainReg } from "../cogop/index.js";
 import { openWalletReadContext, type WalletReadContext } from "../read/index.js";
 import {
+  assertFixedInputPrefixMatches,
+  assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransaction,
   formatCogAmount,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
+  outpointKey,
   pauseMiningForWalletMutation,
   saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
   type BuiltWalletMutationTransaction,
+  type FixedWalletInput,
   type MutationSender,
   type WalletMutationRpcClient,
 } from "./common.js";
@@ -66,7 +70,7 @@ interface RegisterTransactionPlan {
   registerKind: "root" | "subdomain";
   sender: MutationSender;
   changeAddress: string;
-  inputs: Array<{ txid: string; vout: number }>;
+  fixedInputs: FixedWalletInput[];
   outputs: unknown[];
   changePosition: number;
   expectedOpReturnScriptHex: string;
@@ -77,6 +81,7 @@ interface RegisterTransactionPlan {
   expectedAnchorScriptHex: string | null;
   expectedAnchorValueSats: bigint | null;
   allowedFundingScriptPubKeyHex: string;
+  eligibleFundingOutpointKeys: Set<string>;
 }
 
 type BuiltRegisterTransaction = BuiltWalletMutationTransaction;
@@ -701,15 +706,19 @@ function validateFundedDraft(
     throw new Error("wallet_register_missing_sender_input");
   }
 
+  assertFixedInputPrefixMatches(inputs, plan.fixedInputs, "wallet_register_sender_input_mismatch");
+
   if (inputs[0]?.prevout?.scriptPubKey?.hex !== plan.sender.scriptPubKeyHex) {
     throw new Error("wallet_register_sender_input_mismatch");
   }
 
-  for (let index = 1; index < inputs.length; index += 1) {
-    if (inputs[index]?.prevout?.scriptPubKey?.hex !== plan.allowedFundingScriptPubKeyHex) {
-      throw new Error("wallet_register_unexpected_funding_input");
-    }
-  }
+  assertFundingInputsAfterFixedPrefix({
+    inputs,
+    fixedInputs: plan.fixedInputs,
+    allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
+    eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
+    errorCode: "wallet_register_unexpected_funding_input",
+  });
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error("wallet_register_opreturn_mismatch");
@@ -794,9 +803,8 @@ function buildRegisterPlan(options: {
         registerKind: "root",
         sender: options.sender,
         changeAddress: options.state.funding.address,
-        inputs: [
+        fixedInputs: [
           { txid: senderInput.txid, vout: senderInput.vout },
-          ...additionalFunding,
         ],
         outputs: rootOutputs.outputs,
         changePosition: rootOutputs.changePosition,
@@ -808,6 +816,7 @@ function buildRegisterPlan(options: {
         expectedAnchorScriptHex: null,
         expectedAnchorValueSats: null,
         allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+        eligibleFundingOutpointKeys: new Set(additionalFunding.map((entry) => outpointKey(entry))),
       };
     }
 
@@ -826,9 +835,8 @@ function buildRegisterPlan(options: {
       registerKind: "root",
       sender: options.sender,
       changeAddress: options.state.funding.address,
-      inputs: [
+      fixedInputs: [
         { txid: anchorUtxo.txid, vout: anchorUtxo.vout },
-        ...fundingUtxos.map((entry) => ({ txid: entry.txid, vout: entry.vout })),
       ],
       outputs: rootOutputs.outputs,
       changePosition: rootOutputs.changePosition,
@@ -840,6 +848,7 @@ function buildRegisterPlan(options: {
       expectedAnchorScriptHex: options.sender.scriptPubKeyHex,
       expectedAnchorValueSats: options.anchorValueSats,
       allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+      eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey(entry))),
     };
   }
 
@@ -869,9 +878,8 @@ function buildRegisterPlan(options: {
     registerKind: "subdomain",
     sender: options.sender,
     changeAddress: options.state.funding.address,
-    inputs: [
+    fixedInputs: [
       { txid: anchorUtxo.txid, vout: anchorUtxo.vout },
-      ...fundingUtxos.map((entry) => ({ txid: entry.txid, vout: entry.vout })),
     ],
     outputs: subdomainOutputs.outputs,
     changePosition: subdomainOutputs.changePosition,
@@ -883,17 +891,20 @@ function buildRegisterPlan(options: {
     expectedAnchorScriptHex: options.sender.scriptPubKeyHex,
     expectedAnchorValueSats: options.anchorValueSats,
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey(entry))),
   };
 }
 
 async function buildRegisterTransaction(options: {
   rpc: WalletRegisterRpcClient;
   walletName: string;
+  state: WalletStateV1;
   plan: RegisterTransactionPlan;
 }): Promise<BuiltRegisterTransaction> {
   return buildWalletMutationTransaction({
     rpc: options.rpc,
     walletName: options.walletName,
+    state: options.state,
     plan: options.plan,
     validateFundedDraft,
     finalizeErrorCode: "wallet_register_finalize_failed",
@@ -1210,6 +1221,7 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
       const built = await buildRegisterTransaction({
         rpc,
         walletName,
+        state: nextState,
         plan,
       });
 

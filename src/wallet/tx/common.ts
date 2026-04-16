@@ -7,6 +7,7 @@ import type {
   RpcLockedUnspent,
   RpcTestMempoolAcceptResult,
   RpcTransaction,
+  RpcVin,
   RpcWalletCreateFundedPsbtResult,
   RpcWalletProcessPsbtResult,
 } from "../../bitcoind/types.js";
@@ -67,6 +68,8 @@ export interface BuiltWalletMutationTransaction {
   wtxid: string | null;
   temporaryBuilderLockedOutpoints: OutpointRecord[];
 }
+
+export interface FixedWalletInput extends OutpointRecord {}
 
 function createUnlockSessionState(
   state: WalletStateV1,
@@ -178,6 +181,122 @@ export function diffTemporaryLockedOutpoints(
     }));
 }
 
+export function getDecodedInputScriptPubKeyHex(input: RpcVin): string | null {
+  return input.prevout?.scriptPubKey?.hex ?? null;
+}
+
+export function getDecodedInputVout(input: RpcVin): number | null {
+  const vout = (input as RpcVin & { vout?: unknown }).vout;
+  return typeof vout === "number" ? vout : null;
+}
+
+export function inputMatchesOutpoint(input: RpcVin, outpoint: OutpointRecord): boolean {
+  return input.txid === outpoint.txid && getDecodedInputVout(input) === outpoint.vout;
+}
+
+export function assertFixedInputPrefixMatches(
+  inputs: RpcVin[],
+  fixedInputs: FixedWalletInput[],
+  errorCode: string,
+): void {
+  if (inputs.length < fixedInputs.length) {
+    throw new Error(errorCode);
+  }
+
+  for (const [index, fixedInput] of fixedInputs.entries()) {
+    if (!inputMatchesOutpoint(inputs[index]!, fixedInput)) {
+      throw new Error(errorCode);
+    }
+  }
+}
+
+export function assertFundingInputsAfterFixedPrefix(options: {
+  inputs: RpcVin[];
+  fixedInputs: FixedWalletInput[];
+  allowedFundingScriptPubKeyHex: string;
+  eligibleFundingOutpointKeys: Set<string>;
+  errorCode: string;
+}): void {
+  for (let index = options.fixedInputs.length; index < options.inputs.length; index += 1) {
+    const input = options.inputs[index]!;
+    const scriptPubKeyHex = getDecodedInputScriptPubKeyHex(input);
+    const vout = getDecodedInputVout(input);
+    if (scriptPubKeyHex !== options.allowedFundingScriptPubKeyHex || vout === null || typeof input.txid !== "string") {
+      throw new Error(options.errorCode);
+    }
+
+    const key = outpointKey({
+      txid: input.txid,
+      vout,
+    });
+    if (!options.eligibleFundingOutpointKeys.has(key)) {
+      throw new Error(options.errorCode);
+    }
+  }
+}
+
+function collectPersistentPolicyLockedOutpoints(state: WalletStateV1): OutpointRecord[] {
+  const outpoints: OutpointRecord[] = [];
+  const seen = new Set<string>();
+  const pushUnique = (outpoint: OutpointRecord | null) => {
+    if (outpoint === null) {
+      return;
+    }
+    const key = outpointKey(outpoint);
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    outpoints.push(outpoint);
+  };
+
+  for (const domain of state.domains) {
+    pushUnique(domain.currentCanonicalAnchorOutpoint);
+  }
+  pushUnique(state.miningState.sharedMiningConflictOutpoint);
+  return outpoints;
+}
+
+export async function reconcilePersistentPolicyLocks(options: {
+  rpc: Pick<WalletMutationRpcClient, "listLockUnspent" | "lockUnspent" | "listUnspent">;
+  walletName: string;
+  state: WalletStateV1;
+  fixedInputs: FixedWalletInput[];
+}): Promise<void> {
+  const protectedUniverse = collectPersistentPolicyLockedOutpoints(options.state);
+  if (protectedUniverse.length === 0) {
+    return;
+  }
+
+  const protectedUniverseKeys = new Set(protectedUniverse.map((outpoint) => outpointKey(outpoint)));
+  const fixedInputKeys = new Set(options.fixedInputs.map((outpoint) => outpointKey(outpoint)));
+
+  const [locked, spendable] = await Promise.all([
+    options.rpc.listLockUnspent(options.walletName).catch(() => []),
+    options.rpc.listUnspent(options.walletName, 0).catch(() => []),
+  ]);
+
+  const spendableKeys = new Set(spendable.map((entry) => outpointKey(entry)));
+  const expectedLocked = protectedUniverse.filter((outpoint) =>
+    spendableKeys.has(outpointKey(outpoint)) && !fixedInputKeys.has(outpointKey(outpoint)),
+  );
+  const expectedLockedKeys = new Set(expectedLocked.map((outpoint) => outpointKey(outpoint)));
+  const lockedProtected = locked.filter((outpoint) => protectedUniverseKeys.has(outpointKey(outpoint)));
+  const lockedProtectedKeys = new Set(lockedProtected.map((outpoint) => outpointKey(outpoint)));
+  const staleLocked = lockedProtected.filter((outpoint) =>
+    !expectedLockedKeys.has(outpointKey(outpoint)) || !spendableKeys.has(outpointKey(outpoint)),
+  );
+  const missingLocked = expectedLocked.filter((outpoint) => !lockedProtectedKeys.has(outpointKey(outpoint)));
+
+  if (staleLocked.length > 0) {
+    await options.rpc.lockUnspent(options.walletName, true, staleLocked).catch(() => undefined);
+  }
+
+  if (missingLocked.length > 0) {
+    await options.rpc.lockUnspent(options.walletName, false, missingLocked).catch(() => undefined);
+  }
+}
+
 export function isBroadcastUnknownError(error: unknown): boolean {
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   return message.includes("timeout")
@@ -250,8 +369,9 @@ export async function pauseMiningForWalletMutation(options: {
 export async function buildWalletMutationTransaction<TPlan>(options: {
   rpc: WalletMutationRpcClient;
   walletName: string;
+  state: WalletStateV1;
   plan: TPlan & {
-    inputs: Array<{ txid: string; vout: number }>;
+    fixedInputs: FixedWalletInput[];
     outputs: unknown[];
     changeAddress: string;
     changePosition: number;
@@ -264,29 +384,29 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
   finalizeErrorCode: string;
   mempoolRejectPrefix: string;
   feeRate?: number;
-  builderOptions?: {
-    addInputs?: boolean;
-    includeUnsafe?: boolean;
-    minConf?: number;
-    lockUnspents?: boolean;
-  };
 }): Promise<BuiltWalletMutationTransaction> {
+  await reconcilePersistentPolicyLocks({
+    rpc: options.rpc,
+    walletName: options.walletName,
+    state: options.state,
+    fixedInputs: options.plan.fixedInputs,
+  });
   const lockedBefore = await options.rpc.listLockUnspent(options.walletName);
   let temporaryBuilderLockedOutpoints: OutpointRecord[] = [];
 
   try {
     const funded = await options.rpc.walletCreateFundedPsbt(
       options.walletName,
-      options.plan.inputs,
+      options.plan.fixedInputs,
         options.plan.outputs,
         0,
         {
-          add_inputs: options.builderOptions?.addInputs ?? true,
-          include_unsafe: options.builderOptions?.includeUnsafe ?? false,
-          minconf: options.builderOptions?.minConf ?? 1,
+          add_inputs: true,
+          include_unsafe: false,
+          minconf: 1,
           changeAddress: options.plan.changeAddress,
           changePosition: options.plan.changePosition,
-          lockUnspents: options.builderOptions?.lockUnspents ?? true,
+          lockUnspents: true,
           fee_rate: options.feeRate ?? DEFAULT_WALLET_MUTATION_FEE_RATE_SAT_VB,
           replaceable: true,
           subtractFeeFromOutputs: [],

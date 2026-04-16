@@ -9,7 +9,6 @@ import type {
   RpcDecodedPsbt,
   RpcListUnspentEntry,
   RpcTransaction,
-  RpcVin,
 } from "../../bitcoind/types.js";
 import { acquireFileLock } from "../fs/lock.js";
 import type { WalletPrompter } from "../lifecycle.js";
@@ -37,14 +36,20 @@ import {
 } from "../cogop/index.js";
 import { openWalletReadContext, type WalletReadContext } from "../read/index.js";
 import {
+  assertFixedInputPrefixMatches,
+  assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransaction,
+  getDecodedInputScriptPubKeyHex,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
+  outpointKey,
   pauseMiningForWalletMutation,
   saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   type BuiltWalletMutationTransaction,
+  type FixedWalletInput,
+  inputMatchesOutpoint,
   type MutationSender,
   type WalletMutationRpcClient,
 } from "./common.js";
@@ -60,7 +65,7 @@ interface WalletAnchorRpcClient extends WalletMutationRpcClient {
 interface AnchorTxPlan {
   sender: MutationSender;
   changeAddress: string;
-  inputs: Array<{ txid: string; vout: number }>;
+  fixedInputs: FixedWalletInput[];
   outputs: unknown[];
   changePosition: number;
   expectedOpReturnScriptHex: string;
@@ -69,6 +74,7 @@ interface AnchorTxPlan {
   expectedReplacementAnchorScriptHex: string | null;
   expectedReplacementAnchorValueSats: bigint | null;
   allowedFundingScriptPubKeyHex: string;
+  eligibleFundingOutpointKeys: Set<string>;
   requiredSenderOutpoint: OutpointRecord | null;
   requiredProvisionalOutpoint: OutpointRecord | null;
   errorPrefix: string;
@@ -775,11 +781,7 @@ function buildTx1Plan(options: {
     return {
       sender: options.operation.sourceSender,
       changeAddress: options.state.funding.address,
-      inputs: fundingUtxos.map((entry, index) =>
-        index === 0
-          ? { txid: senderInput.txid, vout: senderInput.vout }
-          : { txid: entry.txid, vout: entry.vout }
-      ),
+      fixedInputs: [{ txid: senderInput.txid, vout: senderInput.vout }],
       outputs,
       changePosition: 2,
       expectedOpReturnScriptHex: encodeOpReturnScript(
@@ -790,6 +792,11 @@ function buildTx1Plan(options: {
       expectedReplacementAnchorScriptHex: null,
       expectedReplacementAnchorValueSats: null,
       allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+      eligibleFundingOutpointKeys: new Set(
+        fundingUtxos
+          .filter((entry) => !(entry.txid === senderInput.txid && entry.vout === senderInput.vout))
+          .map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout })),
+      ),
       requiredSenderOutpoint: null,
       requiredProvisionalOutpoint: null,
       errorPrefix: "wallet_anchor_tx1",
@@ -814,10 +821,7 @@ function buildTx1Plan(options: {
   return {
     sender: options.operation.sourceSender,
     changeAddress: options.state.funding.address,
-    inputs: [
-      { txid: sourceAnchor.txid, vout: sourceAnchor.vout },
-      ...fundingUtxos.map((entry) => ({ txid: entry.txid, vout: entry.vout })),
-    ],
+    fixedInputs: [{ txid: sourceAnchor.txid, vout: sourceAnchor.vout }],
     outputs,
     changePosition: 3,
     expectedOpReturnScriptHex: encodeOpReturnScript(
@@ -828,6 +832,7 @@ function buildTx1Plan(options: {
     expectedReplacementAnchorScriptHex: options.operation.sourceSender.scriptPubKeyHex,
     expectedReplacementAnchorValueSats: BigInt(options.state.anchorValueSats),
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
     requiredSenderOutpoint: options.operation.sourceAnchorOutpoint,
     requiredProvisionalOutpoint: null,
     errorPrefix: "wallet_anchor_tx1",
@@ -873,10 +878,7 @@ function buildTx2Plan(options: {
       address: options.operation.targetIdentity.address,
     },
     changeAddress: options.state.funding.address,
-    inputs: [
-      { txid: provisional.txid, vout: provisional.vout },
-      ...fundingUtxos.map((entry) => ({ txid: entry.txid, vout: entry.vout })),
-    ],
+    fixedInputs: [{ txid: provisional.txid, vout: provisional.vout }],
     outputs: [
       { data: Buffer.from(opReturnData).toString("hex") },
       { [options.operation.targetIdentity.address]: satsToBtcNumber(BigInt(options.state.anchorValueSats)) },
@@ -888,6 +890,7 @@ function buildTx2Plan(options: {
     expectedReplacementAnchorScriptHex: null,
     expectedReplacementAnchorValueSats: null,
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
     requiredSenderOutpoint: null,
     requiredProvisionalOutpoint: {
       txid: provisional.txid,
@@ -895,32 +898,6 @@ function buildTx2Plan(options: {
     },
     errorPrefix: "wallet_anchor_tx2",
   };
-}
-
-function getDecodedInputScriptPubKeyHex(input: RpcVin): string | null {
-  return input.prevout?.scriptPubKey?.hex ?? null;
-}
-
-function getDecodedInputVout(input: RpcVin): number | null {
-  const vout = (input as RpcVin & { vout?: unknown }).vout;
-  return typeof vout === "number" ? vout : null;
-}
-
-function inputMatchesOutpoint(input: RpcVin, outpoint: OutpointRecord): boolean {
-  return input.txid === outpoint.txid && getDecodedInputVout(input) === outpoint.vout;
-}
-
-function assertNoUnexpectedAnchorInputs(
-  inputs: RpcVin[],
-  allowedScripts: Set<string>,
-  unexpectedInputErrorCode: string,
-): void {
-  for (const input of inputs) {
-    const scriptPubKeyHex = getDecodedInputScriptPubKeyHex(input);
-    if (scriptPubKeyHex === null || !allowedScripts.has(scriptPubKeyHex)) {
-      throw new Error(unexpectedInputErrorCode);
-    }
-  }
 }
 
 function validateTx1Draft(
@@ -935,6 +912,8 @@ function validateTx1Draft(
     throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
   }
 
+  assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_sender_input_mismatch`);
+
   const firstInputScriptPubKeyHex = getDecodedInputScriptPubKeyHex(inputs[0]!);
   if (firstInputScriptPubKeyHex !== plan.sender.scriptPubKeyHex) {
     throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
@@ -944,23 +923,15 @@ function validateTx1Draft(
     if (!inputMatchesOutpoint(inputs[0]!, plan.requiredSenderOutpoint)) {
       throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
     }
-
-    if (inputs.length < 2 || getDecodedInputScriptPubKeyHex(inputs[1]!) !== plan.allowedFundingScriptPubKeyHex) {
-      throw new Error(`${plan.errorPrefix}_unexpected_funding_input`);
-    }
-
-    assertNoUnexpectedAnchorInputs(
-      inputs.slice(2),
-      new Set<string>([plan.allowedFundingScriptPubKeyHex]),
-      `${plan.errorPrefix}_unexpected_funding_input`,
-    );
-  } else {
-    assertNoUnexpectedAnchorInputs(
-      inputs,
-      new Set<string>([plan.allowedFundingScriptPubKeyHex]),
-      `${plan.errorPrefix}_unexpected_funding_input`,
-    );
   }
+
+  assertFundingInputsAfterFixedPrefix({
+    inputs,
+    fixedInputs: plan.fixedInputs,
+    allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
+    eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
+    errorCode: `${plan.errorPrefix}_unexpected_funding_input`,
+  });
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
@@ -1013,21 +984,21 @@ function validateTx2Draft(
     throw new Error(`${plan.errorPrefix}_provisional_input_mismatch`);
   }
 
+  assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_provisional_input_mismatch`);
+
   const firstInputScriptPubKeyHex = getDecodedInputScriptPubKeyHex(inputs[0]!);
   if (firstInputScriptPubKeyHex !== plan.sender.scriptPubKeyHex
     || !inputMatchesOutpoint(inputs[0]!, plan.requiredProvisionalOutpoint)) {
     throw new Error(`${plan.errorPrefix}_provisional_input_mismatch`);
   }
 
-  if (inputs.length < 2 || getDecodedInputScriptPubKeyHex(inputs[1]!) !== plan.allowedFundingScriptPubKeyHex) {
-    throw new Error(`${plan.errorPrefix}_unexpected_funding_input`);
-  }
-
-  assertNoUnexpectedAnchorInputs(
-    inputs.slice(2),
-    new Set<string>([plan.allowedFundingScriptPubKeyHex]),
-    `${plan.errorPrefix}_unexpected_funding_input`,
-  );
+  assertFundingInputsAfterFixedPrefix({
+    inputs,
+    fixedInputs: plan.fixedInputs,
+    allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
+    eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
+    errorCode: `${plan.errorPrefix}_unexpected_funding_input`,
+  });
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
@@ -1061,38 +1032,34 @@ function validateTx2Draft(
 async function buildTx1(options: {
   rpc: WalletAnchorRpcClient;
   walletName: string;
+  state: WalletStateV1;
   plan: AnchorTxPlan;
 }): Promise<BuiltAnchorTransaction> {
   return buildWalletMutationTransaction({
     rpc: options.rpc,
     walletName: options.walletName,
+    state: options.state,
     plan: options.plan,
     validateFundedDraft: validateTx1Draft,
     finalizeErrorCode: "wallet_anchor_tx1_finalize_failed",
     mempoolRejectPrefix: "wallet_anchor_tx1_mempool_rejected",
-    builderOptions: {
-      addInputs: false,
-    },
   });
 }
 
 async function buildTx2(options: {
   rpc: WalletAnchorRpcClient;
   walletName: string;
+  state: WalletStateV1;
   plan: AnchorTxPlan;
 }): Promise<BuiltAnchorTransaction> {
   return buildWalletMutationTransaction({
     rpc: options.rpc,
     walletName: options.walletName,
+    state: options.state,
     plan: options.plan,
     validateFundedDraft: validateTx2Draft,
     finalizeErrorCode: "wallet_anchor_tx2_finalize_failed",
     mempoolRejectPrefix: "wallet_anchor_tx2_mempool_rejected",
-    builderOptions: {
-      addInputs: false,
-      includeUnsafe: true,
-      minConf: 0,
-    },
   });
 }
 
@@ -1463,6 +1430,7 @@ async function submitTx2(options: {
   const builtTx2 = await buildTx2({
     rpc: options.rpc,
     walletName: options.walletName,
+    state: nextState,
     plan: tx2Plan,
   });
 
@@ -1725,6 +1693,7 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
         const builtTx1 = await buildTx1({
           rpc,
           walletName,
+          state: nextState,
           plan: tx1Plan,
         });
 

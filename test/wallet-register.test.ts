@@ -78,6 +78,33 @@ function encodeOpReturnScript(payloadHex: string): string {
   return Buffer.concat([Buffer.from([0x6a, 0x4c, payload.length]), payload]).toString("hex");
 }
 
+function sameOutpoint(
+  left: { txid: string; vout: number },
+  right: { txid: string; vout: number },
+): boolean {
+  return left.txid === right.txid && left.vout === right.vout;
+}
+
+function appendSupplementalFundingInputs(
+  fixedInputs: Array<{ txid: string; vout: number }>,
+  supplementalCandidates: Array<{ txid: string; vout: number }>,
+  maxSupplemental = 1,
+): Array<{ txid: string; vout: number }> {
+  const finalInputs = fixedInputs.slice();
+
+  for (const candidate of supplementalCandidates) {
+    if (finalInputs.some((input) => sameOutpoint(input, candidate))) {
+      continue;
+    }
+    finalInputs.push(candidate);
+    if (finalInputs.length >= fixedInputs.length + maxSupplemental) {
+      break;
+    }
+  }
+
+  return finalInputs;
+}
+
 function createWalletState(partial: Partial<WalletStateV1> = {}): WalletStateV1 {
   return {
     schemaVersion: 1,
@@ -467,16 +494,25 @@ function createRegisterRpcHarness(options: {
         async decodePsbt() {
           const opReturnHex = String((captured.outputs?.[0] as { data: string }).data);
           const anchoredSender = options.registerKind === "subdomain" || options.rootSenderKind === "anchored";
-          const vin = anchoredSender
-            ? [
-              { prevout: { scriptPubKey: { hex: options.senderScriptPubKeyHex! } } },
-              { prevout: { scriptPubKey: { hex: options.fundingScriptPubKeyHex } } },
-              { prevout: { scriptPubKey: { hex: options.fundingScriptPubKeyHex } } },
-            ]
-            : [
-              { prevout: { scriptPubKey: { hex: options.fundingScriptPubKeyHex } } },
-              { prevout: { scriptPubKey: { hex: options.fundingScriptPubKeyHex } } },
-            ];
+          const fixedInputs = captured.inputs ?? [];
+          const vinInputs = appendSupplementalFundingInputs(
+            fixedInputs,
+            [
+              { txid: "11".repeat(32), vout: 0 },
+              { txid: "22".repeat(32), vout: 0 },
+            ],
+          );
+          const vin = vinInputs.map((input) => ({
+            txid: input.txid,
+            vout: input.vout,
+            prevout: {
+              scriptPubKey: {
+                hex: anchoredSender && input.txid === "aa".repeat(32) && input.vout === 1
+                  ? options.senderScriptPubKeyHex!
+                  : options.fundingScriptPubKeyHex,
+              },
+            },
+          }));
           const vout = options.registerKind === "root" && options.rootSenderKind === "anchored"
             ? [
               { n: 0, value: 0, scriptPubKey: { hex: encodeOpReturnScript(opReturnHex) } },
@@ -625,14 +661,20 @@ function createAnchorRpcHarness(options: {
           hex: input.scriptPubKeyHex,
         },
       },
-    })) ?? call.inputs.map((input, index) => ({
+    })) ?? appendSupplementalFundingInputs(
+      call.inputs,
+      [
+        { txid: "11".repeat(32), vout: 0 },
+        { txid: "22".repeat(32), vout: 0 },
+      ],
+    ).map((input) => ({
       txid: input.txid,
       vout: input.vout,
       prevout: {
         scriptPubKey: {
-          hex: isTx2 && index === 0
+          hex: isTx2 && input.txid === tx1Txid && input.vout === 1
             ? options.targetScriptPubKeyHex
-            : !isTx2 && options.sourceAnchorOutpoint !== undefined && options.sourceAnchorOutpoint !== null && index === 0
+            : !isTx2 && options.sourceAnchorOutpoint !== undefined && options.sourceAnchorOutpoint !== null && sameOutpoint(input, options.sourceAnchorOutpoint)
               ? options.senderScriptPubKeyHex
               : options.fundingScriptPubKeyHex,
         },
@@ -948,10 +990,24 @@ function createDomainMarketRpcHarness(options: {
         },
         async decodePsbt() {
           const opReturnHex = String((captured.outputs?.[0] as { data: string }).data);
-          const vin = (captured.inputs ?? []).map((_, index) => ({
+          const vinInputs = appendSupplementalFundingInputs(
+            captured.inputs ?? [],
+            [
+              { txid: "11".repeat(32), vout: 0 },
+              { txid: "22".repeat(32), vout: 0 },
+              { txid: "44".repeat(32), vout: 0 },
+            ],
+          );
+          const vin = vinInputs.map((input) => ({
+            txid: input.txid,
+            vout: input.vout,
             prevout: {
               scriptPubKey: {
-                hex: index === 0 ? options.senderScriptPubKeyHex : options.fundingScriptPubKeyHex,
+                hex: options.includeAnchorUtxo && input.txid === "aa".repeat(32) && input.vout === 1
+                  ? options.senderScriptPubKeyHex
+                  : !options.includeAnchorUtxo && input.txid === "44".repeat(32) && input.vout === 0
+                    ? options.senderScriptPubKeyHex
+                    : options.fundingScriptPubKeyHex,
               },
             },
           }));
@@ -1119,14 +1175,27 @@ function createReputationRpcHarness(options: {
         },
         async decodePsbt() {
           const opReturnHex = String((captured.outputs?.[0] as { data: string }).data);
+          const vinInputs = appendSupplementalFundingInputs(
+            captured.inputs ?? [],
+            [
+              { txid: "11".repeat(32), vout: 0 },
+              { txid: "22".repeat(32), vout: 0 },
+            ],
+          );
           return {
             tx: {
               txid: "44".repeat(32),
-              vin: [
-                { prevout: { scriptPubKey: { hex: options.senderScriptPubKeyHex } } },
-                { prevout: { scriptPubKey: { hex: options.fundingScriptPubKeyHex } } },
-                { prevout: { scriptPubKey: { hex: options.fundingScriptPubKeyHex } } },
-              ],
+              vin: vinInputs.map((input) => ({
+                txid: input.txid,
+                vout: input.vout,
+                prevout: {
+                  scriptPubKey: {
+                    hex: input.txid === "aa".repeat(32) && input.vout === 1
+                      ? options.senderScriptPubKeyHex
+                      : options.fundingScriptPubKeyHex,
+                  },
+                },
+              })),
               vout: [
                 { n: 0, value: 0, scriptPubKey: { hex: encodeOpReturnScript(opReturnHex) } },
                 { n: 1, value: 0.00002, scriptPubKey: { hex: options.senderScriptPubKeyHex } },
@@ -4146,8 +4215,8 @@ test("anchorDomain builds Case A from funding identity zero and persists a live 
   assert.equal(result.status, "live");
   assert.equal(result.dedicatedIndex, 3);
   assert.equal(harness.captured.calls.length, 2);
-  assert.equal(harness.captured.calls[0]?.options.add_inputs, false);
-  assert.equal(harness.captured.calls[1]?.options.add_inputs, false);
+  assert.equal(harness.captured.calls[0]?.options.add_inputs, true);
+  assert.equal(harness.captured.calls[1]?.options.add_inputs, true);
   assert.equal(harness.captured.calls[0]?.inputs[0]?.txid, "11".repeat(32));
   assert.equal(
     (harness.captured.calls[0]?.outputs[1] as Record<string, number>)[targetIdentity.address],
@@ -4243,11 +4312,11 @@ test("anchorDomain treats a funding-owned Tx1 as funding-sent even if fundingInd
   });
 
   assert.equal(result.status, "live");
-  assert.equal(harness.captured.calls[0]?.options.add_inputs, false);
+  assert.equal(harness.captured.calls[0]?.options.add_inputs, true);
   assert.equal(harness.captured.calls[0]?.inputs[0]?.txid, "11".repeat(32));
 });
 
-test("anchorDomain accepts a funding-owner Tx1 decode with reordered allowed funding inputs", async () => {
+test("anchorDomain rejects a funding-owner Tx1 decode when vin[0] no longer matches the fixed sender prefix", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-case-a-reordered-funding-"));
   const paths = createTempWalletPaths(tempRoot);
   const provider = createMemoryWalletSecretProviderForTesting();
@@ -4316,7 +4385,7 @@ test("anchorDomain accepts a funding-owner Tx1 decode with reordered allowed fun
     },
   });
 
-  const result = await anchorDomain({
+  await assert.rejects(() => anchorDomain({
     domainName: "weatherbot",
     dataDir: paths.bitcoinDataDir,
     databasePath: join(tempRoot, "client.sqlite"),
@@ -4333,10 +4402,9 @@ test("anchorDomain accepts a funding-owner Tx1 decode with reordered allowed fun
     } as never),
     rpcFactory: harness.rpcFactory,
     nowUnixMs: 1_700_000_405_000,
-  });
+  }), /wallet_anchor_tx1_sender_input_mismatch/);
 
-  assert.equal(result.status, "live");
-  assert.equal(harness.captured.calls[0]?.options.add_inputs, false);
+  assert.equal(harness.captured.calls[0]?.options.add_inputs, true);
 });
 
 test("anchorDomain rejects a Tx1 draft with an unexpected foreign input script", async () => {
@@ -4952,8 +5020,8 @@ test("clearPendingAnchor cancels a reserved draft family and releases its dedica
   });
 
   assert.equal(anchored.dedicatedIndex, 3);
-  assert.equal(anchorHarness.captured.calls[0]?.options.add_inputs, false);
-  assert.equal(anchorHarness.captured.calls[1]?.options.add_inputs, false);
+  assert.equal(anchorHarness.captured.calls[0]?.options.add_inputs, true);
+  assert.equal(anchorHarness.captured.calls[1]?.options.add_inputs, true);
   assert.equal(saved.state.domains.find((domain) => domain.name === "weatherbot")?.currentOwnerLocalIndex, 3);
 });
 
@@ -5314,8 +5382,8 @@ test("anchorDomain builds Case B from an anchored local owner and relocks both r
   });
 
   assert.equal(result.status, "live");
-  assert.equal(harness.captured.calls[0]?.options.add_inputs, false);
-  assert.equal(harness.captured.calls[1]?.options.add_inputs, false);
+  assert.equal(harness.captured.calls[0]?.options.add_inputs, true);
+  assert.equal(harness.captured.calls[1]?.options.add_inputs, true);
   assert.equal(harness.captured.calls[0]?.inputs[0]?.txid, "aa".repeat(32));
   assert.equal(
     (harness.captured.calls[0]?.outputs[2] as Record<string, number>)[state.identities[1]!.address!],
@@ -5324,6 +5392,7 @@ test("anchorDomain builds Case B from an anchored local owner and relocks both r
   assert.equal(harness.captured.calls[1]?.inputs[0]?.txid, harness.tx1Txid);
   assert.deepEqual(harness.captured.relockCalls, [
     [{ txid: harness.tx1Txid, vout: 2 }],
+    [{ txid: "aa".repeat(32), vout: 1, valueSats: 2_000 }],
     [{ txid: harness.tx2Txid, vout: 1 }],
   ]);
   assert.match(prompter.lines.join("\n"), /Warning: Tx1 will cancel the current listing/);
@@ -5429,20 +5498,100 @@ test("anchorDomain rejects an anchored-owner Tx1 decode when the source anchor s
     nowUnixMs: 1_700_000_505_000,
   }), /wallet_anchor_tx1_sender_input_mismatch/);
 
-  assert.equal(harness.captured.calls[0]?.options.add_inputs, false);
+  assert.equal(harness.captured.calls[0]?.options.add_inputs, true);
+});
+
+test("anchorDomain accepts an anchored-owner Tx1 decode with no optional funding inputs after vin[0]", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-case-b-no-extra-funding-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const state = {
+    ...baseState,
+    identities: baseState.identities.map((identity) =>
+      identity.index === 1
+        ? {
+          ...identity,
+          assignedDomainNames: ["alpha", "alpha-child"],
+        }
+        : identity
+    ),
+    domains: [
+      ...baseState.domains,
+      {
+        name: "alpha-child",
+        domainId: 10,
+        dedicatedIndex: null,
+        currentOwnerScriptPubKeyHex: baseState.identities[1]!.scriptPubKeyHex,
+        currentOwnerLocalIndex: 1,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "none" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+    ],
+  } satisfies WalletStateV1;
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "alpha-child",
+    ownerScriptPubKeyHex: state.identities[1]!.scriptPubKeyHex,
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
+  });
+
+  const targetIdentity = deriveWalletIdentityMaterial(state.keys.accountXprv, 3);
+  const harness = createAnchorRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    fundingAddress: state.funding.address,
+    senderScriptPubKeyHex: state.identities[1]!.scriptPubKeyHex,
+    senderAddress: state.identities[1]!.address!,
+    targetScriptPubKeyHex: targetIdentity.scriptPubKeyHex,
+    targetAddress: targetIdentity.address,
+    sourceAnchorOutpoint: {
+      txid: "aa".repeat(32),
+      vout: 1,
+    },
+    decodedVinOverrides: {
+      tx1: [
+        {
+          txid: "aa".repeat(32),
+          vout: 1,
+          scriptPubKeyHex: state.identities[1]!.scriptPubKeyHex,
+        },
+      ],
+    },
+  });
+
+  const result = await anchorDomain({
+    domainName: "alpha-child",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["alpha-child"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_505_250,
+  });
+
+  assert.equal(result.status, "live");
 });
 
 for (const [label, tx1Vin] of [
-  [
-    "missing vin[1] funding support",
-    [
-      {
-        txid: "aa".repeat(32),
-        vout: 1,
-        scriptPubKeyHex: createAnchorCapableWalletState().identities[1]!.scriptPubKeyHex,
-      },
-    ],
-  ],
   [
     "non-funding vin[1] support",
     [
@@ -5635,20 +5784,96 @@ test("anchorDomain rejects a Tx2 decode when the provisional sender is not vin[0
     nowUnixMs: 1_700_000_506_000,
   }), /wallet_anchor_tx2_provisional_input_mismatch/);
 
-  assert.equal(harness.captured.calls[1]?.options.add_inputs, false);
+  assert.equal(harness.captured.calls[1]?.options.add_inputs, true);
+});
+
+test("anchorDomain accepts a Tx2 decode with no optional funding inputs after the provisional vin[0]", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-anchor-tx2-no-extra-funding-"));
+  const paths = createTempWalletPaths(tempRoot);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshot = structuredClone(await createSnapshotState());
+  const baseState = createAnchorCapableWalletState();
+  const state = {
+    ...baseState,
+    identities: baseState.identities.map((identity) =>
+      identity.index === 0
+        ? {
+          ...identity,
+          assignedDomainNames: ["weatherbot"],
+        }
+        : identity
+    ),
+    domains: [
+      ...baseState.domains,
+      {
+        name: "weatherbot",
+        domainId: 10,
+        dedicatedIndex: 0,
+        currentOwnerScriptPubKeyHex: baseState.funding.scriptPubKeyHex,
+        currentOwnerLocalIndex: 0,
+        canonicalChainStatus: "registered-unanchored" as const,
+        localAnchorIntent: "none" as const,
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      },
+    ],
+  } satisfies WalletStateV1;
+  addUnanchoredDomainToSnapshot({
+    snapshot,
+    domainId: 10,
+    domainName: "weatherbot",
+    ownerScriptPubKeyHex: state.funding.scriptPubKeyHex,
+  });
+  await writeInitialUnlockedState({
+    paths,
+    provider,
+    state,
+  });
+
+  const targetIdentity = deriveWalletIdentityMaterial(state.keys.accountXprv, 3);
+  const harness = createAnchorRpcHarness({
+    snapshotHeight: snapshot.history.currentHeight ?? 0,
+    fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    fundingAddress: state.funding.address,
+    senderScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    senderAddress: state.funding.address,
+    targetScriptPubKeyHex: targetIdentity.scriptPubKeyHex,
+    targetAddress: targetIdentity.address,
+    decodedVinOverrides: {
+      tx2: [
+        {
+          txid: "55".repeat(32),
+          vout: 1,
+          scriptPubKeyHex: targetIdentity.scriptPubKeyHex,
+        },
+      ],
+    },
+  });
+
+  const result = await anchorDomain({
+    domainName: "weatherbot",
+    dataDir: paths.bitcoinDataDir,
+    databasePath: join(tempRoot, "client.sqlite"),
+    provider,
+    paths,
+    prompter: new ScriptedPrompter(["weatherbot"]),
+    openReadContext: async () => createDynamicReadContext({ paths, provider, snapshot }),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile: "/tmp/does-not-matter",
+        port: 18_443,
+      },
+    } as never),
+    rpcFactory: harness.rpcFactory,
+    nowUnixMs: 1_700_000_506_250,
+  });
+
+  assert.equal(result.status, "live");
 });
 
 for (const [label, tx2Vin] of [
-  [
-    "missing vin[1] funding support",
-    [
-      {
-        txid: "55".repeat(32),
-        vout: 1,
-        scriptPubKeyHex: deriveWalletIdentityMaterial(createAnchorCapableWalletState().keys.accountXprv, 3).scriptPubKeyHex,
-      },
-    ],
-  ],
   [
     "non-funding vin[1] support",
     [

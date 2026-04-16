@@ -30,15 +30,19 @@ import {
 } from "../cogop/index.js";
 import { openWalletReadContext, type WalletReadContext } from "../read/index.js";
 import {
+  assertFixedInputPrefixMatches,
+  assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransaction,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
+  outpointKey,
   pauseMiningForWalletMutation,
   saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
   type BuiltWalletMutationTransaction,
+  type FixedWalletInput,
   type MutationSender,
   type WalletMutationRpcClient,
 } from "./common.js";
@@ -64,13 +68,14 @@ interface DomainMarketRpcClient extends WalletMutationRpcClient {
 interface DomainMarketPlan {
   sender: MutationSender;
   changeAddress: string;
-  inputs: Array<{ txid: string; vout: number }>;
+  fixedInputs: FixedWalletInput[];
   outputs: unknown[];
   changePosition: number;
   expectedOpReturnScriptHex: string;
   expectedAnchorScriptHex: string | null;
   expectedAnchorValueSats: bigint | null;
   allowedFundingScriptPubKeyHex: string;
+  eligibleFundingOutpointKeys: Set<string>;
   errorPrefix: string;
 }
 
@@ -529,11 +534,8 @@ function buildPlanForDomainOperation(options: {
     return {
       sender: options.sender,
       changeAddress: options.state.funding.address,
-      inputs: [
+      fixedInputs: [
         { txid: senderUtxo.txid, vout: senderUtxo.vout },
-        ...fundingUtxos
-          .filter((entry) => !(entry.txid === senderUtxo.txid && entry.vout === senderUtxo.vout))
-          .map((entry) => ({ txid: entry.txid, vout: entry.vout })),
       ],
       outputs,
       changePosition: 1,
@@ -541,6 +543,11 @@ function buildPlanForDomainOperation(options: {
       expectedAnchorScriptHex: null,
       expectedAnchorValueSats: null,
       allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+      eligibleFundingOutpointKeys: new Set(
+        fundingUtxos
+          .filter((entry) => !(entry.txid === senderUtxo.txid && entry.vout === senderUtxo.vout))
+          .map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout })),
+      ),
       errorPrefix: options.errorPrefix,
     };
   }
@@ -565,9 +572,8 @@ function buildPlanForDomainOperation(options: {
   return {
     sender: options.sender,
     changeAddress: options.state.funding.address,
-    inputs: [
+    fixedInputs: [
       { txid: anchorUtxo.txid, vout: anchorUtxo.vout },
-      ...fundingUtxos.map((entry) => ({ txid: entry.txid, vout: entry.vout })),
     ],
     outputs,
     changePosition: 2,
@@ -575,6 +581,7 @@ function buildPlanForDomainOperation(options: {
     expectedAnchorScriptHex: options.sender.scriptPubKeyHex,
     expectedAnchorValueSats: options.anchorValueSats,
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
+    eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
     errorPrefix: options.errorPrefix,
   };
 }
@@ -591,15 +598,19 @@ function validateFundedDraft(
     throw new Error(`${plan.errorPrefix}_missing_sender_input`);
   }
 
+  assertFixedInputPrefixMatches(inputs, plan.fixedInputs, `${plan.errorPrefix}_sender_input_mismatch`);
+
   if (inputs[0]?.prevout?.scriptPubKey?.hex !== plan.sender.scriptPubKeyHex) {
     throw new Error(`${plan.errorPrefix}_sender_input_mismatch`);
   }
 
-  for (let index = 1; index < inputs.length; index += 1) {
-    if (inputs[index]?.prevout?.scriptPubKey?.hex !== plan.allowedFundingScriptPubKeyHex) {
-      throw new Error(`${plan.errorPrefix}_unexpected_funding_input`);
-    }
-  }
+  assertFundingInputsAfterFixedPrefix({
+    inputs,
+    fixedInputs: plan.fixedInputs,
+    allowedFundingScriptPubKeyHex: plan.allowedFundingScriptPubKeyHex,
+    eligibleFundingOutpointKeys: plan.eligibleFundingOutpointKeys,
+    errorCode: `${plan.errorPrefix}_unexpected_funding_input`,
+  });
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
@@ -635,11 +646,13 @@ function validateFundedDraft(
 async function buildTransaction(options: {
   rpc: DomainMarketRpcClient;
   walletName: string;
+  state: WalletStateV1;
   plan: DomainMarketPlan;
 }): Promise<BuiltDomainMarketTransaction> {
   return buildWalletMutationTransaction({
     rpc: options.rpc,
     walletName: options.walletName,
+    state: options.state,
     plan: options.plan,
     validateFundedDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
@@ -1175,6 +1188,7 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
       const built = await buildTransaction({
         rpc,
         walletName,
+        state: nextState,
         plan: buildPlanForDomainOperation({
           state: nextState,
           allUtxos: await rpc.listUnspent(walletName, 1),
@@ -1431,6 +1445,7 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
       const built = await buildTransaction({
         rpc,
         walletName,
+        state: nextState,
         plan: buildPlanForDomainOperation({
           state: nextState,
           allUtxos: await rpc.listUnspent(walletName, 1),
@@ -1697,6 +1712,7 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
       const built = await buildTransaction({
         rpc,
         walletName,
+        state: nextState,
         plan: buildPlanForDomainOperation({
           state: nextState,
           allUtxos: await rpc.listUnspent(walletName, 1),
