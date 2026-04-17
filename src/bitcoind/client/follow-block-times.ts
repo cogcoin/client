@@ -1,7 +1,7 @@
 import type { Client, ClientStoreAdapter } from "../../types.js";
 import type { BitcoinRpcClient } from "../rpc.js";
 
-const FOLLOW_VISIBLE_PRIOR_BLOCKS = 4;
+export const FOLLOW_VISIBLE_PRIOR_BLOCKS = 4;
 
 export async function loadVisibleFollowBlockTimes(
   options: {

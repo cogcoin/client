@@ -3,6 +3,7 @@ import { createBootstrapProgress } from "../../bitcoind/progress/formatting.js";
 import {
   advanceFollowSceneState,
   createFollowSceneState,
+  replaceFollowBlockTimes,
   syncFollowSceneState,
 } from "../../bitcoind/progress/follow-scene.js";
 import {
@@ -50,6 +51,7 @@ export interface MiningRecentWinSummary {
 export interface MiningFollowVisualizerState {
   balanceCogtoshi: bigint | null;
   balanceSats: bigint | null;
+  visibleBlockTimesByHeight: Record<number, number>;
   settledBlockHeight: number | null;
   settledBoardEntries: MiningSentenceBoardEntry[];
   provisionalRequiredWords: readonly string[];
@@ -148,6 +150,7 @@ export function createEmptyMiningFollowVisualizerState(): MiningFollowVisualizer
   return {
     balanceCogtoshi: null,
     balanceSats: null,
+    visibleBlockTimesByHeight: {},
     settledBlockHeight: null,
     settledBoardEntries: [],
     provisionalRequiredWords: [],
@@ -324,6 +327,7 @@ export class MiningFollowVisualizer {
     if (uiState !== undefined) {
       this.#latestUiState = uiState;
     }
+    replaceFollowBlockTimes(this.#scene, this.#latestUiState.visibleBlockTimesByHeight);
     const indexedHeight = snapshot.indexerTipHeight ?? snapshot.coreBestHeight ?? null;
     const nodeHeight = snapshot.coreBestHeight ?? indexedHeight;
     syncFollowSceneState(this.#scene, {

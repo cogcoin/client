@@ -11,12 +11,15 @@ import {
   cacheSelectedCandidateForTipForTesting,
   createMiningLoopStateForTesting,
   getSelectedCandidateForTipForTesting,
+  loadMiningVisibleFollowBlockTimesForTesting,
   publishCandidateForTesting,
   refreshMiningCandidateFromCurrentStateForTesting,
+  resolveFundingDisplaySatsForTesting,
   resetMiningUiForTipForTesting,
   resolveSettledBoardForTesting,
   resolveMiningConflictOutpointForTesting,
   shouldKeepCurrentTipLivePublishForTesting,
+  syncMiningVisualizerBlockTimesForTesting,
 } from "../src/wallet/mining/runner.js";
 import { createMiningState, createWalletReadContext, createWalletState } from "./current-model-helpers.js";
 
@@ -348,6 +351,88 @@ test("shared mining conflict inputs are reused only for verified in-mempool live
     txid: "aa".repeat(32),
     vout: 0,
   });
+});
+
+test("funding display sats includes unconfirmed funding change so the mine SAT counter stays nonzero", async () => {
+  const state = createWalletState();
+  const sats = await resolveFundingDisplaySatsForTesting(state, {
+    listUnspent: async () => [
+      {
+        txid: "11".repeat(32),
+        vout: 0,
+        amount: 0.00009,
+        scriptPubKey: state.funding.scriptPubKeyHex,
+        confirmations: 0,
+        spendable: true,
+        safe: false,
+      },
+      {
+        txid: "22".repeat(32),
+        vout: 1,
+        amount: 0.5,
+        scriptPubKey: state.funding.scriptPubKeyHex,
+        confirmations: 0,
+        spendable: false,
+        safe: true,
+      },
+      {
+        txid: "33".repeat(32),
+        vout: 2,
+        amount: 0.75,
+        scriptPubKey: "0014" + "22".repeat(20),
+        confirmations: 3,
+        spendable: true,
+        safe: true,
+      },
+    ],
+  } as any);
+
+  assert.equal(sats, 9_000n);
+});
+
+test("mining visible follow block times load from the indexed tip and sync into the visualizer state", async () => {
+  const blockTimes = await loadMiningVisibleFollowBlockTimesForTesting({
+    indexedTipHeight: 100,
+    indexedTipHashHex: "aa".repeat(32),
+    rpc: {
+      getBlock: async (hashHex: string) => {
+        if (hashHex === "aa".repeat(32)) {
+          return {
+            hash: hashHex,
+            height: 100,
+            time: 1_000,
+            previousblockhash: "bb".repeat(32),
+          };
+        }
+
+        if (hashHex === "bb".repeat(32)) {
+          return {
+            hash: hashHex,
+            height: 99,
+            time: 940,
+            previousblockhash: "cc".repeat(32),
+          };
+        }
+
+        return {
+          hash: hashHex,
+          height: 98,
+          time: 880,
+          previousblockhash: null,
+        };
+      },
+    },
+  } as any);
+
+  const loopState = createMiningLoopStateForTesting();
+  syncMiningVisualizerBlockTimesForTesting(loopState, blockTimes);
+
+  assert.deepEqual(blockTimes, {
+    100: 1_000,
+    99: 940,
+    98: 880,
+  });
+  assert.deepEqual(loopState.ui.visibleBlockTimesByHeight, blockTimes);
 });
 
 test("publish candidate returns a same-tip retry result after missing inputs", async () => {

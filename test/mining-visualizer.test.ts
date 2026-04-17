@@ -7,6 +7,7 @@ import {
   describeMiningVisualizerProgress,
   describeMiningVisualizerStatus,
 } from "../src/wallet/mining/visualizer.js";
+import { renderFollowFrameForTesting } from "../src/bitcoind/progress/follow-scene.js";
 import type { FollowSceneRenderOptions } from "../src/bitcoind/progress/tty-renderer.js";
 import type { MiningRuntimeStatusV1 } from "../src/wallet/mining/types.js";
 import type { MiningFollowVisualizerState } from "../src/wallet/mining/visualizer.js";
@@ -257,6 +258,96 @@ test("mining visualizer descriptions surface zero-reward and note overrides", ()
   });
 
   assert.equal(describeMiningVisualizerProgress(notedSnapshot), "Custom mining note.");
+});
+
+test("mining follow visualizer renders and advances follow-style age labels when block times are provided", () => {
+  const clock = new FakeClock(180_000);
+  const renderedFrames: string[] = [];
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    clock,
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        followScene,
+        statusFieldText,
+        renderOptions,
+      ) {
+        renderedFrames.push(renderFollowFrameForTesting(
+          followScene,
+          statusFieldText ?? "",
+          clock.now(),
+          {
+            artworkCogText: renderOptions?.artworkCogText ?? null,
+            artworkSatText: renderOptions?.artworkSatText ?? null,
+          },
+        ).join("\n"));
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot({
+    currentPhase: "waiting",
+  }), createUiState({
+    visibleBlockTimesByHeight: {
+      100: 60,
+    },
+  }));
+
+  assert.match(renderedFrames[0] ?? "", /\b2m\b/);
+
+  clock.advance(60_000);
+
+  assert.ok(renderedFrames.some((frame) => /\b3m\b/.test(frame)));
+  visualizer.close();
+});
+
+test("mining follow visualizer omits age labels when block times are unavailable", () => {
+  const clock = new FakeClock(180_000);
+  const renderedFrames: string[] = [];
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    clock,
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        followScene,
+        statusFieldText,
+        renderOptions,
+      ) {
+        renderedFrames.push(renderFollowFrameForTesting(
+          followScene,
+          statusFieldText ?? "",
+          clock.now(),
+          {
+            artworkCogText: renderOptions?.artworkCogText ?? null,
+            artworkSatText: renderOptions?.artworkSatText ?? null,
+          },
+        ).join("\n"));
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot({
+    currentPhase: "waiting",
+  }), createUiState());
+  visualizer.close();
+
+  assert.doesNotMatch(renderedFrames[0] ?? "", /\b\d+[smhd]\b/);
 });
 
 test("mining follow visualizer keeps the sentence board and footer block permanently allocated", () => {

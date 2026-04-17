@@ -17,6 +17,7 @@ import {
 } from "@cogcoin/scoring";
 
 import { probeIndexerDaemon } from "../../bitcoind/indexer-daemon.js";
+import { FOLLOW_VISIBLE_PRIOR_BLOCKS } from "../../bitcoind/client/follow-block-times.js";
 import { attachOrStartManagedBitcoindService } from "../../bitcoind/service.js";
 import { createRpcClient } from "../../bitcoind/node.js";
 import type { ProgressOutputMode } from "../../bitcoind/types.js";
@@ -109,6 +110,13 @@ type MiningRpcClient = WalletMutationRpcClient & {
   getNetworkInfo(): Promise<{
     networkactive: boolean;
     connections_out?: number;
+  }>;
+  getBlockHash(height: number): Promise<string>;
+  getBlock(hashHex: string): Promise<{
+    hash: string;
+    previousblockhash?: string;
+    height: number;
+    time?: number;
   }>;
   getMempoolInfo(): Promise<{
     loaded: boolean;
@@ -722,21 +730,62 @@ function clearSelectedCandidate(loopState: MiningLoopState): void {
   loopState.selectedCandidate = null;
 }
 
-async function resolveFundingSpendableSats(state: WalletStateV1, rpc: MiningRpcClient): Promise<bigint> {
-  const utxos = await rpc.listUnspent(state.managedCoreWallet.walletName, 1);
+async function resolveFundingDisplaySats(state: WalletStateV1, rpc: MiningRpcClient): Promise<bigint> {
+  const utxos = await rpc.listUnspent(state.managedCoreWallet.walletName, 0);
 
   return utxos.reduce((sum, entry) => {
     if (
       entry.scriptPubKey !== state.funding.scriptPubKeyHex
-      || entry.confirmations < 1
       || entry.spendable === false
-      || entry.safe === false
     ) {
       return sum;
     }
 
     return sum + numberToSats(entry.amount);
   }, 0n);
+}
+
+export async function resolveFundingDisplaySatsForTesting(state: WalletStateV1, rpc: MiningRpcClient): Promise<bigint> {
+  return resolveFundingDisplaySats(state, rpc);
+}
+
+async function loadMiningVisibleFollowBlockTimes(options: {
+  rpc: MiningRpcClient;
+  indexedTipHeight: number | null;
+  indexedTipHashHex: string | null;
+}): Promise<Record<number, number>> {
+  if (options.indexedTipHeight === null || options.indexedTipHashHex === null) {
+    return {};
+  }
+
+  const blockTimesByHeight: Record<number, number> = {};
+  let currentHeight = options.indexedTipHeight;
+  let currentHashHex: string | null = options.indexedTipHashHex;
+
+  for (let offset = 0; offset <= FOLLOW_VISIBLE_PRIOR_BLOCKS; offset += 1) {
+    if (currentHeight < 0 || currentHashHex === null) {
+      break;
+    }
+
+    const block = await options.rpc.getBlock(currentHashHex);
+
+    if (typeof block.time === "number") {
+      blockTimesByHeight[currentHeight] = block.time;
+    }
+
+    currentHashHex = block.previousblockhash ?? null;
+    currentHeight -= 1;
+  }
+
+  return blockTimesByHeight;
+}
+
+export async function loadMiningVisibleFollowBlockTimesForTesting(options: {
+  rpc: MiningRpcClient;
+  indexedTipHeight: number | null;
+  indexedTipHashHex: string | null;
+}): Promise<Record<number, number>> {
+  return loadMiningVisibleFollowBlockTimes(options);
 }
 
 function syncMiningVisualizerBalances(
@@ -748,6 +797,17 @@ function syncMiningVisualizerBalances(
     ? null
     : getBalance(readContext.snapshot.state, readContext.localState.state.funding.scriptPubKeyHex);
   loopState.ui.balanceSats = balanceSats;
+}
+
+function syncMiningVisualizerBlockTimes(loopState: MiningLoopState, blockTimesByHeight: Record<number, number>): void {
+  loopState.ui.visibleBlockTimesByHeight = { ...blockTimesByHeight };
+}
+
+export function syncMiningVisualizerBlockTimesForTesting(
+  loopState: MiningLoopState,
+  blockTimesByHeight: Record<number, number>,
+): void {
+  syncMiningVisualizerBlockTimes(loopState, blockTimesByHeight);
 }
 
 function findRecentMiningWin(
@@ -2802,6 +2862,14 @@ async function performMiningCycle(options: {
       options.loopState.ui.latestTxid = effectiveReadContext.localState.state.miningState.currentTxid;
     }
 
+    const indexedTip = effectiveReadContext.snapshot?.tip ?? effectiveReadContext.indexer.snapshotTip ?? null;
+    const visibleBlockTimes = await loadMiningVisibleFollowBlockTimes({
+      rpc,
+      indexedTipHeight: indexedTip?.height ?? null,
+      indexedTipHashHex: indexedTip?.blockHashHex ?? null,
+    }).catch(() => ({}));
+    syncMiningVisualizerBlockTimes(options.loopState, visibleBlockTimes);
+
     if (effectiveReadContext.localState.state.miningState.state === "repair-required") {
       await refreshAndSaveStatus({
         paths: options.paths,
@@ -2956,8 +3024,8 @@ async function performMiningCycle(options: {
       targetBlockHeight,
     );
 
-    const spendableSats = await resolveFundingSpendableSats(effectiveReadContext.localState.state, rpc).catch(() => null);
-    syncMiningVisualizerBalances(options.loopState, effectiveReadContext, spendableSats);
+    const displaySats = await resolveFundingDisplaySats(effectiveReadContext.localState.state, rpc).catch(() => null);
+    syncMiningVisualizerBalances(options.loopState, effectiveReadContext, displaySats);
 
     if (getBlockRewardCogtoshi(targetBlockHeight) === 0n) {
       const nextState = defaultMiningStatePatch(effectiveReadContext.localState.state, {
