@@ -291,12 +291,11 @@ function createInitialWalletState(options: {
   internalCoreWalletPassphrase: string;
 }): WalletStateV1 {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     stateRevision: 1,
     lastWrittenAtUnixMs: options.nowUnixMs,
     walletRootId: options.walletRootId,
     network: "mainnet",
-    anchorValueSats: 2_000,
     localScriptPubKeyHexes: [options.material.funding.scriptPubKeyHex],
     mnemonic: {
       phrase: options.material.mnemonic.phrase,

@@ -22,7 +22,6 @@ import {
   type WalletSecretProvider,
 } from "../state/provider.js";
 import type {
-  OutpointRecord,
   DomainRecord,
   PendingMutationRecord,
   PendingMutationStatus,
@@ -86,9 +85,6 @@ interface RegisterTransactionPlan {
   expectedTreasuryOutputIndex: number | null;
   expectedTreasuryScriptHex: string | null;
   expectedTreasuryValueSats: bigint | null;
-  expectedAnchorOutputIndex: number | null;
-  expectedAnchorScriptHex: string | null;
-  expectedAnchorValueSats: bigint | null;
   allowedFundingScriptPubKeyHex: string;
   eligibleFundingOutpointKeys: Set<string>;
 }
@@ -121,7 +117,6 @@ interface ResolvedRegisterSender {
   parentDomainName: string | null;
   sender: MutationSender;
   senderSelector: string;
-  anchorOutpoint: OutpointRecord | null;
 }
 
 export interface RegisterDomainResult {
@@ -269,8 +264,6 @@ function buildRootRegisterOutputs(options: {
   treasuryAddress: string;
   treasuryScriptPubKeyHex: string;
   priceSats: bigint;
-  senderAddress: string | null;
-  anchorValueSats: bigint | null;
 }): {
   outputs: unknown[];
   changePosition: number;
@@ -282,10 +275,6 @@ function buildRootRegisterOutputs(options: {
     { [options.treasuryAddress]: satsToBtcNumber(options.priceSats) },
   ];
 
-  if (options.senderAddress !== null && options.anchorValueSats !== null) {
-    outputs.push({ [options.senderAddress]: satsToBtcNumber(options.anchorValueSats) });
-  }
-
   return {
     outputs,
     changePosition: outputs.length,
@@ -295,8 +284,6 @@ function buildRootRegisterOutputs(options: {
 
 function buildSubdomainRegisterOutputs(options: {
   domainName: string;
-  senderAddress: string;
-  anchorValueSats: bigint;
 }): {
   outputs: unknown[];
   changePosition: number;
@@ -304,11 +291,8 @@ function buildSubdomainRegisterOutputs(options: {
 } {
   const payload = serializeDomainReg(options.domainName).opReturnData;
   return {
-    outputs: [
-      { data: Buffer.from(payload).toString("hex") },
-      { [options.senderAddress]: satsToBtcNumber(options.anchorValueSats) },
-    ],
-    changePosition: 2,
+    outputs: [{ data: Buffer.from(payload).toString("hex") }],
+    changePosition: 1,
     expectedOpReturnScriptHex: encodeOpReturnScript(payload),
   };
 }
@@ -458,7 +442,6 @@ function reserveLocalDomainRecord(options: {
         domainId: null,
         currentOwnerScriptPubKeyHex: options.sender.scriptPubKeyHex,
         canonicalChainStatus: "unknown",
-        currentCanonicalAnchorOutpoint: null,
         foundingMessageText: existing?.foundingMessageText ?? null,
         birthTime: Math.floor(options.nowUnixMs / 1000),
       },
@@ -485,28 +468,6 @@ function getMutationStatusAfterAcceptance(options: {
     : "live";
 }
 
-function resolveRootRegisterAnchorOutpoint(
-  state: WalletStateV1,
-): OutpointRecord | null {
-  const anchoredDomain = state.domains.find((domain) =>
-    domain.currentOwnerScriptPubKeyHex === state.funding.scriptPubKeyHex
-    && domain.canonicalChainStatus === "anchored"
-    && domain.currentCanonicalAnchorOutpoint !== null
-  ) ?? null;
-
-  if (
-    anchoredDomain?.currentCanonicalAnchorOutpoint === undefined
-    || anchoredDomain?.currentCanonicalAnchorOutpoint === null
-  ) {
-    return null;
-  }
-
-  return {
-    txid: anchoredDomain.currentCanonicalAnchorOutpoint.txid,
-    vout: anchoredDomain.currentCanonicalAnchorOutpoint.vout,
-  };
-}
-
 function resolveRegisterSender(
   context: WalletReadContext & {
     localState: {
@@ -531,7 +492,6 @@ function resolveRegisterSender(
       parentDomainName: null,
       senderSelector: context.model.walletAddress,
       sender: createFundingMutationSender(state),
-      anchorOutpoint: null,
     };
   }
 
@@ -553,21 +513,11 @@ function resolveRegisterSender(
     throw new Error("wallet_register_insufficient_cog_balance");
   }
 
-  const localParentRecord = state.domains.find((domain) => domain.name === parent.parentName) ?? null;
-  const anchorOutpoint = localParentRecord?.currentCanonicalAnchorOutpoint ?? null;
-  if (anchorOutpoint === null) {
-    throw new Error("wallet_register_anchor_outpoint_unavailable");
-  }
-
   return {
     registerKind: "subdomain",
     parentDomainName: parent.parentName,
     senderSelector: context.model.walletAddress,
     sender: createFundingMutationSender(state),
-    anchorOutpoint: {
-      txid: anchorOutpoint.txid,
-      vout: anchorOutpoint.vout,
-    },
   };
 }
 
@@ -645,19 +595,7 @@ function validateFundedDraft(
     }
   }
 
-  if (plan.expectedAnchorScriptHex !== null && plan.expectedAnchorOutputIndex !== null) {
-    if (outputs[plan.expectedAnchorOutputIndex]?.scriptPubKey?.hex !== plan.expectedAnchorScriptHex) {
-      throw new Error("wallet_register_anchor_output_mismatch");
-    }
-
-    if (valueToSats(outputs[plan.expectedAnchorOutputIndex]?.value ?? 0) !== (plan.expectedAnchorValueSats ?? 0n)) {
-      throw new Error("wallet_register_anchor_value_mismatch");
-    }
-  }
-
-  const expectedWithoutChange = 1
-    + Number(plan.expectedTreasuryOutputIndex !== null)
-    + Number(plan.expectedAnchorOutputIndex !== null);
+  const expectedWithoutChange = 1 + Number(plan.expectedTreasuryOutputIndex !== null);
   if (funded.changepos === -1) {
     if (outputs.length !== expectedWithoutChange) {
       throw new Error("wallet_register_unexpected_output_count");
@@ -679,13 +617,11 @@ function buildRegisterPlan(options: {
   state: WalletStateV1;
   allUtxos: RpcListUnspentEntry[];
   sender: MutationSender;
-  anchorOutpoint: OutpointRecord | null;
   registerKind: "root" | "subdomain";
   domainName: string;
   parentDomainName: string | null;
   treasuryAddress: string;
   treasuryScriptPubKeyHex: string;
-  anchorValueSats: bigint;
   rootPriceSats: bigint;
 }): RegisterTransactionPlan {
   const fundingUtxos = listFundingUtxos(options.allUtxos, options.state.funding.scriptPubKeyHex);
@@ -696,100 +632,39 @@ function buildRegisterPlan(options: {
       treasuryAddress: options.treasuryAddress,
       treasuryScriptPubKeyHex: options.treasuryScriptPubKeyHex,
       priceSats: options.rootPriceSats,
-      senderAddress: options.anchorOutpoint === null ? null : options.sender.address,
-      anchorValueSats: options.anchorOutpoint === null ? null : options.anchorValueSats,
     });
-
-    if (options.anchorOutpoint === null) {
-      return {
-        registerKind: "root",
-        sender: options.sender,
-        changeAddress: options.state.funding.address,
-        fixedInputs: [],
-        outputs: rootOutputs.outputs,
-        changePosition: rootOutputs.changePosition,
-        expectedOpReturnScriptHex: rootOutputs.expectedOpReturnScriptHex,
-        expectedTreasuryOutputIndex: 1,
-        expectedTreasuryScriptHex: options.treasuryScriptPubKeyHex,
-        expectedTreasuryValueSats: options.rootPriceSats,
-        expectedAnchorOutputIndex: null,
-        expectedAnchorScriptHex: null,
-        expectedAnchorValueSats: null,
-        allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
-        eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey(entry))),
-      };
-    }
-
-    const anchorUtxo = options.allUtxos.find((entry) =>
-      entry.txid === options.anchorOutpoint?.txid
-      && entry.vout === options.anchorOutpoint.vout
-      && entry.scriptPubKey === options.sender.scriptPubKeyHex
-      && isSpendableConfirmedUtxo(entry)
-    );
-
-    if (anchorUtxo === undefined) {
-      throw new Error("wallet_register_anchor_utxo_missing");
-    }
 
     return {
       registerKind: "root",
       sender: options.sender,
       changeAddress: options.state.funding.address,
-      fixedInputs: [
-        { txid: anchorUtxo.txid, vout: anchorUtxo.vout },
-      ],
+      fixedInputs: [],
       outputs: rootOutputs.outputs,
       changePosition: rootOutputs.changePosition,
       expectedOpReturnScriptHex: rootOutputs.expectedOpReturnScriptHex,
       expectedTreasuryOutputIndex: 1,
       expectedTreasuryScriptHex: options.treasuryScriptPubKeyHex,
       expectedTreasuryValueSats: options.rootPriceSats,
-      expectedAnchorOutputIndex: 2,
-      expectedAnchorScriptHex: options.sender.scriptPubKeyHex,
-      expectedAnchorValueSats: options.anchorValueSats,
       allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
       eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey(entry))),
     };
   }
 
-  const anchor = options.anchorOutpoint;
-  if (anchor === null) {
-    throw new Error("wallet_register_anchor_outpoint_unavailable");
-  }
-
-  const anchorUtxo = options.allUtxos.find((entry) =>
-    entry.txid === anchor.txid
-    && entry.vout === anchor.vout
-    && entry.scriptPubKey === options.sender.scriptPubKeyHex
-    && isSpendableConfirmedUtxo(entry)
-  );
-
-  if (anchorUtxo === undefined) {
-    throw new Error("wallet_register_anchor_utxo_missing");
-  }
-
   const subdomainOutputs = buildSubdomainRegisterOutputs({
     domainName: options.domainName,
-    senderAddress: options.sender.address,
-    anchorValueSats: options.anchorValueSats,
   });
 
   return {
     registerKind: "subdomain",
     sender: options.sender,
     changeAddress: options.state.funding.address,
-    fixedInputs: [
-      { txid: anchorUtxo.txid, vout: anchorUtxo.vout },
-    ],
+    fixedInputs: [],
     outputs: subdomainOutputs.outputs,
     changePosition: subdomainOutputs.changePosition,
     expectedOpReturnScriptHex: subdomainOutputs.expectedOpReturnScriptHex,
     expectedTreasuryOutputIndex: null,
     expectedTreasuryScriptHex: null,
     expectedTreasuryValueSats: null,
-    expectedAnchorOutputIndex: 1,
-    expectedAnchorScriptHex: options.sender.scriptPubKeyHex,
-    expectedAnchorValueSats: options.anchorValueSats,
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
     eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey(entry))),
   };
@@ -1123,13 +998,11 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
         state: nextState,
         allUtxos,
         sender: senderResolution.sender,
-        anchorOutpoint: senderResolution.anchorOutpoint,
         registerKind: senderResolution.registerKind,
         domainName: normalizedDomainName,
         parentDomainName: senderResolution.parentDomainName,
         treasuryAddress: genesis.treasuryAddress,
         treasuryScriptPubKeyHex: Buffer.from(genesis.treasuryScriptPubKey).toString("hex"),
-        anchorValueSats: BigInt(nextState.anchorValueSats),
         rootPriceSats,
       });
       const built = await buildRegisterTransaction({

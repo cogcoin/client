@@ -55,7 +55,7 @@ function createHookState() {
   };
 }
 
-test("normalizeWalletStateRecord migrates legacy multi-identity state into schema 4", () => {
+test("normalizeWalletStateRecord migrates legacy multi-identity state into schema 5", () => {
   const normalized = normalizeWalletStateRecord({
     schemaVersion: 1,
     stateRevision: 7,
@@ -146,7 +146,7 @@ test("normalizeWalletStateRecord migrates legacy multi-identity state into schem
     hookClientState: createHookState(),
   } as unknown as Parameters<typeof normalizeWalletStateRecord>[0]);
 
-  assert.equal(normalized.schemaVersion, 4);
+  assert.equal(normalized.schemaVersion, 5);
   assert.equal(normalized.managedCoreWallet.walletAddress, "bc1qfunding");
   assert.equal(normalized.managedCoreWallet.walletScriptPubKeyHex, "0014" + "11".repeat(20));
   assert.deepEqual(normalized.localScriptPubKeyHexes, [
@@ -161,12 +161,11 @@ test("normalizeWalletStateRecord migrates legacy multi-identity state into schem
 
 test("createWalletReadModel exposes one wallet address and treats historical local scripts as local owners", () => {
   const model = createWalletReadModel({
-    schemaVersion: 4,
+    schemaVersion: 5,
     stateRevision: 1,
     lastWrittenAtUnixMs: 100,
     walletRootId: "wallet-root",
     network: "mainnet",
-    anchorValueSats: 2_000,
     localScriptPubKeyHexes: ["0014" + "77".repeat(20)],
     mnemonic: {
       phrase: "abandon ".repeat(23) + "art",
@@ -206,7 +205,6 @@ test("createWalletReadModel exposes one wallet address and treats historical loc
         domainId: 1,
         currentOwnerScriptPubKeyHex: "0014" + "11".repeat(20),
         canonicalChainStatus: "registered-unanchored",
-        currentCanonicalAnchorOutpoint: null,
         foundingMessageText: null,
         birthTime: 1,
       },
@@ -215,7 +213,6 @@ test("createWalletReadModel exposes one wallet address and treats historical loc
         domainId: 2,
         currentOwnerScriptPubKeyHex: "0014" + "77".repeat(20),
         canonicalChainStatus: "anchored",
-        currentCanonicalAnchorOutpoint: { txid: "aa".repeat(32), vout: 1, valueSats: 2_000 },
         foundingMessageText: "legacy",
         birthTime: 2,
       },

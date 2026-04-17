@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { normalizeWalletStateRecord } from "../src/wallet/coin-control.js";
 
-test("wallet state normalization keeps schema 4 and drops old reserve baggage", () => {
+test("wallet state normalization keeps schema 5 and drops old reserve baggage", () => {
   const normalized = normalizeWalletStateRecord({
     schemaVersion: 1,
     stateRevision: 1,
@@ -88,7 +88,7 @@ test("wallet state normalization keeps schema 4 and drops old reserve baggage", 
     },
   } as any);
 
-  assert.equal(normalized.schemaVersion, 4);
+  assert.equal(normalized.schemaVersion, 5);
   assert.equal(normalized.miningState.livePublishInMempool, true);
   assert.equal("proactiveReserveSats" in normalized, false);
   assert.equal("proactiveReserveOutpoints" in normalized, false);

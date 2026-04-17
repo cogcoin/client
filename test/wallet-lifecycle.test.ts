@@ -32,12 +32,11 @@ function createRepairWalletState(overrides: {
   const walletRootId = overrides.walletRootId ?? "wallet-root";
 
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     stateRevision: 1,
     lastWrittenAtUnixMs: 1,
     walletRootId,
     network: "mainnet",
-    anchorValueSats: 2_000,
     localScriptPubKeyHexes: [material.funding.scriptPubKeyHex],
     mnemonic: {
       phrase: material.mnemonic.phrase,

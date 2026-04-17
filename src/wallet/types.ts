@@ -83,9 +83,6 @@ export interface DomainRecord {
     | "unknown"
     | "registered-unanchored"
     | "anchored";
-  currentCanonicalAnchorOutpoint:
-    | { txid: string; vout: number; valueSats: number }
-    | null;
   foundingMessageText: string | null;
   birthTime: number | null;
 }
@@ -130,12 +127,11 @@ export interface MiningStateRecord {
 }
 
 export interface WalletStateV1 {
-  schemaVersion: 4;
+  schemaVersion: 5;
   stateRevision: number;
   lastWrittenAtUnixMs: number;
   walletRootId: string;
   network: WalletNetwork;
-  anchorValueSats: number;
   localScriptPubKeyHexes?: ScriptPubKeyHex[];
   mnemonic: {
     phrase: string;

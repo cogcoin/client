@@ -30,10 +30,6 @@ function createTestMiningCandidate(overrides: Record<string, unknown> = {}) {
       scriptPubKeyHex: "0014" + "11".repeat(20),
       address: "bc1qfunding",
     },
-    anchorOutpoint: {
-      txid: "aa".repeat(32),
-      vout: 0,
-    },
     sentence: "Under the trees, a monkey helped the youth place a basket on the bike for the hamster.",
     encodedSentenceBytes: Buffer.from("candidate", "utf8"),
     bip39WordIndices: [1, 2, 3, 4, 5],
@@ -47,28 +43,28 @@ function createTestMiningCandidate(overrides: Record<string, unknown> = {}) {
 }
 
 function createReadyMiningReadContext(options: {
-  anchorOutpoint: { txid: string; vout: number };
   miningState?: ReturnType<typeof createMiningState>;
   close?: () => Promise<void>;
 }) {
+  const walletScriptPubKeyHex = "0014" + "11".repeat(20);
   const state = createWalletState({
     managedCoreWallet: {
       walletName: "wallet.dat",
       internalPassphrase: "passphrase",
       descriptorChecksum: "abcd1234",
       walletAddress: "bc1qfunding",
-      walletScriptPubKeyHex: "0014" + "11".repeat(20),
+      walletScriptPubKeyHex,
       proofStatus: "ready",
       lastImportedAtUnixMs: null,
       lastVerifiedAtUnixMs: null,
     },
     domains: [{
       name: "cogdemo",
-      currentCanonicalAnchorOutpoint: {
-        txid: options.anchorOutpoint.txid,
-        vout: options.anchorOutpoint.vout,
-        valueSats: 2_000,
-      },
+      domainId: 7,
+      currentOwnerScriptPubKeyHex: walletScriptPubKeyHex,
+      canonicalChainStatus: "anchored",
+      foundingMessageText: null,
+      birthTime: null,
     } as any],
     miningState: options.miningState ?? createMiningState(),
   });
@@ -263,23 +259,25 @@ test("settled mining board resolves previous-block winners and falls back when d
   ]);
 });
 
-test("publish-time candidate refresh rebinds to the latest canonical anchor outpoint", () => {
-  const candidate = createTestMiningCandidate();
+test("publish-time candidate refresh updates sender metadata from current state", () => {
+  const candidate = createTestMiningCandidate({
+    domainName: "stale-name",
+    localIndex: 99,
+    sender: {
+      localIndex: 99,
+      scriptPubKeyHex: "0014" + "22".repeat(20),
+      address: "bc1qstale",
+    },
+  });
   const refreshed = refreshMiningCandidateFromCurrentStateForTesting(
-    createReadyMiningReadContext({
-      anchorOutpoint: {
-        txid: "bb".repeat(32),
-        vout: 2,
-      },
-    }),
+    createReadyMiningReadContext({}),
     candidate,
   );
 
   assert.notEqual(refreshed, null);
-  assert.deepEqual(refreshed?.anchorOutpoint, {
-    txid: "bb".repeat(32),
-    vout: 2,
-  });
+  assert.equal(refreshed?.domainName, "cogdemo");
+  assert.equal(refreshed?.localIndex, 0);
+  assert.equal(refreshed?.sender.address, "bc1qfunding");
   assert.equal(refreshed?.sentence, candidate.sentence);
 });
 
@@ -311,12 +309,6 @@ test("shared mining conflict inputs are reused only for verified in-mempool live
   });
   const liveConflict = resolveMiningConflictOutpointForTesting({
     state: liveState,
-    candidate: createTestMiningCandidate({
-      anchorOutpoint: {
-        txid: "11".repeat(32),
-        vout: 1,
-      },
-    }),
     allUtxos: [{
       txid: "22".repeat(32),
       vout: 3,
@@ -340,12 +332,6 @@ test("shared mining conflict inputs are reused only for verified in-mempool live
   });
   const conflict = resolveMiningConflictOutpointForTesting({
     state,
-    candidate: createTestMiningCandidate({
-      anchorOutpoint: {
-        txid: "11".repeat(32),
-        vout: 1,
-      },
-    }),
     allUtxos: [{
       txid: "22".repeat(32),
       vout: 3,
@@ -357,10 +343,7 @@ test("shared mining conflict inputs are reused only for verified in-mempool live
     }] as any,
   });
 
-  assert.deepEqual(conflict, {
-    txid: "22".repeat(32),
-    vout: 3,
-  });
+  assert.equal(conflict, null);
   assert.deepEqual(liveConflict, {
     txid: "aa".repeat(32),
     vout: 0,
@@ -377,18 +360,8 @@ test("publish candidate returns a same-tip retry result after missing inputs", a
     databasePath: "/tmp/test.db",
     provider: {} as any,
     paths: {} as any,
-    fallbackState: createReadyMiningReadContext({
-      anchorOutpoint: {
-        txid: "bb".repeat(32),
-        vout: 1,
-      },
-    }).localState.state,
-    openReadContext: async () => createReadyMiningReadContext({
-      anchorOutpoint: {
-        txid: "bb".repeat(32),
-        vout: 1,
-      },
-    }),
+    fallbackState: createReadyMiningReadContext({}).localState.state,
+    openReadContext: async () => createReadyMiningReadContext({}),
     attachService: async () => {
       throw new Error("attachService should not be called when publishAttempt is stubbed");
     },
@@ -410,7 +383,7 @@ test("publish candidate returns a same-tip retry result after missing inputs", a
   assert.equal(result.txid, null);
   assert.equal(result.decision, "publish-retry-pending");
   assert.match(result.note, /retried on the current tip/i);
-  assert.equal(result.candidate.anchorOutpoint.txid, "bb".repeat(32));
+  assert.equal(result.candidate.sentence, createTestMiningCandidate().sentence);
   assert.equal(events.length, 1);
   assert.equal(events[0]?.kind, "publish-retry-pending");
   assert.equal(events[0]?.reason, "missing-inputs");
@@ -420,25 +393,16 @@ test("publish candidate reuses the same selected sentence across same-tip retrie
   const closeCalls: number[] = [];
   const contexts = [
     createReadyMiningReadContext({
-      anchorOutpoint: {
-        txid: "bb".repeat(32),
-        vout: 1,
-      },
       close: async () => {
         closeCalls.push(1);
       },
     }),
     createReadyMiningReadContext({
-      anchorOutpoint: {
-        txid: "cc".repeat(32),
-        vout: 2,
-      },
       close: async () => {
         closeCalls.push(2);
       },
     }),
   ];
-  const seenAnchors: string[] = [];
   const seenSentences: string[] = [];
   let attempts = 0;
 
@@ -459,7 +423,6 @@ test("publish candidate reuses the same selected sentence across same-tip retrie
     runId: "run-1",
     publishAttempt: async ({ candidate }) => {
       attempts += 1;
-      seenAnchors.push(`${candidate.anchorOutpoint.txid}:${candidate.anchorOutpoint.vout}`);
       seenSentences.push(candidate.sentence);
       throw new Error("wallet_mining_mempool_rejected_missing-inputs");
     },
@@ -485,7 +448,6 @@ test("publish candidate reuses the same selected sentence across same-tip retrie
     runId: "run-1",
     publishAttempt: async ({ readContext, candidate }) => {
       attempts += 1;
-      seenAnchors.push(`${candidate.anchorOutpoint.txid}:${candidate.anchorOutpoint.vout}`);
       seenSentences.push(candidate.sentence);
       return {
         state: readContext.localState.state,
@@ -500,11 +462,7 @@ test("publish candidate reuses the same selected sentence across same-tip retrie
   assert.equal(second.retryable, undefined);
   assert.equal(second.txid, "ff".repeat(32));
   assert.equal(second.decision, "broadcast");
-  assert.equal(second.candidate.anchorOutpoint.txid, "cc".repeat(32));
-  assert.deepEqual(seenAnchors, [
-    `${"bb".repeat(32)}:1`,
-    `${"cc".repeat(32)}:2`,
-  ]);
+  assert.equal(second.candidate.sentence, createTestMiningCandidate().sentence);
   assert.deepEqual(seenSentences, [
     createTestMiningCandidate().sentence,
     createTestMiningCandidate().sentence,
@@ -522,18 +480,8 @@ test("publish candidate skips the tip when the selected domain is no longer loca
     databasePath: "/tmp/test.db",
     provider: {} as any,
     paths: {} as any,
-    fallbackState: createReadyMiningReadContext({
-      anchorOutpoint: {
-        txid: "bb".repeat(32),
-        vout: 1,
-      },
-    }).localState.state,
-    openReadContext: async () => createReadyMiningReadContext({
-      anchorOutpoint: {
-        txid: "bb".repeat(32),
-        vout: 1,
-      },
-    }),
+    fallbackState: createReadyMiningReadContext({}).localState.state,
+    openReadContext: async () => createReadyMiningReadContext({}),
     attachService: async () => {
       throw new Error("attachService should not be called when publishAttempt is stubbed");
     },

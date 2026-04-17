@@ -19,7 +19,6 @@ import {
   type WalletSecretProvider,
 } from "../state/provider.js";
 import type {
-  OutpointRecord,
   PendingMutationRecord,
   WalletStateV1,
 } from "../types.js";
@@ -77,8 +76,6 @@ interface DomainAdminPlan {
   outputs: unknown[];
   changePosition: number;
   expectedOpReturnScriptHex: string;
-  expectedAnchorScriptHex: string;
-  expectedAnchorValueSats: bigint;
   allowedFundingScriptPubKeyHex: string;
   eligibleFundingOutpointKeys: Set<string>;
   errorPrefix: string;
@@ -96,7 +93,6 @@ interface DomainAdminOperation {
   state: WalletStateV1;
   sender: MutationSender;
   senderSelector: string;
-  anchorOutpoint: OutpointRecord;
   chainDomain: NonNullable<ReturnType<typeof lookupDomain>>;
 }
 
@@ -261,27 +257,6 @@ function createIntentFingerprint(parts: Array<string | number | bigint>): string
     .digest("hex");
 }
 
-function resolveAnchorOutpointForSender(
-  state: WalletStateV1,
-  domainName: string,
-  errorPrefix: string,
-): OutpointRecord {
-  const anchoredDomain = state.domains.find((domain) =>
-    domain.name === domainName
-    && domain.currentOwnerScriptPubKeyHex === state.funding.scriptPubKeyHex
-    && domain.canonicalChainStatus === "anchored"
-  ) ?? null;
-
-  if (anchoredDomain?.currentCanonicalAnchorOutpoint === null || anchoredDomain === null) {
-    throw new Error(`${errorPrefix}_anchor_outpoint_unavailable`);
-  }
-
-  return {
-    txid: anchoredDomain.currentCanonicalAnchorOutpoint.txid,
-    vout: anchoredDomain.currentCanonicalAnchorOutpoint.vout,
-  };
-}
-
 function resolveAnchoredDomainOperation(
   context: WalletReadContext,
   domainName: string,
@@ -316,7 +291,6 @@ function resolveAnchoredDomainOperation(
     state: context.localState.state,
     sender: createFundingMutationSender(context.localState.state),
     senderSelector: context.model.walletAddress,
-    anchorOutpoint: resolveAnchorOutpointForSender(context.localState.state, domainName, errorPrefix),
     chainDomain,
   };
 }
@@ -325,7 +299,6 @@ function buildPlanForDomainAdminOperation(options: {
   state: WalletStateV1;
   allUtxos: RpcListUnspentEntry[];
   sender: MutationSender;
-  anchorOutpoint: OutpointRecord;
   opReturnData: Uint8Array;
   errorPrefix: string;
 }): DomainAdminPlan {
@@ -335,33 +308,13 @@ function buildPlanForDomainAdminOperation(options: {
     && entry.spendable !== false
     && entry.safe !== false
   );
-  const anchorUtxo = options.allUtxos.find((entry) =>
-    entry.txid === options.anchorOutpoint.txid
-    && entry.vout === options.anchorOutpoint.vout
-    && entry.scriptPubKey === options.sender.scriptPubKeyHex
-    && entry.confirmations >= 1
-    && entry.spendable !== false
-    && entry.safe !== false
-  );
-
-  if (anchorUtxo === undefined) {
-    throw new Error(`${options.errorPrefix}_anchor_utxo_missing`);
-  }
-
   return {
     sender: options.sender,
     changeAddress: options.state.funding.address,
-    fixedInputs: [
-      { txid: anchorUtxo.txid, vout: anchorUtxo.vout },
-    ],
-    outputs: [
-      { data: Buffer.from(options.opReturnData).toString("hex") },
-      { [options.sender.address]: satsToBtcNumber(BigInt(options.state.anchorValueSats)) },
-    ],
-    changePosition: 2,
+    fixedInputs: [],
+    outputs: [{ data: Buffer.from(options.opReturnData).toString("hex") }],
+    changePosition: 1,
     expectedOpReturnScriptHex: encodeOpReturnScript(options.opReturnData),
-    expectedAnchorScriptHex: options.sender.scriptPubKeyHex,
-    expectedAnchorValueSats: BigInt(options.state.anchorValueSats),
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
     eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
     errorPrefix: options.errorPrefix,
@@ -384,22 +337,14 @@ function validateFundedDraft(
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
   }
 
-  if (outputs[1]?.scriptPubKey?.hex !== plan.expectedAnchorScriptHex) {
-    throw new Error(`${plan.errorPrefix}_anchor_output_mismatch`);
-  }
-
-  if (valueToSats(outputs[1]?.value ?? 0) !== plan.expectedAnchorValueSats) {
-    throw new Error(`${plan.errorPrefix}_anchor_value_mismatch`);
-  }
-
   if (funded.changepos === -1) {
-    if (outputs.length !== 2) {
+    if (outputs.length !== 1) {
       throw new Error(`${plan.errorPrefix}_unexpected_output_count`);
     }
     return;
   }
 
-  if (funded.changepos !== plan.changePosition || outputs.length !== 3) {
+  if (funded.changepos !== plan.changePosition || outputs.length !== 2) {
     throw new Error(`${plan.errorPrefix}_change_position_mismatch`);
   }
 
@@ -1017,7 +962,6 @@ async function submitDomainAdminMutation(options: DomainAdminBaseOptions & {
         state: nextState,
         allUtxos: await rpc.listUnspent(walletName, 1),
         sender: operation.sender,
-        anchorOutpoint: operation.anchorOutpoint,
         opReturnData: payload.opReturnData,
         errorPrefix: options.errorPrefix,
       });

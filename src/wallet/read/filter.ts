@@ -30,11 +30,6 @@ export function isMineableWalletDomain(
     return false;
   }
 
-  const localRecord = state.domains.find((entry) => entry.name === domain.name);
-  if (localRecord?.currentCanonicalAnchorOutpoint == null) {
-    return false;
-  }
-
   const chainDomain = lookupDomain(snapshot.state, domain.name);
   return chainDomain !== null && chainDomain.anchored;
 }

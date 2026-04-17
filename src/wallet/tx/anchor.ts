@@ -60,8 +60,6 @@ interface DirectAnchorPlan {
   changeAddress: string;
   changePosition: number;
   expectedOpReturnScriptHex: string;
-  expectedAnchorScriptHex: string;
-  expectedAnchorValueSats: bigint;
   allowedFundingScriptPubKeyHex: string;
   eligibleFundingOutpointKeys: Set<string>;
 }
@@ -253,15 +251,10 @@ function buildDirectAnchorPlan(options: {
 
   return {
     fixedInputs: [],
-    outputs: [
-      { data: Buffer.from(opReturnData).toString("hex") },
-      { [options.state.funding.address]: satsToBtcNumber(BigInt(options.state.anchorValueSats)) },
-    ],
+    outputs: [{ data: Buffer.from(opReturnData).toString("hex") }],
     changeAddress: options.state.funding.address,
-    changePosition: 2,
+    changePosition: 1,
     expectedOpReturnScriptHex: encodeOpReturnScript(opReturnData),
-    expectedAnchorScriptHex: options.state.funding.scriptPubKeyHex,
-    expectedAnchorValueSats: BigInt(options.state.anchorValueSats),
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
     eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
   };
@@ -278,22 +271,14 @@ function validateDirectAnchorDraft(
     throw new Error("wallet_anchor_opreturn_mismatch");
   }
 
-  if (outputs[1]?.scriptPubKey?.hex !== plan.expectedAnchorScriptHex) {
-    throw new Error("wallet_anchor_anchor_output_mismatch");
-  }
-
-  if (valueToSats(outputs[1]?.value ?? 0) !== plan.expectedAnchorValueSats) {
-    throw new Error("wallet_anchor_anchor_value_mismatch");
-  }
-
   if (funded.changepos === -1) {
-    if (outputs.length !== 2) {
+    if (outputs.length !== 1) {
       throw new Error("wallet_anchor_unexpected_output_count");
     }
     return;
   }
 
-  if (funded.changepos !== plan.changePosition || outputs.length !== 3) {
+  if (funded.changepos !== plan.changePosition || outputs.length !== 2) {
     throw new Error("wallet_anchor_change_position_mismatch");
   }
 
@@ -354,7 +339,6 @@ function upsertAnchoredDomainRecord(options: {
   state: WalletStateV1;
   domainName: string;
   domainId: number;
-  txid: string;
   foundingMessageText: string | null;
 }): WalletStateV1 {
   const domains = options.state.domains.slice();
@@ -365,11 +349,6 @@ function upsertAnchoredDomainRecord(options: {
     domainId: options.domainId,
     currentOwnerScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
     canonicalChainStatus: "anchored",
-    currentCanonicalAnchorOutpoint: {
-      txid: options.txid,
-      vout: 1,
-      valueSats: options.state.anchorValueSats,
-    },
     foundingMessageText: options.foundingMessageText ?? current?.foundingMessageText ?? null,
     birthTime: current?.birthTime ?? options.state.lastWrittenAtUnixMs,
   };
@@ -458,7 +437,6 @@ async function reconcilePendingAnchorMutation(options: {
       state: upsertPendingMutation(options.state, confirmedMutation),
       domainName: options.mutation.domainName,
       domainId: chainDomain?.domainId ?? 0,
-      txid: options.mutation.attemptedTxid ?? "unknown",
       foundingMessageText: options.foundingMessageText,
     });
     return {
@@ -489,7 +467,6 @@ async function reconcilePendingAnchorMutation(options: {
         state: upsertPendingMutation(options.state, liveMutation),
         domainName: options.mutation.domainName,
         domainId,
-        txid: options.mutation.attemptedTxid,
         foundingMessageText: options.foundingMessageText,
       });
       return {
@@ -790,7 +767,6 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
         state: upsertPendingMutation(nextState, finalMutation),
         domainName: normalizedDomainName,
         domainId: chainDomain.domainId,
-        txid: built.txid,
         foundingMessageText: message.text,
       });
       nextState = await saveState({

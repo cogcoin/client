@@ -24,7 +24,6 @@ function createLocalDomain(overrides: Partial<WalletStateV1["domains"][number]> 
     domainId: 1,
     currentOwnerScriptPubKeyHex: "0014" + "11".repeat(20),
     canonicalChainStatus: "registered-unanchored",
-    currentCanonicalAnchorOutpoint: null,
     foundingMessageText: null,
     birthTime: null,
     ...overrides,
@@ -181,13 +180,11 @@ test("balance ready-state text lists anchored and unanchored domains in separate
           name: "mitsnake",
           domainId: 2,
           canonicalChainStatus: "anchored",
-          currentCanonicalAnchorOutpoint: { txid: "11".repeat(32), vout: 0, valueSats: 2_000 },
         }),
         createLocalDomain({
           name: "mitcat",
           domainId: 3,
           canonicalChainStatus: "anchored",
-          currentCanonicalAnchorOutpoint: { txid: "22".repeat(32), vout: 1, valueSats: 2_000 },
         }),
       ],
     },
@@ -213,31 +210,26 @@ test("balance ready-state text wraps anchored and unanchored domain lists to 80 
         createLocalDomain({
           name: "mitanchoredcat",
           canonicalChainStatus: "anchored",
-          currentCanonicalAnchorOutpoint: { txid: "11".repeat(32), vout: 0, valueSats: 2_000 },
         }),
         createLocalDomain({
           name: "mitanchoreddog",
           domainId: 2,
           canonicalChainStatus: "anchored",
-          currentCanonicalAnchorOutpoint: { txid: "22".repeat(32), vout: 1, valueSats: 2_000 },
         }),
         createLocalDomain({
           name: "mitanchoredfrog",
           domainId: 3,
           canonicalChainStatus: "anchored",
-          currentCanonicalAnchorOutpoint: { txid: "33".repeat(32), vout: 2, valueSats: 2_000 },
         }),
         createLocalDomain({
           name: "mitanchoredgoat",
           domainId: 4,
           canonicalChainStatus: "anchored",
-          currentCanonicalAnchorOutpoint: { txid: "44".repeat(32), vout: 3, valueSats: 2_000 },
         }),
         createLocalDomain({
           name: "mitanchoredlion",
           domainId: 5,
           canonicalChainStatus: "anchored",
-          currentCanonicalAnchorOutpoint: { txid: "55".repeat(32), vout: 4, valueSats: 2_000 },
         }),
         createLocalDomain({
           name: "mitunanchoredalpha",
@@ -384,7 +376,6 @@ test("balance ready-state text suggests mining when an anchored root domain exis
         createLocalDomain({
           name: "mitcat",
           canonicalChainStatus: "anchored",
-          currentCanonicalAnchorOutpoint: { txid: "11".repeat(32), vout: 0, valueSats: 2_000 },
         }),
       ],
     },
@@ -403,7 +394,6 @@ test("balance ready-state text suggests transferring BTC when an anchored root d
         createLocalDomain({
           name: "mitcat",
           canonicalChainStatus: "anchored",
-          currentCanonicalAnchorOutpoint: { txid: "11".repeat(32), vout: 0, valueSats: 2_000 },
         }),
       ],
     },

@@ -38,12 +38,11 @@ export function createMiningState(overrides: Partial<WalletStateV1["miningState"
 
 export function createWalletState(overrides: Partial<WalletStateV1> = {}): WalletStateV1 {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     stateRevision: 1,
     lastWrittenAtUnixMs: 1,
     walletRootId: "wallet-root",
     network: "mainnet",
-    anchorValueSats: 2_000,
     localScriptPubKeyHexes: [],
     mnemonic: {
       phrase: `${"abandon ".repeat(23)}art`,

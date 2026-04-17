@@ -25,7 +25,6 @@ import {
   type WalletSecretProvider,
 } from "../state/provider.js";
 import type {
-  OutpointRecord,
   PendingMutationRecord,
   WalletStateV1,
 } from "../types.js";
@@ -88,8 +87,6 @@ interface FieldPlan {
   outputs: unknown[];
   changePosition: number;
   expectedOpReturnScriptHex: string;
-  expectedAnchorScriptHex: string;
-  expectedAnchorValueSats: bigint;
   allowedFundingScriptPubKeyHex: string;
   eligibleFundingOutpointKeys: Set<string>;
   errorPrefix: string;
@@ -107,7 +104,6 @@ interface FieldOperation {
   state: WalletStateV1;
   sender: MutationSender;
   senderSelector: string;
-  anchorOutpoint: OutpointRecord;
   chainDomain: NonNullable<ReturnType<typeof lookupDomain>>;
 }
 
@@ -377,13 +373,6 @@ function resolveAnchoredFieldOperation(
     throw new Error(`${errorPrefix}_owner_not_locally_controlled`);
   }
 
-  const localDomain = state.domains.find((domain) => domain.name === domainName) ?? null;
-  const anchorOutpoint = localDomain?.currentCanonicalAnchorOutpoint ?? null;
-
-  if (anchorOutpoint === null) {
-    throw new Error(`${errorPrefix}_anchor_outpoint_unavailable`);
-  }
-
   return {
     readContext: context,
     state,
@@ -393,10 +382,6 @@ function resolveAnchoredFieldOperation(
       address: state.funding.address,
     },
     senderSelector: state.funding.address,
-    anchorOutpoint: {
-      txid: anchorOutpoint.txid,
-      vout: anchorOutpoint.vout,
-    },
     chainDomain,
   };
 }
@@ -405,7 +390,6 @@ function buildAnchoredFieldPlan(options: {
   state: WalletStateV1;
   allUtxos: RpcListUnspentEntry[];
   sender: MutationSender;
-  anchorOutpoint: OutpointRecord;
   opReturnData: Uint8Array;
   errorPrefix: string;
 }): FieldPlan {
@@ -415,33 +399,14 @@ function buildAnchoredFieldPlan(options: {
     && entry.spendable !== false
     && entry.safe !== false
   );
-  const anchorUtxo = options.allUtxos.find((entry) =>
-    entry.txid === options.anchorOutpoint.txid
-    && entry.vout === options.anchorOutpoint.vout
-    && entry.scriptPubKey === options.sender.scriptPubKeyHex
-    && entry.confirmations >= 1
-    && entry.spendable !== false
-    && entry.safe !== false
-  );
-
-  if (anchorUtxo === undefined) {
-    throw new Error(`${options.errorPrefix}_anchor_utxo_missing`);
-  }
 
   return {
     sender: options.sender,
     changeAddress: options.state.funding.address,
-    fixedInputs: [
-      { txid: anchorUtxo.txid, vout: anchorUtxo.vout },
-    ],
-    outputs: [
-      { data: Buffer.from(options.opReturnData).toString("hex") },
-      { [options.sender.address]: satsToBtcNumber(BigInt(options.state.anchorValueSats)) },
-    ],
-    changePosition: 2,
+    fixedInputs: [],
+    outputs: [{ data: Buffer.from(options.opReturnData).toString("hex") }],
+    changePosition: 1,
     expectedOpReturnScriptHex: encodeOpReturnScript(options.opReturnData),
-    expectedAnchorScriptHex: options.sender.scriptPubKeyHex,
-    expectedAnchorValueSats: BigInt(options.state.anchorValueSats),
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
     eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
     errorPrefix: options.errorPrefix,
@@ -464,22 +429,14 @@ function validateFieldDraft(
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
   }
 
-  if (outputs[1]?.scriptPubKey?.hex !== plan.expectedAnchorScriptHex) {
-    throw new Error(`${plan.errorPrefix}_anchor_output_mismatch`);
-  }
-
-  if (valueToSats(outputs[1]?.value ?? 0) !== plan.expectedAnchorValueSats) {
-    throw new Error(`${plan.errorPrefix}_anchor_value_mismatch`);
-  }
-
   if (funded.changepos === -1) {
-    if (outputs.length !== 2) {
+    if (outputs.length !== 1) {
       throw new Error(`${plan.errorPrefix}_unexpected_output_count`);
     }
     return;
   }
 
-  if (funded.changepos !== plan.changePosition || outputs.length !== 3) {
+  if (funded.changepos !== plan.changePosition || outputs.length !== 2) {
     throw new Error(`${plan.errorPrefix}_change_position_mismatch`);
   }
 
@@ -1246,7 +1203,6 @@ async function submitStandaloneFieldMutation(options: {
         state: nextState,
         allUtxos: await rpc.listUnspent(walletName, 1),
         sender: operation.sender,
-        anchorOutpoint: operation.anchorOutpoint,
         opReturnData: planned.opReturnData,
         errorPrefix: options.errorPrefix,
       });

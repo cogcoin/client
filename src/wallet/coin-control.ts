@@ -65,6 +65,7 @@ type LegacyManagedCoreWallet = {
 type LegacyWalletStateRecord = Partial<WalletStateV1> & {
   schemaVersion?: number;
   hookClientState?: unknown;
+  anchorValueSats?: number;
   localScriptPubKeyHexes?: string[] | null;
   funding?: { address?: string | null; scriptPubKeyHex?: string | null } | null;
   identities?: Array<{ scriptPubKeyHex?: string | null }> | null;
@@ -74,7 +75,6 @@ type LegacyWalletStateRecord = Partial<WalletStateV1> & {
     domainId?: number | null;
     currentOwnerScriptPubKeyHex?: string | null;
     canonicalChainStatus?: WalletStateV1["domains"][number]["canonicalChainStatus"];
-    currentCanonicalAnchorOutpoint?: WalletStateV1["domains"][number]["currentCanonicalAnchorOutpoint"];
     foundingMessageText?: string | null;
     birthTime?: number | null;
   }> | null;
@@ -99,7 +99,6 @@ function normalizeDomains(rawDomains: LegacyWalletStateRecord["domains"]): Walle
       domainId: domain.domainId ?? null,
       currentOwnerScriptPubKeyHex: domain.currentOwnerScriptPubKeyHex ?? null,
       canonicalChainStatus: domain.canonicalChainStatus ?? "unknown",
-      currentCanonicalAnchorOutpoint: domain.currentCanonicalAnchorOutpoint ?? null,
       foundingMessageText: domain.foundingMessageText ?? null,
       birthTime: domain.birthTime ?? null,
     }))
@@ -128,12 +127,11 @@ export function normalizeWalletStateRecord(rawState: LegacyWalletStateRecord): W
     }));
 
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     stateRevision: rawState.stateRevision ?? 1,
     lastWrittenAtUnixMs: rawState.lastWrittenAtUnixMs ?? 0,
     walletRootId: rawState.walletRootId ?? "",
     network: rawState.network ?? "mainnet",
-    anchorValueSats: rawState.anchorValueSats ?? 2_000,
     localScriptPubKeyHexes,
     mnemonic: {
       phrase: rawState.mnemonic?.phrase ?? "",

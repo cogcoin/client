@@ -82,8 +82,6 @@ interface DomainMarketPlan {
   outputs: unknown[];
   changePosition: number;
   expectedOpReturnScriptHex: string;
-  expectedAnchorScriptHex: string | null;
-  expectedAnchorValueSats: bigint | null;
   allowedFundingScriptPubKeyHex: string;
   eligibleFundingOutpointKeys: Set<string>;
   errorPrefix: string;
@@ -96,7 +94,6 @@ interface DomainOperationContext {
   state: WalletStateV1;
   sender: MutationSender;
   senderSelector: string;
-  anchorOutpoint: OutpointRecord | null;
   chainDomain: NonNullable<ReturnType<typeof lookupDomain>>;
 }
 
@@ -338,7 +335,6 @@ function reserveTransferredDomainRecord(options: {
         domainId: options.domainId ?? domain.domainId,
         currentOwnerScriptPubKeyHex: options.currentOwnerScriptPubKeyHex,
         canonicalChainStatus: "registered-unanchored",
-        currentCanonicalAnchorOutpoint: null,
         birthTime: domain.birthTime ?? Math.floor(options.nowUnixMs / 1000),
       };
     })
@@ -349,7 +345,6 @@ function reserveTransferredDomainRecord(options: {
         domainId: options.domainId,
         currentOwnerScriptPubKeyHex: options.currentOwnerScriptPubKeyHex,
         canonicalChainStatus: "registered-unanchored",
-        currentCanonicalAnchorOutpoint: null,
         foundingMessageText: existing?.foundingMessageText ?? null,
         birthTime: Math.floor(options.nowUnixMs / 1000),
       },
@@ -404,33 +399,6 @@ function createSellEconomicEffectSummary(listedPriceCogtoshi: bigint): DomainMar
   };
 }
 
-function resolveAnchorOutpointForSender(
-  state: WalletStateV1,
-  domainName: string,
-  errorPrefix: string,
-): OutpointRecord | null {
-  const anchoredDomains = state.domains.filter((domain) =>
-    domain.name === domainName
-    && domain.currentOwnerScriptPubKeyHex === state.funding.scriptPubKeyHex
-    && domain.canonicalChainStatus === "anchored"
-  );
-
-  if (anchoredDomains.length === 0) {
-    return null;
-  }
-
-  const anchoredDomain = anchoredDomains[0]!;
-
-  if (anchoredDomain.currentCanonicalAnchorOutpoint === null) {
-    throw new Error(`${errorPrefix}_anchor_outpoint_unavailable`);
-  }
-
-  return {
-    txid: anchoredDomain.currentCanonicalAnchorOutpoint.txid,
-    vout: anchoredDomain.currentCanonicalAnchorOutpoint.vout,
-  };
-}
-
 function resolveOwnedDomainOperation(
   context: WalletReadContext,
   domainName: string,
@@ -457,7 +425,6 @@ function resolveOwnedDomainOperation(
     state: context.localState.state,
     sender: createFundingMutationSender(context.localState.state),
     senderSelector: context.model.walletAddress,
-    anchorOutpoint: null,
     chainDomain,
   };
 }
@@ -501,7 +468,6 @@ function resolveBuyOperation(
     state: context.localState.state,
     sender: createFundingMutationSender(context.localState.state),
     senderSelector: context.model.walletAddress,
-    anchorOutpoint: null,
     chainDomain,
     listingPriceCogtoshi: listing.priceCogtoshi,
     buyerSelector: context.model.walletAddress,
@@ -512,9 +478,7 @@ function buildPlanForDomainOperation(options: {
   state: WalletStateV1;
   allUtxos: RpcListUnspentEntry[];
   sender: MutationSender;
-  anchorOutpoint: OutpointRecord | null;
   opReturnData: Uint8Array;
-  anchorValueSats: bigint;
   errorPrefix: string;
 }): DomainMarketPlan {
   const fundingUtxos = options.allUtxos.filter((entry) =>
@@ -523,82 +487,14 @@ function buildPlanForDomainOperation(options: {
     && entry.spendable !== false
     && entry.safe !== false
   );
-  const senderUtxos = options.allUtxos
-    .filter((entry) =>
-      entry.scriptPubKey === options.sender.scriptPubKeyHex
-      && entry.confirmations >= 1
-      && entry.spendable !== false
-      && entry.safe !== false
-    )
-    .sort((left, right) =>
-      Number(left.amount) - Number(right.amount)
-      || left.txid.localeCompare(right.txid)
-      || left.vout - right.vout
-    );
-  const outputs: unknown[] = [{ data: Buffer.from(options.opReturnData).toString("hex") }];
-
-  if (options.anchorOutpoint === null) {
-    if (options.sender.scriptPubKeyHex !== options.state.funding.scriptPubKeyHex) {
-      outputs.push({
-        [options.sender.address]: satsToBtcNumber(options.anchorValueSats),
-      });
-    }
-    const senderUtxo = senderUtxos[0];
-    const fixedInputs = options.sender.scriptPubKeyHex === options.state.funding.scriptPubKeyHex
-      ? []
-      : (() => {
-        if (senderUtxo === undefined) {
-          throw new Error(`${options.errorPrefix}_sender_utxo_unavailable`);
-        }
-        return [{ txid: senderUtxo.txid, vout: senderUtxo.vout }];
-      })();
-    return {
-      sender: options.sender,
-      changeAddress: options.state.funding.address,
-      fixedInputs,
-      outputs,
-      changePosition: options.sender.scriptPubKeyHex === options.state.funding.scriptPubKeyHex ? 1 : 2,
-      expectedOpReturnScriptHex: encodeOpReturnScript(options.opReturnData),
-      expectedAnchorScriptHex: options.sender.scriptPubKeyHex === options.state.funding.scriptPubKeyHex
-        ? null
-        : options.sender.scriptPubKeyHex,
-      expectedAnchorValueSats: options.sender.scriptPubKeyHex === options.state.funding.scriptPubKeyHex
-        ? null
-        : options.anchorValueSats,
-      allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
-      eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
-      errorPrefix: options.errorPrefix,
-    };
-  }
-
-  const anchorUtxo = options.allUtxos.find((entry) =>
-    entry.txid === options.anchorOutpoint?.txid
-    && entry.vout === options.anchorOutpoint.vout
-    && entry.scriptPubKey === options.sender.scriptPubKeyHex
-    && entry.confirmations >= 1
-    && entry.spendable !== false
-    && entry.safe !== false
-  );
-
-  if (anchorUtxo === undefined) {
-    throw new Error(`${options.errorPrefix}_anchor_utxo_missing`);
-  }
-
-  outputs.push({
-    [options.sender.address]: satsToBtcNumber(options.anchorValueSats),
-  });
 
   return {
     sender: options.sender,
     changeAddress: options.state.funding.address,
-    fixedInputs: [
-      { txid: anchorUtxo.txid, vout: anchorUtxo.vout },
-    ],
-    outputs,
-    changePosition: 2,
+    fixedInputs: [],
+    outputs: [{ data: Buffer.from(options.opReturnData).toString("hex") }],
+    changePosition: 1,
     expectedOpReturnScriptHex: encodeOpReturnScript(options.opReturnData),
-    expectedAnchorScriptHex: options.sender.scriptPubKeyHex,
-    expectedAnchorValueSats: options.anchorValueSats,
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
     eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
     errorPrefix: options.errorPrefix,
@@ -621,17 +517,7 @@ function validateFundedDraft(
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
   }
 
-  if (plan.expectedAnchorScriptHex !== null) {
-    if (outputs[1]?.scriptPubKey?.hex !== plan.expectedAnchorScriptHex) {
-      throw new Error(`${plan.errorPrefix}_anchor_output_mismatch`);
-    }
-
-    if (valueToSats(outputs[1]?.value ?? 0) !== (plan.expectedAnchorValueSats ?? 0n)) {
-      throw new Error(`${plan.errorPrefix}_anchor_value_mismatch`);
-    }
-  }
-
-  const expectedWithoutChange = plan.expectedAnchorScriptHex === null ? 1 : 2;
+  const expectedWithoutChange = 1;
   if (funded.changepos === -1) {
     if (outputs.length !== expectedWithoutChange) {
       throw new Error(`${plan.errorPrefix}_unexpected_output_count`);
@@ -1207,8 +1093,7 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
         provider,
         nowUnixMs,
         paths,
-        preflightCoinControl: operation.anchorOutpoint === null
-          && operation.sender.scriptPubKeyHex !== nextState.funding.scriptPubKeyHex,
+        preflightCoinControl: false,
       });
       nextState = buildPreparation.state;
 
@@ -1216,9 +1101,7 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
         state: nextState,
         allUtxos: buildPreparation.allUtxos,
         sender: operation.sender,
-        anchorOutpoint: operation.anchorOutpoint,
         opReturnData: serializeDomainTransfer(operation.chainDomain.domainId, Buffer.from(recipient.scriptPubKeyHex, "hex")).opReturnData,
-        anchorValueSats: BigInt(nextState.anchorValueSats),
         errorPrefix: "wallet_transfer",
       });
       const built = await buildTransaction({
@@ -1497,8 +1380,7 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
         provider,
         nowUnixMs,
         paths,
-        preflightCoinControl: operation.anchorOutpoint === null
-          && operation.sender.scriptPubKeyHex !== nextState.funding.scriptPubKeyHex,
+        preflightCoinControl: false,
       });
       nextState = buildPreparation.state;
 
@@ -1506,9 +1388,7 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
         state: nextState,
         allUtxos: buildPreparation.allUtxos,
         sender: operation.sender,
-        anchorOutpoint: operation.anchorOutpoint,
         opReturnData: serializeDomainSell(operation.chainDomain.domainId, options.listedPriceCogtoshi).opReturnData,
-        anchorValueSats: BigInt(nextState.anchorValueSats),
         errorPrefix: "wallet_sell",
       });
       const built = await buildTransaction({
@@ -1798,8 +1678,7 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
         provider,
         nowUnixMs,
         paths,
-        preflightCoinControl: operation.anchorOutpoint === null
-          && operation.sender.scriptPubKeyHex !== nextState.funding.scriptPubKeyHex,
+        preflightCoinControl: false,
       });
       nextState = buildPreparation.state;
 
@@ -1807,9 +1686,7 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
         state: nextState,
         allUtxos: buildPreparation.allUtxos,
         sender: operation.sender,
-        anchorOutpoint: operation.anchorOutpoint,
         opReturnData: serializeDomainBuy(operation.chainDomain.domainId, operation.listingPriceCogtoshi).opReturnData,
-        anchorValueSats: BigInt(nextState.anchorValueSats),
         errorPrefix: "wallet_buy",
       });
       const built = await buildTransaction({

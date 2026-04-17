@@ -171,7 +171,6 @@ interface MiningCandidate {
   domainName: string;
   localIndex: number;
   sender: MutationSender;
-  anchorOutpoint: OutpointRecord;
   sentence: string;
   encodedSentenceBytes: Uint8Array;
   bip39WordIndices: number[];
@@ -1321,7 +1320,7 @@ function determineCorePublishState(info: {
 function createMiningPlan(options: {
   state: WalletStateV1;
   candidate: MiningCandidate;
-  conflictOutpoint: OutpointRecord;
+  conflictOutpoint: OutpointRecord | null;
   allUtxos: Awaited<ReturnType<MiningRpcClient["listUnspent"]>>;
   feeRateSatVb: number;
 }): {
@@ -1331,11 +1330,9 @@ function createMiningPlan(options: {
   changeAddress: string;
   changePosition: number;
   expectedOpReturnScriptHex: string;
-  expectedAnchorScriptHex: string;
-  expectedAnchorValueSats: bigint;
   allowedFundingScriptPubKeyHex: string;
   eligibleFundingOutpointKeys: Set<string>;
-  expectedConflictOutpoint: OutpointRecord;
+  expectedConflictOutpoint: OutpointRecord | null;
   feeRateSatVb: number;
 } {
   const fundingUtxos = options.allUtxos.filter((entry) =>
@@ -1343,7 +1340,11 @@ function createMiningPlan(options: {
     && entry.confirmations >= 1
     && entry.spendable !== false
     && entry.safe !== false
-    && !(entry.txid === options.conflictOutpoint.txid && entry.vout === options.conflictOutpoint.vout)
+    && !(
+      options.conflictOutpoint !== null
+      && entry.txid === options.conflictOutpoint.txid
+      && entry.vout === options.conflictOutpoint.vout
+    )
   );
   const opReturnData = serializeMine(
     options.candidate.domainId,
@@ -1357,19 +1358,11 @@ function createMiningPlan(options: {
 
   return {
     sender: options.candidate.sender,
-    fixedInputs: [
-      options.candidate.anchorOutpoint,
-      options.conflictOutpoint,
-    ],
-    outputs: [
-      { data: Buffer.from(opReturnData).toString("hex") },
-      { [options.candidate.sender.address]: satsToBtc(BigInt(options.state.anchorValueSats)) },
-    ],
+    fixedInputs: options.conflictOutpoint === null ? [] : [options.conflictOutpoint],
+    outputs: [{ data: Buffer.from(opReturnData).toString("hex") }],
     changeAddress: options.state.funding.address,
-    changePosition: 2,
+    changePosition: 1,
     expectedOpReturnScriptHex,
-    expectedAnchorScriptHex: options.candidate.sender.scriptPubKeyHex,
-    expectedAnchorValueSats: BigInt(options.state.anchorValueSats),
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
     eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => walletMutationOutpointKey({ txid: entry.txid, vout: entry.vout }))),
     expectedConflictOutpoint: options.conflictOutpoint,
@@ -1385,27 +1378,24 @@ function validateMiningDraft(
   const inputs = decoded.tx.vin;
   const outputs = decoded.tx.vout;
 
-  if (inputs.length < 2) {
+  if (inputs.length === 0) {
     throw new Error("wallet_mining_missing_inputs");
   }
 
   assertFixedInputPrefixMatches(inputs, plan.fixedInputs, "wallet_mining_missing_inputs");
 
-  if (inputs[1]?.txid !== plan.expectedConflictOutpoint.txid
-    || inputs[1]?.vout !== plan.expectedConflictOutpoint.vout) {
+  if (
+    plan.expectedConflictOutpoint !== null
+    && (
+      inputs[0]?.txid !== plan.expectedConflictOutpoint.txid
+      || inputs[0]?.vout !== plan.expectedConflictOutpoint.vout
+    )
+  ) {
     throw new Error("wallet_mining_conflict_input_mismatch");
   }
 
   if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
     throw new Error("wallet_mining_opreturn_mismatch");
-  }
-
-  if (outputs[1]?.scriptPubKey?.hex !== plan.expectedAnchorScriptHex) {
-    throw new Error("wallet_mining_anchor_output_mismatch");
-  }
-
-  if (numberToSats(outputs[1]?.value ?? 0) !== plan.expectedAnchorValueSats) {
-    throw new Error("wallet_mining_anchor_value_mismatch");
   }
 
   if (funded.changepos !== -1 && (funded.changepos !== plan.changePosition || outputs[funded.changepos]?.scriptPubKey?.hex !== plan.allowedFundingScriptPubKeyHex)) {
@@ -1438,7 +1428,6 @@ export function createMiningPlanForTesting(options: {
     domainName: string;
     localIndex: number;
     sender: MutationSender;
-    anchorOutpoint: OutpointRecord;
     sentence: string;
     encodedSentenceBytes: Uint8Array;
     bip39WordIndices: number[];
@@ -1468,7 +1457,6 @@ function resolveEligibleAnchoredRoots(context: WalletReadContext): Array<{
   domainName: string;
   localIndex: number;
   sender: MutationSender;
-  anchorOutpoint: OutpointRecord;
 }> {
   const state = context.localState.state;
   const model = context.model;
@@ -1483,7 +1471,6 @@ function resolveEligibleAnchoredRoots(context: WalletReadContext): Array<{
     domainName: string;
     localIndex: number;
     sender: MutationSender;
-    anchorOutpoint: OutpointRecord;
   }> = [];
 
   for (const domain of model.domains) {
@@ -1491,14 +1478,11 @@ function resolveEligibleAnchoredRoots(context: WalletReadContext): Array<{
       continue;
     }
 
-    const localRecord = state.domains.find((entry) => entry.name === domain.name);
     const domainId = domain.domainId;
 
     if (
       domainId === null
       || domainId === undefined
-      || localRecord?.currentCanonicalAnchorOutpoint === null
-      || localRecord?.currentCanonicalAnchorOutpoint === undefined
       || domain.ownerAddress == null
       || domain.ownerScriptPubKeyHex !== model.walletScriptPubKeyHex
     ) {
@@ -1518,10 +1502,6 @@ function resolveEligibleAnchoredRoots(context: WalletReadContext): Array<{
         localIndex: 0,
         scriptPubKeyHex: model.walletScriptPubKeyHex,
         address: domain.ownerAddress,
-      },
-      anchorOutpoint: {
-        txid: localRecord.currentCanonicalAnchorOutpoint.txid,
-        vout: localRecord.currentCanonicalAnchorOutpoint.vout,
       },
     });
   }
@@ -1543,7 +1523,6 @@ function refreshMiningCandidateFromCurrentState(
     domainName: refreshed.domainName,
     localIndex: refreshed.localIndex,
     sender: refreshed.sender,
-    anchorOutpoint: refreshed.anchorOutpoint,
   };
 }
 
@@ -1556,7 +1535,6 @@ export function refreshMiningCandidateFromCurrentStateForTesting(
 
 function resolveMiningConflictOutpoint(options: {
   state: WalletStateV1;
-  candidate: Pick<MiningCandidate, "anchorOutpoint">;
   allUtxos: Awaited<ReturnType<MiningRpcClient["listUnspent"]>>;
 }): OutpointRecord | null {
   const normalizedMiningState = normalizeMiningStateRecord(options.state.miningState);
@@ -1564,22 +1542,12 @@ function resolveMiningConflictOutpoint(options: {
     return { ...normalizedMiningState.sharedMiningConflictOutpoint };
   }
 
-  const fundingConflict = options.allUtxos.find((entry) =>
-    entry.scriptPubKey === options.state.funding.scriptPubKeyHex
-    && entry.confirmations >= 1
-    && entry.spendable !== false
-    && entry.safe !== false
-    && !(entry.txid === options.candidate.anchorOutpoint.txid && entry.vout === options.candidate.anchorOutpoint.vout)
-  );
-
-  return fundingConflict === undefined
-    ? null
-    : { txid: fundingConflict.txid, vout: fundingConflict.vout };
+  void options.allUtxos;
+  return null;
 }
 
 export function resolveMiningConflictOutpointForTesting(options: {
   state: WalletStateV1;
-  candidate: Pick<MiningCandidate, "anchorOutpoint">;
   allUtxos: Awaited<ReturnType<MiningRpcClient["listUnspent"]>>;
 }): OutpointRecord | null {
   return resolveMiningConflictOutpoint(options);
@@ -1744,7 +1712,6 @@ async function generateCandidatesForDomains(options: {
         domainName: domain.domainName,
         localIndex: domain.localIndex,
         sender: domain.sender,
-        anchorOutpoint: domain.anchorOutpoint,
         sentence: best.sentence,
         encodedSentenceBytes: best.encodedSentenceBytes,
         bip39WordIndices: [...best.bip39WordIndices],
@@ -2368,13 +2335,8 @@ async function publishCandidateOnce(options: {
   const allUtxos = await rpc.listUnspent(state.managedCoreWallet.walletName, 0);
   const conflictOutpoint = resolveMiningConflictOutpoint({
     state,
-    candidate: options.candidate,
     allUtxos,
   });
-
-  if (conflictOutpoint === null) {
-    throw new Error("wallet_mining_missing_conflict_utxo");
-  }
   const priorMiningState = cloneMiningState(state.miningState);
 
   if (

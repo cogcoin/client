@@ -385,12 +385,11 @@ function createEntropyRetainedWalletState(
   void deriveWalletIdentityMaterial;
 
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     stateRevision: 1,
     lastWrittenAtUnixMs: nowUnixMs,
     walletRootId,
     network: previousState.network,
-    anchorValueSats: previousState.anchorValueSats,
     localScriptPubKeyHexes: [material.funding.scriptPubKeyHex],
     mnemonic: {
       phrase: previousState.mnemonic.phrase,

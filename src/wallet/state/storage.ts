@@ -40,12 +40,11 @@ async function readEnvelope(path: string): Promise<EncryptedEnvelopeV1> {
 
 function serializeWalletState(state: WalletStateV1): Record<string, unknown> {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     stateRevision: state.stateRevision,
     lastWrittenAtUnixMs: state.lastWrittenAtUnixMs,
     walletRootId: state.walletRootId,
     network: state.network,
-    anchorValueSats: state.anchorValueSats,
     localScriptPubKeyHexes: state.localScriptPubKeyHexes,
     mnemonic: state.mnemonic,
     keys: state.keys,
@@ -67,7 +66,6 @@ function serializeWalletState(state: WalletStateV1): Record<string, unknown> {
       domainId: domain.domainId,
       currentOwnerScriptPubKeyHex: domain.currentOwnerScriptPubKeyHex,
       canonicalChainStatus: domain.canonicalChainStatus,
-      currentCanonicalAnchorOutpoint: domain.currentCanonicalAnchorOutpoint,
       foundingMessageText: domain.foundingMessageText,
       birthTime: domain.birthTime,
     })),

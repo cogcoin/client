@@ -17,7 +17,6 @@ import {
   type WalletSecretProvider,
 } from "../state/provider.js";
 import type {
-  OutpointRecord,
   PendingMutationRecord,
   WalletStateV1,
 } from "../types.js";
@@ -80,8 +79,6 @@ interface CogMutationPlan {
   outputs: unknown[];
   changePosition: number;
   expectedOpReturnScriptHex: string;
-  expectedAnchorScriptHex: string | null;
-  expectedAnchorValueSats: bigint | null;
   allowedFundingScriptPubKeyHex: string;
   eligibleFundingOutpointKeys: Set<string>;
   errorPrefix: string;
@@ -236,32 +233,6 @@ function sha256Hex(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function resolveAnchorOutpointForSender(
-  state: WalletStateV1,
-  _sender: ReturnType<typeof resolveIdentityBySelector>,
-  errorPrefix: string,
-): OutpointRecord | null {
-  const anchoredDomains = state.domains.filter((domain) =>
-    domain.currentOwnerScriptPubKeyHex === state.funding.scriptPubKeyHex
-    && domain.canonicalChainStatus === "anchored"
-  );
-
-  if (anchoredDomains.length === 0) {
-    return null;
-  }
-
-  const anchoredDomain = anchoredDomains[0]!;
-
-  if (anchoredDomain.currentCanonicalAnchorOutpoint === null) {
-    throw new Error(`${errorPrefix}_anchor_outpoint_unavailable`);
-  }
-
-  return {
-    txid: anchoredDomain.currentCanonicalAnchorOutpoint.txid,
-    vout: anchoredDomain.currentCanonicalAnchorOutpoint.vout,
-  };
-}
-
 function ensureUsableSender(
   sender: ReturnType<typeof resolveIdentityBySelector>,
   errorPrefix: string,
@@ -299,7 +270,6 @@ function resolveIdentitySender(
 ): {
   state: WalletStateV1;
   sender: MutationSender;
-  anchorOutpoint: OutpointRecord | null;
   resolved: CogResolvedSummary;
 } {
   assertWalletMutationContextReady(context, errorPrefix);
@@ -313,7 +283,6 @@ function resolveIdentitySender(
   return {
     state: context.localState.state,
     sender: createFundingMutationSender(context.localState.state),
-    anchorOutpoint: null,
     resolved: {
       sender: createResolvedSenderSummary(identity),
       claimPath: null,
@@ -329,7 +298,6 @@ function resolveClaimSender(
 ): {
   state: WalletStateV1;
   sender: MutationSender;
-  anchorOutpoint: OutpointRecord | null;
   recipientDomainName: string | null;
   amountCogtoshi: bigint;
   lockId: number;
@@ -367,7 +335,6 @@ function resolveClaimSender(
     return {
       state: context.localState.state,
       sender: createFundingMutationSender(context.localState.state),
-      anchorOutpoint: null,
       recipientDomainName,
       amountCogtoshi: lock.amount,
       lockId: lock.lockId,
@@ -401,7 +368,6 @@ function resolveClaimSender(
   return {
     state: context.localState.state,
     sender: createFundingMutationSender(context.localState.state),
-    anchorOutpoint: null,
     recipientDomainName,
     amountCogtoshi: lock.amount,
     lockId: lock.lockId,
@@ -454,9 +420,7 @@ function buildPlanForCogOperation(options: {
   state: WalletStateV1;
   allUtxos: RpcListUnspentEntry[];
   sender: MutationSender;
-  anchorOutpoint: OutpointRecord | null;
   opReturnData: Uint8Array;
-  anchorValueSats: bigint;
   errorPrefix: string;
 }): CogMutationPlan {
   const fundingUtxos = options.allUtxos.filter((entry) =>
@@ -465,52 +429,13 @@ function buildPlanForCogOperation(options: {
     && entry.spendable !== false
     && entry.safe !== false
   );
-  const outputs: unknown[] = [{ data: Buffer.from(options.opReturnData).toString("hex") }];
-
-  if (options.anchorOutpoint === null) {
-    return {
-      sender: options.sender,
-      changeAddress: options.state.funding.address,
-      fixedInputs: [],
-      outputs,
-      changePosition: 1,
-      expectedOpReturnScriptHex: encodeOpReturnScript(options.opReturnData),
-      expectedAnchorScriptHex: null,
-      expectedAnchorValueSats: null,
-      allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
-      eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
-      errorPrefix: options.errorPrefix,
-    };
-  }
-
-  const anchorUtxo = options.allUtxos.find((entry) =>
-    entry.txid === options.anchorOutpoint?.txid
-    && entry.vout === options.anchorOutpoint.vout
-    && entry.scriptPubKey === options.sender.scriptPubKeyHex
-    && entry.confirmations >= 1
-    && entry.spendable !== false
-    && entry.safe !== false
-  );
-
-  if (anchorUtxo === undefined) {
-    throw new Error(`${options.errorPrefix}_anchor_utxo_missing`);
-  }
-
-  outputs.push({
-    [options.sender.address]: satsToBtcNumber(options.anchorValueSats),
-  });
-
   return {
     sender: options.sender,
     changeAddress: options.state.funding.address,
-    fixedInputs: [
-      { txid: anchorUtxo.txid, vout: anchorUtxo.vout },
-    ],
-    outputs,
-    changePosition: 2,
+    fixedInputs: [],
+    outputs: [{ data: Buffer.from(options.opReturnData).toString("hex") }],
+    changePosition: 1,
     expectedOpReturnScriptHex: encodeOpReturnScript(options.opReturnData),
-    expectedAnchorScriptHex: options.sender.scriptPubKeyHex,
-    expectedAnchorValueSats: options.anchorValueSats,
     allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
     eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout }))),
     errorPrefix: options.errorPrefix,
@@ -533,17 +458,7 @@ function validateFundedDraft(
     throw new Error(`${plan.errorPrefix}_opreturn_mismatch`);
   }
 
-  if (plan.expectedAnchorScriptHex !== null) {
-    if (outputs[1]?.scriptPubKey?.hex !== plan.expectedAnchorScriptHex) {
-      throw new Error(`${plan.errorPrefix}_anchor_output_mismatch`);
-    }
-
-    if (valueToSats(outputs[1]?.value ?? 0) !== (plan.expectedAnchorValueSats ?? 0n)) {
-      throw new Error(`${plan.errorPrefix}_anchor_value_mismatch`);
-    }
-  }
-
-  const expectedWithoutChange = plan.expectedAnchorScriptHex === null ? 1 : 2;
+  const expectedWithoutChange = 1;
   if (funded.changepos === -1) {
     if (outputs.length !== expectedWithoutChange) {
       throw new Error(`${plan.errorPrefix}_unexpected_output_count`);
@@ -1039,9 +954,7 @@ export async function sendCog(options: SendCogOptions): Promise<CogMutationResul
         state: nextState,
         allUtxos: await rpc.listUnspent(walletName, 1),
         sender: operation.sender,
-        anchorOutpoint: operation.anchorOutpoint,
         opReturnData: serializeCogTransfer(amountCogtoshi, Buffer.from(recipient.scriptPubKeyHex, "hex")).opReturnData,
-        anchorValueSats: BigInt(nextState.anchorValueSats),
         errorPrefix: "wallet_send",
       });
       const built = await buildTransaction({
@@ -1249,14 +1162,12 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
         state: nextState,
         allUtxos: await rpc.listUnspent(walletName, 1),
         sender: operation.sender,
-        anchorOutpoint: operation.anchorOutpoint,
         opReturnData: serializeCogLock(
           amountCogtoshi,
           timeoutHeight,
           recipientDomain.domainId,
           condition,
         ).opReturnData,
-        anchorValueSats: BigInt(nextState.anchorValueSats),
         errorPrefix: "wallet_lock",
       });
       const built = await buildTransaction({
@@ -1440,9 +1351,7 @@ async function runClaimLikeMutation(
         state: nextState,
         allUtxos: await rpc.listUnspent(walletName, 1),
         sender: operation.sender,
-        anchorOutpoint: operation.anchorOutpoint,
         opReturnData: serializeCogClaim(options.lockId, Buffer.from(preimageHex, "hex")).opReturnData,
-        anchorValueSats: BigInt(nextState.anchorValueSats),
         errorPrefix,
       });
       const built = await buildTransaction({
