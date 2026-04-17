@@ -29,6 +29,7 @@ import {
   createBlockRateTracker,
   createInitialSyncResult,
   type FollowLoopSubscriber,
+  type SyncRecoveryClient,
 } from "./internal-types.js";
 import { syncToTip as runManagedSync } from "./sync-engine.js";
 
@@ -50,7 +51,7 @@ function mergeSyncResults(target: SyncResult, source: SyncResult): void {
 }
 
 export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
-  readonly #client: Client;
+  readonly #client: SyncRecoveryClient;
   readonly #store: ClientStoreAdapter;
   #node: ManagedBitcoindNodeHandle;
   #rpc: BitcoinRpcClient;
@@ -77,7 +78,7 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
   #syncAbortControllers = new Set<AbortController>();
 
   constructor(
-    client: Client,
+    client: SyncRecoveryClient,
     store: ClientStoreAdapter,
     node: ManagedBitcoindNodeHandle,
     rpc: BitcoinRpcClient,

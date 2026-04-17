@@ -467,6 +467,67 @@ test("managed bitcoind client rewinds and replays when a competing regtest chain
   }
 });
 
+test("managed bitcoind client restores from checkpoints when a regtest reorg exceeds retained rewind history", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-client-bitcoind-deep-reorg");
+  let client: Awaited<ReturnType<typeof openManagedBitcoindClientInternal>> | null = null;
+  const alternateDataDir = join(fixture.rootDir, "bitcoind-alt");
+
+  try {
+    const store = await openSqliteStore({ filename: fixture.databasePath });
+    client = await openManagedBitcoindClientInternal({
+      store,
+      dataDir: fixture.dataDir,
+      chain: "regtest",
+      startHeight: 0,
+      snapshotInterval: 2,
+      pollIntervalMs: 250,
+      syncDebounceMs: 50,
+    });
+
+    const startupStatus = await client.getNodeStatus();
+    const descriptor = await getMiningDescriptor(fixture.dataDir, startupStatus.rpc.port);
+    await generateBlocks(fixture.dataDir, startupStatus.rpc.port, 105, descriptor);
+    await client.syncToTip();
+
+    assert.equal((await client.getTip())?.height, 105);
+    assert.equal(await store.loadBlockRecord(5), null);
+    assert.ok(await store.loadBlockRecord(6));
+
+    await client.close();
+    client = null;
+
+    const alternateStore = await openSqliteStore({ filename: fixture.databasePath });
+    client = await openManagedBitcoindClientInternal({
+      store: alternateStore,
+      dataDir: alternateDataDir,
+      chain: "regtest",
+      startHeight: 0,
+      snapshotInterval: 2,
+      pollIntervalMs: 250,
+      syncDebounceMs: 50,
+    });
+
+    const alternateStatus = await client.getNodeStatus();
+    const alternateDescriptor = await getMiningDescriptor(alternateDataDir, alternateStatus.rpc.port, "52");
+    await generateBlocks(alternateDataDir, alternateStatus.rpc.port, 106, alternateDescriptor);
+
+    const reorgResult = await client.syncToTip();
+    assert.equal(reorgResult.rewoundBlocks, 105);
+    assert.equal(reorgResult.commonAncestorHeight, 0);
+    assert.equal(reorgResult.appliedBlocks, 106);
+
+    const status = await client.getNodeStatus();
+    const blocks = await collectChainBlocks(status.rpc, status.nodeBestHeight ?? 0);
+    const replayState = await replayBlocks(blocks);
+    assert.equal((await client.getTip())?.height, 106);
+    assert.equal(serializeStateHex(await client.getState()), serializeStateHex(replayState));
+  } finally {
+    await client?.close();
+    await cleanupManagedFixture(fixture, alternateDataDir);
+  }
+});
+
 test("managed bitcoind client syncs through the live node tip before exiting", async (t) => {
   await ensureBitcoinBinaries(t);
   const fixture = createFixture("cogcoin-client-bitcoind-live-tip");

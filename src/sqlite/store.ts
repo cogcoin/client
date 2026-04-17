@@ -13,6 +13,7 @@ import type {
 import {
   deleteCheckpointsAbove,
   loadLatestCheckpoint,
+  loadLatestCheckpointAtOrBelow,
   replaceCheckpoint,
 } from "./checkpoints.js";
 import type { SqliteDatabase } from "./driver.js";
@@ -71,6 +72,23 @@ export function createSqliteStoreAdapter(database: SqliteDatabase): ClientStoreA
       }
 
       const row = await loadLatestCheckpoint(database);
+
+      if (row === null) {
+        return null;
+      }
+
+      return {
+        height: row.height,
+        blockHashHex: row.blockHashHex,
+        stateBytes: row.stateBytes,
+        createdAt: row.createdAt,
+      };
+    },
+
+    async loadLatestCheckpointAtOrBelow(height: number): Promise<ClientCheckpoint | null> {
+      assertOpen();
+
+      const row = await loadLatestCheckpointAtOrBelow(database, height);
 
       if (row === null) {
         return null;

@@ -26,6 +26,7 @@ import type {
   ManagedBitcoindClient,
 } from "../types.js";
 import { DefaultManagedBitcoindClient } from "./managed-client.js";
+import type { SyncRecoveryClient } from "./internal-types.js";
 
 const DEFAULT_SYNC_DEBOUNCE_MS = 250;
 
@@ -122,7 +123,7 @@ async function createManagedBitcoindClient(
       store: options.store,
       genesisParameters,
       snapshotInterval: options.snapshotInterval,
-    });
+    }) as SyncRecoveryClient;
     const indexerDaemon = options.databasePath
       ? await pauseIndexerDaemonForForegroundClientForTesting({
         daemon: await attachOrStartIndexerDaemon({

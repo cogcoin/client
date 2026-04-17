@@ -9,7 +9,7 @@ import type {
 } from "../types.js";
 
 const DEFAULT_SNAPSHOT_INTERVAL = 1000;
-const DEFAULT_BLOCK_RECORD_RETENTION = 1000;
+const DEFAULT_BLOCK_RECORD_RETENTION = 100;
 
 export async function openClient(options: ClientOptions): Promise<Client> {
   const store = createClientStoreAdapter(options.store);

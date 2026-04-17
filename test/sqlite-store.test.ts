@@ -127,3 +127,67 @@ test("sqlite store rolls back tip changes when a block-record insert fails", asy
   assert.deepEqual(await store.loadTip(), previousTip);
   await store.close();
 });
+
+test("sqlite store loads the newest checkpoint at or below a requested height", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-store-checkpoints");
+  const historyVector = loadHistoryVector();
+  const [firstBlock, secondBlock] = historyVector.setupBlocks.slice(0, 2).map(materializeBlock);
+  const genesis = await loadBundledGenesisParameters();
+  const firstApplied = await applyBlockWithScoring(createInitialState(genesis), firstBlock!, genesis);
+  const secondApplied = await applyBlockWithScoring(firstApplied.state, secondBlock!, genesis);
+  const store = await openSqliteStore({ filename: databasePath });
+
+  await store.writeAppliedBlock({
+    tip: {
+      height: firstBlock!.height,
+      blockHashHex: Buffer.from(firstBlock!.hash).toString("hex"),
+      previousHashHex: firstBlock!.previousHash === null ? null : Buffer.from(firstBlock!.previousHash).toString("hex"),
+      stateHashHex: firstApplied.stateHashHex,
+    },
+    stateBytes: serializeIndexerState(firstApplied.state),
+    blockRecord: {
+      height: firstApplied.blockRecord.height,
+      blockHashHex: firstApplied.blockRecord.hashHex,
+      previousHashHex: firstApplied.blockRecord.previousHashHex,
+      stateHashHex: firstApplied.blockRecord.stateHashHex,
+      recordBytes: serializeBlockRecord(firstApplied.blockRecord),
+      createdAt: 1,
+    },
+    checkpoint: {
+      height: firstBlock!.height,
+      blockHashHex: Buffer.from(firstBlock!.hash).toString("hex"),
+      stateBytes: serializeIndexerState(firstApplied.state),
+      createdAt: 1,
+    },
+  });
+
+  await store.writeAppliedBlock({
+    tip: {
+      height: secondBlock!.height,
+      blockHashHex: Buffer.from(secondBlock!.hash).toString("hex"),
+      previousHashHex: secondBlock!.previousHash === null ? null : Buffer.from(secondBlock!.previousHash).toString("hex"),
+      stateHashHex: secondApplied.stateHashHex,
+    },
+    stateBytes: serializeIndexerState(secondApplied.state),
+    blockRecord: {
+      height: secondApplied.blockRecord.height,
+      blockHashHex: secondApplied.blockRecord.hashHex,
+      previousHashHex: secondApplied.blockRecord.previousHashHex,
+      stateHashHex: secondApplied.blockRecord.stateHashHex,
+      recordBytes: serializeBlockRecord(secondApplied.blockRecord),
+      createdAt: 2,
+    },
+    checkpoint: {
+      height: secondBlock!.height,
+      blockHashHex: Buffer.from(secondBlock!.hash).toString("hex"),
+      stateBytes: serializeIndexerState(secondApplied.state),
+      createdAt: 2,
+    },
+  });
+
+  assert.equal((await store.loadLatestCheckpointAtOrBelow(secondBlock!.height))?.height, secondBlock!.height);
+  assert.equal((await store.loadLatestCheckpointAtOrBelow(secondBlock!.height - 1))?.height, firstBlock!.height);
+  assert.equal(await store.loadLatestCheckpointAtOrBelow(firstBlock!.height - 1), null);
+
+  await store.close();
+});

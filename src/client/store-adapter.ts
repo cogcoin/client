@@ -4,6 +4,7 @@ export function assertClientStoreAdapter(store: ClientStoreAdapter): ClientStore
   const requiredMethods: Array<keyof ClientStoreAdapter> = [
     "loadTip",
     "loadLatestSnapshot",
+    "loadLatestCheckpointAtOrBelow",
     "loadBlockRecordsAfter",
     "writeAppliedBlock",
     "deleteBlockRecordsAbove",

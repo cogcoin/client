@@ -18,6 +18,15 @@ import { estimateEtaSeconds } from "./rate-tracker.js";
 const DEFAULT_SYNC_CATCH_UP_POLL_MS = 2_000;
 const BITCOIN_SYNC_PHASE_DEBOUNCE_MS = DEFAULT_SYNC_CATCH_UP_POLL_MS * 3;
 
+type CommonAncestorSearchResult =
+  | {
+    kind: "rewind";
+    rewindTarget: number;
+  }
+  | {
+    kind: "checkpoint_recovery";
+  };
+
 function createAbortError(signal?: AbortSignal): Error {
   const reason = signal?.reason;
 
@@ -79,6 +88,26 @@ async function setBitcoinSyncProgress(
     message: dependencies.node.expectedChain === "main"
       ? "Bitcoin Core is syncing blocks after assumeutxo bootstrap."
       : "Reading blocks from the managed Bitcoin node.",
+  });
+}
+
+function isMissingBlockRecordError(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith("client_store_missing_block_record_");
+}
+
+async function setDeepRecoveryProgress(
+  dependencies: Pick<SyncEngineDependencies, "cogcoinRateTracker" | "progress">,
+  blocks: number,
+  bestHeight: number,
+  message: string,
+): Promise<void> {
+  await dependencies.progress.setPhase("cogcoin_sync", {
+    blocks,
+    headers: bestHeight,
+    targetHeight: bestHeight,
+    etaSeconds: estimateEtaSeconds(dependencies.cogcoinRateTracker, blocks, bestHeight),
+    lastError: null,
+    message,
   });
 }
 
@@ -158,26 +187,77 @@ async function findCommonAncestor(
   tip: NonNullable<Awaited<ReturnType<Client["getTip"]>>>,
   bestHeight: number,
   runRpc: <T>(operation: () => Promise<T>) => Promise<T>,
-): Promise<number> {
-  const startHeight = Math.min(tip.height, bestHeight);
+) : Promise<CommonAncestorSearchResult> {
+  const searchStartHeight = Math.min(tip.height, bestHeight);
 
-  for (let height = startHeight; height >= dependencies.startHeight; height -= 1) {
+  for (let height = searchStartHeight; height >= dependencies.startHeight; height -= 1) {
     const localHashHex = height === tip.height
       ? tip.blockHashHex
       : (await dependencies.store.loadBlockRecord(height))?.blockHashHex ?? null;
 
     if (localHashHex === null) {
-      continue;
+      return {
+        kind: "checkpoint_recovery",
+      };
     }
 
     const chainHashHex = await runRpc(() => dependencies.rpc.getBlockHash(height));
 
     if (chainHashHex === localHashHex) {
-      return height;
+      return {
+        kind: "rewind",
+        rewindTarget: height,
+      };
     }
   }
 
-  return dependencies.startHeight - 1;
+  return {
+    kind: "rewind",
+    rewindTarget: dependencies.startHeight - 1,
+  };
+}
+
+async function recoverFromCheckpoint(
+  dependencies: SyncEngineDependencies,
+  startTip: NonNullable<Awaited<ReturnType<Client["getTip"]>>>,
+  bestHeight: number,
+  runRpc: <T>(operation: () => Promise<T>) => Promise<T>,
+): Promise<Pick<SyncPassResult, "rewoundBlocks" | "commonAncestorHeight">> {
+  let checkpoint = await dependencies.store.loadLatestCheckpointAtOrBelow(Math.min(startTip.height, bestHeight));
+
+  while (checkpoint !== null) {
+    const currentCheckpoint = checkpoint;
+    const chainHashHex = await runRpc(() => dependencies.rpc.getBlockHash(currentCheckpoint.height));
+
+    if (chainHashHex === currentCheckpoint.blockHashHex) {
+      await setDeepRecoveryProgress(
+        dependencies,
+        currentCheckpoint.height,
+        bestHeight,
+        `Retained rewind window exhausted; restoring checkpoint at height ${currentCheckpoint.height.toLocaleString()} and replaying.`,
+      );
+      await dependencies.client.restoreCheckpoint(currentCheckpoint);
+      return {
+        rewoundBlocks: startTip.height - currentCheckpoint.height,
+        commonAncestorHeight: currentCheckpoint.height,
+      };
+    }
+
+    checkpoint = await dependencies.store.loadLatestCheckpointAtOrBelow(currentCheckpoint.height - 1);
+  }
+
+  await setDeepRecoveryProgress(
+    dependencies,
+    Math.max(0, dependencies.startHeight - 1),
+    bestHeight,
+    "Retained rewind window exhausted; resetting to the processing start and replaying.",
+  );
+  await dependencies.client.resetToInitialState();
+
+  return {
+    rewoundBlocks: startTip.height - dependencies.startHeight + 1,
+    commonAncestorHeight: null,
+  };
 }
 
 async function syncAgainstBestHeight(
@@ -198,12 +278,26 @@ async function syncAgainstBestHeight(
   let commonAncestorHeight: number | null = null;
 
   if (startTip !== null) {
-    const rewindTarget = await findCommonAncestor(dependencies, startTip, bestHeight, runRpc);
+    const ancestor = await findCommonAncestor(dependencies, startTip, bestHeight, runRpc);
 
-    if (rewindTarget < startTip.height) {
-      commonAncestorHeight = rewindTarget < dependencies.startHeight ? null : rewindTarget;
-      await dependencies.client.rewindToHeight(rewindTarget);
-      rewoundBlocks = startTip.height - rewindTarget;
+    if (ancestor.kind === "checkpoint_recovery") {
+      const recovered = await recoverFromCheckpoint(dependencies, startTip, bestHeight, runRpc);
+      rewoundBlocks = recovered.rewoundBlocks;
+      commonAncestorHeight = recovered.commonAncestorHeight;
+    } else if (ancestor.rewindTarget < startTip.height) {
+      try {
+        commonAncestorHeight = ancestor.rewindTarget < dependencies.startHeight ? null : ancestor.rewindTarget;
+        await dependencies.client.rewindToHeight(ancestor.rewindTarget);
+        rewoundBlocks = startTip.height - ancestor.rewindTarget;
+      } catch (error) {
+        if (!isMissingBlockRecordError(error)) {
+          throw error;
+        }
+
+        const recovered = await recoverFromCheckpoint(dependencies, startTip, bestHeight, runRpc);
+        rewoundBlocks = recovered.rewoundBlocks;
+        commonAncestorHeight = recovered.commonAncestorHeight;
+      }
     }
   }
 

@@ -41,6 +41,7 @@ export interface WriteAppliedBlockEntry {
 export interface ClientStoreAdapter {
   loadTip(): Promise<ClientTip | null>;
   loadLatestSnapshot(): Promise<ClientCheckpoint | null>;
+  loadLatestCheckpointAtOrBelow(height: number): Promise<ClientCheckpoint | null>;
   loadBlockRecordsAfter(height: number): Promise<StoredBlockRecord[]>;
   writeAppliedBlock(entry: WriteAppliedBlockEntry): Promise<void>;
   deleteBlockRecordsAbove(height: number): Promise<void>;

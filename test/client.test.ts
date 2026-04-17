@@ -7,6 +7,7 @@ import {
   loadBundledGenesisParameters,
   serializeIndexerState,
 } from "@cogcoin/indexer";
+import { DefaultClient } from "../src/client/default-client.js";
 import { openClient } from "../src/index.js";
 import { openSqliteStore } from "../src/sqlite/index.js";
 import { createTempDatabasePath, loadHistoryVector, materializeBlock } from "./helpers.js";
@@ -154,6 +155,77 @@ test("client keeps blocks below genesis inactive and activates exactly at genesi
   const genesisResult = await client.applyBlock(activatedGenesisBlock);
   assert.equal(genesisResult.applied.state.consensus.activationBlock, genesis.genesisBlock);
   assert.equal((await client.getState()).consensus.activationBlock, genesis.genesisBlock);
+
+  await client.close();
+});
+
+test("client restores a persisted checkpoint and prunes newer rewind data", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-client-restore");
+  const historyVector = loadHistoryVector();
+  const blocks = [...historyVector.setupBlocks, ...historyVector.testBlocks].slice(0, 4).map(materializeBlock);
+  const genesis = await loadBundledGenesisParameters();
+
+  const store = await openSqliteStore({ filename: databasePath });
+  const client = await openClient({
+    store,
+    genesisParameters: genesis,
+    snapshotInterval: 2,
+  }) as DefaultClient;
+
+  for (const block of blocks) {
+    await client.applyBlock(block);
+  }
+
+  const checkpointBoundHeight = blocks[2]!.height;
+  const checkpoint = await store.loadLatestCheckpointAtOrBelow(checkpointBoundHeight);
+  assert.ok(checkpoint !== null);
+  assert.ok(checkpoint.height < blocks.at(-1)!.height);
+  assert.ok(await store.loadBlockRecord(blocks[3]!.height));
+
+  const restoredTip = await client.restoreCheckpoint(checkpoint);
+
+  assert.equal(restoredTip.height, checkpoint.height);
+  assert.equal(restoredTip.blockHashHex, checkpoint.blockHashHex);
+  assert.equal(restoredTip.previousHashHex, null);
+  assert.equal((await client.getTip())?.height, checkpoint.height);
+  assert.equal(await store.loadBlockRecord(blocks[2]!.height), null);
+  assert.equal(await store.loadBlockRecord(blocks[3]!.height), null);
+  assert.equal((await store.loadLatestCheckpointAtOrBelow(blocks[3]!.height))?.height, checkpoint.height);
+  assert.equal(
+    Buffer.from(serializeIndexerState(await client.getState())).toString("hex"),
+    Buffer.from(checkpoint.stateBytes).toString("hex"),
+  );
+
+  await client.close();
+});
+
+test("client resetToInitialState clears persisted snapshots and rewind data", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-client-reset");
+  const historyVector = loadHistoryVector();
+  const blocks = [...historyVector.setupBlocks, ...historyVector.testBlocks].slice(0, 2).map(materializeBlock);
+  const genesis = await loadBundledGenesisParameters();
+
+  const store = await openSqliteStore({ filename: databasePath });
+  const client = await openClient({
+    store,
+    genesisParameters: genesis,
+    snapshotInterval: 1,
+  }) as DefaultClient;
+
+  for (const block of blocks) {
+    await client.applyBlock(block);
+  }
+
+  await client.resetToInitialState();
+
+  assert.equal(await client.getTip(), null);
+  assert.equal(await store.loadLatestSnapshot(), null);
+  assert.equal(await store.loadLatestCheckpointAtOrBelow(blocks.at(-1)?.height ?? 0), null);
+  assert.equal(await store.loadBlockRecord(blocks[0]!.height), null);
+  assert.equal(
+    Buffer.from(serializeIndexerState(await client.getState())).toString("hex"),
+    Buffer.from(serializeIndexerState(createInitialState(genesis))).toString("hex"),
+  );
 
   await client.close();
 });

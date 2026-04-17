@@ -21,6 +21,9 @@ const noopStore: ClientStoreAdapter = {
   async loadLatestSnapshot() {
     return null;
   },
+  async loadLatestCheckpointAtOrBelow() {
+    return null;
+  },
   async loadBlockRecordsAfter() {
     return [];
   },

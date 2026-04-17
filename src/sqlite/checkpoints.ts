@@ -37,6 +37,22 @@ export async function loadLatestCheckpoint(database: SqliteDatabase): Promise<St
   );
 }
 
+export async function loadLatestCheckpointAtOrBelow(
+  database: SqliteDatabase,
+  height: number,
+): Promise<StoredCheckpointRow | null> {
+  return decodeCheckpointRow(
+    await database.get<CheckpointRow>(
+      `SELECT height, block_hash, state_bytes, created_at
+       FROM checkpoints
+       WHERE height <= ?
+       ORDER BY height DESC
+       LIMIT 1`,
+      [height],
+    ),
+  );
+}
+
 export async function replaceCheckpoint(database: SqliteDatabase, checkpoint: ClientCheckpoint): Promise<void> {
   await database.run(
     `INSERT OR REPLACE INTO checkpoints (height, block_hash, state_bytes, created_at)

@@ -1,6 +1,8 @@
 import {
   applyBlockWithScoring,
+  createInitialState,
   deserializeBlockRecord,
+  deserializeIndexerState,
   rewindBlock,
   serializeIndexerState,
 } from "@cogcoin/indexer";
@@ -14,6 +16,7 @@ import { createCheckpoint, createStoredBlockRecord, createTip } from "./persiste
 import type {
   ApplyBlockResult,
   Client,
+  ClientCheckpoint,
   ClientStoreAdapter,
   ClientTip,
   WriteAppliedBlockEntry,
@@ -141,6 +144,59 @@ export class DefaultClient implements Client {
       this.#tip = nextTip;
 
       return nextTip === null ? null : { ...nextTip };
+    });
+  }
+
+  async restoreCheckpoint(checkpoint: ClientCheckpoint): Promise<ClientTip> {
+    return this.#enqueue(async () => {
+      this.#assertOpen();
+
+      const nextState = deserializeIndexerState(checkpoint.stateBytes);
+
+      if (nextState.history.currentHeight !== checkpoint.height) {
+        throw new Error("client_checkpoint_height_mismatch");
+      }
+
+      const nextTip: ClientTip = {
+        height: checkpoint.height,
+        blockHashHex: checkpoint.blockHashHex,
+        previousHashHex: null,
+        stateHashHex: nextState.history.stateHashByHeight.get(checkpoint.height) ?? null,
+      };
+
+      await this.#store.writeAppliedBlock({
+        tip: nextTip,
+        stateBytes: checkpoint.stateBytes,
+        blockRecord: null,
+        checkpoint,
+        deleteAboveHeight: checkpoint.height,
+      });
+
+      this.#state = nextState;
+      this.#tip = nextTip;
+
+      return { ...nextTip };
+    });
+  }
+
+  async resetToInitialState(): Promise<null> {
+    return this.#enqueue(async () => {
+      this.#assertOpen();
+
+      const nextState = createInitialState(this.#genesisParameters);
+
+      await this.#store.writeAppliedBlock({
+        tip: null,
+        stateBytes: null,
+        blockRecord: null,
+        checkpoint: null,
+        deleteAboveHeight: -1,
+      });
+
+      this.#state = nextState;
+      this.#tip = null;
+
+      return null;
     });
   }
 

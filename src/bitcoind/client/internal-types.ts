@@ -1,4 +1,4 @@
-import type { Client, ClientStoreAdapter } from "../../types.js";
+import type { Client, ClientCheckpoint, ClientStoreAdapter, ClientTip } from "../../types.js";
 import type { AssumeUtxoBootstrapController } from "../bootstrap.js";
 import type { ManagedProgressController } from "../progress.js";
 import type { BitcoinRpcClient } from "../rpc.js";
@@ -14,6 +14,11 @@ export interface SyncPassResult {
   commonAncestorHeight: number | null;
 }
 
+export interface SyncRecoveryClient extends Client {
+  restoreCheckpoint(checkpoint: ClientCheckpoint): Promise<ClientTip>;
+  resetToInitialState(): Promise<null>;
+}
+
 export interface BlockRateTracker {
   lastHeight: number | null;
   lastUpdatedAt: number | null;
@@ -21,7 +26,7 @@ export interface BlockRateTracker {
 }
 
 export interface SyncEngineDependencies {
-  client: Client;
+  client: SyncRecoveryClient;
   store: ClientStoreAdapter;
   node: ManagedBitcoindNodeHandle;
   rpc: BitcoinRpcClient;
@@ -33,7 +38,7 @@ export interface SyncEngineDependencies {
   cogcoinRateTracker: BlockRateTracker;
   abortSignal?: AbortSignal;
   isFollowing(): boolean;
-  loadVisibleFollowBlockTimes(tip: Awaited<ReturnType<Client["getTip"]>>): Promise<Record<number, number>>;
+  loadVisibleFollowBlockTimes(tip: Awaited<ReturnType<SyncRecoveryClient["getTip"]>>): Promise<Record<number, number>>;
 }
 
 export interface FollowLoopSubscriber extends AsyncIterable<unknown> {

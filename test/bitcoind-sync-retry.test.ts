@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { loadBundledGenesisParameters } from "@cogcoin/indexer";
 
-import type { BitcoinBlock, ClientTip } from "../src/types.js";
+import type { BitcoinBlock, ClientCheckpoint, ClientTip, StoredBlockRecord } from "../src/types.js";
 import { syncToTip } from "../src/bitcoind/client/sync-engine.js";
 import { createBlockRateTracker } from "../src/bitcoind/client/internal-types.js";
 import { createBootstrapProgressForTesting, DEFAULT_SNAPSHOT_METADATA } from "../src/bitcoind/testing.js";
@@ -50,6 +50,10 @@ function createRpcBlock(height: number, hash: string, previousblockhash?: string
       }],
     }],
   };
+}
+
+function hashForHeight(height: number): string {
+  return `${height.toString(16).padStart(2, "0")}`.repeat(32);
 }
 
 function createProgressRecorder(initialPhase: BootstrapPhase = "paused"): {
@@ -152,6 +156,11 @@ function createSyncDependencies(options: {
   getBlockchainInfo: () => Promise<RpcBlockchainInfo>;
   getBlockHash?: (height: number) => Promise<string>;
   getBlock?: (hash: string) => Promise<RpcBlock>;
+  loadBlockRecord?: (height: number) => Promise<StoredBlockRecord | null>;
+  loadLatestCheckpointAtOrBelow?: (height: number) => Promise<ClientCheckpoint | null>;
+  rewindToHeight?: (height: number) => Promise<ClientTip | null>;
+  restoreCheckpoint?: (checkpoint: ClientCheckpoint) => Promise<ClientTip>;
+  resetToInitialState?: () => Promise<null>;
   isFollowing?: boolean;
   loadVisibleFollowBlockTimes?: (tip: ClientTip | null) => Promise<Record<number, number>>;
 }) {
@@ -182,8 +191,39 @@ function createSyncDependencies(options: {
           appliedHeights.push(block.height);
           return {} as never;
         },
-        async rewindToHeight() {
+        async rewindToHeight(height: number) {
+          if (!options.rewindToHeight) {
+            return tip;
+          }
+
+          tip = await options.rewindToHeight(height);
           return tip;
+        },
+        async restoreCheckpoint(checkpoint: ClientCheckpoint): Promise<ClientTip> {
+          if (!options.restoreCheckpoint) {
+            const restoredTip = {
+              height: checkpoint.height,
+              blockHashHex: checkpoint.blockHashHex,
+              previousHashHex: null,
+              stateHashHex: null,
+            };
+            tip = restoredTip;
+            return restoredTip;
+          }
+
+          const restoredTip = await options.restoreCheckpoint(checkpoint);
+          tip = restoredTip;
+          return restoredTip;
+        },
+        async resetToInitialState(): Promise<null> {
+          if (!options.resetToInitialState) {
+            tip = null;
+            return null;
+          }
+
+          await options.resetToInitialState();
+          tip = null;
+          return null;
         },
         async close() {},
       },
@@ -194,13 +234,16 @@ function createSyncDependencies(options: {
         async loadLatestSnapshot() {
           return null;
         },
+        async loadLatestCheckpointAtOrBelow(height: number) {
+          return await (options.loadLatestCheckpointAtOrBelow?.(height) ?? Promise.resolve(null));
+        },
         async loadBlockRecordsAfter() {
           return [];
         },
         async writeAppliedBlock() {},
         async deleteBlockRecordsAbove() {},
-        async loadBlockRecord() {
-          return null;
+        async loadBlockRecord(height: number) {
+          return await (options.loadBlockRecord?.(height) ?? Promise.resolve(null));
         },
         async close() {},
       },
@@ -694,6 +737,181 @@ test("syncToTip retries a transient getblock timeout without duplicating applied
   assert.equal(block2Calls, 2);
   assert.equal(phases.includes("error"), false);
   assert.ok(blockchainInfoCalls >= 2);
+});
+
+test("syncToTip restores the newest matching checkpoint when retained rewind history is exhausted", async () => {
+  const checkpointBounds: number[] = [];
+  const restoredHeights: number[] = [];
+  const checkpoints: ClientCheckpoint[] = [
+    { height: 104, blockHashHex: "ee".repeat(32), stateBytes: new Uint8Array(), createdAt: 3 },
+    { height: 102, blockHashHex: hashForHeight(102), stateBytes: new Uint8Array(), createdAt: 2 },
+    { height: 100, blockHashHex: hashForHeight(100), stateBytes: new Uint8Array(), createdAt: 1 },
+  ];
+  const { dependencies, appliedHeights, messages } = createSyncDependencies({
+    startHeight: 100,
+    initialTip: {
+      height: 105,
+      blockHashHex: "ff".repeat(32),
+      previousHashHex: hashForHeight(104),
+      stateHashHex: null,
+    },
+    async getBlockchainInfo() {
+      return createBlockchainInfo(105);
+    },
+    async getBlockHash(height: number) {
+      return hashForHeight(height);
+    },
+    async getBlock(hash: string) {
+      const height = Number.parseInt(hash.slice(0, 2), 16);
+      return createRpcBlock(height, hash, height > 100 ? hashForHeight(height - 1) : undefined);
+    },
+    async loadBlockRecord(height: number) {
+      assert.equal(height, 104);
+      return null;
+    },
+    async loadLatestCheckpointAtOrBelow(height: number) {
+      checkpointBounds.push(height);
+      return checkpoints.find((checkpoint) => checkpoint.height <= height) ?? null;
+    },
+    async restoreCheckpoint(checkpoint: ClientCheckpoint) {
+      restoredHeights.push(checkpoint.height);
+      return {
+        height: checkpoint.height,
+        blockHashHex: checkpoint.blockHashHex,
+        previousHashHex: null,
+        stateHashHex: null,
+      };
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.deepEqual(checkpointBounds, [105, 103]);
+  assert.deepEqual(restoredHeights, [102]);
+  assert.deepEqual(appliedHeights, [103, 104, 105]);
+  assert.equal(result.appliedBlocks, 3);
+  assert.equal(result.rewoundBlocks, 3);
+  assert.equal(result.commonAncestorHeight, 102);
+  assert.ok(messages.some((message) => message.includes("restoring checkpoint at height 102")));
+});
+
+test("syncToTip resets to the processing start when no persisted checkpoint matches the node chain", async () => {
+  const checkpointBounds: number[] = [];
+  const resetCalls: number[] = [];
+  const checkpoints: ClientCheckpoint[] = [
+    { height: 101, blockHashHex: "cc".repeat(32), stateBytes: new Uint8Array(), createdAt: 2 },
+    { height: 100, blockHashHex: "bb".repeat(32), stateBytes: new Uint8Array(), createdAt: 1 },
+  ];
+  const { dependencies, appliedHeights, messages } = createSyncDependencies({
+    startHeight: 100,
+    initialTip: {
+      height: 102,
+      blockHashHex: "aa".repeat(32),
+      previousHashHex: hashForHeight(101),
+      stateHashHex: null,
+    },
+    async getBlockchainInfo() {
+      return createBlockchainInfo(102);
+    },
+    async getBlockHash(height: number) {
+      return hashForHeight(height);
+    },
+    async getBlock(hash: string) {
+      const height = Number.parseInt(hash.slice(0, 2), 16);
+      return createRpcBlock(height, hash, height > 100 ? hashForHeight(height - 1) : undefined);
+    },
+    async loadBlockRecord(height: number) {
+      assert.equal(height, 101);
+      return null;
+    },
+    async loadLatestCheckpointAtOrBelow(height: number) {
+      checkpointBounds.push(height);
+      return checkpoints.find((checkpoint) => checkpoint.height <= height) ?? null;
+    },
+    async resetToInitialState() {
+      resetCalls.push(Date.now());
+      return null;
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.deepEqual(checkpointBounds, [102, 100, 99]);
+  assert.equal(resetCalls.length, 1);
+  assert.deepEqual(appliedHeights, [100, 101, 102]);
+  assert.equal(result.appliedBlocks, 3);
+  assert.equal(result.rewoundBlocks, 3);
+  assert.equal(result.commonAncestorHeight, null);
+  assert.ok(messages.some((message) => message.includes("resetting to the processing start and replaying")));
+});
+
+test("syncToTip falls back to checkpoint recovery when a shallow rewind still hits a missing block record", async () => {
+  const rewindTargets: number[] = [];
+  const restoredHeights: number[] = [];
+  const checkpoint: ClientCheckpoint = {
+    height: 102,
+    blockHashHex: hashForHeight(102),
+    stateBytes: new Uint8Array(),
+    createdAt: 1,
+  };
+  const { dependencies, appliedHeights } = createSyncDependencies({
+    startHeight: 100,
+    initialTip: {
+      height: 103,
+      blockHashHex: "ff".repeat(32),
+      previousHashHex: hashForHeight(102),
+      stateHashHex: null,
+    },
+    async getBlockchainInfo() {
+      return createBlockchainInfo(103);
+    },
+    async getBlockHash(height: number) {
+      return hashForHeight(height);
+    },
+    async getBlock(hash: string) {
+      const height = Number.parseInt(hash.slice(0, 2), 16);
+      return createRpcBlock(height, hash, height > 100 ? hashForHeight(height - 1) : undefined);
+    },
+    async loadBlockRecord(height: number) {
+      if (height !== 102) {
+        return null;
+      }
+
+      return {
+        height,
+        blockHashHex: hashForHeight(height),
+        previousHashHex: hashForHeight(height - 1),
+        stateHashHex: null,
+        recordBytes: new Uint8Array(),
+        createdAt: 1,
+      };
+    },
+    async loadLatestCheckpointAtOrBelow(height: number) {
+      return height >= checkpoint.height ? checkpoint : null;
+    },
+    async rewindToHeight(height: number) {
+      rewindTargets.push(height);
+      throw new Error("client_store_missing_block_record_103");
+    },
+    async restoreCheckpoint(restoredCheckpoint: ClientCheckpoint) {
+      restoredHeights.push(restoredCheckpoint.height);
+      return {
+        height: restoredCheckpoint.height,
+        blockHashHex: restoredCheckpoint.blockHashHex,
+        previousHashHex: null,
+        stateHashHex: null,
+      };
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.deepEqual(rewindTargets, [102]);
+  assert.deepEqual(restoredHeights, [102]);
+  assert.deepEqual(appliedHeights, [103]);
+  assert.equal(result.appliedBlocks, 1);
+  assert.equal(result.rewoundBlocks, 1);
+  assert.equal(result.commonAncestorHeight, 102);
 });
 
 test("syncToTip keeps follow mode alive across a transient RPC timeout", async () => {
