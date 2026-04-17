@@ -5,6 +5,7 @@ import test from "node:test";
 import { createInitialState, loadBundledGenesisParameters } from "@cogcoin/indexer";
 
 import { formatBalanceReport } from "../src/cli/wallet-format.js";
+import { getFundingQuickstartGuidance } from "../src/cli/workflow-hints.js";
 import { createWalletReadModel } from "../src/wallet/read/project.js";
 import type { WalletSnapshotView } from "../src/wallet/read/index.js";
 import type { PendingMutationRecord, WalletStateV1 } from "../src/wallet/types.js";
@@ -89,29 +90,32 @@ test("balance ready-state text renders the 80-column balance card", async () => 
   const rendered = formatBalanceReport(context);
   const lines = rendered.split("\n");
 
-  assert.equal(lines.length, BALANCE_ART_TEMPLATE.length);
-  assert.ok(rendered.startsWith(`${BALANCE_ART_TEMPLATE[0]}\n${BALANCE_ART_TEMPLATE[1]}\n${BALANCE_ART_TEMPLATE[2]}\n`));
-  assert.equal(lines[0], BALANCE_ART_TEMPLATE[0]);
-  assert.equal(lines[1], BALANCE_ART_TEMPLATE[1]);
-  assert.equal(lines[2], BALANCE_ART_TEMPLATE[2]);
-  assert.equal(lines[4], BALANCE_ART_TEMPLATE[4]);
-  assert.equal(lines[7], BALANCE_ART_TEMPLATE[7]);
-  assert.equal(lines[9], BALANCE_ART_TEMPLATE[9]);
+  assert.equal(lines.length, BALANCE_ART_TEMPLATE.length + 2);
+  assert.ok(rendered.startsWith(`\n${BALANCE_ART_TEMPLATE[0]}\n${BALANCE_ART_TEMPLATE[1]}\n${BALANCE_ART_TEMPLATE[2]}\n`));
+  assert.equal(lines[0], "");
+  assert.equal(lines[1], BALANCE_ART_TEMPLATE[0]);
+  assert.equal(lines[2], BALANCE_ART_TEMPLATE[1]);
+  assert.equal(lines[3], BALANCE_ART_TEMPLATE[2]);
+  assert.equal(lines[5], BALANCE_ART_TEMPLATE[4]);
+  assert.equal(lines[8], BALANCE_ART_TEMPLATE[7]);
+  assert.equal(lines[10], BALANCE_ART_TEMPLATE[9]);
+  assert.equal(lines[11], "");
 
-  for (const [index, line] of lines.entries()) {
-    assert.equal(line.length, 80, `line ${index + 1} width`);
-    assert.equal(line[line.length - 1], BALANCE_ART_TEMPLATE[index]![BALANCE_ART_TEMPLATE[index]!.length - 1]);
+  for (const [index, line] of BALANCE_ART_TEMPLATE.entries()) {
+    const renderedLine = lines[index + 1]!;
+    assert.equal(renderedLine.length, 80, `line ${index + 2} width`);
+    assert.equal(renderedLine[renderedLine.length - 1], line[line.length - 1]);
   }
 
-  assertSingleSpaceValue(lines[3]!, "Funding address:", "bc1qfunding");
-  assertSingleSpaceValue(lines[5]!, "Bitcoin Balance:", "1.23456789 BTC");
-  assertSingleSpaceValue(lines[6]!, "Cogcoin Balance:", "0.00000000 COG");
+  assertSingleSpaceValue(lines[4]!, "Funding address:", "bc1qfunding");
+  assertSingleSpaceValue(lines[6]!, "Bitcoin Balance:", "1.23456789 BTC");
+  assertSingleSpaceValue(lines[7]!, "Cogcoin Balance:", "0.00000000 COG");
 
   const urlLabel = "mempool.space/address/";
-  const urlLabelIndex = lines[8]!.indexOf(urlLabel);
+  const urlLabelIndex = lines[9]!.indexOf(urlLabel);
   assert.notEqual(urlLabelIndex, -1);
   assert.equal(
-    lines[8]!.slice(urlLabelIndex + urlLabel.length, urlLabelIndex + urlLabel.length + "bc1qfunding".length),
+    lines[9]!.slice(urlLabelIndex + urlLabel.length, urlLabelIndex + urlLabel.length + "bc1qfunding".length),
     "bc1qfunding",
   );
 });
@@ -133,13 +137,17 @@ test("balance ready-state text clips long inserted values inside the art frame",
   });
   const lines = formatBalanceReport(context).split("\n");
 
-  for (const [index, line] of lines.entries()) {
-    assert.equal(line.length, 80, `line ${index + 1} width`);
-    assert.equal(line[line.length - 1], BALANCE_ART_TEMPLATE[index]![BALANCE_ART_TEMPLATE[index]!.length - 1]);
+  assert.equal(lines[0], "");
+  assert.equal(lines[11], "");
+
+  for (const [index, line] of BALANCE_ART_TEMPLATE.entries()) {
+    const renderedLine = lines[index + 1]!;
+    assert.equal(renderedLine.length, 80, `line ${index + 2} width`);
+    assert.equal(renderedLine[renderedLine.length - 1], line[line.length - 1]);
   }
 
-  assert.ok(lines[3]!.includes("Funding address: "));
-  assert.ok(lines[8]!.includes("mempool.space/address/"));
+  assert.ok(lines[4]!.includes("Funding address: "));
+  assert.ok(lines[9]!.includes("mempool.space/address/"));
 });
 
 test("balance ready-state text keeps pending lines below the art card", async () => {
@@ -152,9 +160,10 @@ test("balance ready-state text keeps pending lines below the art card", async ()
   });
   const lines = formatBalanceReport(context).split("\n");
 
-  assert.equal(lines.length, BALANCE_ART_TEMPLATE.length + 1);
-  assert.equal(lines[9], BALANCE_ART_TEMPLATE[9]);
-  assert.equal(lines[10], "Pending: send  broadcasting  0.00000123 COG");
+  assert.equal(lines.length, BALANCE_ART_TEMPLATE.length + 3);
+  assert.equal(lines[10], BALANCE_ART_TEMPLATE[9]);
+  assert.equal(lines[11], "");
+  assert.equal(lines[12], "Pending: send  broadcasting  0.00000123 COG");
 });
 
 test("balance ready-state text renders unavailable BTC inside the art card", async () => {
@@ -163,7 +172,39 @@ test("balance ready-state text renders unavailable BTC inside the art card", asy
   });
   const lines = formatBalanceReport(context).split("\n");
 
-  assertSingleSpaceValue(lines[5]!, "Bitcoin Balance:", "unavailable BTC");
+  assertSingleSpaceValue(lines[6]!, "Bitcoin Balance:", "unavailable BTC");
+});
+
+test("balance ready-state text adds quickstart below the art when BTC is below the funding threshold and no domain exists", async () => {
+  const context = await createReadyBalanceContext({
+    fundingSpendableSats: 149_999n,
+  });
+  const lines = formatBalanceReport(context).split("\n");
+
+  assert.equal(lines[11], "");
+  assert.equal(lines[12], `Quickstart: ${getFundingQuickstartGuidance()}`);
+});
+
+test("balance ready-state text suppresses quickstart when an anchored or registered-unanchored domain exists", async () => {
+  const context = await createReadyBalanceContext({
+    fundingSpendableSats: 149_999n,
+    stateOverrides: {
+      domains: [{
+        name: "alpha",
+        domainId: 1,
+        currentOwnerScriptPubKeyHex: "0014" + "11".repeat(20),
+        canonicalChainStatus: "registered-unanchored",
+        currentCanonicalAnchorOutpoint: null,
+        foundingMessageText: null,
+        birthTime: null,
+      }],
+    },
+  });
+
+  assert.equal(
+    formatBalanceReport(context).includes(`Quickstart: ${getFundingQuickstartGuidance()}`),
+    false,
+  );
 });
 
 test("balance fallback text remains unchanged when wallet state is unavailable", () => {

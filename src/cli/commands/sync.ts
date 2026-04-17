@@ -5,12 +5,40 @@ import { formatBytes, formatDuration } from "../../bitcoind/progress/formatting.
 import type { ManagedBitcoindProgressEvent } from "../../bitcoind/types.js";
 import { FileLockBusyError, acquireFileLock } from "../../wallet/fs/lock.js";
 import { resolveWalletRootIdFromLocalArtifacts } from "../../wallet/root-resolution.js";
+import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 import { usesTtyProgress, writeLine } from "../io.js";
 import { classifyCliError, formatCliTextError } from "../output.js";
+import { createTerminalPrompter } from "../prompt.js";
 import { createStopSignalWatcher, waitForCompletionOrStop } from "../signals.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
+import { formatBalanceReport } from "../wallet-format.js";
 
 const SYNC_PROGRESS_LOG_INTERVAL_MS = 5_000;
+
+async function writePostSyncBalanceReport(options: {
+  context: RequiredCliRunnerContext;
+  dataDir: string;
+  databasePath: string;
+  runtimePaths: ReturnType<RequiredCliRunnerContext["resolveWalletRuntimePaths"]>;
+}): Promise<void> {
+  const provider = withInteractiveWalletSecretProvider(
+    options.context.walletSecretProvider,
+    options.context.createPrompter?.() ?? createTerminalPrompter(options.context.stdin, options.context.stdout),
+  );
+  const readContext = await options.context.openWalletReadContext({
+    dataDir: options.dataDir,
+    databasePath: options.databasePath,
+    secretProvider: provider,
+    walletControlLockHeld: true,
+    paths: options.runtimePaths,
+  });
+
+  try {
+    writeLine(options.context.stdout, formatBalanceReport(readContext));
+  } finally {
+    await readContext.close().catch(() => undefined);
+  }
+}
 
 function createSyncProgressReporter(options: {
   progressOutput: ParsedCliArgs["progressOutput"];
@@ -211,6 +239,12 @@ export async function runSyncCommand(
           await client.close();
           clientClosed = true;
           writeLine(context.stderr, "Detached cleanly; background indexer follow resumed.");
+          await writePostSyncBalanceReport({
+            context,
+            dataDir,
+            databasePath: dbPath,
+            runtimePaths,
+          }).catch(() => undefined);
           return 0;
         } catch {
           writeLine(context.stderr, "Detach failed before background indexer follow was confirmed.");

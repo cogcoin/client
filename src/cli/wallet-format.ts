@@ -15,7 +15,12 @@ import type {
 import type { PendingMutationRecord } from "../wallet/types.js";
 import { loadBalanceArtText } from "./art.js";
 import { formatMiningSummaryLine } from "./mining-format.js";
-import { getBootstrapSyncNextStep } from "./workflow-hints.js";
+import {
+  getBootstrapSyncNextStep,
+  getFundingQuickstartGuidance,
+} from "./workflow-hints.js";
+
+const BALANCE_QUICKSTART_THRESHOLD_SATS = 150_000n;
 
 function formatUnitAmount(value: bigint, unit: string): string {
   const sign = value < 0n ? "-" : "";
@@ -693,6 +698,23 @@ function renderBalanceArtCard(context: WalletReadContext & {
   });
 }
 
+function hasRegisteredOrAnchoredDomain(
+  model: NonNullable<WalletReadContext["model"]>,
+): boolean {
+  return model.domains.some((domain) =>
+    domain.chainStatus === "registered-unanchored" || domain.chainStatus === "anchored"
+  );
+}
+
+function shouldShowBalanceQuickstart(context: WalletReadContext & {
+  model: NonNullable<WalletReadContext["model"]>;
+  snapshot: NonNullable<WalletReadContext["snapshot"]>;
+}): boolean {
+  return context.fundingSpendableSats !== null
+    && context.fundingSpendableSats < BALANCE_QUICKSTART_THRESHOLD_SATS
+    && !hasRegisteredOrAnchoredDomain(context.model);
+}
+
 function listPendingBalanceLines(context: WalletReadContext): string[] {
   const lines: string[] = [];
 
@@ -709,6 +731,24 @@ function listPendingBalanceLines(context: WalletReadContext): string[] {
   }
 
   return lines;
+}
+
+function formatReadyBalanceReport(context: WalletReadContext & {
+  model: NonNullable<WalletReadContext["model"]>;
+  snapshot: NonNullable<WalletReadContext["snapshot"]>;
+}): string {
+  const lines = [
+    "",
+    ...renderBalanceArtCard(context),
+    "",
+  ];
+
+  if (shouldShowBalanceQuickstart(context)) {
+    lines.push(`Quickstart: ${getFundingQuickstartGuidance()}`);
+  }
+
+  lines.push(...listPendingBalanceLines(context));
+  return lines.join("\n");
 }
 
 export function formatIdentityListReport(
@@ -755,13 +795,10 @@ export function formatBalanceReport(context: WalletReadContext): string {
     return lines.join("\n");
   }
 
-  return [
-    ...renderBalanceArtCard(context as WalletReadContext & {
-      model: NonNullable<WalletReadContext["model"]>;
-      snapshot: NonNullable<WalletReadContext["snapshot"]>;
-    }),
-    ...listPendingBalanceLines(context),
-  ].join("\n");
+  return formatReadyBalanceReport(context as WalletReadContext & {
+    model: NonNullable<WalletReadContext["model"]>;
+    snapshot: NonNullable<WalletReadContext["snapshot"]>;
+  });
 }
 
 export function formatLocksReport(

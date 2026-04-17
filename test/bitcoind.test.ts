@@ -11,6 +11,7 @@ import { getBitcoinCliPath, getBitcoindPath } from "@cogcoin/bitcoin";
 import {
   runCli,
 } from "../src/cli-runner.js";
+import { formatBalanceReport } from "../src/cli/wallet-format.js";
 import {
   attachOrStartIndexerDaemon,
   attachOrStartManagedBitcoindService,
@@ -39,6 +40,7 @@ import {
 import { openSqliteDatabase } from "../src/sqlite/driver.js";
 import { openSqliteStore } from "../src/sqlite/index.js";
 import { createTempDirectory, generateBlocks, getMiningDescriptor, removeTempDirectory, replayBlocks, serializeStateHex, waitForCondition } from "./bitcoind-helpers.js";
+import { createWalletReadContext } from "./current-model-helpers.js";
 
 interface RegtestFixture {
   rootDir: string;
@@ -1144,6 +1146,7 @@ test("sync CLI resumes background indexer follow after a single SIGTERM detach",
     assert.equal(stdout.toString(), "");
     assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
     assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+    assert.doesNotMatch(stderr.toString(), /Next step: cogcoin balance/);
 
     const daemon = await attachOrStartIndexerDaemon({
       dataDir: fixture.dataDir,
@@ -1235,10 +1238,11 @@ test("sync CLI auto-detaches and resumes background indexer follow once fully ca
     });
 
     assert.equal(code, 0);
-    assert.equal(stdout.toString(), "");
+    assert.match(stdout.toString(), /(COG Balance|Funding address:)/);
     assert.doesNotMatch(stderr.toString(), /Managed sync fully caught up to the live tip\./);
     assert.doesNotMatch(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
     assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+    assert.doesNotMatch(stderr.toString(), /Next step: cogcoin balance/);
 
     const daemon = await attachOrStartIndexerDaemon({
       dataDir: fixture.dataDir,
@@ -1275,6 +1279,11 @@ test("sync CLI runs the completion scene while background-follow detach is alrea
   const stdout = new MemoryStream();
   const stderr = new MemoryStream();
   const events: string[] = [];
+  const fakeReadContext = {
+    ...createWalletReadContext(),
+    close: async () => undefined,
+  };
+  let walletControlLockHeld: boolean | undefined;
 
   try {
     const code = await runCli(["sync"], {
@@ -1288,6 +1297,10 @@ test("sync CLI runs the completion scene while background-follow detach is alrea
       openSqliteStore: async () => ({
         close: async () => undefined,
       }) as never,
+      openWalletReadContext: async (options) => {
+        walletControlLockHeld = options.walletControlLockHeld;
+        return fakeReadContext as never;
+      },
       openManagedBitcoindClient: async () => ({
         async syncToTip() {
           events.push("sync");
@@ -1324,11 +1337,64 @@ test("sync CLI runs the completion scene while background-follow detach is alrea
     });
 
     assert.equal(code, 0);
-    assert.equal(stdout.toString(), "");
+    assert.equal(stdout.toString(), `${formatBalanceReport(fakeReadContext as never)}\n`);
     assert.deepEqual(events, ["sync", "detach-start", "scene-start", "scene-end", "detach-end", "close"]);
+    assert.equal(walletControlLockHeld, true);
     assert.doesNotMatch(stderr.toString(), /Managed sync fully caught up to the live tip\./);
     assert.doesNotMatch(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
     assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+    assert.doesNotMatch(stderr.toString(), /Next step: cogcoin balance/);
+  } finally {
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("sync CLI does not print the balance hint when auto-detach fails", async () => {
+  const fixture = createFixture("cogcoin-cli-sync-detach-failure");
+  const runtimePaths = createTempWalletPaths(join(fixture.rootDir, "wallet-home"));
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream();
+
+  try {
+    const code = await runCli(["sync"], {
+      stdout,
+      stderr,
+      resolveDefaultClientDatabasePath: () => fixture.databasePath,
+      resolveDefaultBitcoindDataDir: () => fixture.dataDir,
+      resolveWalletRuntimePaths: () => runtimePaths,
+      loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub("wallet-root-sync-detach-failure"),
+      ensureDirectory: async () => undefined,
+      openSqliteStore: async () => ({
+        close: async () => undefined,
+      }) as never,
+      openManagedBitcoindClient: async () => ({
+        async syncToTip() {
+          return {
+            appliedBlocks: 0,
+            rewoundBlocks: 0,
+            endingHeight: 25,
+            bestHeight: 25,
+          };
+        },
+        async detachToBackgroundFollow() {
+          throw new Error("detach_failed");
+        },
+        async playSyncCompletionScene() {},
+        async startFollowingTip() {},
+        async getNodeStatus() {
+          return {
+            indexedTip: null,
+            nodeBestHeight: null,
+          };
+        },
+        async close() {},
+      }),
+    });
+
+    assert.equal(code, 1);
+    assert.equal(stdout.toString(), "");
+    assert.match(stderr.toString(), /Detach failed before background indexer follow was confirmed\./);
+    assert.doesNotMatch(stderr.toString(), /Next step: cogcoin balance/);
   } finally {
     await cleanupManagedFixture(fixture);
   }
