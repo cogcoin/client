@@ -13,7 +13,7 @@ npm install -g @cogcoin/client
 cogcoin init
 cogcoin address  # Send 0.0015 BTC to address
 cogcoin register <domainname> # 6+ character domain for 0.001 BTC
-cogcoin anchor <domainname>
+cogcoin anchor <domainname> # You can leave a founding message permanently on Bitcoin!
 cogcoin mine setup
 cogcoin mine # Use remaining ~0.0005 BTC for mining tx, ~1000 sats per entry (0.00001 BTC)
 ```
@@ -49,7 +49,7 @@ cogcoin mine # Use remaining ~0.0005 BTC for mining tx, ~1000 sats per entry (0.
 ▌▝▀▀▀▀▀▀▀▀▀▌│ Funding address: bc1qsamplewallet0000000000000000000000000      │
 ▌   ▗▙▙    ▌│                                                                  │
 ▌   ▐  ▌   ▌│ Bitcoin Balance: 0.00150000 BTC                                  │
-▌   ▐▀▀▚   ▌│ Cogcoin Balance: 12.50000000 COG                                  │
+▌   ▐▀▀▚   ▌│ Cogcoin Balance: 12.50000000 COG                                 │
 ▌   ▐▄▄▞   ▌│                                                                  │
 ▌    ▘▘    ▌│ mempool.space/address/bc1qsamplewallet0000000000000000000000000 |
 ▝▀▀▀▀▀▀▀▀▀▀▘╚──────────────────────────────────────────────────────────────────╝
@@ -63,7 +63,7 @@ Unanchored Domains
 
 ```bash
  _____                                                                    _____ 
-( ___ ) 3.125 COG             ⛭  C O G C O I N  ⛭              150000 SAT ( ___ )
+( ___ ) 12.500 COG            ⛭  C O G C O I N  ⛭             150000 SAT ( ___ )
  |   |~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~|   | 
  |   |                                                                    |   | 
  |   |                                                                    |   | 

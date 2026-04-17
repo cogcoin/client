@@ -36,6 +36,22 @@ function createStringWriter() {
   };
 }
 
+function parseJsonOutput(text: string): Record<string, unknown> {
+  return JSON.parse(text) as Record<string, unknown>;
+}
+
+function assertStableJsonEnvelope(
+  actualText: string,
+  expected: unknown,
+): void {
+  const actual = parseJsonOutput(actualText);
+  const expectedObject = structuredClone(expected) as Record<string, unknown>;
+  assert.equal(typeof actual.generatedAtUnixMs, "number");
+  delete actual.generatedAtUnixMs;
+  delete expectedObject.generatedAtUnixMs;
+  assert.deepEqual(actual, expectedObject);
+}
+
 const QUIET_SIGNAL_SOURCE = {
   on() {},
   off() {},
@@ -261,14 +277,17 @@ test("mine start JSON output is unchanged after the managed-service preflight", 
   assert.equal(exitCode, 0);
   assert.equal(stderr.read(), "");
   assert.equal(closeCalls, 1);
-  assert.equal(
+  assertStableJsonEnvelope(
     stdout.read(),
-    `${JSON.stringify(createMutationSuccessEnvelope(
+    createMutationSuccessEnvelope(
       resolveStableMiningControlJsonSchema(parsed)!,
       "cogcoin mine start",
       "started",
       buildMineStartData(result),
-    ))}\n`,
+      {
+        generatedAtUnixMs: 0,
+      },
+    ),
   );
 });
 
@@ -312,14 +331,17 @@ test("mine start preview JSON output is unchanged after the managed-service pref
   assert.equal(exitCode, 0);
   assert.equal(stderr.read(), "");
   assert.equal(closeCalls, 1);
-  assert.equal(
+  assertStableJsonEnvelope(
     stdout.read(),
-    `${JSON.stringify(createPreviewSuccessEnvelope(
+    createPreviewSuccessEnvelope(
       resolvePreviewJsonSchema(parsed)!,
       describeCanonicalCommand(parsed),
       "started",
       buildMineStartPreviewData(result),
-    ))}\n`,
+      {
+        generatedAtUnixMs: 0,
+      },
+    ),
   );
 });
 
