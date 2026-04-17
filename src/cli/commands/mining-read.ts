@@ -1,9 +1,8 @@
 import { dirname } from "node:path";
 import { stat } from "node:fs/promises";
 
-import { formatHooksStatusReport, formatMineStatusReport, formatMiningEventRecord } from "../mining-format.js";
+import { formatMineStatusReport, formatMiningEventRecord } from "../mining-format.js";
 import { writeLine } from "../io.js";
-import { inspectWalletLocalState } from "../../wallet/read/index.js";
 import {
   createErrorEnvelope,
   createSuccessEnvelope,
@@ -11,7 +10,7 @@ import {
   normalizeListPage,
   writeJsonValue,
 } from "../output.js";
-import { buildHooksStatusJson, buildMineLogJson, buildMineStatusJson } from "../read-json.js";
+import { buildMineLogJson, buildMineStatusJson } from "../read-json.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 
 async function readRotationIndices(paths: {
@@ -42,52 +41,6 @@ export async function runMiningReadCommand(
     const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
     const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
     await context.ensureDirectory(dirname(dbPath));
-
-    if (parsed.command === "hooks-mining-status") {
-      const localState = await inspectWalletLocalState({
-        secretProvider: context.walletSecretProvider,
-        paths: runtimePaths,
-      });
-      const view = await context.inspectMiningControlPlane({
-        provider: context.walletSecretProvider,
-        localState,
-        bitcoind: {
-          health: "unavailable",
-          status: null,
-          message: "Managed bitcoind status unavailable during hook inspection.",
-        },
-        nodeStatus: null,
-        nodeHealth: "unavailable",
-        indexer: {
-          health: "unavailable",
-          status: null,
-          message: null,
-          snapshotTip: null,
-          source: "none",
-          daemonInstanceId: null,
-          snapshotSeq: null,
-          openedAtUnixMs: null,
-        },
-        verify: parsed.verify,
-        paths: runtimePaths,
-      });
-      if (parsed.outputMode === "json") {
-        const result = buildHooksStatusJson(view);
-        writeJsonValue(context.stdout, createSuccessEnvelope(
-          "cogcoin/hooks-status/v1",
-          describeCanonicalCommand(parsed),
-          result.data,
-          {
-            warnings: result.warnings,
-            explanations: result.explanations,
-            nextSteps: result.nextSteps,
-          },
-        ));
-        return 0;
-      }
-      writeLine(context.stdout, formatHooksStatusReport(view));
-      return 0;
-    }
 
     if (parsed.command === "mine-log") {
       if (!parsed.follow) {
@@ -211,11 +164,9 @@ export async function runMiningReadCommand(
     const message = error instanceof Error ? error.message : String(error);
     if (parsed.outputMode === "json") {
       writeJsonValue(context.stdout, createErrorEnvelope(
-        parsed.command === "hooks-mining-status"
-          ? "cogcoin/hooks-status/v1"
-          : parsed.command === "mine-log"
-            ? "cogcoin/mine-log/v1"
-            : "cogcoin/mine-status/v1",
+        parsed.command === "mine-log"
+          ? "cogcoin/mine-log/v1"
+          : "cogcoin/mine-status/v1",
         describeCanonicalCommand(parsed),
         message,
         message,

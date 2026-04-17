@@ -15,7 +15,6 @@ export interface WalletRuntimePaths {
   clientConfigPath: string;
   runtimeRoot: string;
   walletRuntimeRoot: string;
-  hooksRoot: string;
   stateRoot: string;
   walletStateRoot: string;
   seedRegistryPath: string;
@@ -35,9 +34,6 @@ export interface WalletRuntimePaths {
   bitcoindStatusPath: string;
   indexerDaemonLockPath: string;
   indexerStatusPath: string;
-  hooksMiningDir: string;
-  hooksMiningEntrypointPath: string;
-  hooksMiningPackageJsonPath: string;
   miningRoot: string;
   miningStatusPath: string;
   miningEventsPath: string;
@@ -104,7 +100,6 @@ export function resolveWalletRuntimePathsForTesting(
     clientConfigPath: paths.clientConfigPath,
     runtimeRoot: paths.runtimeRoot,
     walletRuntimeRoot: paths.runtimeRoot,
-    hooksRoot: paths.hooksRoot,
     stateRoot: paths.stateRoot,
     walletStateRoot: paths.stateRoot,
     seedRegistryPath: join(paths.stateRoot, "seed-index.json"),
@@ -124,9 +119,6 @@ export function resolveWalletRuntimePathsForTesting(
     bitcoindStatusPath: paths.bitcoindStatusPath,
     indexerDaemonLockPath: paths.indexerDaemonLockPath,
     indexerStatusPath: paths.indexerStatusPath,
-    hooksMiningDir: paths.hooksMiningDir,
-    hooksMiningEntrypointPath: paths.hooksMiningEntrypointPath,
-    hooksMiningPackageJsonPath: paths.hooksMiningPackageJsonPath,
     miningRoot: join(paths.runtimeRoot, "mining"),
     miningStatusPath: join(paths.runtimeRoot, "mining", "status.json"),
     miningEventsPath: join(paths.runtimeRoot, "mining", "events.jsonl"),

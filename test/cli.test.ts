@@ -44,3 +44,17 @@ test("CLI error text explains the legacy Windows DPAPI break", () => {
   assert.match(rendered, /\.dpapi/);
   assert.match(rendered, /recover|reimport/i);
 });
+
+test("CLI error text describes Linux local-file secret failures without Secret Service wording", () => {
+  const formatted = formatCliTextError(new Error("wallet_secret_provider_linux_runtime_error")) ?? [];
+  const rendered = formatted.join("\n");
+
+  assert.match(rendered, /Linux local wallet-secret access failed/);
+  assert.match(rendered, /state directory/i);
+  assert.doesNotMatch(rendered, /secret-tool|Secret Service/i);
+});
+
+test("CLI no longer renders dedicated Linux Secret Service guidance", () => {
+  assert.equal(formatCliTextError(new Error("wallet_secret_provider_linux_secret_tool_missing")), null);
+  assert.equal(formatCliTextError(new Error("wallet_secret_provider_linux_secret_service_unavailable")), null);
+});

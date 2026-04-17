@@ -39,8 +39,6 @@ import { loadWalletExplicitLock } from "../wallet/state/explicit-lock.js";
 import { loadUnlockSession } from "../wallet/state/session.js";
 import { loadRawWalletStateEnvelope, loadWalletState } from "../wallet/state/storage.js";
 import {
-  disableMiningHooks,
-  enableMiningHooks,
   followMiningLog,
   inspectMiningControlPlane,
   readMiningLog,
@@ -147,8 +145,6 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     clearField: overrides.clearField ?? clearField,
     giveReputation: overrides.giveReputation ?? giveReputation,
     revokeReputation: overrides.revokeReputation ?? revokeReputation,
-    enableMiningHooks: overrides.enableMiningHooks ?? enableMiningHooks,
-    disableMiningHooks: overrides.disableMiningHooks ?? disableMiningHooks,
     inspectMiningControlPlane: overrides.inspectMiningControlPlane ?? inspectMiningControlPlane,
     runForegroundMining: overrides.runForegroundMining ?? runForegroundMining,
     startBackgroundMining: overrides.startBackgroundMining ?? startBackgroundMining,

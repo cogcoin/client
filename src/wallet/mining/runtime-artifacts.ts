@@ -17,6 +17,24 @@ function resolveIndexedRotatedMiningEventsPath(eventsPath: string, index: number
   return `${eventsPath}.${index}`;
 }
 
+function normalizeLegacyMiningProviderState(
+  raw: unknown,
+): MiningRuntimeStatusV1["providerState"] {
+  switch (raw) {
+    case "ready":
+    case "backoff":
+    case "unavailable":
+    case "rate-limited":
+    case "auth-error":
+      return raw;
+    case "hook-error":
+    case "n/a":
+      return "unavailable";
+    default:
+      return null;
+  }
+}
+
 export async function loadMiningRuntimeStatus(
   statusPath: string,
 ): Promise<MiningRuntimeStatusV1 | null> {
@@ -31,6 +49,7 @@ export async function loadMiningRuntimeStatus(
     return {
       ...parsed,
       miningState: normalizeMiningLifecycleStatus(parsed.miningState),
+      providerState: normalizeLegacyMiningProviderState(parsed.providerState),
       currentPublishState: normalizeMiningPublishState(parsed.currentPublishState),
       livePublishInMempool: parsed.livePublishInMempool ?? parsed.liveMiningFamilyInMempool ?? null,
       indexerReorgDepth: parsed.indexerReorgDepth ?? null,
@@ -52,7 +71,10 @@ export async function saveMiningRuntimeStatus(
   statusPath: string,
   snapshot: MiningRuntimeStatusV1,
 ): Promise<void> {
-  await writeRuntimeStatusFile(statusPath, snapshot);
+  await writeRuntimeStatusFile(statusPath, {
+    ...snapshot,
+    providerState: normalizeLegacyMiningProviderState(snapshot.providerState),
+  });
 }
 
 async function rotateMiningEventsIfNeeded(eventsPath: string, nextEntryBytes: number): Promise<void> {

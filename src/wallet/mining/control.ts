@@ -1,29 +1,26 @@
-import { randomBytes } from "node:crypto";
-
 import { acquireFileLock } from "../fs/lock.js";
 import { loadOrAutoUnlockWalletState, type WalletPrompter } from "../lifecycle.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../runtime.js";
-import { saveWalletState } from "../state/storage.js";
 import {
   createDefaultWalletSecretProvider,
   createWalletSecretReference,
   type WalletSecretProvider,
 } from "../state/provider.js";
-import type { HookClientStateRecord, WalletStateV1 } from "../types.js";
 import type {
   WalletBitcoindStatus,
   WalletIndexerStatus,
   WalletLocalStateStatus,
   WalletNodeStatus,
 } from "../read/types.js";
-import { appendMiningEvent, getLastMiningEventTimestamp, loadMiningRuntimeStatus, readMiningEvents, saveMiningRuntimeStatus, followMiningEvents } from "./runtime-artifacts.js";
-import { requestMiningGenerationPreemption } from "./coordination.js";
 import {
-  ensureMiningHookTemplate,
-  inspectMiningHookState,
-  shouldEnterHookCooldown,
-  validateCustomMiningHook,
-} from "./hooks.js";
+  appendMiningEvent,
+  getLastMiningEventTimestamp,
+  loadMiningRuntimeStatus,
+  readMiningEvents,
+  saveMiningRuntimeStatus,
+  followMiningEvents,
+} from "./runtime-artifacts.js";
+import { requestMiningGenerationPreemption } from "./coordination.js";
 import { normalizeMiningPublishState, normalizeMiningStateRecord } from "./state.js";
 import { loadClientConfig, saveBuiltInMiningProviderConfig } from "./config.js";
 import type {
@@ -33,27 +30,10 @@ import type {
   MiningProviderInspection,
   MiningRuntimeStatusV1,
 } from "./types.js";
-import { MINING_WORKER_API_VERSION } from "./constants.js";
-
-const WORKER_HEARTBEAT_STALE_MS = 15_000;
-
-function normalizeHookMode(mode: HookClientStateRecord["mode"] | null | undefined): "builtin" | "custom" {
-  return mode === "custom" ? "custom" : "builtin";
-}
-
-function createDefaultHookState(): HookClientStateRecord {
-  return {
-    mode: "builtin",
-    validationState: "never",
-    lastValidationAtUnixMs: null,
-    lastValidationError: null,
-    validatedLaunchFingerprint: null,
-    validatedFullFingerprint: null,
-    fullTrustWarningAcknowledgedAtUnixMs: null,
-    consecutiveFailureCount: 0,
-    cooldownUntilUnixMs: null,
-  };
-}
+import {
+  MINING_WORKER_API_VERSION,
+  MINING_WORKER_HEARTBEAT_STALE_MS,
+} from "./constants.js";
 
 function createMiningEvent(
   kind: string,
@@ -127,23 +107,11 @@ async function isProcessAlive(pid: number | null): Promise<boolean> {
 
 function mapProviderState(
   provider: MiningProviderInspection,
-  hookMode: "builtin" | "custom",
   localState: WalletLocalStateStatus,
-  nowUnixMs: number,
 ): MiningRuntimeStatusV1["providerState"] {
   const miningState = localState.state?.miningState === undefined
     ? null
     : normalizeMiningStateRecord(localState.state.miningState);
-  const hookState = localState.state?.hookClientState.mining ?? null;
-  const hookCooldownUntilUnixMs = hookState?.cooldownUntilUnixMs ?? null;
-  const hookCooldownActive = hookCooldownUntilUnixMs !== null
-    && hookCooldownUntilUnixMs > nowUnixMs;
-
-  if (hookMode === "custom") {
-    return hookState?.validationState === "failed" || hookCooldownActive
-      ? "hook-error"
-      : "n/a";
-  }
 
   if (miningState?.state === "paused" && miningState.pauseReason?.includes("rate-limit")) {
     return "rate-limited";
@@ -159,10 +127,6 @@ function mapProviderState(
 
   if (provider.status === "ready") {
     return "ready";
-  }
-
-  if (provider.status === "error") {
-    return "unavailable";
   }
 
   return "unavailable";
@@ -265,7 +229,7 @@ async function deriveBackgroundWorkerHealth(options: {
 
   if (
     runtime.backgroundWorkerHeartbeatAtUnixMs === null
-    || (options.nowUnixMs - runtime.backgroundWorkerHeartbeatAtUnixMs) > WORKER_HEARTBEAT_STALE_MS
+    || (options.nowUnixMs - runtime.backgroundWorkerHeartbeatAtUnixMs) > MINING_WORKER_HEARTBEAT_STALE_MS
   ) {
     return "stale-heartbeat";
   }
@@ -278,11 +242,6 @@ async function buildMiningRuntimeSnapshot(options: {
   localState: WalletLocalStateStatus;
   bitcoind: WalletBitcoindStatus;
   nodeStatus: WalletNodeStatus | null;
-  hookMode: "builtin" | "custom";
-  hookValidationState: MiningRuntimeStatusV1["lastValidationState"];
-  hookOperatorValidationState: MiningRuntimeStatusV1["lastOperatorValidationState"];
-  hookValidationAtUnixMs: number | null;
-  hookCooldownActive: boolean;
   provider: MiningProviderInspection;
   nodeHealth: MiningRuntimeStatusV1["nodeHealth"];
   indexer: WalletIndexerStatus;
@@ -298,7 +257,7 @@ async function buildMiningRuntimeSnapshot(options: {
     localState: options.localState,
     nowUnixMs: options.nowUnixMs,
   });
-  const providerState = mapProviderState(options.provider, options.hookMode, options.localState, options.nowUnixMs);
+  const providerState = mapProviderState(options.provider, options.localState);
   const indexerDaemonState = mapIndexerDaemonState(options.indexer);
   const corePublishState = mapCorePublishState(options.nodeHealth, options.nodeStatus);
   const existing = options.existingRuntime;
@@ -360,7 +319,6 @@ async function buildMiningRuntimeSnapshot(options: {
     lastMempoolSequence: existing?.lastMempoolSequence ?? null,
     lastCompetitivenessGateAtUnixMs: existing?.lastCompetitivenessGateAtUnixMs ?? null,
     pauseReason: state?.pauseReason ?? options.existingRuntime?.pauseReason ?? null,
-    hookMode: options.hookMode,
     providerConfigured: options.provider.configured,
     providerKind: options.provider.provider,
     bitcoindHealth: options.bitcoind.health,
@@ -369,59 +327,34 @@ async function buildMiningRuntimeSnapshot(options: {
     nodeHealth: options.nodeHealth,
     indexerHealth: options.indexer.health,
     tipsAligned: options.tipsAligned,
-    lastValidationState: options.hookValidationState,
-    lastOperatorValidationState: options.hookOperatorValidationState,
-    lastValidationAtUnixMs: options.hookValidationAtUnixMs,
     lastEventAtUnixMs: options.lastEventAtUnixMs,
     lastError: existing?.lastError ?? options.provider.message ?? options.indexer.message ?? null,
-    note: options.hookMode === "custom" && options.hookCooldownActive
-      ? "Custom mining hook launch is paused during the post-failure cooldown window."
-      : options.hookMode === "custom" && options.hookOperatorValidationState !== "current"
-        ? "Custom mining hook is selected, but it must be revalidated before it can launch."
-        : state?.pauseReason === "zero-reward"
-          ? "Mining is disabled because the target block reward is zero."
-          : existing?.currentPhase === "resuming"
-            ? "Mining discarded stale in-flight work after a large local runtime gap and is rechecking health."
-            : existing?.currentPhase === "waiting-provider"
-              ? "Mining is waiting for the sentence provider to recover."
-              : existing?.currentPhase === "waiting-indexer"
-                ? "Mining is waiting for Bitcoin Core and the indexer to align."
-                : existing?.currentPhase === "waiting-bitcoin-network"
-                  ? "Mining is waiting for the local Bitcoin node to become publishable."
-        : state?.state === "repair-required"
-          ? "Mining is blocked until the current mining publish is reconciled or `cogcoin repair` completes."
-          : state?.state === "paused-stale" && state.livePublishInMempool
-            ? "A previously broadcast mining transaction is still in mempool for an older tip context. Wait for confirmation or rerun mining to replace it."
-            : state?.state === "paused" && state.livePublishInMempool
-              ? "Mining is paused, but the last mining transaction may still confirm from mempool without further fee bumps."
-              : state?.state === "paused"
-                ? "Mining is paused by another wallet command or local policy."
-                : options.provider.status === "missing"
-                  ? "Run `cogcoin mine setup` to configure the built-in mining provider."
-                  : options.indexer.health === "reorging"
-                    ? "Mining remains stopped while the indexer replays a reorg and refreshes the coherent snapshot."
-                    : options.indexer.health !== "synced" || options.nodeHealth !== "synced"
-                      ? "Mining remains stopped until Bitcoin Core and the indexer are both healthy and aligned."
-                      : null,
+    note: state?.pauseReason === "zero-reward"
+      ? "Mining is disabled because the target block reward is zero."
+      : existing?.currentPhase === "resuming"
+        ? "Mining discarded stale in-flight work after a large local runtime gap and is rechecking health."
+        : existing?.currentPhase === "waiting-provider"
+          ? "Mining is waiting for the sentence provider to recover."
+          : existing?.currentPhase === "waiting-indexer"
+            ? "Mining is waiting for Bitcoin Core and the indexer to align."
+            : existing?.currentPhase === "waiting-bitcoin-network"
+              ? "Mining is waiting for the local Bitcoin node to become publishable."
+              : state?.state === "repair-required"
+                ? "Mining is blocked until the current mining publish is reconciled or `cogcoin repair` completes."
+                : state?.state === "paused-stale" && state.livePublishInMempool
+                  ? "A previously broadcast mining transaction is still in mempool for an older tip context. Wait for confirmation or rerun mining to replace it."
+                  : state?.state === "paused" && state.livePublishInMempool
+                    ? "Mining is paused, but the last mining transaction may still confirm from mempool without further fee bumps."
+                    : state?.state === "paused"
+                      ? "Mining is paused by another wallet command or local policy."
+                      : options.provider.status === "missing"
+                        ? "Run `cogcoin mine setup` to configure the built-in mining provider."
+                        : options.indexer.health === "reorging"
+                          ? "Mining remains stopped while the indexer replays a reorg and refreshes the coherent snapshot."
+                          : options.indexer.health !== "synced" || options.nodeHealth !== "synced"
+                            ? "Mining remains stopped until Bitcoin Core and the indexer are both healthy and aligned."
+                            : null,
   };
-}
-
-async function persistWalletMiningHookState(options: {
-  state: WalletStateV1;
-  provider: WalletSecretProvider;
-  paths: WalletRuntimePaths;
-}): Promise<void> {
-  await saveWalletState(
-    {
-      primaryPath: options.paths.walletStatePath,
-      backupPath: options.paths.walletStateBackupPath,
-    },
-    options.state,
-    {
-      provider: options.provider,
-      secretReference: createWalletSecretReference(options.state.walletRootId),
-    },
-  );
 }
 
 async function loadMiningProviderConfig(options: {
@@ -455,7 +388,6 @@ export async function inspectMiningControlPlane(options: {
   nodeStatus: WalletNodeStatus | null;
   nodeHealth: MiningRuntimeStatusV1["nodeHealth"];
   indexer: WalletIndexerStatus;
-  verify?: boolean;
   nowUnixMs?: number;
   paths?: WalletRuntimePaths;
 }): Promise<MiningControlPlaneView> {
@@ -465,14 +397,6 @@ export async function inspectMiningControlPlane(options: {
   const providerConfig = await loadMiningProviderConfig({
     paths,
     provider,
-  });
-  const hookState = options.localState.state?.hookClientState.mining ?? null;
-  const hook = await inspectMiningHookState({
-    hookRootPath: paths.hooksMiningDir,
-    entrypointPath: paths.hooksMiningEntrypointPath,
-    packagePath: paths.hooksMiningPackageJsonPath,
-    localState: hookState,
-    verify: options.verify ?? false,
   });
   const providerInspection = buildProviderInspection(providerConfig);
   const existingRuntime = await loadMiningRuntimeStatus(paths.miningStatusPath).catch(() => null);
@@ -485,11 +409,6 @@ export async function inspectMiningControlPlane(options: {
     localState: options.localState,
     bitcoind: options.bitcoind,
     nodeStatus: options.nodeStatus,
-    hookMode: normalizeHookMode(hook.mode === "unavailable" ? null : hook.mode),
-    hookValidationState: hook.validationState === "unavailable" ? null : hook.validationState,
-    hookOperatorValidationState: hook.operatorValidationState,
-    hookValidationAtUnixMs: hook.validatedAtUnixMs,
-    hookCooldownActive: hook.cooldownActive,
     provider: providerInspection,
     nodeHealth: options.nodeHealth,
     indexer: options.indexer,
@@ -500,7 +419,6 @@ export async function inspectMiningControlPlane(options: {
 
   return {
     runtime,
-    hook,
     provider: providerInspection,
     lastEventAtUnixMs,
   };
@@ -522,288 +440,6 @@ export async function refreshMiningRuntimeStatus(options: {
   return view;
 }
 
-export async function enableMiningHooks(options: {
-  provider?: WalletSecretProvider;
-  prompter: WalletPrompter;
-  nowUnixMs?: number;
-  paths?: WalletRuntimePaths;
-}): Promise<MiningControlPlaneView> {
-  if (!options.prompter.isInteractive) {
-    throw new Error("mining_hooks_enable_requires_tty");
-  }
-
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.miningControlLockPath, {
-    purpose: "hooks-enable-mining",
-  });
-
-  try {
-    const preemption = await requestMiningGenerationPreemption({
-      paths,
-      reason: "hooks-enable-mining",
-    });
-    const unlocked = await loadOrAutoUnlockWalletState({
-      provider,
-      nowUnixMs,
-      paths,
-    });
-
-    try {
-      if (unlocked === null) {
-        throw new Error("wallet_locked");
-      }
-
-      const state = unlocked.state;
-      state.hookClientState.mining ??= createDefaultHookState();
-
-      if (state.hookClientState.mining.fullTrustWarningAcknowledgedAtUnixMs === null) {
-        options.prompter.writeLine("Enabling a custom mining hook gives local JavaScript code full access to your user account.");
-        const confirmation = await options.prompter.prompt("Type TRUST CUSTOM MINING HOOKS to continue: ");
-
-        if (confirmation.trim() !== "TRUST CUSTOM MINING HOOKS") {
-          throw new Error("mining_hooks_enable_trust_acknowledgement_required");
-        }
-
-        state.hookClientState.mining.fullTrustWarningAcknowledgedAtUnixMs = nowUnixMs;
-      }
-
-      const createdTemplate = await ensureMiningHookTemplate({
-        hookRootPath: paths.hooksMiningDir,
-        entrypointPath: paths.hooksMiningEntrypointPath,
-        packagePath: paths.hooksMiningPackageJsonPath,
-      });
-
-      if (createdTemplate) {
-        await persistWalletMiningHookState({ state, provider, paths });
-        await appendMiningEvent(
-          paths.miningEventsPath,
-          createMiningEvent(
-            "custom-hook-template-created",
-            "Created the default mining hook template. Edit it, then rerun `cogcoin hooks enable mining`.",
-            { timestampUnixMs: nowUnixMs },
-          ),
-        );
-        await refreshMiningRuntimeStatus({
-          provider,
-          localState: {
-            availability: "ready",
-            walletRootId: state.walletRootId,
-            state,
-            source: unlocked.source,
-            unlockUntilUnixMs: unlocked.session.unlockUntilUnixMs,
-            hasPrimaryStateFile: true,
-            hasBackupStateFile: true,
-            hasUnlockSessionFile: true,
-            message: null,
-          },
-          bitcoind: {
-            health: "unavailable",
-            status: null,
-            message: "Managed bitcoind status unavailable during hook setup.",
-          },
-          nodeStatus: null,
-          nodeHealth: "unavailable",
-          indexer: {
-            health: "unavailable",
-            status: null,
-            message: "Indexer status unavailable during hook setup.",
-            snapshotTip: null,
-            source: "none",
-            daemonInstanceId: null,
-            snapshotSeq: null,
-            openedAtUnixMs: null,
-          },
-          nowUnixMs,
-          paths,
-        });
-        throw new Error(`mining_hooks_enable_template_created:${paths.hooksMiningDir}`);
-      }
-
-      try {
-        const validation = await validateCustomMiningHook({
-          hookRootPath: paths.hooksMiningDir,
-          entrypointPath: paths.hooksMiningEntrypointPath,
-          packagePath: paths.hooksMiningPackageJsonPath,
-        });
-        state.hookClientState.mining = {
-          ...state.hookClientState.mining,
-          mode: "custom",
-          validationState: "current",
-          lastValidationAtUnixMs: nowUnixMs,
-          lastValidationError: null,
-          validatedLaunchFingerprint: validation.launchFingerprint,
-          validatedFullFingerprint: validation.fullFingerprint,
-          consecutiveFailureCount: 0,
-          cooldownUntilUnixMs: null,
-        };
-        await persistWalletMiningHookState({ state, provider, paths });
-        await appendMiningEvent(
-          paths.miningEventsPath,
-          createMiningEvent(
-            "custom-hook-enabled",
-            "Custom mining hook enabled after validation.",
-            { timestampUnixMs: nowUnixMs },
-          ),
-        );
-      } catch (error) {
-        const validationError = error instanceof Error ? error.message : String(error);
-        const consecutiveFailureCount = (state.hookClientState.mining.consecutiveFailureCount ?? 0) + 1;
-        state.hookClientState.mining = {
-          ...state.hookClientState.mining,
-          validationState: "failed",
-          lastValidationAtUnixMs: nowUnixMs,
-          lastValidationError: validationError,
-          validatedLaunchFingerprint: null,
-          validatedFullFingerprint: null,
-          consecutiveFailureCount,
-          cooldownUntilUnixMs: shouldEnterHookCooldown({
-            consecutiveFailureCount,
-            nowUnixMs,
-          }),
-        };
-        await persistWalletMiningHookState({ state, provider, paths });
-        await appendMiningEvent(
-          paths.miningEventsPath,
-          createMiningEvent(
-            "custom-hook-validation-failed",
-            state.hookClientState.mining.lastValidationError ?? "Custom mining hook validation failed.",
-            {
-              level: "error",
-              timestampUnixMs: nowUnixMs,
-            },
-          ),
-        );
-        throw new Error(`mining_hooks_enable_validation_failed:${validationError}`);
-      }
-
-      return refreshMiningRuntimeStatus({
-        provider,
-        localState: {
-          availability: "ready",
-          walletRootId: state.walletRootId,
-          state,
-          source: unlocked.source,
-          unlockUntilUnixMs: unlocked.session.unlockUntilUnixMs,
-          hasPrimaryStateFile: true,
-          hasBackupStateFile: true,
-          hasUnlockSessionFile: true,
-          message: null,
-        },
-        bitcoind: {
-          health: "unavailable",
-          status: null,
-          message: "Managed bitcoind status unavailable during hook setup.",
-        },
-        nodeStatus: null,
-        nodeHealth: "unavailable",
-        indexer: {
-          health: "unavailable",
-          status: null,
-          message: "Indexer status unavailable during hook setup.",
-          snapshotTip: null,
-          source: "none",
-          daemonInstanceId: null,
-          snapshotSeq: null,
-          openedAtUnixMs: null,
-        },
-        nowUnixMs,
-        paths,
-      });
-    } finally {
-      await preemption.release();
-    }
-  } finally {
-    await controlLock.release();
-  }
-}
-
-export async function disableMiningHooks(options: {
-  provider?: WalletSecretProvider;
-  nowUnixMs?: number;
-  paths?: WalletRuntimePaths;
-}): Promise<MiningControlPlaneView> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.miningControlLockPath, {
-    purpose: "hooks-disable-mining",
-  });
-
-  try {
-    const preemption = await requestMiningGenerationPreemption({
-      paths,
-      reason: "hooks-disable-mining",
-    });
-    const unlocked = await loadOrAutoUnlockWalletState({
-      provider,
-      nowUnixMs,
-      paths,
-    });
-
-    try {
-      if (unlocked === null) {
-        throw new Error("wallet_locked");
-      }
-
-      const state = unlocked.state;
-      state.hookClientState.mining = {
-        ...createDefaultHookState(),
-        mode: "builtin",
-        fullTrustWarningAcknowledgedAtUnixMs: state.hookClientState.mining?.fullTrustWarningAcknowledgedAtUnixMs ?? null,
-      };
-      await persistWalletMiningHookState({ state, provider, paths });
-      await appendMiningEvent(
-        paths.miningEventsPath,
-        createMiningEvent(
-          "custom-hook-disabled",
-          "Custom mining hook disabled. Built-in mining mode is active again.",
-          { timestampUnixMs: nowUnixMs },
-        ),
-      );
-
-      return refreshMiningRuntimeStatus({
-        provider,
-        localState: {
-          availability: "ready",
-          walletRootId: state.walletRootId,
-          state,
-          source: unlocked.source,
-          unlockUntilUnixMs: unlocked.session.unlockUntilUnixMs,
-          hasPrimaryStateFile: true,
-          hasBackupStateFile: true,
-          hasUnlockSessionFile: true,
-          message: null,
-        },
-        bitcoind: {
-          health: "unavailable",
-          status: null,
-          message: "Managed bitcoind status unavailable during hook setup.",
-        },
-        nodeStatus: null,
-        nodeHealth: "unavailable",
-        indexer: {
-          health: "unavailable",
-          status: null,
-          message: "Indexer status unavailable during hook setup.",
-          snapshotTip: null,
-          source: "none",
-          daemonInstanceId: null,
-          snapshotSeq: null,
-          openedAtUnixMs: null,
-        },
-        nowUnixMs,
-        paths,
-      });
-    } finally {
-      await preemption.release();
-    }
-  } finally {
-    await controlLock.release();
-  }
-}
-
 function normalizeProviderChoice(raw: string): "openai" | "anthropic" | null {
   const value = raw.trim().toLowerCase();
   return value === "openai" || value === "anthropic" ? value : null;
@@ -811,7 +447,7 @@ function normalizeProviderChoice(raw: string): "openai" | "anthropic" | null {
 
 function writeBuiltInMiningProviderDisclosure(prompter: WalletPrompter): void {
   prompter.writeLine("Built-in mining provider disclosure:");
-  prompter.writeLine("The built-in mining hook will send the following to the selected provider:");
+  prompter.writeLine("The built-in mining provider will send the following to the selected provider:");
   prompter.writeLine("- eligible anchored root domain names");
   prompter.writeLine("- the required five words for each root domain");
   prompter.writeLine("- target block height");
@@ -879,7 +515,6 @@ export async function setupBuiltInMining(options: {
         throw new Error("wallet_locked");
       }
 
-      const state = unlocked.state;
       await appendMiningEvent(
         paths.miningEventsPath,
         createMiningEvent(
@@ -895,15 +530,9 @@ export async function setupBuiltInMining(options: {
         await saveBuiltInMiningProviderConfig({
           path: paths.clientConfigPath,
           provider,
-          secretReference: createWalletSecretReference(state.walletRootId),
+          secretReference: createWalletSecretReference(unlocked.state.walletRootId),
           config,
         });
-
-        state.hookClientState.mining ??= createDefaultHookState();
-        if (state.hookClientState.mining.mode === "disabled") {
-          state.hookClientState.mining.mode = "builtin";
-        }
-        await persistWalletMiningHookState({ state, provider, paths });
         await appendMiningEvent(
           paths.miningEventsPath,
           createMiningEvent(
@@ -917,8 +546,8 @@ export async function setupBuiltInMining(options: {
           provider,
           localState: {
             availability: "ready",
-            walletRootId: state.walletRootId,
-            state,
+            walletRootId: unlocked.state.walletRootId,
+            state: unlocked.state,
             source: unlocked.source,
             unlockUntilUnixMs: unlocked.session.unlockUntilUnixMs,
             hasPrimaryStateFile: true,

@@ -36,22 +36,6 @@ export function createMiningState(overrides: Partial<WalletStateV1["miningState"
   };
 }
 
-export function createHookClientState(): WalletStateV1["hookClientState"] {
-  return {
-    mining: {
-      mode: "builtin",
-      validationState: "current",
-      lastValidationAtUnixMs: null,
-      lastValidationError: null,
-      validatedLaunchFingerprint: null,
-      validatedFullFingerprint: null,
-      fullTrustWarningAcknowledgedAtUnixMs: null,
-      consecutiveFailureCount: 0,
-      cooldownUntilUnixMs: null,
-    },
-  };
-}
-
 export function createWalletState(overrides: Partial<WalletStateV1> = {}): WalletStateV1 {
   return {
     schemaVersion: 4,
@@ -95,7 +79,6 @@ export function createWalletState(overrides: Partial<WalletStateV1> = {}): Walle
     },
     domains: [],
     miningState: createMiningState(),
-    hookClientState: createHookClientState(),
     pendingMutations: [],
     ...overrides,
   };
@@ -129,7 +112,6 @@ export function createPortableArchivePayload(
     },
     domains: [],
     miningState: createMiningState(),
-    hookClientState: createHookClientState(),
     ...overrides,
   };
 }
@@ -192,7 +174,6 @@ export function createMiningRuntimeStatus(
     lastMempoolSequence: null,
     lastCompetitivenessGateAtUnixMs: null,
     pauseReason: null,
-    hookMode: "builtin",
     providerConfigured: true,
     providerKind: "openai",
     bitcoindHealth: "ready",
@@ -201,9 +182,6 @@ export function createMiningRuntimeStatus(
     nodeHealth: "synced",
     indexerHealth: "synced",
     tipsAligned: true,
-    lastValidationState: "validated",
-    lastOperatorValidationState: "current",
-    lastValidationAtUnixMs: null,
     lastEventAtUnixMs: null,
     lastError: null,
     note: null,
@@ -216,28 +194,6 @@ export function createMiningControlPlaneView(
 ): MiningControlPlaneView {
   return {
     runtime: createMiningRuntimeStatus(),
-    hook: {
-      mode: "builtin",
-      entrypointPath: "/tmp/hook.js",
-      packagePath: "/tmp/package.json",
-      entrypointExists: true,
-      packageStatus: "valid",
-      packageMessage: null,
-      trustStatus: "trusted",
-      trustMessage: null,
-      validationState: "validated",
-      operatorValidationState: "current",
-      validationError: null,
-      validatedAtUnixMs: null,
-      validatedLaunchFingerprint: null,
-      validatedFullFingerprint: null,
-      currentLaunchFingerprint: null,
-      currentFullFingerprint: null,
-      verifyUsed: false,
-      cooldownUntilUnixMs: null,
-      cooldownActive: false,
-      consecutiveFailureCount: 0,
-    },
     provider: {
       configured: true,
       provider: "openai",

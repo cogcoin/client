@@ -339,31 +339,11 @@ export function classifyCliError(error: unknown): {
     return { exitCode: 2, errorCode: message, message };
   }
 
-  if (message === "mining_hooks_enable_trust_acknowledgement_required") {
-    return { exitCode: 2, errorCode: message, message };
-  }
-
   if (
     message === "mining_setup_invalid_provider"
     || message === "mining_setup_missing_api_key"
   ) {
     return { exitCode: 2, errorCode: message, message };
-  }
-
-  if (message.startsWith("mining_hooks_enable_template_created:")) {
-    return {
-      exitCode: 4,
-      errorCode: "mining_hooks_enable_template_created",
-      message,
-    };
-  }
-
-  if (message.startsWith("mining_hooks_enable_validation_failed:")) {
-    return {
-      exitCode: 5,
-      errorCode: "mining_hooks_enable_validation_failed",
-      message,
-    };
   }
 
   if (message.endsWith("_typed_ack_required")) {
@@ -447,10 +427,7 @@ function isBlockedError(message: string): boolean {
     || message === "indexer_daemon_wallet_root_mismatch"
     || message === "indexer_daemon_schema_mismatch"
     || message === "mine_setup_requires_tty"
-    || message === "mining_hooks_enable_requires_tty"
     || message === "mining_preemption_timeout"
-    || message === "wallet_secret_provider_linux_secret_tool_missing"
-    || message === "wallet_secret_provider_linux_secret_service_unavailable"
     || message === "wallet_secret_provider_linux_runtime_error"
     || message === "wallet_secret_provider_windows_runtime_error"
     || message === "wallet_secret_provider_windows_legacy_dpapi_unsupported"
@@ -492,6 +469,13 @@ export function createCliErrorPresentation(
   why: string | null;
   next: string | null;
 } | null {
+  if (
+    errorCode === "wallet_secret_provider_linux_secret_tool_missing"
+    || errorCode === "wallet_secret_provider_linux_secret_service_unavailable"
+  ) {
+    return null;
+  }
+
   if (errorCode === "wallet_locked") {
     return {
       what: "Wallet is locked.",
@@ -591,9 +575,9 @@ export function createCliErrorPresentation(
 
   if (errorCode === "reset_secret_cleanup_failed") {
     return {
-      what: "Reset finished the filesystem wipe but could not fully clean up wallet secret-provider entries.",
-      why: "The local Cogcoin files were already removed or rewritten, but at least one discoverable OS secret-store entry could not be deleted cleanly.",
-      next: "Remove the remaining Cogcoin wallet secret from the local secret store, then rerun `cogcoin status` to confirm the new state.",
+      what: "Reset finished the filesystem wipe but could not fully clean up wallet secret-provider material.",
+      why: "The local Cogcoin files were already removed or rewritten, but at least one tracked wallet secret could not be deleted cleanly.",
+      next: "Remove the remaining wallet secret material, then rerun `cogcoin status` to confirm the new state.",
     };
   }
 
@@ -773,30 +757,6 @@ export function createCliErrorPresentation(
     };
   }
 
-  if (errorCode === "mining_hooks_enable_trust_acknowledgement_required") {
-    return {
-      what: "Trust acknowledgement is still required.",
-      why: "Enabling a custom mining hook grants unsandboxed local JavaScript full access to the current OS account and readable local data.",
-      next: "Rerun `cogcoin hooks enable mining` in an interactive terminal and type the requested trust acknowledgement.",
-    };
-  }
-
-  if (errorCode === "mining_hooks_enable_template_created") {
-    return {
-      what: "Default mining hook template was created.",
-      why: "The wallet wrote starter custom-hook files and stopped before enabling custom mode so you can review and edit them first.",
-      next: "Edit `generate-sentences.js`, then rerun `cogcoin hooks enable mining`.",
-    };
-  }
-
-  if (errorCode === "mining_hooks_enable_validation_failed") {
-    return {
-      what: "Custom mining hook validation failed.",
-      why: "The hook files, package shape, trust checks, or isolated validation run did not pass the required checks.",
-      next: "Fix the custom mining hook and rerun `cogcoin hooks enable mining`.",
-    };
-  }
-
   if (errorCode === "mining_setup_invalid_provider") {
     return {
       what: "Mining provider choice is invalid.",
@@ -850,27 +810,11 @@ export function createCliErrorPresentation(
     };
   }
 
-  if (errorCode === "wallet_secret_provider_linux_secret_tool_missing") {
-    return {
-      what: "Linux secret-store support (`secret-tool`) is not installed.",
-      why: "Cogcoin uses `secret-tool` to talk to Secret Service on Linux, but that helper is not available in this environment.",
-      next: "Install `secret-tool`/libsecret for this machine, then rerun the command.",
-    };
-  }
-
-  if (errorCode === "wallet_secret_provider_linux_secret_service_unavailable") {
-    return {
-      what: "Linux Secret Service is unavailable or locked.",
-      why: "The local Secret Service session could not be reached for wallet-secret storage, so the wallet cannot read or write its encryption keys.",
-      next: "Start or unlock your desktop keyring/Secret Service session, then rerun the command.",
-    };
-  }
-
   if (errorCode === "wallet_secret_provider_linux_runtime_error") {
     return {
-      what: "Linux secret-store operation failed.",
-      why: "`secret-tool` ran but did not complete a usable wallet-secret operation for this command.",
-      next: "Check that Secret Service is running correctly on this machine, then retry.",
+      what: "Linux local wallet-secret access failed.",
+      why: "Cogcoin could not read or write the local wallet secret file for this Linux account.",
+      next: "Check that the Cogcoin state directory is readable and writable for this Linux user, then retry.",
     };
   }
 
@@ -1325,12 +1269,6 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
       return "cogcoin ids";
     case "wallet-status":
       return "cogcoin wallet status";
-    case "hooks-mining-status":
-      return `cogcoin hooks status${parsed.verify ? " --verify" : ""}`;
-    case "hooks-mining-enable":
-      return "cogcoin hooks enable mining";
-    case "hooks-mining-disable":
-      return "cogcoin hooks disable mining";
     case "mine-setup":
       return "cogcoin mine setup";
     case "mine-start":
@@ -1405,8 +1343,6 @@ export function resolveStableJsonSchema(parsed: ParsedCliArgs): string | null {
       return "cogcoin/ids/v1";
     case "wallet-status":
       return "cogcoin/wallet-status/v1";
-    case "hooks-mining-status":
-      return "cogcoin/hooks-status/v1";
     case "mine-status":
       return "cogcoin/mine-status/v1";
     case "mine-log":
@@ -1517,10 +1453,6 @@ export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string |
 
 export function resolveStableMiningControlJsonSchema(parsed: ParsedCliArgs): string | null {
   switch (parsed.command) {
-    case "hooks-mining-enable":
-      return "cogcoin/hooks-enable-mining/v1";
-    case "hooks-mining-disable":
-      return "cogcoin/hooks-disable-mining/v1";
     case "mine-setup":
       return "cogcoin/mine-setup/v1";
     case "mine-start":
@@ -1574,8 +1506,6 @@ export function resolvePreviewJsonSchema(parsed: ParsedCliArgs): string | null {
       return stableMutationSchema === null
         ? null
         : stableMutationSchema.replace(/^cogcoin\//, "cogcoin-preview/");
-    case "hooks-mining-enable":
-    case "hooks-mining-disable":
     case "mine-setup":
     case "mine-start":
     case "mine-stop":
@@ -1622,7 +1552,6 @@ function createSchemaProbe(command: CommandName | null): ParsedCliArgs {
     domainsMineableOnly: false,
     listLimit: null,
     listAll: false,
-    verify: false,
     follow: false,
   };
 }
@@ -1744,19 +1673,9 @@ function createCliErrorDetails(
 ): Record<string, unknown> {
   const details: Record<string, unknown> = {};
   const initMatch = /^wallet_init_confirmation_failed_word_(\d+)$/.exec(errorCode);
-  const hooksTemplateMatch = /^mining_hooks_enable_template_created:(.+)$/.exec(rawMessage);
-  const hooksValidationMatch = /^mining_hooks_enable_validation_failed:(.+)$/.exec(rawMessage);
 
   if (initMatch !== null) {
     details.wordIndex = Number.parseInt(initMatch[1]!, 10);
-  }
-
-  if (hooksTemplateMatch !== null) {
-    details.hookRootPath = hooksTemplateMatch[1]!;
-  }
-
-  if (hooksValidationMatch !== null) {
-    details.validationError = hooksValidationMatch[1]!;
   }
 
   if (humanMessage !== rawMessage) {

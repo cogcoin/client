@@ -80,7 +80,6 @@ function serializeWalletState(state: WalletStateV1): Record<string, unknown> {
       birthTime: domain.birthTime,
     })),
     miningState: state.miningState,
-    hookClientState: state.hookClientState,
     pendingMutations: state.pendingMutations,
   };
 }

@@ -58,8 +58,6 @@ import {
 } from "./runtime-artifacts.js";
 import { loadClientConfig } from "./config.js";
 import {
-  MINING_HOOK_COOLDOWN_MS,
-  MINING_HOOK_FAILURE_THRESHOLD,
   MINING_LOOP_INTERVAL_MS,
   MINING_NETWORK_SETTLE_WINDOW_MS,
   MINING_PROVIDER_BACKOFF_BASE_MS,
@@ -84,7 +82,7 @@ import {
   normalizeMiningPublishState,
   normalizeMiningStateRecord,
 } from "./state.js";
-import { createGenerateSentencesHookLimits } from "./hook-protocol.js";
+import { createMiningSentenceRequestLimits } from "./sentence-protocol.js";
 import { generateMiningSentences, MiningProviderRequestError, type MiningSentenceGenerationRequest } from "./sentences.js";
 import type { MiningControlPlaneView, MiningEventRecord, MiningRuntimeStatusV1 } from "./types.js";
 import { MiningFollowVisualizer } from "./visualizer.js";
@@ -1220,61 +1218,6 @@ function resolveEligibleAnchoredRoots(context: WalletReadContext): Array<{
   return domains.sort((left, right) => left.domainId - right.domainId || left.domainName.localeCompare(right.domainName));
 }
 
-async function persistCustomHookRuntimeOutcome(options: {
-  readContext: WalletReadContext & {
-    localState: { availability: "ready"; state: WalletStateV1; unlockUntilUnixMs: number };
-  };
-  provider: WalletSecretProvider;
-  paths: WalletRuntimePaths;
-  nowUnixMs: number;
-  success: boolean;
-}): Promise<boolean> {
-  const hookState = options.readContext.localState.state.hookClientState.mining;
-
-  if (hookState.mode !== "custom") {
-    return false;
-  }
-
-  if (options.success) {
-    if ((hookState.consecutiveFailureCount ?? 0) === 0 && hookState.cooldownUntilUnixMs === null) {
-      return false;
-    }
-
-    options.readContext.localState.state.hookClientState.mining = {
-      ...hookState,
-      consecutiveFailureCount: 0,
-      cooldownUntilUnixMs: null,
-    };
-    await saveWalletStatePreservingUnlock({
-      state: options.readContext.localState.state,
-      provider: options.provider,
-      unlockUntilUnixMs: options.readContext.localState.unlockUntilUnixMs,
-      nowUnixMs: options.nowUnixMs,
-      paths: options.paths,
-    });
-    return false;
-  }
-
-  const consecutiveFailureCount = (hookState.consecutiveFailureCount ?? 0) + 1;
-  const cooldownUntilUnixMs = consecutiveFailureCount >= MINING_HOOK_FAILURE_THRESHOLD
-    ? options.nowUnixMs + MINING_HOOK_COOLDOWN_MS
-    : null;
-
-  options.readContext.localState.state.hookClientState.mining = {
-    ...hookState,
-    consecutiveFailureCount,
-    cooldownUntilUnixMs,
-  };
-  await saveWalletStatePreservingUnlock({
-    state: options.readContext.localState.state,
-    provider: options.provider,
-    unlockUntilUnixMs: options.readContext.localState.unlockUntilUnixMs,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-  return cooldownUntilUnixMs !== null && cooldownUntilUnixMs > options.nowUnixMs;
-}
-
 async function generateCandidatesForDomains(options: {
   rpc: MiningRpcClient;
   readContext: WalletReadContext & {
@@ -1349,7 +1292,7 @@ async function generateCandidatesForDomains(options: {
       referencedBlockHashDisplay: bestBlockHash,
       generatedAtUnixMs: Date.now(),
       extraPrompt: null,
-      limits: createGenerateSentencesHookLimits(),
+      limits: createMiningSentenceRequestLimits(),
       rootDomains: rootDomains.map((domain) => ({
         domainId: domain.domainId,
         domainName: domain.domainName,
@@ -1362,7 +1305,6 @@ async function generateCandidatesForDomains(options: {
       generated = await generateMiningSentences(generationRequest, {
         paths: options.paths,
         provider: options.provider,
-        hookState: options.readContext.localState.state.hookClientState.mining,
         signal: abortController.signal,
         fetchImpl: options.fetchImpl,
       });
@@ -1398,16 +1340,6 @@ async function generateCandidatesForDomains(options: {
       dataDir: options.readContext.dataDir,
       truthKey: options.indexerTruthKey,
     });
-
-    if (generated.hookMode === "custom") {
-      await persistCustomHookRuntimeOutcome({
-        readContext: options.readContext,
-        provider: options.provider,
-        paths: options.paths,
-        nowUnixMs: Date.now(),
-        success: true,
-      });
-    }
 
     const sentencesByDomain = new Map<number, string[]>();
     for (const candidate of generated.candidates) {
@@ -2277,10 +2209,6 @@ async function ensureBuiltInSetupIfNeeded(options: {
     paths: options.paths,
   });
 
-  if (unlocked?.state.hookClientState.mining.mode === "custom") {
-    return true;
-  }
-
   const config = await loadClientConfig({
     path: options.paths.clientConfigPath,
     provider: options.provider,
@@ -2633,7 +2561,7 @@ async function performMiningCycle(options: {
     });
 
     await appendEvent(options.paths, createEvent(
-      "hook-request-start",
+      "sentence-generation-start",
       "Started mining sentence generation.",
       {
         targetBlockHeight,
@@ -2730,15 +2658,6 @@ async function performMiningCycle(options: {
         return;
       }
 
-      const hookCooldownActive = await persistCustomHookRuntimeOutcome({
-        readContext: effectiveReadContext as WalletReadContext & {
-          localState: { availability: "ready"; state: WalletStateV1; unlockUntilUnixMs: number };
-        },
-        provider: options.provider,
-        paths: options.paths,
-        nowUnixMs: Date.now(),
-        success: false,
-      });
       const failureMessage = error instanceof Error ? error.message : String(error);
 
       await refreshAndSaveStatus({
@@ -2748,20 +2667,14 @@ async function performMiningCycle(options: {
         overrides: {
           runMode: options.runMode,
           currentPhase: "waiting-provider",
-          providerState: effectiveReadContext.localState.state?.hookClientState.mining.mode === "custom"
-            ? "hook-error"
-            : undefined,
+          providerState: "unavailable",
           lastError: failureMessage,
-          note: effectiveReadContext.localState.state?.hookClientState.mining.mode === "custom"
-            ? (hookCooldownActive
-              ? "Custom mining hook launch is paused during the post-failure cooldown window."
-              : "Custom mining hook failed during sentence generation. Fix it or rerun `cogcoin hooks enable mining`.")
-            : "Mining sentence generation failed for the current tip.",
+          note: "Mining sentence generation failed for the current tip.",
         },
         visualizer: options.visualizer,
       });
       await appendEvent(options.paths, createEvent(
-        "hook-request-failed",
+        "sentence-generation-failed",
         failureMessage,
         {
           level: "error",

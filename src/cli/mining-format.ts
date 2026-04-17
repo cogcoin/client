@@ -18,7 +18,6 @@ function formatIndexerTruthSource(source: MiningControlPlaneView["runtime"]["ind
 }
 
 export function formatMiningSummaryLine(mining: MiningControlPlaneView): string {
-  const hookMode = mining.hook.mode === "unavailable" ? "unavailable" : mining.hook.mode;
   const provider = mining.provider.configured
     ? `${mining.provider.provider} configured`
     : mining.provider.status === "error"
@@ -30,38 +29,10 @@ export function formatMiningSummaryLine(mining: MiningControlPlaneView): string 
       ? "  next wait-or-rerun"
       : mining.runtime.miningState === "paused" && mining.runtime.livePublishInMempool
         ? "  next wait-or-rerun"
-        : mining.runtime.pauseReason === "zero-reward"
+      : mining.runtime.pauseReason === "zero-reward"
           ? "  zero-reward"
         : "";
-  return `${mining.runtime.runMode} / ${mining.runtime.miningState} / ${mining.runtime.currentPhase}  hooks ${hookMode} (${mining.hook.operatorValidationState})  provider ${provider}${suffix}`;
-}
-
-export function formatHooksStatusReport(mining: MiningControlPlaneView): string {
-  const lines = ["Mining Hook Status"];
-  lines.push(`Mode: ${mining.hook.mode}`);
-  lines.push(`Entrypoint: ${mining.hook.entrypointPath}`);
-  lines.push(`Entrypoint present: ${mining.hook.entrypointExists ? "yes" : "no"}`);
-  lines.push(`Package: ${mining.hook.packageStatus}`);
-  if (mining.hook.packageMessage !== null) {
-    lines.push(`Package note: ${mining.hook.packageMessage}`);
-  }
-  lines.push(`Trust: ${mining.hook.trustStatus}`);
-  if (mining.hook.trustMessage !== null) {
-    lines.push(`Trust note: ${mining.hook.trustMessage}`);
-  }
-  lines.push(`Validation: ${mining.hook.operatorValidationState}`);
-  if (mining.hook.validationError !== null) {
-    lines.push(`Validation note: ${mining.hook.validationError}`);
-  }
-  lines.push(`Validated at: ${formatMaybeIso(mining.hook.validatedAtUnixMs)}`);
-  lines.push(`Launch fingerprint: ${mining.hook.currentLaunchFingerprint ?? "unavailable"}`);
-  lines.push(`Validated launch fingerprint: ${mining.hook.validatedLaunchFingerprint ?? "none"}`);
-  lines.push(`Full fingerprint: ${mining.hook.currentFullFingerprint ?? (mining.hook.verifyUsed ? "unavailable" : "not requested")}`);
-  lines.push(`Validated full fingerprint: ${mining.hook.validatedFullFingerprint ?? "none"}`);
-  lines.push(`Cooldown until: ${formatMaybeIso(mining.hook.cooldownUntilUnixMs)}`);
-  lines.push(`Cooldown active: ${mining.hook.cooldownActive ? "yes" : "no"}`);
-  lines.push(`Consecutive failures: ${mining.hook.consecutiveFailureCount}`);
-  return lines.join("\n");
+  return `${mining.runtime.runMode} / ${mining.runtime.miningState} / ${mining.runtime.currentPhase}  provider ${provider}${suffix}`;
 }
 
 export function formatMineStatusReport(mining: MiningControlPlaneView): string {
@@ -75,14 +46,11 @@ export function formatMineStatusReport(mining: MiningControlPlaneView): string {
   if (mining.runtime.lastSuspendDetectedAtUnixMs !== null) {
     lines.push(`Last suspend detected: ${formatMaybeIso(mining.runtime.lastSuspendDetectedAtUnixMs)}`);
   }
-  lines.push(`Hook mode: ${mining.runtime.hookMode}`);
-  lines.push(`Hook validation: ${mining.hook.operatorValidationState}`);
   lines.push(`Provider: ${mining.provider.configured ? `${mining.provider.provider} configured` : mining.provider.status}`);
   if (mining.provider.message !== null) {
     lines.push(`Provider note: ${mining.provider.message}`);
   }
   lines.push(`Provider runtime: ${mining.runtime.providerState ?? "unknown"}`);
-  lines.push(`Hook cooldown: ${mining.hook.cooldownActive ? "active" : "inactive"}`);
   lines.push(`Managed bitcoind: ${mining.runtime.bitcoindHealth}`);
   if (mining.runtime.bitcoindReplicaStatus !== null) {
     lines.push(`Managed Core wallet: ${mining.runtime.bitcoindReplicaStatus}`);
@@ -130,7 +98,6 @@ export function formatMineStatusReport(mining: MiningControlPlaneView): string {
   if (mining.runtime.mempoolSequenceCacheStatus !== null) {
     lines.push(`Gate cache: ${mining.runtime.mempoolSequenceCacheStatus}`);
   }
-  lines.push(`Last validation: ${formatMaybeIso(mining.runtime.lastValidationAtUnixMs)}`);
   lines.push(`Last event: ${formatMaybeIso(mining.runtime.lastEventAtUnixMs)}`);
   if (mining.runtime.lastError !== null) {
     lines.push(`Last error: ${mining.runtime.lastError}`);

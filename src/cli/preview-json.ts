@@ -335,20 +335,10 @@ function summarizeRuntime(snapshot: MiningRuntimeStatusV1 | null) {
   };
 }
 
-export function buildHooksPreviewData(
-  kind: "hooks-enable-mining" | "hooks-disable-mining" | "mine-setup",
-  view: MiningControlPlaneView,
-) {
+export function buildMineSetupPreviewData(view: MiningControlPlaneView) {
   return buildStateChangePreviewData({
-    kind,
+    kind: "mine-setup",
     state: {
-      hook: {
-        mode: view.hook.mode,
-        validationState: view.hook.validationState,
-        operatorValidationState: view.hook.operatorValidationState,
-        validationError: view.hook.validationError,
-        cooldownActive: view.hook.cooldownActive,
-      },
       provider: {
         configured: view.provider.configured,
         provider: view.provider.provider,

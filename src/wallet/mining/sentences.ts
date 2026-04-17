@@ -1,29 +1,26 @@
 import { loadClientConfig } from "./config.js";
-import { inspectMiningHookState, runGenerateSentencesHookRequest } from "./hooks.js";
 import {
   MINING_BUILTIN_TIMEOUT_MS,
 } from "./constants.js";
 import type { MiningProviderKind } from "./types.js";
 import type {
-  GenerateSentencesHookCandidateV1,
-  GenerateSentencesHookRequestV1,
-} from "./hook-protocol.js";
+  MiningSentenceCandidateV1,
+  MiningSentenceGenerationRequestV1,
+} from "./sentence-protocol.js";
 import {
-  normalizeHookResponse,
+  normalizeMiningSentenceResponse,
   parseStrictJsonValue,
   stripMarkdownCodeFence,
-} from "./hook-protocol.js";
+} from "./sentence-protocol.js";
 import type { WalletRuntimePaths } from "../runtime.js";
-import type { HookClientStateRecord } from "../types.js";
 import type { WalletSecretProvider } from "../state/provider.js";
 
-export type MiningSentenceGenerationRequest = GenerateSentencesHookRequestV1;
-export type MiningSentenceGenerationCandidate = GenerateSentencesHookCandidateV1;
+export type MiningSentenceGenerationRequest = MiningSentenceGenerationRequestV1;
+export type MiningSentenceGenerationCandidate = MiningSentenceCandidateV1;
 
 export interface MiningSentenceSourceOptions {
   paths: WalletRuntimePaths;
   provider: WalletSecretProvider;
-  hookState: HookClientStateRecord | null;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
 }
@@ -68,10 +65,10 @@ function buildUserPrompt(request: MiningSentenceGenerationRequest): string {
 }
 
 function annotateProviderCandidates(options: {
-  candidates: GenerateSentencesHookCandidateV1[];
+  candidates: MiningSentenceCandidateV1[];
   provider: MiningProviderKind;
   model: string;
-}): GenerateSentencesHookCandidateV1[] {
+}): MiningSentenceCandidateV1[] {
   return options.candidates.map((candidate) => ({
     ...candidate,
     attribution: candidate.attribution ?? {
@@ -86,23 +83,19 @@ function parseProviderJsonResponse(options: {
   raw: string;
   request: MiningSentenceGenerationRequest;
   providerLabel: string;
-}): GenerateSentencesHookCandidateV1[] {
+}): MiningSentenceCandidateV1[] {
   const response = parseStrictJsonValue(
     stripMarkdownCodeFence(options.raw),
     `${options.providerLabel} returned invalid JSON.`,
   );
 
   try {
-    return normalizeHookResponse({
+    return normalizeMiningSentenceResponse({
       request: options.request,
       response,
     }).candidates;
   } catch (error) {
-    throw new Error(
-      error instanceof Error
-        ? error.message.replace(/^Custom mining hook /, `${options.providerLabel} `)
-        : `${options.providerLabel} returned an invalid response.`,
-    );
+    throw new Error(error instanceof Error ? error.message : `${options.providerLabel} returned an invalid response.`);
   }
 }
 
@@ -119,7 +112,7 @@ async function requestBuiltInSentences(options: {
   request: MiningSentenceGenerationRequest;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
-}): Promise<GenerateSentencesHookCandidateV1[]> {
+}): Promise<MiningSentenceCandidateV1[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const providerSignal = createProviderSignal(
     options.signal,
@@ -295,73 +288,12 @@ function extractAnthropicText(payload: unknown): string {
   throw new Error("The built-in Anthropic mining provider returned an empty response.");
 }
 
-async function requestCustomHookSentences(options: {
-  paths: WalletRuntimePaths;
-  hookState: HookClientStateRecord | null;
-  request: MiningSentenceGenerationRequest;
-  signal?: AbortSignal;
-}): Promise<GenerateSentencesHookCandidateV1[]> {
-  const inspection = await inspectMiningHookState({
-    hookRootPath: options.paths.hooksMiningDir,
-    entrypointPath: options.paths.hooksMiningEntrypointPath,
-    packagePath: options.paths.hooksMiningPackageJsonPath,
-    localState: options.hookState,
-    verify: false,
-    nowUnixMs: Date.now(),
-  });
-
-  if (inspection.mode !== "custom") {
-    throw new Error("Custom mining hooks are not enabled.");
-  }
-
-  if (inspection.cooldownActive) {
-    throw new Error("Custom mining hook is cooling down after repeated failures. Wait for the cooldown to expire or rerun `cogcoin hooks enable mining`.");
-  }
-
-  if (
-    inspection.operatorValidationState === "failed"
-    || inspection.operatorValidationState === "stale"
-    || inspection.operatorValidationState === "never"
-  ) {
-    throw new Error("Custom mining hook validation is stale or failed. Rerun `cogcoin hooks enable mining`.");
-  }
-
-  if (inspection.trustStatus !== "trusted") {
-    throw new Error(inspection.trustMessage ?? "Custom mining hook trust checks failed.");
-  }
-
-  return runGenerateSentencesHookRequest({
-    hookRootPath: options.paths.hooksMiningDir,
-    entrypointPath: options.paths.hooksMiningEntrypointPath,
-    request: options.request,
-    signal: options.signal,
-    timeoutMs: options.request.limits.timeoutMs,
-  }).then((result) => result.candidates);
-}
-
 export async function generateMiningSentences(
   request: MiningSentenceGenerationRequest,
   options: MiningSentenceSourceOptions,
 ): Promise<{
-  hookMode: "builtin" | "custom";
-  candidates: GenerateSentencesHookCandidateV1[];
-  providerState: "ready" | "n/a";
+  candidates: MiningSentenceCandidateV1[];
 }> {
-  const hookMode = options.hookState?.mode === "custom" ? "custom" : "builtin";
-
-  if (hookMode === "custom") {
-    return {
-      hookMode,
-      candidates: await requestCustomHookSentences({
-        paths: options.paths,
-        hookState: options.hookState,
-        request,
-        signal: options.signal,
-      }),
-      providerState: "n/a",
-    };
-  }
-
   const config = await loadClientConfig({
     path: options.paths.clientConfigPath,
     provider: options.provider,
@@ -373,7 +305,6 @@ export async function generateMiningSentences(
   }
 
   return {
-    hookMode,
     candidates: await requestBuiltInSentences({
       provider: builtIn.provider,
       apiKey: builtIn.apiKey,
@@ -383,7 +314,6 @@ export async function generateMiningSentences(
       fetchImpl: options.fetchImpl,
       signal: options.signal,
     }),
-    providerState: "ready",
   };
 }
 

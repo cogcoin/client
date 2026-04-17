@@ -49,7 +49,6 @@ import {
 } from "./runtime.js";
 import { requestMiningGenerationPreemption, type MiningPreemptionHandle } from "./mining/coordination.js";
 import { loadClientConfig } from "./mining/config.js";
-import { inspectMiningHookState } from "./mining/hooks.js";
 import { loadMiningRuntimeStatus, saveMiningRuntimeStatus } from "./mining/runtime-artifacts.js";
 import { normalizeMiningStateRecord } from "./mining/state.js";
 import type { MiningRuntimeStatusV1 } from "./mining/types.js";
@@ -389,19 +388,6 @@ function createInitialWalletState(options: {
       lifetimeFeeSpentSats: "0",
       sharedMiningConflictOutpoint: null,
     },
-    hookClientState: {
-      mining: {
-        mode: "builtin",
-        validationState: "never",
-        lastValidationAtUnixMs: null,
-        lastValidationError: null,
-        validatedLaunchFingerprint: null,
-        validatedFullFingerprint: null,
-        fullTrustWarningAcknowledgedAtUnixMs: null,
-        consecutiveFailureCount: 0,
-        cooldownUntilUnixMs: null,
-      },
-    },
     pendingMutations: [],
   };
 }
@@ -532,7 +518,6 @@ function createPortableWalletArchivePayload(
     },
     domains: state.domains,
     miningState: normalizeMiningStateRecord(state.miningState),
-    hookClientState: state.hookClientState,
   };
 }
 
@@ -576,7 +561,6 @@ function createWalletStateFromPortableArchive(options: {
     },
     domains: options.payload.domains,
     miningState: normalizeMiningStateRecord(options.payload.miningState),
-    hookClientState: options.payload.hookClientState,
     pendingMutations: [],
   };
 }
@@ -1220,21 +1204,6 @@ async function canResumeBackgroundMiningAfterRepair(options: {
     || normalizeMiningStateRecord(options.repairedState.miningState).state === "repair-required"
   ) {
     return false;
-  }
-
-  const hookMode = options.repairedState.hookClientState.mining?.mode ?? "builtin";
-
-  if (hookMode === "custom") {
-    const inspection = await inspectMiningHookState({
-      hookRootPath: options.paths.hooksMiningDir,
-      entrypointPath: options.paths.hooksMiningEntrypointPath,
-      packagePath: options.paths.hooksMiningPackageJsonPath,
-      localState: options.repairedState.hookClientState.mining ?? null,
-      verify: false,
-      nowUnixMs: options.nowUnixMs,
-    });
-
-    return inspection.operatorValidationState === "current" && !inspection.cooldownActive;
   }
 
   try {

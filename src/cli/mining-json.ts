@@ -19,23 +19,8 @@ function summarizeRuntime(snapshot: MiningRuntimeStatusV1 | null) {
   };
 }
 
-export function buildHooksDisableMiningData(view: MiningControlPlaneView) {
-  return buildHooksStateChangeData("hooks-disable-mining", view);
-}
-
-export function buildHooksEnableMiningData(view: MiningControlPlaneView) {
-  return buildHooksStateChangeData("hooks-enable-mining", view);
-}
-
 export function buildMineSetupData(view: MiningControlPlaneView) {
   const after = {
-    hook: {
-      mode: view.hook.mode,
-      validationState: view.hook.validationState,
-      operatorValidationState: view.hook.operatorValidationState,
-      validationError: view.hook.validationError,
-      cooldownActive: view.hook.cooldownActive,
-    },
     provider: {
       configured: view.provider.configured,
       provider: view.provider.provider,
@@ -48,33 +33,6 @@ export function buildMineSetupData(view: MiningControlPlaneView) {
 
   return buildStateChangeData({
     kind: "mine-setup",
-    state: after,
-    after,
-  });
-}
-
-function buildHooksStateChangeData(
-  kind: "hooks-enable-mining" | "hooks-disable-mining",
-  view: MiningControlPlaneView,
-) {
-  const after = {
-    hook: {
-      mode: view.hook.mode,
-      validationState: view.hook.validationState,
-      operatorValidationState: view.hook.operatorValidationState,
-      validationError: view.hook.validationError,
-      cooldownActive: view.hook.cooldownActive,
-    },
-    provider: {
-      configured: view.provider.configured,
-      provider: view.provider.provider,
-      status: view.provider.status,
-    },
-    runtime: summarizeRuntime(view.runtime),
-  };
-
-  return buildStateChangeData({
-    kind,
     state: after,
     after,
   });

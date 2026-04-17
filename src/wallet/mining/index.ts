@@ -7,8 +7,6 @@ export {
   requestMiningGenerationPreemption,
 } from "./coordination.js";
 export {
-  disableMiningHooks,
-  enableMiningHooks,
   followMiningLog,
   inspectMiningControlPlane,
   readMiningLog,
@@ -29,18 +27,11 @@ export {
   resolveRotatedMiningEventsPath,
   saveMiningRuntimeStatus,
 } from "./runtime-artifacts.js";
-export {
-  ensureMiningHookTemplate,
-  inspectMiningHookState,
-  runGenerateSentencesHookRequest,
-  validateCustomMiningHook,
-} from "./hooks.js";
 export type {
-  GenerateSentencesHookCandidateV1,
-  GenerateSentencesHookRequestV1,
-  GenerateSentencesHookResponseV1,
-  MiningHookOperatorValidationState,
-} from "./hook-protocol.js";
+  MiningSentenceCandidateV1,
+  MiningSentenceGenerationRequestV1,
+  MiningSentenceGenerationResponseV1,
+} from "./sentence-protocol.js";
 export {
   loadClientConfig,
   saveBuiltInMiningProviderConfig,
@@ -50,7 +41,6 @@ export type {
   ClientConfigV1,
   MiningControlPlaneView,
   MiningEventRecord,
-  MiningHookInspection,
   MiningProviderConfigRecord,
   MiningProviderInspection,
   MiningRuntimeStatusV1,

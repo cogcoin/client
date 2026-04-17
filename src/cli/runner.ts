@@ -123,9 +123,7 @@ export async function runCli(
     }
 
     if (
-      parsed.command === "hooks-mining-enable"
-      || parsed.command === "hooks-mining-disable"
-      || parsed.command === "mine-setup"
+      parsed.command === "mine-setup"
     ) {
       return runMiningAdminCommand(parsed, context);
     }
@@ -185,8 +183,7 @@ export async function runCli(
     }
 
     if (
-      parsed.command === "hooks-mining-status"
-      || parsed.command === "mine-status"
+      parsed.command === "mine-status"
       || parsed.command === "mine-log"
     ) {
       return runMiningReadCommand(parsed, context);

@@ -10,6 +10,7 @@ import {
   attachOrStartManagedBitcoindService,
   createManagedWalletReplica,
 } from "../bitcoind/service.js";
+import { resolveLegacyHooksRootPath } from "../app-paths.js";
 import type {
   ManagedBitcoindObservedStatus,
   ManagedIndexerDaemonObservedStatus,
@@ -217,6 +218,10 @@ interface ResetExecutionDecision {
 
 function sanitizeWalletName(walletRootId: string): string {
   return `cogcoin-${walletRootId}`.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 63);
+}
+
+function providerUsesExternalSecretStore(provider: WalletSecretProvider): boolean {
+  return provider.kind === "macos-keychain";
 }
 
 function isPathWithin(root: string, target: string): boolean {
@@ -452,19 +457,6 @@ function createEntropyRetainedWalletState(
       sessionFeeSpentSats: "0",
       lifetimeFeeSpentSats: "0",
       sharedMiningConflictOutpoint: null,
-    },
-    hookClientState: {
-      mining: {
-        mode: "builtin",
-        validationState: "never",
-        lastValidationAtUnixMs: null,
-        lastValidationError: null,
-        validatedLaunchFingerprint: null,
-        validatedFullFingerprint: null,
-        fullTrustWarningAcknowledgedAtUnixMs: null,
-        consecutiveFailureCount: 0,
-        cooldownUntilUnixMs: null,
-      },
     },
     pendingMutations: [],
   };
@@ -744,7 +736,10 @@ function resolveBitcoindPreservingRemovedRoots(paths: WalletRuntimePaths): strin
     paths.stateRoot,
     paths.runtimeRoot,
     configRoot,
-    paths.hooksRoot,
+    resolveLegacyHooksRootPath({
+      dataRoot: paths.dataRoot,
+      clientConfigPath: paths.clientConfigPath,
+    }),
   ]);
 }
 
@@ -1063,8 +1058,11 @@ export async function previewResetWallet(options: {
         : null,
     },
     trackedProcessKinds: preflight.trackedProcessKinds,
-    willDeleteOsSecrets: preflight.wallet.secretProviderKeyId !== null
-      || preflight.wallet.importedSeedSecretProviderKeyIds.length > 0,
+    willDeleteOsSecrets: providerUsesExternalSecretStore(provider)
+      && (
+        preflight.wallet.secretProviderKeyId !== null
+        || preflight.wallet.importedSeedSecretProviderKeyIds.length > 0
+      ),
     removedPaths,
   };
 }
@@ -1275,12 +1273,20 @@ export async function resetWallet(options: {
     } else if (deletedSecretRefs.length > 0) {
       secretCleanupStatus = "deleted";
     } else if (
-      preflight.wallet.secretProviderKeyId === null
+      providerUsesExternalSecretStore(provider)
+      && preflight.wallet.secretProviderKeyId === null
       && preflight.wallet.importedSeedSecretProviderKeyIds.length === 0
       && preflight.wallet.present
       && preflight.wallet.rawEnvelope === null
     ) {
       secretCleanupStatus = "unknown";
+    } else if (
+      preflight.wallet.secretProviderKeyId === null
+      && preflight.wallet.importedSeedSecretProviderKeyIds.length === 0
+      && preflight.wallet.present
+      && preflight.wallet.rawEnvelope === null
+    ) {
+      secretCleanupStatus = "not-found";
     } else if (deletedSecretRefs.length === 0) {
       secretCleanupStatus = "not-found";
     }

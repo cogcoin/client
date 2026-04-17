@@ -255,7 +255,6 @@ test("createWalletReadModel exposes one wallet address and treats historical loc
       },
     ],
     miningState: createMiningState(),
-    hookClientState: createHookState(),
     pendingMutations: [],
   }, null);
 

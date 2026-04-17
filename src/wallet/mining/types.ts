@@ -1,5 +1,4 @@
 import type { ManagedBitcoindHealth, ManagedIndexerTruthSource } from "../../bitcoind/types.js";
-import type { MiningHookOperatorValidationState } from "./hook-protocol.js";
 
 export type MiningServiceHealth =
   | "synced"
@@ -91,7 +90,7 @@ export interface MiningRuntimeStatusV1 {
     | "mempool-loading"
     | "healthy"
     | null;
-  providerState: "n/a" | "ready" | "backoff" | "unavailable" | "rate-limited" | "auth-error" | "hook-error" | null;
+  providerState: "ready" | "backoff" | "unavailable" | "rate-limited" | "auth-error" | null;
   lastSuspendDetectedAtUnixMs: number | null;
   reconnectSettledUntilUnixMs: number | null;
   tipSettledUntilUnixMs: number | null;
@@ -140,7 +139,6 @@ export interface MiningRuntimeStatusV1 {
   lastMempoolSequence: string | null;
   lastCompetitivenessGateAtUnixMs: number | null;
   pauseReason: string | null;
-  hookMode: "builtin" | "custom";
   providerConfigured: boolean;
   providerKind: MiningProviderKind | null;
   bitcoindHealth: ManagedBitcoindHealth;
@@ -149,35 +147,9 @@ export interface MiningRuntimeStatusV1 {
   nodeHealth: MiningServiceHealth;
   indexerHealth: MiningServiceHealth;
   tipsAligned: boolean | null;
-  lastValidationState: "unknown" | "validated" | "stale" | "failed" | null;
-  lastOperatorValidationState: MiningHookOperatorValidationState | null;
-  lastValidationAtUnixMs: number | null;
   lastEventAtUnixMs: number | null;
   lastError: string | null;
   note: string | null;
-}
-
-export interface MiningHookInspection {
-  mode: "builtin" | "custom" | "disabled" | "unavailable";
-  entrypointPath: string;
-  packagePath: string;
-  entrypointExists: boolean;
-  packageStatus: "valid" | "missing" | "invalid";
-  packageMessage: string | null;
-  trustStatus: "trusted" | "untrusted" | "missing";
-  trustMessage: string | null;
-  validationState: "unknown" | "validated" | "stale" | "failed" | "unavailable";
-  operatorValidationState: MiningHookOperatorValidationState;
-  validationError: string | null;
-  validatedAtUnixMs: number | null;
-  validatedLaunchFingerprint: string | null;
-  validatedFullFingerprint: string | null;
-  currentLaunchFingerprint: string | null;
-  currentFullFingerprint: string | null;
-  verifyUsed: boolean;
-  cooldownUntilUnixMs: number | null;
-  cooldownActive: boolean;
-  consecutiveFailureCount: number;
 }
 
 export interface MiningProviderInspection {
@@ -191,7 +163,6 @@ export interface MiningProviderInspection {
 
 export interface MiningControlPlaneView {
   runtime: MiningRuntimeStatusV1;
-  hook: MiningHookInspection;
   provider: MiningProviderInspection;
   lastEventAtUnixMs: number | null;
 }

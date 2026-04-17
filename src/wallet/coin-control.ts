@@ -67,6 +67,7 @@ type LegacyManagedCoreWallet = {
 
 type LegacyWalletStateRecord = Partial<WalletStateV1> & {
   schemaVersion?: number;
+  hookClientState?: unknown;
   localScriptPubKeyHexes?: string[] | null;
   funding?: { address?: string | null; scriptPubKeyHex?: string | null } | null;
   identities?: Array<{ scriptPubKeyHex?: string | null }> | null;
@@ -171,7 +172,6 @@ export function normalizeWalletStateRecord(rawState: LegacyWalletStateRecord): W
     },
     domains: normalizeDomains(rawState.domains),
     miningState: normalizeMiningStateRecord(rawState.miningState as WalletStateV1["miningState"]),
-    hookClientState: rawState.hookClientState!,
     pendingMutations,
   };
 }
@@ -179,6 +179,7 @@ export function normalizeWalletStateRecord(rawState: LegacyWalletStateRecord): W
 export function normalizePortableWalletArchivePayload(
   payload: Partial<PortableWalletArchivePayloadV1> & {
     schemaVersion?: number;
+    hookClientState?: unknown;
     localScriptPubKeyHexes?: string[] | null;
     expected?: Partial<PortableWalletArchivePayloadV1["expected"]> & {
       fundingAddress0?: string;
@@ -225,7 +226,6 @@ export function normalizePortableWalletArchivePayload(
     },
     domains: normalizeDomains(payload.domains),
     miningState: normalizeMiningStateRecord(payload.miningState as WalletStateV1["miningState"]),
-    hookClientState: payload.hookClientState!,
   };
 }
 

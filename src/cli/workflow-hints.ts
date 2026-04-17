@@ -74,10 +74,6 @@ export function getAnchorNextSteps(domainName: string): string[] {
   return nextSteps;
 }
 
-export function getHooksEnableMiningNextSteps(): string[] {
-  return ["cogcoin mine", "cogcoin mine start"];
-}
-
 export function getMineSetupNextSteps(): string[] {
   return ["cogcoin mine", "cogcoin mine start"];
 }

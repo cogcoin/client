@@ -36,8 +36,6 @@ import { loadUnlockSession } from "../wallet/state/session.js";
 import { loadRawWalletStateEnvelope, loadWalletState } from "../wallet/state/storage.js";
 import type { WalletSecretProvider } from "../wallet/state/provider.js";
 import type {
-  disableMiningHooks,
-  enableMiningHooks,
   followMiningLog,
   inspectMiningControlPlane,
   readMiningLog,
@@ -122,9 +120,6 @@ export type CommandName =
   | "rep-revoke"
   | "cog-balance"
   | "cog-locks"
-  | "hooks-mining-enable"
-  | "hooks-mining-disable"
-  | "hooks-mining-status"
   | "mine"
   | "mine-start"
   | "mine-stop"
@@ -201,7 +196,6 @@ export interface ParsedCliArgs {
   domainsMineableOnly: boolean;
   listLimit: number | null;
   listAll: boolean;
-  verify: boolean;
   follow: boolean;
 }
 
@@ -291,8 +285,6 @@ export interface CliRunnerContext {
   clearField?: typeof clearField;
   giveReputation?: typeof giveReputation;
   revokeReputation?: typeof revokeReputation;
-  enableMiningHooks?: typeof enableMiningHooks;
-  disableMiningHooks?: typeof disableMiningHooks;
   inspectMiningControlPlane?: typeof inspectMiningControlPlane;
   runForegroundMining?: typeof runForegroundMining;
   startBackgroundMining?: typeof startBackgroundMining;

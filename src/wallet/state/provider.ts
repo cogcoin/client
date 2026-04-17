@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { access, constants, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -9,30 +9,9 @@ import { writeFileAtomic } from "../fs/atomic.js";
 
 const execFileAsync = promisify(execFile);
 const KEYCHAIN_SERVICE_NAME = "org.cogcoin.wallet";
-const LINUX_SECRET_TOOL_ATTRIBUTE_APPLICATION = "application";
-const LINUX_SECRET_TOOL_ATTRIBUTE_KIND = "secret-kind";
-const LINUX_SECRET_TOOL_ATTRIBUTE_KEY_ID = "key-id";
-const LINUX_SECRET_TOOL_SECRET_KIND = "wallet-secret";
-
-export interface LinuxSecretToolResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number | null;
-  signal: NodeJS.Signals | null;
-}
-
-export interface LinuxSecretToolInvocationOptions {
-  stdin?: string;
-}
-
-export type LinuxSecretToolRunner = (
-  args: readonly string[],
-  options?: LinuxSecretToolInvocationOptions,
-) => Promise<LinuxSecretToolResult>;
 
 export interface DefaultWalletSecretProviderFactoryOptions {
   platform?: NodeJS.Platform;
-  linuxSecretToolRunner?: LinuxSecretToolRunner;
   stateRoot?: string;
 }
 
@@ -74,27 +53,8 @@ function base64ToBytes(secret: string): Uint8Array {
   return new Uint8Array(Buffer.from(secret, "base64"));
 }
 
-function createLinuxSecretToolAttributes(keyId: string): string[] {
-  return [
-    LINUX_SECRET_TOOL_ATTRIBUTE_APPLICATION,
-    KEYCHAIN_SERVICE_NAME,
-    LINUX_SECRET_TOOL_ATTRIBUTE_KIND,
-    LINUX_SECRET_TOOL_SECRET_KIND,
-    LINUX_SECRET_TOOL_ATTRIBUTE_KEY_ID,
-    keyId,
-  ];
-}
-
-function createLinuxSecretToolError(message: string, cause?: unknown): Error {
-  return cause === undefined ? new Error(message) : new Error(message, { cause });
-}
-
 function createWalletSecretProviderError(message: string, cause?: unknown): Error {
   return cause === undefined ? new Error(message) : new Error(message, { cause });
-}
-
-function isWalletSecretProviderMessage(error: unknown, message: string): boolean {
-  return error instanceof Error && error.message === message;
 }
 
 function sanitizeSecretKeyId(keyId: string): string {
@@ -103,78 +63,6 @@ function sanitizeSecretKeyId(keyId: string): string {
 
 function resolveSecretDirectoryPath(options: DefaultWalletSecretProviderFactoryOptions): string {
   return join(options.stateRoot ?? resolveWalletRuntimePathsForTesting().stateRoot, "secrets");
-}
-
-function isLinuxSecretServiceUnavailableMessage(stderr: string): boolean {
-  const normalized = stderr.trim().toLowerCase();
-
-  if (normalized.length === 0) {
-    return false;
-  }
-
-  return normalized.includes("secret service")
-    || normalized.includes("org.freedesktop.secrets")
-    || normalized.includes("dbus")
-    || normalized.includes("d-bus")
-    || normalized.includes("cannot autolaunch")
-    || normalized.includes("no such secret collection")
-    || normalized.includes("collection is locked")
-    || normalized.includes("prompt dismissed")
-    || normalized.includes("not available");
-}
-
-function isLinuxSecretToolMissingSecretMessage(stderr: string): boolean {
-  const normalized = stderr.trim().toLowerCase();
-
-  if (normalized.length === 0) {
-    return true;
-  }
-
-  return normalized.includes("no matching")
-    || normalized.includes("not found")
-    || normalized.includes("does not exist")
-    || normalized.includes("no such item")
-    || normalized.includes("no secret");
-}
-
-async function runLinuxSecretTool(
-  args: readonly string[],
-  options: LinuxSecretToolInvocationOptions = {},
-): Promise<LinuxSecretToolResult> {
-  return await new Promise((resolve, reject) => {
-    const child = spawn("secret-tool", [...args], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-
-    child.once("error", reject);
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
-    child.once("close", (exitCode, signal) => {
-      resolve({
-        stdout,
-        stderr,
-        exitCode,
-        signal,
-      });
-    });
-
-    child.stdin.on("error", (error) => {
-      if ("code" in error && (error as NodeJS.ErrnoException).code === "EPIPE") {
-        return;
-      }
-      reject(error);
-    });
-
-    child.stdin.end(options.stdin ?? undefined, "utf8");
-  });
 }
 
 export class MemoryWalletSecretProvider implements WalletSecretProvider {
@@ -243,103 +131,6 @@ class MacOsKeychainWalletSecretProvider implements WalletSecretProvider {
   }
 }
 
-class LinuxSecretToolWalletSecretProvider implements WalletSecretProvider {
-  readonly kind = "linux-secret-service";
-  readonly #runner: LinuxSecretToolRunner;
-
-  constructor(runner: LinuxSecretToolRunner = runLinuxSecretTool) {
-    this.#runner = runner;
-  }
-
-  async #invoke(options: {
-    args: readonly string[];
-    keyId: string;
-    operation: "load" | "store" | "delete";
-    stdin?: string;
-    ignoreMissing?: boolean;
-  }): Promise<LinuxSecretToolResult> {
-    try {
-      const result = await this.#runner(options.args, {
-        stdin: options.stdin,
-      });
-
-      if (result.exitCode === 0) {
-        return result;
-      }
-
-      if (isLinuxSecretServiceUnavailableMessage(result.stderr)) {
-        throw createLinuxSecretToolError("wallet_secret_provider_linux_secret_service_unavailable");
-      }
-
-      if (
-        (options.operation === "load" || options.ignoreMissing)
-        && isLinuxSecretToolMissingSecretMessage(result.stderr)
-      ) {
-        throw createLinuxSecretToolError(`wallet_secret_missing_${options.keyId}`);
-      }
-
-      throw createLinuxSecretToolError("wallet_secret_provider_linux_runtime_error");
-    } catch (error) {
-      if (
-        error instanceof Error
-        && (
-          error.message === "wallet_secret_provider_linux_secret_tool_missing"
-          || error.message === "wallet_secret_provider_linux_secret_service_unavailable"
-          || error.message === "wallet_secret_provider_linux_runtime_error"
-          || error.message === `wallet_secret_missing_${options.keyId}`
-        )
-      ) {
-        throw error;
-      }
-
-      if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-        throw createLinuxSecretToolError("wallet_secret_provider_linux_secret_tool_missing", error);
-      }
-
-      throw createLinuxSecretToolError("wallet_secret_provider_linux_runtime_error", error);
-    }
-  }
-
-  async loadSecret(keyId: string): Promise<Uint8Array> {
-    const result = await this.#invoke({
-      args: ["lookup", ...createLinuxSecretToolAttributes(keyId)],
-      keyId,
-      operation: "load",
-    });
-    return base64ToBytes(result.stdout.trim());
-  }
-
-  async storeSecret(keyId: string, secret: Uint8Array): Promise<void> {
-    await this.#invoke({
-      args: [
-        "store",
-        "--label",
-        `Cogcoin wallet secret (${keyId})`,
-        ...createLinuxSecretToolAttributes(keyId),
-      ],
-      keyId,
-      operation: "store",
-      stdin: bytesToBase64(secret),
-    });
-  }
-
-  async deleteSecret(keyId: string): Promise<void> {
-    try {
-      await this.#invoke({
-        args: ["clear", ...createLinuxSecretToolAttributes(keyId)],
-        keyId,
-        operation: "delete",
-        ignoreMissing: true,
-      });
-    } catch (error) {
-      if (error instanceof Error && error.message === `wallet_secret_missing_${keyId}`) {
-        return;
-      }
-      throw error;
-    }
-  }
-}
-
 class LocalFileWalletSecretProvider implements WalletSecretProvider {
   readonly kind: string;
   readonly #directoryPath: string;
@@ -394,15 +185,6 @@ class LocalFileWalletSecretProvider implements WalletSecretProvider {
     throw new Error(`wallet_secret_missing_${keyId}`);
   }
 
-  async hasSecret(keyId: string): Promise<boolean> {
-    try {
-      await access(this.#resolveSecretPath(keyId), constants.F_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   async loadSecret(keyId: string): Promise<Uint8Array> {
     try {
       const encoded = await readFile(this.#resolveSecretPath(keyId), "utf8");
@@ -439,88 +221,6 @@ class LocalFileWalletSecretProvider implements WalletSecretProvider {
   }
 }
 
-class LinuxFallbackWalletSecretProvider implements WalletSecretProvider {
-  readonly kind = "linux-secret-service-fallback";
-  readonly #secretService: LinuxSecretToolWalletSecretProvider;
-  readonly #fileProvider: LocalFileWalletSecretProvider;
-
-  constructor(options: {
-    secretService: LinuxSecretToolWalletSecretProvider;
-    fileProvider: LocalFileWalletSecretProvider;
-  }) {
-    this.#secretService = options.secretService;
-    this.#fileProvider = options.fileProvider;
-  }
-
-  async #loadFromFileOrRethrow(keyId: string, error: Error): Promise<Uint8Array> {
-    try {
-      return await this.#fileProvider.loadSecret(keyId);
-    } catch (fileError) {
-      if (
-        isWalletSecretProviderMessage(fileError, `wallet_secret_missing_${keyId}`)
-        && (
-          error.message === "wallet_secret_provider_linux_secret_tool_missing"
-          || error.message === "wallet_secret_provider_linux_secret_service_unavailable"
-        )
-      ) {
-        throw error;
-      }
-
-      throw fileError;
-    }
-  }
-
-  async loadSecret(keyId: string): Promise<Uint8Array> {
-    try {
-      return await this.#secretService.loadSecret(keyId);
-    } catch (error) {
-      if (!(error instanceof Error)) {
-        throw error;
-      }
-
-      if (
-        error.message === "wallet_secret_provider_linux_secret_tool_missing"
-        || error.message === "wallet_secret_provider_linux_secret_service_unavailable"
-        || error.message === `wallet_secret_missing_${keyId}`
-      ) {
-        return await this.#loadFromFileOrRethrow(keyId, error);
-      }
-
-      if (
-        error.message === "wallet_secret_provider_linux_runtime_error"
-        && await this.#fileProvider.hasSecret(keyId)
-      ) {
-        return await this.#fileProvider.loadSecret(keyId);
-      }
-
-      throw error;
-    }
-  }
-
-  async storeSecret(keyId: string, secret: Uint8Array): Promise<void> {
-    try {
-      await this.#secretService.storeSecret(keyId, secret);
-    } catch (error) {
-      if (
-        isWalletSecretProviderMessage(error, "wallet_secret_provider_linux_secret_tool_missing")
-        || isWalletSecretProviderMessage(error, "wallet_secret_provider_linux_secret_service_unavailable")
-      ) {
-        await this.#fileProvider.storeSecret(keyId, secret);
-        return;
-      }
-
-      throw error;
-    }
-  }
-
-  async deleteSecret(keyId: string): Promise<void> {
-    await Promise.allSettled([
-      this.#secretService.deleteSecret(keyId),
-      this.#fileProvider.deleteSecret(keyId),
-    ]);
-  }
-}
-
 function createWalletSecretProviderForPlatform(
   platform: NodeJS.Platform,
   options: DefaultWalletSecretProviderFactoryOptions = {},
@@ -540,13 +240,10 @@ function createWalletSecretProviderForPlatform(
   }
 
   if (platform === "linux") {
-    return new LinuxFallbackWalletSecretProvider({
-      secretService: new LinuxSecretToolWalletSecretProvider(options.linuxSecretToolRunner),
-      fileProvider: new LocalFileWalletSecretProvider({
-        directoryPath: resolveSecretDirectoryPath(options),
-        kind: "linux-local-file",
-        runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
-      }),
+    return new LocalFileWalletSecretProvider({
+      directoryPath: resolveSecretDirectoryPath(options),
+      kind: "linux-local-file",
+      runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
     });
   }
 

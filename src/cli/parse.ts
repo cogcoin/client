@@ -23,9 +23,6 @@ Commands:
   unlock                  Clear an explicit wallet lock and unlock for a limited duration
   wallet address          Alias for address
   wallet ids              Alias for ids
-  hooks enable mining     Enable a validated custom mining hook
-  hooks disable mining    Return to built-in mining hooks
-  hooks status            Show mining hook validation and trust status
   mine                    Run the miner in the foreground
   mine start              Start the miner as a background worker
   mine stop               Stop the active background miner
@@ -109,7 +106,6 @@ Options:
   --mineable       Show only locally mineable root domains
   --limit <n>      Limit list rows (1..1000)
   --all            Show all rows for list commands
-  --verify         Run full custom-hook verification
   --follow         Follow mining log output
   --output <mode>  Output mode: text, json, or preview-json
   --progress <mode> Progress output mode: auto, tty, or none
@@ -138,7 +134,6 @@ Examples:
   cogcoin buy alpha
   cogcoin field set alpha bio --text "hello"
   cogcoin rep give alpha beta 10 --review "great operator"
-  cogcoin hooks status
   cogcoin mine setup --output json
   cogcoin register alpha-child --output preview-json
   cogcoin mine status
@@ -294,7 +289,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   let domainsMineableOnly = false;
   let listLimit: number | null = null;
   let listAll = false;
-  let verify = false;
   let follow = false;
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -570,11 +564,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
       continue;
     }
 
-    if (token === "--verify") {
-      verify = true;
-      continue;
-    }
-
     if (token === "--follow") {
       follow = true;
       continue;
@@ -718,30 +707,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
         }
 
         throw new Error(`cli_unknown_command_indexer${subcommand === null ? "" : `_${subcommand}`}`);
-      }
-
-      if (token === "hooks") {
-        const subcommand = argv[index + 1] ?? null;
-
-        if (subcommand === "status") {
-          command = "hooks-mining-status";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "enable" || subcommand === "disable") {
-          const target = argv[index + 2] ?? null;
-
-          if (target !== "mining") {
-            throw new Error(`cli_unknown_command_hooks_${subcommand}${target === null ? "" : `_${target}`}`);
-          }
-
-          command = subcommand === "enable" ? "hooks-mining-enable" : "hooks-mining-disable";
-          index += 2;
-          continue;
-        }
-
-        throw new Error(`cli_unknown_command_hooks${subcommand === null ? "" : `_${subcommand}`}`);
       }
 
       if (token === "mine") {
@@ -1062,9 +1027,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
       || command === "repair"
       || command === "sync"
       || command === "follow"
-      || command === "hooks-mining-enable"
-      || command === "hooks-mining-disable"
-      || command === "hooks-mining-status"
       || command === "mine"
       || command === "mine-start"
       || command === "mine-stop"
@@ -1304,10 +1266,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_conflicting_lock_limits");
   }
 
-  if (verify && command !== "hooks-mining-status") {
-    throw new Error("cli_verify_not_supported_for_command");
-  }
-
   if (follow && command !== "mine-log") {
     throw new Error("cli_follow_not_supported_for_command");
   }
@@ -1378,7 +1336,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     domainsMineableOnly,
     listLimit,
     listAll,
-    verify,
     follow,
   };
 }

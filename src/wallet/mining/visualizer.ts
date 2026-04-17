@@ -40,9 +40,7 @@ export function describeMiningVisualizerStatus(
     case "resuming":
       return "Resuming after suspend";
     case "waiting-provider":
-      return snapshot.providerState === "hook-error"
-        ? "Waiting for hook"
-        : "Waiting for provider";
+      return "Waiting for provider";
     case "waiting-indexer":
       return snapshot.indexerDaemonState === "reorging"
         ? "Indexer replaying reorg"

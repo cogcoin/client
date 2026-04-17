@@ -188,14 +188,6 @@ export function buildAvailability(context: WalletReadContext): Record<string, Js
   };
 
   if (context.mining !== undefined) {
-    availability.hooks = {
-      available: context.mining.hook.mode !== "unavailable",
-      stale: context.mining.hook.operatorValidationState === "stale",
-      reason: context.mining.hook.validationError ?? context.mining.hook.trustMessage,
-      state: context.mining.hook.validationState,
-      operatorValidationState: context.mining.hook.operatorValidationState,
-      cooldownActive: context.mining.hook.cooldownActive,
-    };
     availability.backgroundWorker = {
       available: context.mining.runtime.backgroundWorkerPid !== null,
       stale: context.mining.runtime.backgroundWorkerHealth === "stale-heartbeat"
@@ -361,10 +353,6 @@ function buildMiningStatusData(mining: MiningControlPlaneView) {
     phase: mining.runtime.currentPhase,
     lastSuspendDetectedAtUnixMs: mining.runtime.lastSuspendDetectedAtUnixMs,
     pauseReason: mining.runtime.pauseReason,
-    hookMode: mining.runtime.hookMode,
-    hookValidationState: mining.runtime.lastValidationState,
-    hookOperatorValidationState: mining.runtime.lastOperatorValidationState,
-    hookCooldownActive: mining.hook.cooldownActive,
     providerState: mining.runtime.providerState,
     tipsAligned: mining.runtime.tipsAligned,
     sameDomainCompetitorSuppressed: mining.runtime.sameDomainCompetitorSuppressed,
@@ -382,7 +370,6 @@ export function buildStatusJson(context: WalletReadContext): ReadJsonResult<{
   cog: Record<string, unknown>;
   domains: Record<string, unknown>;
   mining: Record<string, unknown> | null;
-  hooks: Record<string, unknown> | null;
   availability: Record<string, JsonAvailabilityEntry>;
 }> {
   const messages = createBaseMessages(context);
@@ -424,16 +411,6 @@ export function buildStatusJson(context: WalletReadContext): ReadJsonResult<{
         pendingFamilyCount: 0,
       },
       mining: context.mining === undefined ? null : buildMiningStatusData(context.mining),
-      hooks: context.mining === undefined
-        ? null
-        : {
-          mode: context.mining.hook.mode,
-          validationState: context.mining.hook.validationState,
-          operatorValidationState: context.mining.hook.operatorValidationState,
-          trustStatus: context.mining.hook.trustStatus,
-          providerConfigured: context.mining.provider.configured,
-          cooldownActive: context.mining.hook.cooldownActive,
-        },
       availability: buildAvailability(context),
     },
   };
@@ -511,78 +488,6 @@ export function buildWalletStatusJson(context: WalletReadContext): ReadJsonResul
   };
 }
 
-export function buildHooksStatusJson(mining: MiningControlPlaneView): ReadJsonResult<{
-  mode: string;
-  validationState: string;
-  operatorValidationState: string;
-  launchFingerprintState: string;
-  fullFingerprintState: string;
-  lastValidationAtUnixMs: number | null;
-  lastValidationError: string | null;
-  trustChecks: Record<string, unknown>;
-}> {
-  const warnings: string[] = [];
-  const explanations: string[] = [];
-  const nextSteps: string[] = [];
-
-  if (mining.hook.operatorValidationState === "failed" || mining.hook.operatorValidationState === "stale") {
-    warnings.push(`Mining hook validation is ${mining.hook.operatorValidationState}.`);
-  }
-
-  if (mining.hook.cooldownActive) {
-    warnings.push("Mining hook launch is paused during the cooldown window.");
-  }
-
-  if (mining.hook.validationError !== null) {
-    explanations.push(mining.hook.validationError);
-  }
-
-  if (mining.hook.trustMessage !== null) {
-    explanations.push(mining.hook.trustMessage);
-  }
-
-  const launchFingerprintState = mining.hook.currentLaunchFingerprint === null
-    ? "unavailable"
-    : mining.hook.validatedLaunchFingerprint === null
-      ? "not-validated"
-      : mining.hook.currentLaunchFingerprint === mining.hook.validatedLaunchFingerprint
-        ? "matched"
-        : "stale";
-
-  const fullFingerprintState = mining.hook.currentFullFingerprint === null
-    ? (mining.hook.verifyUsed ? "unavailable" : "not-verified")
-    : mining.hook.validatedFullFingerprint === null
-      ? "not-validated"
-      : mining.hook.currentFullFingerprint === mining.hook.validatedFullFingerprint
-        ? "matched"
-        : "stale";
-
-  return {
-    warnings: dedupeStrings(warnings),
-    explanations: dedupeStrings(explanations),
-    nextSteps: dedupeStrings(nextSteps),
-    data: {
-      mode: mining.hook.mode,
-      validationState: mining.hook.validationState,
-      operatorValidationState: mining.hook.operatorValidationState,
-      launchFingerprintState,
-      fullFingerprintState,
-      lastValidationAtUnixMs: mining.hook.validatedAtUnixMs,
-      lastValidationError: mining.hook.validationError,
-      trustChecks: {
-        trustStatus: mining.hook.trustStatus,
-        trustMessage: mining.hook.trustMessage,
-        entrypointExists: mining.hook.entrypointExists,
-        packageStatus: mining.hook.packageStatus,
-        packageMessage: mining.hook.packageMessage,
-        cooldownUntilUnixMs: mining.hook.cooldownUntilUnixMs,
-        cooldownActive: mining.hook.cooldownActive,
-        consecutiveFailureCount: mining.hook.consecutiveFailureCount,
-      },
-    },
-  };
-}
-
 export function buildMineStatusJson(mining: MiningControlPlaneView): ReadJsonResult<{
   runMode: string;
   state: string;
@@ -627,14 +532,6 @@ export function buildMineStatusJson(mining: MiningControlPlaneView): ReadJsonRes
     data: {
       ...buildMiningStatusData(mining),
       availability: {
-        hooks: {
-          available: mining.hook.mode !== "unavailable",
-          stale: mining.hook.operatorValidationState === "stale",
-          reason: mining.hook.validationError,
-          state: mining.hook.validationState,
-          operatorValidationState: mining.hook.operatorValidationState,
-          cooldownActive: mining.hook.cooldownActive,
-        },
         bitcoind: {
           available: mining.runtime.bitcoindHealth === "ready" || mining.runtime.bitcoindHealth === "starting",
           stale: mining.runtime.bitcoindHealth === "starting",

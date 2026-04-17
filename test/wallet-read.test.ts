@@ -80,3 +80,39 @@ test("wallet read status explains unsupported legacy Windows DPAPI secrets", asy
   assert.match(status.message ?? "", /legacy Windows `?\.dpapi`?/i);
   assert.match(status.message ?? "", /recover|reimport/i);
 });
+
+test("wallet read status reports missing Linux local-file secrets generically", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-linux-missing-secret-"));
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory: tempRoot,
+    platform: "linux",
+  });
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "linux",
+    stateRoot: paths.stateRoot,
+  });
+  const secretReference = createWalletSecretReference("wallet-root");
+
+  await provider.storeSecret(secretReference.keyId, Buffer.alloc(32, 41));
+  await saveWalletState(
+    {
+      primaryPath: paths.walletStatePath,
+      backupPath: paths.walletStateBackupPath,
+    },
+    createWalletState(),
+    {
+      provider,
+      secretReference,
+    },
+  );
+  await provider.deleteSecret(secretReference.keyId);
+
+  const status = await inspectWalletLocalState({
+    paths,
+    secretProvider: provider,
+  });
+
+  assert.equal(status.availability, "locked");
+  assert.match(status.message ?? "", /local secret-provider material is unavailable/i);
+  assert.doesNotMatch(status.message ?? "", /Secret Service|secret-tool/i);
+});

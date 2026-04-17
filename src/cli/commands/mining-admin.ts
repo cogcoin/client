@@ -1,9 +1,7 @@
 import {
-  buildHooksDisableMiningData,
-  buildHooksEnableMiningData,
   buildMineSetupData,
 } from "../mining-json.js";
-import { buildHooksPreviewData } from "../preview-json.js";
+import { buildMineSetupPreviewData } from "../preview-json.js";
 import { writeLine } from "../io.js";
 import { createTerminalPrompter } from "../prompt.js";
 import {
@@ -17,7 +15,6 @@ import {
 } from "../output.js";
 import {
   formatNextStepLines,
-  getHooksEnableMiningNextSteps,
   getMineSetupNextSteps,
 } from "../workflow-hints.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
@@ -39,72 +36,6 @@ export async function runMiningAdminCommand(
     const provider = context.walletSecretProvider;
     const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
 
-    if (parsed.command === "hooks-mining-enable") {
-      const prompter = createCommandPrompter(parsed, context);
-      const view = await context.enableMiningHooks({
-        provider,
-        prompter,
-        paths: runtimePaths,
-      });
-      const nextSteps = getHooksEnableMiningNextSteps();
-      if (parsed.outputMode === "preview-json") {
-        writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
-          resolvePreviewJsonSchema(parsed)!,
-          describeCanonicalCommand(parsed),
-          "enabled",
-          buildHooksPreviewData("hooks-enable-mining", view),
-          {
-            nextSteps,
-          },
-        ));
-        return 0;
-      }
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-          resolveStableMiningControlJsonSchema(parsed)!,
-          "cogcoin hooks enable mining",
-          "enabled",
-          buildHooksEnableMiningData(view),
-          {
-            nextSteps,
-          },
-        ));
-        return 0;
-      }
-      writeLine(context.stdout, "Custom mining hook enabled.");
-      for (const line of formatNextStepLines(nextSteps)) {
-        writeLine(context.stdout, line);
-      }
-      return 0;
-    }
-
-    if (parsed.command === "hooks-mining-disable") {
-      const view = await context.disableMiningHooks({
-        provider,
-        paths: runtimePaths,
-      });
-      if (parsed.outputMode === "preview-json") {
-        writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
-          resolvePreviewJsonSchema(parsed)!,
-          describeCanonicalCommand(parsed),
-          "disabled",
-          buildHooksPreviewData("hooks-disable-mining", view),
-        ));
-        return 0;
-      }
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-          resolveStableMiningControlJsonSchema(parsed)!,
-          "cogcoin hooks disable mining",
-          "disabled",
-          buildHooksDisableMiningData(view),
-        ));
-        return 0;
-      }
-      writeLine(context.stdout, "Mining hooks switched back to builtin mode.");
-      return 0;
-    }
-
     if (parsed.command === "mine-setup") {
       const prompter = createCommandPrompter(parsed, context);
       const view = await context.setupBuiltInMining({
@@ -118,7 +49,7 @@ export async function runMiningAdminCommand(
           resolvePreviewJsonSchema(parsed)!,
           describeCanonicalCommand(parsed),
           "configured",
-          buildHooksPreviewData("mine-setup", view),
+          buildMineSetupPreviewData(view),
           {
             nextSteps,
           },

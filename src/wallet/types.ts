@@ -88,18 +88,6 @@ export interface DomainRecord {
   birthTime: number | null;
 }
 
-export interface HookClientStateRecord {
-  mode: "builtin" | "custom" | "disabled";
-  validationState: "unknown" | "validated" | "stale" | "failed" | "never" | "current";
-  lastValidationAtUnixMs: number | null;
-  lastValidationError: string | null;
-  validatedLaunchFingerprint: string | null;
-  validatedFullFingerprint: string | null;
-  fullTrustWarningAcknowledgedAtUnixMs: number | null;
-  consecutiveFailureCount: number;
-  cooldownUntilUnixMs: number | null;
-}
-
 export interface MiningStateRecord {
   runMode: "stopped" | "foreground" | "background";
   state:
@@ -181,9 +169,6 @@ export interface WalletStateV1 {
   };
   domains: DomainRecord[];
   miningState: MiningStateRecord;
-  hookClientState: {
-    mining: HookClientStateRecord;
-  };
   pendingMutations?: PendingMutationRecord[];
 }
 
@@ -212,9 +197,6 @@ export interface PortableWalletArchivePayloadV1 {
   };
   domains: DomainRecord[];
   miningState: MiningStateRecord;
-  hookClientState: {
-    mining: HookClientStateRecord;
-  };
 }
 
 export interface Argon2EnvelopeParams {

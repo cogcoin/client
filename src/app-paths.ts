@@ -12,7 +12,6 @@ export interface CogcoinResolvedPaths {
   configRoot: string;
   stateRoot: string;
   runtimeRoot: string;
-  hooksRoot: string;
   bitcoinDataDir: string;
   clientDataDir: string;
   clientDatabasePath: string;
@@ -30,9 +29,6 @@ export interface CogcoinResolvedPaths {
   bitcoindStatusPath: string;
   indexerDaemonLockPath: string;
   indexerStatusPath: string;
-  hooksMiningDir: string;
-  hooksMiningEntrypointPath: string;
-  hooksMiningPackageJsonPath: string;
   miningRoot: string;
   miningStatusPath: string;
   miningEventsPath: string;
@@ -63,7 +59,7 @@ function resolveAbsoluteEnvPath(
 function resolveLinuxRoots(
   env: NodeJS.ProcessEnv,
   homeDirectory: string,
-): Pick<CogcoinResolvedPaths, "dataRoot" | "configRoot" | "stateRoot" | "runtimeRoot" | "hooksRoot"> {
+): Pick<CogcoinResolvedPaths, "dataRoot" | "configRoot" | "stateRoot" | "runtimeRoot"> {
   const dataRoot = join(
     resolveAbsoluteEnvPath(env.XDG_DATA_HOME, join(homeDirectory, ".local", "share")),
     "cogcoin",
@@ -85,8 +81,22 @@ function resolveLinuxRoots(
     configRoot,
     stateRoot,
     runtimeRoot,
-    hooksRoot: join(configRoot, "hooks"),
   };
+}
+
+export function resolveLegacyHooksRootPath(options: {
+  dataRoot: string;
+  clientConfigPath: string;
+  platform?: NodeJS.Platform;
+}): string {
+  const platform = options.platform ?? process.platform;
+
+  if (platform === "darwin" || platform === "win32") {
+    return joinForPlatform(platform, options.dataRoot, "hooks");
+  }
+
+  const configDirectory = dirname(options.clientConfigPath);
+  return joinForPlatform(platform, configDirectory, "hooks");
 }
 
 export function resolveCogcoinPathsForTesting(
@@ -100,27 +110,23 @@ export function resolveCogcoinPathsForTesting(
   let configRoot: string;
   let stateRoot: string;
   let runtimeRoot: string;
-  let hooksRoot: string;
 
   if (platform === "darwin") {
     dataRoot = join(homeDirectory, "Library", "Application Support", "Cogcoin");
     configRoot = join(dataRoot, "config");
     stateRoot = join(dataRoot, "state");
     runtimeRoot = join(dataRoot, "runtime");
-    hooksRoot = join(dataRoot, "hooks");
   } else if (platform === "win32") {
     dataRoot = win32Path.join(resolveLocalAppDataWindows(env, homeDirectory), "Cogcoin");
     configRoot = win32Path.join(dataRoot, "config");
     stateRoot = win32Path.join(dataRoot, "state");
     runtimeRoot = win32Path.join(dataRoot, "runtime");
-    hooksRoot = win32Path.join(dataRoot, "hooks");
   } else {
     const linuxRoots = resolveLinuxRoots(env, homeDirectory);
     dataRoot = linuxRoots.dataRoot;
     configRoot = linuxRoots.configRoot;
     stateRoot = linuxRoots.stateRoot;
     runtimeRoot = linuxRoots.runtimeRoot;
-    hooksRoot = linuxRoots.hooksRoot;
   }
 
   const bitcoinDataDir = joinForPlatform(platform, dataRoot, "bitcoin");
@@ -140,9 +146,6 @@ export function resolveCogcoinPathsForTesting(
   const bitcoindStatusPath = joinForPlatform(platform, runtimeRoot, "bitcoind-status.json");
   const indexerDaemonLockPath = joinForPlatform(platform, runtimeRoot, "indexer-daemon.lock");
   const indexerStatusPath = joinForPlatform(platform, indexerRoot, "status.json");
-  const hooksMiningDir = joinForPlatform(platform, hooksRoot, "mining");
-  const hooksMiningEntrypointPath = joinForPlatform(platform, hooksMiningDir, "generate-sentences.js");
-  const hooksMiningPackageJsonPath = joinForPlatform(platform, hooksMiningDir, "package.json");
   const miningRoot = joinForPlatform(platform, runtimeRoot, "mining");
   const miningStatusPath = joinForPlatform(platform, miningRoot, "status.json");
   const miningEventsPath = joinForPlatform(platform, miningRoot, "events.jsonl");
@@ -153,7 +156,6 @@ export function resolveCogcoinPathsForTesting(
     configRoot,
     stateRoot,
     runtimeRoot,
-    hooksRoot,
     bitcoinDataDir,
     clientDataDir,
     clientDatabasePath,
@@ -171,9 +173,6 @@ export function resolveCogcoinPathsForTesting(
     bitcoindStatusPath,
     indexerDaemonLockPath,
     indexerStatusPath,
-    hooksMiningDir,
-    hooksMiningEntrypointPath,
-    hooksMiningPackageJsonPath,
     miningRoot,
     miningStatusPath,
     miningEventsPath,
