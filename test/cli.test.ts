@@ -58,13 +58,12 @@ test("CLI error text uses wallet-address wording", () => {
   assert.doesNotMatch(notLocal.join("\n"), /owner identity|anchored owner identity/);
 });
 
-test("CLI error text explains the legacy Windows DPAPI break", () => {
-  const formatted = formatCliTextError(new Error("wallet_secret_provider_windows_legacy_dpapi_unsupported")) ?? [];
+test("CLI error text describes Windows local-file secret failures", () => {
+  const formatted = formatCliTextError(new Error("wallet_secret_provider_windows_runtime_error")) ?? [];
   const rendered = formatted.join("\n");
 
-  assert.match(rendered, /legacy Windows/i);
-  assert.match(rendered, /\.dpapi/);
-  assert.match(rendered, /recover|reimport/i);
+  assert.match(rendered, /Windows local wallet-secret access failed/);
+  assert.match(rendered, /state directory/i);
 });
 
 test("CLI error text explains removed wallet archive export", () => {
@@ -95,16 +94,10 @@ test("CLI error text explains unsupported legacy wallet state", () => {
   assert.doesNotMatch(rendered, /passphrase/i);
 });
 
-test("CLI error text describes Linux local-file secret failures without Secret Service wording", () => {
+test("CLI error text describes Linux local-file secret failures", () => {
   const formatted = formatCliTextError(new Error("wallet_secret_provider_linux_runtime_error")) ?? [];
   const rendered = formatted.join("\n");
 
   assert.match(rendered, /Linux local wallet-secret access failed/);
   assert.match(rendered, /state directory/i);
-  assert.doesNotMatch(rendered, /secret-tool|Secret Service/i);
-});
-
-test("CLI no longer renders dedicated Linux Secret Service guidance", () => {
-  assert.equal(formatCliTextError(new Error("wallet_secret_provider_linux_secret_tool_missing")), null);
-  assert.equal(formatCliTextError(new Error("wallet_secret_provider_linux_secret_service_unavailable")), null);
 });

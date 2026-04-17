@@ -77,10 +77,6 @@ function describeWalletAccessMessage(options: {
 }): string {
   const message = options.accessError instanceof Error ? options.accessError.message : String(options.accessError ?? "");
 
-  if (message === "wallet_secret_provider_windows_legacy_dpapi_unsupported") {
-    return "Wallet state exists but still depends on a legacy Windows `.dpapi` secret. This version no longer reads that secret-store format; recover or reimport the wallet because the old Windows secret is not auto-migrated.";
-  }
-
   if (message === "wallet_state_legacy_envelope_unsupported") {
     return "Wallet state exists but was created by an older Cogcoin wallet format that this version no longer loads directly.";
   }

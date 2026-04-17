@@ -34,8 +34,8 @@ test("ids JSON exposes a single wallet-address entry", () => {
   assert.deepEqual(result.data.addresses?.[0]?.localDomains, []);
 });
 
-test("wallet read status explains unsupported legacy Windows DPAPI secrets", async () => {
-  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-win32-legacy-"));
+test("wallet read status reports missing Windows local-file secrets generically", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-win32-missing-secret-"));
   const paths = resolveWalletRuntimePathsForTesting({
     env: {
       ...process.env,
@@ -46,15 +46,10 @@ test("wallet read status explains unsupported legacy Windows DPAPI secrets", asy
   });
   const seedProvider = createMemoryWalletSecretProviderForTesting();
   const secretReference = createWalletSecretReference("wallet-root");
-  const legacyProvider = createDefaultWalletSecretProviderForTesting({
+  const provider = createDefaultWalletSecretProviderForTesting({
     platform: "win32",
     stateRoot: paths.stateRoot,
   });
-  const legacySecretPath = join(
-    paths.stateRoot,
-    "secrets",
-    `${secretReference.keyId.replace(/[^a-zA-Z0-9._-]+/g, "-")}.dpapi`,
-  );
 
   await seedProvider.storeSecret(secretReference.keyId, Buffer.alloc(32, 31));
   await saveWalletState(
@@ -68,17 +63,14 @@ test("wallet read status explains unsupported legacy Windows DPAPI secrets", asy
       secretReference,
     },
   );
-  await mkdir(join(paths.stateRoot, "secrets"), { recursive: true });
-  await writeFile(legacySecretPath, "Zm9v\n");
 
   const status = await inspectWalletLocalState({
     paths,
-    secretProvider: legacyProvider,
+    secretProvider: provider,
   });
 
   assert.equal(status.availability, "local-state-corrupt");
-  assert.match(status.message ?? "", /legacy Windows `?\.dpapi`?/i);
-  assert.match(status.message ?? "", /recover|reimport/i);
+  assert.match(status.message ?? "", /local secret-provider material is unavailable/i);
 });
 
 test("wallet read status treats unsupported legacy wallet-state envelopes as corrupt", async () => {
@@ -150,5 +142,4 @@ test("wallet read status reports missing Linux local-file secrets generically", 
 
   assert.equal(status.availability, "local-state-corrupt");
   assert.match(status.message ?? "", /local secret-provider material is unavailable/i);
-  assert.doesNotMatch(status.message ?? "", /Secret Service|secret-tool/i);
 });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -83,39 +83,16 @@ test("Windows default secret provider stores, loads, and deletes local secret fi
   await assert.rejects(() => provider.loadSecret(keyId), /wallet_secret_missing_wallet-state:wallet-root-test/);
 });
 
-test("Windows default secret provider reports unsupported legacy DPAPI secrets when no .secret file exists", async () => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-win32-legacy-dpapi-");
+test("Windows default secret provider reports missing secrets generically", async () => {
+  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-win32-missing-secret-");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "win32",
     stateRoot,
   });
   const keyId = createWalletSecretReference("wallet-root-test").keyId;
-  const legacyPath = join(stateRoot, "secrets", `${sanitizeSecretKeyIdForTest(keyId)}.dpapi`);
-
-  await mkdir(join(stateRoot, "secrets"), { recursive: true });
-  await writeFile(legacyPath, "Zm9v\n");
 
   await assert.rejects(
     () => provider.loadSecret(keyId),
-    /wallet_secret_provider_windows_legacy_dpapi_unsupported/,
+    /wallet_secret_missing_wallet-state:wallet-root-test/,
   );
-});
-
-test("Windows default secret provider prefers .secret files over legacy .dpapi leftovers", async () => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-win32-legacy-precedence-");
-  const provider = createDefaultWalletSecretProviderForTesting({
-    platform: "win32",
-    stateRoot,
-  });
-  const keyId = createWalletSecretReference("wallet-root-test").keyId;
-  const secret = Buffer.alloc(32, 29);
-  const legacyPath = join(stateRoot, "secrets", `${sanitizeSecretKeyIdForTest(keyId)}.dpapi`);
-
-  await provider.storeSecret(keyId, secret);
-  await writeFile(legacyPath, "YmFy\n");
-
-  assert.deepEqual(await provider.loadSecret(keyId), new Uint8Array(secret));
-
-  await provider.deleteSecret(keyId);
-  await assert.rejects(() => provider.loadSecret(keyId), /wallet_secret_missing_wallet-state:wallet-root-test/);
 });

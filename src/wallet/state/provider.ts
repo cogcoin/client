@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { access, constants, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -135,54 +135,19 @@ class LocalFileWalletSecretProvider implements WalletSecretProvider {
   readonly kind: string;
   readonly #directoryPath: string;
   readonly #runtimeErrorCode: string;
-  readonly #legacyUnsupportedErrorCode: string | null;
-  readonly #legacyFileExtension: string | null;
 
   constructor(options: {
     directoryPath: string;
     kind: string;
-    legacyFileExtension?: string;
-    legacyUnsupportedErrorCode?: string;
     runtimeErrorCode: string;
   }) {
     this.kind = options.kind;
     this.#directoryPath = options.directoryPath;
     this.#runtimeErrorCode = options.runtimeErrorCode;
-    this.#legacyUnsupportedErrorCode = options.legacyUnsupportedErrorCode ?? null;
-    this.#legacyFileExtension = options.legacyFileExtension ?? null;
   }
 
   #resolveSecretPath(keyId: string): string {
     return join(this.#directoryPath, `${sanitizeSecretKeyId(keyId)}.secret`);
-  }
-
-  #resolveLegacySecretPath(keyId: string): string | null {
-    return this.#legacyFileExtension === null
-      ? null
-      : join(this.#directoryPath, `${sanitizeSecretKeyId(keyId)}${this.#legacyFileExtension}`);
-  }
-
-  async #throwMissingSecretError(keyId: string): Promise<never> {
-    const legacyPath = this.#resolveLegacySecretPath(keyId);
-
-    if (legacyPath !== null && this.#legacyUnsupportedErrorCode !== null) {
-      try {
-        await access(legacyPath, constants.F_OK);
-        throw new Error(this.#legacyUnsupportedErrorCode);
-      } catch (error) {
-        if (error instanceof Error && error.message === this.#legacyUnsupportedErrorCode) {
-          throw error;
-        }
-
-        if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-          throw new Error(`wallet_secret_missing_${keyId}`);
-        }
-
-        throw createWalletSecretProviderError(this.#runtimeErrorCode, error);
-      }
-    }
-
-    throw new Error(`wallet_secret_missing_${keyId}`);
   }
 
   async loadSecret(keyId: string): Promise<Uint8Array> {
@@ -191,7 +156,7 @@ class LocalFileWalletSecretProvider implements WalletSecretProvider {
       return base64ToBytes(encoded.trim());
     } catch (error) {
       if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-        await this.#throwMissingSecretError(keyId);
+        throw new Error(`wallet_secret_missing_${keyId}`);
       }
 
       throw createWalletSecretProviderError(this.#runtimeErrorCode, error);
@@ -208,16 +173,7 @@ class LocalFileWalletSecretProvider implements WalletSecretProvider {
   }
 
   async deleteSecret(keyId: string): Promise<void> {
-    const secretPaths = [this.#resolveSecretPath(keyId)];
-    const legacyPath = this.#resolveLegacySecretPath(keyId);
-
-    if (legacyPath !== null) {
-      secretPaths.push(legacyPath);
-    }
-
-    await Promise.allSettled(secretPaths.map(async (secretPath) => {
-      await rm(secretPath, { force: true }).catch(() => undefined);
-    }));
+    await rm(this.#resolveSecretPath(keyId), { force: true }).catch(() => undefined);
   }
 }
 
@@ -233,8 +189,6 @@ function createWalletSecretProviderForPlatform(
     return new LocalFileWalletSecretProvider({
       directoryPath: resolveSecretDirectoryPath(options),
       kind: "windows-local-file",
-      legacyFileExtension: ".dpapi",
-      legacyUnsupportedErrorCode: "wallet_secret_provider_windows_legacy_dpapi_unsupported",
       runtimeErrorCode: "wallet_secret_provider_windows_runtime_error",
     });
   }
