@@ -15,7 +15,8 @@ const CLIENT_PASSWORD_STATE_FORMAT = "cogcoin-client-password";
 const CLIENT_PASSWORD_VERIFIER_FORMAT = "cogcoin-client-password-verifier";
 const LOCAL_SECRET_ENVELOPE_FORMAT = "cogcoin-local-wallet-secret";
 const CLIENT_PASSWORD_VERIFIER_TEXT = "cogcoin-client-password-verifier-v1";
-const CLIENT_PASSWORD_DEFAULT_UNLOCK_SECONDS = 60;
+const CLIENT_PASSWORD_MANUAL_UNLOCK_SECONDS = 60;
+export const CLIENT_PASSWORD_SETUP_AUTO_UNLOCK_SECONDS = 86_400;
 const CLIENT_PASSWORD_DERIVED_KEY_BYTES = 32;
 const CLIENT_PASSWORD_KDF = {
   memoryKib: 65_536,
@@ -76,8 +77,9 @@ interface ClientPasswordStateV1 {
 }
 
 interface AgentRequest {
-  command: "status" | "lock" | "encrypt" | "decrypt";
+  command: "status" | "lock" | "refresh" | "encrypt" | "decrypt";
   secretBase64?: string;
+  unlockUntilUnixMs?: number;
   envelope?: {
     nonce: string;
     tag: string;
@@ -625,6 +627,11 @@ async function waitForAgentReady(child: ReturnType<typeof spawn>): Promise<void>
   });
 }
 
+function releaseAgentBootstrapHandles(child: ReturnType<typeof spawn>): void {
+  child.stdin?.destroy();
+  child.stdout?.destroy();
+}
+
 async function startClientPasswordSession(options: ClientPasswordStorageOptions & {
   derivedKey: Buffer;
   unlockDurationSeconds: number;
@@ -653,6 +660,7 @@ async function startClientPasswordSession(options: ClientPasswordStorageOptions 
     child.kill();
     throw error;
   } finally {
+    releaseAgentBootstrapHandles(child);
     zeroizeBuffer(options.derivedKey);
   }
 
@@ -673,11 +681,18 @@ async function promptForHiddenValue(prompt: ClientPasswordPrompt, message: strin
 }
 
 async function promptForUnlockDuration(prompt: ClientPasswordPrompt): Promise<number> {
+  return await promptForUnlockDurationWithDefault(prompt, CLIENT_PASSWORD_MANUAL_UNLOCK_SECONDS);
+}
+
+async function promptForUnlockDurationWithDefault(
+  prompt: ClientPasswordPrompt,
+  defaultSeconds: number,
+): Promise<number> {
   while (true) {
-    const answer = (await prompt.prompt(`Unlock duration in seconds [${CLIENT_PASSWORD_DEFAULT_UNLOCK_SECONDS}]: `)).trim();
+    const answer = (await prompt.prompt(`Unlock duration in seconds [${defaultSeconds}]: `)).trim();
 
     if (answer === "") {
-      return CLIENT_PASSWORD_DEFAULT_UNLOCK_SECONDS;
+      return defaultSeconds;
     }
 
     if (/^[1-9]\d*$/.test(answer)) {
@@ -686,6 +701,34 @@ async function promptForUnlockDuration(prompt: ClientPasswordPrompt): Promise<nu
 
     prompt.writeLine("Enter a whole-number duration in seconds.");
   }
+}
+
+function resolveRemainingUnlockSeconds(status: ClientPasswordSessionStatus): number {
+  if (status.unlockUntilUnixMs === null) {
+    return CLIENT_PASSWORD_MANUAL_UNLOCK_SECONDS;
+  }
+
+  return Math.max(1, Math.ceil((status.unlockUntilUnixMs - Date.now()) / 1_000));
+}
+
+async function refreshClientPasswordSession(
+  options: ClientPasswordStorageOptions & {
+    unlockUntilUnixMs: number;
+  },
+): Promise<ClientPasswordSessionStatus | null> {
+  const response = await requestAgentOrNull(options, {
+    command: "refresh",
+    unlockUntilUnixMs: options.unlockUntilUnixMs,
+  });
+
+  if (response === null || !response.ok) {
+    return null;
+  }
+
+  return {
+    unlocked: true,
+    unlockUntilUnixMs: response.unlockUntilUnixMs ?? options.unlockUntilUnixMs,
+  };
 }
 
 async function unlockClientPasswordSessionWithPrompt(
@@ -881,7 +924,7 @@ export async function ensureClientPasswordConfigured(
     const session = await startClientPasswordSession({
       ...options,
       derivedKey,
-      unlockDurationSeconds: CLIENT_PASSWORD_DEFAULT_UNLOCK_SECONDS,
+      unlockDurationSeconds: CLIENT_PASSWORD_SETUP_AUTO_UNLOCK_SECONDS,
     });
     derivedKey = null;
 
@@ -1054,6 +1097,27 @@ export async function unlockClientPasswordSession(
     prompt: ClientPasswordPrompt;
   },
 ): Promise<ClientPasswordSessionStatus> {
+  if (!options.prompt.isInteractive) {
+    throw new Error("wallet_client_password_unlock_requires_tty");
+  }
+
+  const currentStatus = await readClientPasswordSessionStatus(options);
+
+  if (currentStatus.unlocked) {
+    const unlockDurationSeconds = await promptForUnlockDurationWithDefault(
+      options.prompt,
+      resolveRemainingUnlockSeconds(currentStatus),
+    );
+    const refreshed = await refreshClientPasswordSession({
+      ...options,
+      unlockUntilUnixMs: Date.now() + (unlockDurationSeconds * 1_000),
+    });
+
+    if (refreshed !== null) {
+      return refreshed;
+    }
+  }
+
   return await unlockClientPasswordSessionWithPrompt(options);
 }
 

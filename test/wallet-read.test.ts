@@ -12,6 +12,7 @@ import {
   createDefaultWalletSecretProviderForTesting,
   createMemoryWalletSecretProviderForTesting,
   createWalletSecretReference,
+  lockClientPassword,
 } from "../src/wallet/state/provider.js";
 import { saveWalletState } from "../src/wallet/state/storage.js";
 import { createWalletReadContext, createWalletState } from "./current-model-helpers.js";
@@ -112,7 +113,7 @@ test("wallet read status treats unsupported legacy wallet-state envelopes as cor
   assert.doesNotMatch(status.message ?? "", /passphrase/i);
 });
 
-test("wallet read status reports missing Linux local-file secrets generically", async () => {
+test("wallet read status reports missing Linux local-file secrets generically", async (t) => {
   const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-linux-missing-secret-"));
   const paths = resolveWalletRuntimePathsForTesting({
     homeDirectory: tempRoot,
@@ -125,6 +126,9 @@ test("wallet read status reports missing Linux local-file secrets generically", 
   const secretReference = createWalletSecretReference("wallet-root");
 
   await configureTestClientPassword(provider);
+  t.after(async () => {
+    await lockClientPassword(provider);
+  });
   await provider.storeSecret(secretReference.keyId, Buffer.alloc(32, 41));
   await saveWalletState(
     {

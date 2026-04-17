@@ -79,7 +79,7 @@ async function readBootstrapConfig(): Promise<{
 async function main(): Promise<void> {
   const bootstrap = await readBootstrapConfig();
   let key = bootstrap.derivedKey;
-  const unlockUntilUnixMs = bootstrap.unlockUntilUnixMs;
+  let unlockUntilUnixMs = bootstrap.unlockUntilUnixMs;
   let expiryTimer: NodeJS.Timeout | null = null;
 
   const cleanupAndExit = async (): Promise<void> => {
@@ -160,6 +160,7 @@ async function main(): Promise<void> {
       let parsed: {
         command?: string;
         secretBase64?: string;
+        unlockUntilUnixMs?: unknown;
         envelope?: {
           nonce?: string;
           tag?: string;
@@ -184,6 +185,15 @@ async function main(): Promise<void> {
             setImmediate(() => {
               void cleanupAndExit();
             });
+            return;
+          case "refresh":
+            if (!Number.isFinite(parsed.unlockUntilUnixMs)) {
+              send({ ok: false, error: "wallet_client_password_agent_protocol_error" });
+              return;
+            }
+            unlockUntilUnixMs = Number(parsed.unlockUntilUnixMs);
+            refreshExpiry();
+            send({ ok: true, unlockUntilUnixMs });
             return;
           case "encrypt":
             if (typeof parsed.secretBase64 !== "string") {

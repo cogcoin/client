@@ -25,6 +25,7 @@ import {
   getFundingQuickstartGuidance,
   getInitNextSteps,
   getRestoreNextSteps,
+  getSetupUnlockGuidanceLines,
 } from "../workflow-hints.js";
 import {
   createOwnedLockCleanupSignalWatcher,
@@ -32,6 +33,7 @@ import {
 } from "../signals.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import type { WalletRepairResult, WalletResetResult } from "../../wallet/lifecycle.js";
+import { CLIENT_PASSWORD_SETUP_AUTO_UNLOCK_SECONDS } from "../../wallet/state/client-password.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
 function createCommandPrompter(
@@ -53,6 +55,12 @@ function getResetWarnings(result: WalletResetResult): string[] {
   return result.secretCleanupStatus === "unknown"
     ? ["Some existing Cogcoin secret-provider entries could not be discovered from the remaining local wallet artifacts and may need manual cleanup."]
     : [];
+}
+
+function writeSetupUnlockGuidance(stdout: RequiredCliRunnerContext["stdout"]): void {
+  for (const line of getSetupUnlockGuidanceLines(CLIENT_PASSWORD_SETUP_AUTO_UNLOCK_SECONDS)) {
+    writeLine(stdout, line);
+  }
 }
 
 function getResetNextSteps(result: WalletResetResult): string[] {
@@ -195,6 +203,9 @@ export async function runWalletAdminCommand(
             : "Wallet initialized.",
         );
         writeLine(context.stdout, `Client password: ${result.passwordAction}`);
+        if (result.passwordAction !== "already-configured") {
+          writeSetupUnlockGuidance(context.stdout);
+        }
         writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
         writeLine(context.stdout, `Funding address: ${result.fundingAddress}`);
         writeLine(context.stdout, `Quickstart: ${getFundingQuickstartGuidance()}`);
@@ -231,6 +242,9 @@ export async function runWalletAdminCommand(
           return 0;
         }
         writeLine(context.stdout, `Wallet seed "${result.seedName}" restored from mnemonic.`);
+        if (result.passwordAction !== "already-configured") {
+          writeSetupUnlockGuidance(context.stdout);
+        }
         writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
         writeLine(context.stdout, `Funding address: ${result.fundingAddress}`);
         writeLine(context.stdout, "Note: Managed Bitcoin/indexer bootstrap is deferred until you run `cogcoin sync`.");

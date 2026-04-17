@@ -23,6 +23,13 @@ export function getRestoreNextSteps(): string[] {
   return ["cogcoin sync", "cogcoin address"];
 }
 
+export function getSetupUnlockGuidanceLines(unlockSeconds: number): string[] {
+  return [
+    `Client unlock: active for ${unlockSeconds} seconds.`,
+    "Use `cogcoin client unlock` to lengthen this unlock window, or `cogcoin client lock` to lock immediately.",
+  ];
+}
+
 function blocksSyncBootstrap(
   context: Pick<WalletReadContext, "bitcoind" | "indexer">,
 ): boolean {

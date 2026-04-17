@@ -50,7 +50,6 @@ export function createTerminalPrompter(
         off?: (...args: unknown[]) => unknown;
         removeListener?: (...args: unknown[]) => unknown;
       };
-      let promptShown = false;
       const hiddenOutput = Object.create(writableOutput) as NodeJS.WriteStream & {
         on?: (...args: unknown[]) => unknown;
         once?: (...args: unknown[]) => unknown;
@@ -58,25 +57,20 @@ export function createTerminalPrompter(
         removeListener?: (...args: unknown[]) => unknown;
       };
 
-      hiddenOutput.write = ((chunk: string): boolean => {
-          if (!promptShown) {
-            promptShown = true;
-            output.write(chunk);
-            return true;
-          }
-
-          if (chunk === "\n" || chunk === "\r\n") {
-            output.write(chunk);
-          }
-          return true;
-        }) as NodeJS.WriteStream["write"];
+      hiddenOutput.write = (() => true) as NodeJS.WriteStream["write"];
 
       hiddenOutput.on ??= (() => hiddenOutput) as typeof hiddenOutput.on;
       hiddenOutput.once ??= (() => hiddenOutput) as typeof hiddenOutput.once;
       hiddenOutput.off ??= (() => hiddenOutput) as typeof hiddenOutput.off;
       hiddenOutput.removeListener ??= (() => hiddenOutput) as typeof hiddenOutput.removeListener;
 
-      return await ask(message, hiddenOutput);
+      output.write(message);
+
+      try {
+        return await ask("", hiddenOutput);
+      } finally {
+        output.write("\n");
+      }
     },
     clearSensitiveDisplay(scope: "mnemonic-reveal" | "restore-mnemonic-entry"): void {
       if (!input.isTTY || !output.isTTY) {

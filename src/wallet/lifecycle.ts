@@ -106,6 +106,7 @@ export interface WalletInitializationResult {
 }
 
 export interface WalletRestoreResult {
+  passwordAction: "created" | "migrated" | "already-configured";
   seedName?: string | null;
   walletRootId: string;
   fundingAddress: string;
@@ -1505,7 +1506,7 @@ export async function restoreWalletFromMnemonic(options: {
       throw new Error("wallet_seed_name_exists");
     }
 
-    await ensureClientPasswordConfigured(provider, options.prompter);
+    const passwordAction = await ensureClientPasswordConfigured(provider, options.prompter);
     await ensureWalletNotInitialized(paths, interactiveProvider);
     let promptPhaseStarted = false;
     let mnemonicPhrase: string;
@@ -1568,6 +1569,7 @@ export async function restoreWalletFromMnemonic(options: {
     });
 
     return {
+      passwordAction,
       seedName,
       walletRootId,
       fundingAddress: restoredState.funding.address,
