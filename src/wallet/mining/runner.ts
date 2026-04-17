@@ -80,6 +80,7 @@ import {
 } from "./coordination.js";
 import {
   clearMiningPublishState,
+  miningPublishIsInMempool,
   miningPublishMayStillExist,
   normalizeMiningPublishState,
   normalizeMiningStateRecord,
@@ -181,6 +182,42 @@ interface MiningCandidate {
   targetBlockHeight: number;
 }
 
+type ReadyMiningReadContext = WalletReadContext & {
+  localState: { availability: "ready"; state: WalletStateV1 };
+  snapshot: NonNullable<WalletReadContext["snapshot"]>;
+  model: NonNullable<WalletReadContext["model"]>;
+};
+
+interface MiningPublishSkipResult {
+  state: WalletStateV1;
+  txid: null;
+  decision: "publish-skipped-stale-candidate";
+  note: string;
+  skipped: true;
+  retryable?: false;
+  candidate: null;
+}
+
+interface MiningPublishRetryResult {
+  state: WalletStateV1;
+  txid: null;
+  decision: "publish-retry-pending";
+  note: string;
+  skipped?: false;
+  retryable: true;
+  candidate: MiningCandidate;
+}
+
+type MiningPublishOutcome =
+  | ({
+    skipped?: false;
+    retryable?: false;
+    note?: null;
+    candidate: MiningCandidate;
+  } & Awaited<ReturnType<typeof publishCandidateOnce>>)
+  | MiningPublishSkipResult
+  | MiningPublishRetryResult;
+
 interface CompetitivenessDecision {
   allowed: boolean;
   decision: string;
@@ -254,6 +291,8 @@ interface RankedMiningSentenceEntry {
 interface MiningLoopState {
   attemptedTipKey: string | null;
   currentTipKey: string | null;
+  selectedCandidateTipKey: string | null;
+  selectedCandidate: MiningCandidate | null;
   ui: MiningFollowVisualizerState;
   waitingNote: string | null;
 }
@@ -268,6 +307,16 @@ class MiningSuspendDetectedError extends Error {
   constructor(detectedAtUnixMs: number) {
     super("mining_runtime_resumed");
     this.detectedAtUnixMs = detectedAtUnixMs;
+  }
+}
+
+class MiningPublishRejectedError extends Error {
+  readonly revertedState: WalletStateV1;
+
+  constructor(message: string, revertedState: WalletStateV1) {
+    super(message);
+    this.name = "MiningPublishRejectedError";
+    this.revertedState = revertedState;
   }
 }
 
@@ -522,9 +571,15 @@ function createMiningLoopState(): MiningLoopState {
   return {
     attemptedTipKey: null,
     currentTipKey: null,
+    selectedCandidateTipKey: null,
+    selectedCandidate: null,
     ui: createEmptyMiningFollowVisualizerState(),
     waitingNote: null,
   };
+}
+
+export function createMiningLoopStateForTesting(): MiningLoopState {
+  return createMiningLoopState();
 }
 
 function buildMiningTipKey(bestBlockHash: string | null, targetBlockHeight: number | null): string | null {
@@ -542,7 +597,13 @@ function resetMiningUiForTip(loopState: MiningLoopState, targetBlockHeight: numb
     ...createEmptyMiningFollowVisualizerState(),
     latestTxid: preservedTxid,
   };
+  loopState.selectedCandidateTipKey = null;
+  loopState.selectedCandidate = null;
   loopState.waitingNote = null;
+}
+
+export function resetMiningUiForTipForTesting(loopState: MiningLoopState, targetBlockHeight: number | null): void {
+  resetMiningUiForTip(loopState, targetBlockHeight);
 }
 
 function getSettledBoardHeight(targetBlockHeight: number | null): number | null {
@@ -622,6 +683,44 @@ function setMiningUiCandidate(
     domainName: candidate.domainName,
     sentence: candidate.sentence,
   };
+}
+
+function getSelectedCandidateForTip(loopState: MiningLoopState, tipKey: string | null): MiningCandidate | null {
+  if (tipKey === null || loopState.selectedCandidateTipKey !== tipKey) {
+    return null;
+  }
+
+  return loopState.selectedCandidate;
+}
+
+export function getSelectedCandidateForTipForTesting(
+  loopState: MiningLoopState,
+  tipKey: string | null,
+): MiningCandidate | null {
+  return getSelectedCandidateForTip(loopState, tipKey);
+}
+
+function cacheSelectedCandidateForTip(
+  loopState: MiningLoopState,
+  tipKey: string | null,
+  candidate: MiningCandidate,
+): void {
+  loopState.selectedCandidateTipKey = tipKey;
+  loopState.selectedCandidate = candidate;
+  setMiningUiCandidate(loopState, candidate);
+}
+
+export function cacheSelectedCandidateForTipForTesting(
+  loopState: MiningLoopState,
+  tipKey: string | null,
+  candidate: MiningCandidate,
+): void {
+  cacheSelectedCandidateForTip(loopState, tipKey, candidate);
+}
+
+function clearSelectedCandidate(loopState: MiningLoopState): void {
+  loopState.selectedCandidateTipKey = null;
+  loopState.selectedCandidate = null;
 }
 
 async function resolveFundingSpendableSats(state: WalletStateV1, rpc: MiningRpcClient): Promise<bigint> {
@@ -1430,6 +1529,70 @@ function resolveEligibleAnchoredRoots(context: WalletReadContext): Array<{
   return domains.sort((left, right) => left.domainId - right.domainId || left.domainName.localeCompare(right.domainName));
 }
 
+function refreshMiningCandidateFromCurrentState(
+  context: ReadyMiningReadContext,
+  candidate: MiningCandidate,
+): MiningCandidate | null {
+  const refreshed = resolveEligibleAnchoredRoots(context).find((domain) => domain.domainId === candidate.domainId);
+  if (refreshed === undefined) {
+    return null;
+  }
+
+  return {
+    ...candidate,
+    domainName: refreshed.domainName,
+    localIndex: refreshed.localIndex,
+    sender: refreshed.sender,
+    anchorOutpoint: refreshed.anchorOutpoint,
+  };
+}
+
+export function refreshMiningCandidateFromCurrentStateForTesting(
+  context: ReadyMiningReadContext,
+  candidate: MiningCandidate,
+): MiningCandidate | null {
+  return refreshMiningCandidateFromCurrentState(context, candidate);
+}
+
+function resolveMiningConflictOutpoint(options: {
+  state: WalletStateV1;
+  candidate: Pick<MiningCandidate, "anchorOutpoint">;
+  allUtxos: Awaited<ReturnType<MiningRpcClient["listUnspent"]>>;
+}): OutpointRecord | null {
+  const normalizedMiningState = normalizeMiningStateRecord(options.state.miningState);
+  if (miningPublishIsInMempool(normalizedMiningState) && normalizedMiningState.sharedMiningConflictOutpoint !== null) {
+    return { ...normalizedMiningState.sharedMiningConflictOutpoint };
+  }
+
+  const fundingConflict = options.allUtxos.find((entry) =>
+    entry.scriptPubKey === options.state.funding.scriptPubKeyHex
+    && entry.confirmations >= 1
+    && entry.spendable !== false
+    && entry.safe !== false
+    && !(entry.txid === options.candidate.anchorOutpoint.txid && entry.vout === options.candidate.anchorOutpoint.vout)
+  );
+
+  return fundingConflict === undefined
+    ? null
+    : { txid: fundingConflict.txid, vout: fundingConflict.vout };
+}
+
+export function resolveMiningConflictOutpointForTesting(options: {
+  state: WalletStateV1;
+  candidate: Pick<MiningCandidate, "anchorOutpoint">;
+  allUtxos: Awaited<ReturnType<MiningRpcClient["listUnspent"]>>;
+}): OutpointRecord | null {
+  return resolveMiningConflictOutpoint(options);
+}
+
+function createStaleMiningCandidateWaitingNote(): string {
+  return "Mining candidate changed before broadcast: the selected root domain is no longer locally mineable. Skipping this tip and waiting for the next block.";
+}
+
+function createRetryableMiningPublishWaitingNote(): string {
+  return "Selected mining candidate did not reach mempool and will be retried on the current tip with refreshed wallet state.";
+}
+
 async function generateCandidatesForDomains(options: {
   rpc: MiningRpcClient;
   readContext: WalletReadContext & {
@@ -2174,7 +2337,7 @@ async function reconcileLiveMiningState(options: {
   };
 }
 
-async function publishCandidate(options: {
+async function publishCandidateOnce(options: {
   readContext: WalletReadContext & {
     localState: { availability: "ready"; state: WalletStateV1 };
     snapshot: NonNullable<WalletReadContext["snapshot"]>;
@@ -2203,22 +2366,15 @@ async function publishCandidate(options: {
     snapshotState: options.readContext.snapshot.state,
   })).state;
   const allUtxos = await rpc.listUnspent(state.managedCoreWallet.walletName, 0);
-  const fundingConflict = state.miningState.sharedMiningConflictOutpoint
-    ?? allUtxos.find((entry) =>
-      entry.scriptPubKey === state.funding.scriptPubKeyHex
-      && entry.confirmations >= 1
-      && entry.spendable !== false
-      && entry.safe !== false
-      && !(entry.txid === options.candidate.anchorOutpoint.txid && entry.vout === options.candidate.anchorOutpoint.vout)
-    );
+  const conflictOutpoint = resolveMiningConflictOutpoint({
+    state,
+    candidate: options.candidate,
+    allUtxos,
+  });
 
-  if (fundingConflict === undefined || fundingConflict === null) {
+  if (conflictOutpoint === null) {
     throw new Error("wallet_mining_missing_conflict_utxo");
   }
-
-  const conflictOutpoint = "txid" in fundingConflict
-    ? { txid: fundingConflict.txid, vout: fundingConflict.vout }
-    : fundingConflict;
   const priorMiningState = cloneMiningState(state.miningState);
 
   if (
@@ -2357,7 +2513,19 @@ async function publishCandidate(options: {
       };
     }
 
-    throw error;
+    state = {
+      ...state,
+      miningState: cloneMiningState(priorMiningState),
+    };
+    await saveWalletStatePreservingUnlock({
+      state,
+      provider: options.provider,
+      paths: options.paths,
+    });
+    throw new MiningPublishRejectedError(
+      error instanceof Error ? error.message : String(error),
+      state,
+    );
   }
 
   const absoluteFeeSats = numberToSats(built.funded.fee);
@@ -2408,6 +2576,141 @@ async function publishCandidate(options: {
       ? "replaced"
       : "broadcast",
   };
+}
+
+async function publishCandidate(options: {
+  candidate: MiningCandidate;
+  dataDir: string;
+  databasePath: string;
+  provider: WalletSecretProvider;
+  paths: WalletRuntimePaths;
+  fallbackState: WalletStateV1;
+  openReadContext: typeof openWalletReadContext;
+  attachService: typeof attachOrStartManagedBitcoindService;
+  rpcFactory: (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
+  runId: string | null;
+  publishAttempt?: typeof publishCandidateOnce;
+  appendEventFn?: typeof appendEvent;
+}): Promise<MiningPublishOutcome> {
+  const publishAttempt = options.publishAttempt ?? publishCandidateOnce;
+  const appendEventFn = options.appendEventFn ?? appendEvent;
+
+  const createStaleCandidateSkipResult = async (state: WalletStateV1): Promise<MiningPublishSkipResult> => {
+    const note = createStaleMiningCandidateWaitingNote();
+    await appendEventFn(options.paths, createEvent(
+      "publish-skipped-stale-candidate",
+      "Skipped mining publish for the current tip because the selected root domain is no longer locally mineable.",
+      {
+        level: "warn",
+        runId: options.runId,
+        targetBlockHeight: options.candidate.targetBlockHeight,
+        referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+        domainId: options.candidate.domainId,
+        domainName: options.candidate.domainName,
+        score: options.candidate.canonicalBlend.toString(),
+        reason: "candidate-unavailable",
+      },
+    ));
+    return {
+      state,
+      txid: null,
+      decision: "publish-skipped-stale-candidate",
+      note,
+      skipped: true,
+      candidate: null,
+    };
+  };
+  const lockedReadContext = await options.openReadContext({
+    dataDir: options.dataDir,
+    databasePath: options.databasePath,
+    secretProvider: options.provider,
+    walletControlLockHeld: true,
+    paths: options.paths,
+  });
+
+  try {
+    if (
+      lockedReadContext.localState.availability !== "ready"
+      || lockedReadContext.localState.state === null
+      || lockedReadContext.snapshot === null
+      || lockedReadContext.model === null
+    ) {
+      return await createStaleCandidateSkipResult(options.fallbackState);
+    }
+
+    const readyReadContext = lockedReadContext as ReadyMiningReadContext;
+    const refreshedCandidate = refreshMiningCandidateFromCurrentState(readyReadContext, options.candidate);
+    if (refreshedCandidate === null) {
+      return await createStaleCandidateSkipResult(readyReadContext.localState.state);
+    }
+
+    try {
+      const published = await publishAttempt({
+        readContext: readyReadContext,
+        candidate: refreshedCandidate,
+        dataDir: options.dataDir,
+        provider: options.provider,
+        paths: options.paths,
+        attachService: options.attachService,
+        rpcFactory: options.rpcFactory,
+        runId: options.runId,
+      });
+      return {
+        ...published,
+        candidate: refreshedCandidate,
+      };
+    } catch (error) {
+      if (error instanceof Error && error.message === "wallet_mining_mempool_rejected_missing-inputs") {
+        const note = createRetryableMiningPublishWaitingNote();
+        const revertedState = error instanceof MiningPublishRejectedError
+          ? error.revertedState
+          : readyReadContext.localState.state;
+        await appendEventFn(options.paths, createEvent(
+          "publish-retry-pending",
+          "Selected mining candidate did not reach mempool and will be retried on the current tip with refreshed wallet state.",
+          {
+            level: "warn",
+            runId: options.runId,
+            targetBlockHeight: refreshedCandidate.targetBlockHeight,
+            referencedBlockHashDisplay: refreshedCandidate.referencedBlockHashDisplay,
+            domainId: refreshedCandidate.domainId,
+            domainName: refreshedCandidate.domainName,
+            score: refreshedCandidate.canonicalBlend.toString(),
+            reason: "missing-inputs",
+          },
+        ));
+        return {
+          state: revertedState,
+          txid: null,
+          decision: "publish-retry-pending",
+          note,
+          retryable: true,
+          candidate: refreshedCandidate,
+        };
+      }
+
+      throw error;
+    }
+  } finally {
+    await lockedReadContext.close();
+  }
+}
+
+export async function publishCandidateForTesting(options: {
+  candidate: MiningCandidate;
+  dataDir: string;
+  databasePath: string;
+  provider: WalletSecretProvider;
+  paths: WalletRuntimePaths;
+  fallbackState: WalletStateV1;
+  openReadContext: typeof openWalletReadContext;
+  attachService: typeof attachOrStartManagedBitcoindService;
+  rpcFactory: (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
+  runId: string | null;
+  publishAttempt?: typeof publishCandidateOnce;
+  appendEventFn?: typeof appendEvent;
+}): Promise<MiningPublishOutcome> {
+  return await publishCandidate(options);
 }
 
 async function ensureBuiltInSetupIfNeeded(options: {
@@ -2735,23 +3038,6 @@ async function performMiningCycle(options: {
       return;
     }
 
-    const domains = resolveEligibleAnchoredRoots(effectiveReadContext);
-    if (domains.length === 0) {
-      await refreshAndSaveStatus({
-        paths: options.paths,
-        provider: options.provider,
-        readContext: effectiveReadContext,
-        overrides: {
-          runMode: options.runMode,
-          currentPhase: "idle",
-          note: "No locally controlled anchored root domains are currently eligible to mine.",
-        },
-        visualizer: options.visualizer,
-        visualizerState: options.loopState.ui,
-      });
-      return;
-    }
-
     if (tipKey !== null && options.loopState.attemptedTipKey === tipKey) {
       await refreshAndSaveStatus({
         paths: options.paths,
@@ -2802,52 +3088,160 @@ async function performMiningCycle(options: {
       }
     };
 
-    await refreshAndSaveStatus({
-      paths: options.paths,
-      provider: options.provider,
-      readContext: effectiveReadContext,
-      overrides: {
-        runMode: options.runMode,
-        currentPhase: "generating",
-        note: "Generating mining sentences for eligible root domains.",
-      },
-      visualizer: options.visualizer,
-      visualizerState: options.loopState.ui,
-    });
+    let selectedCandidate = getSelectedCandidateForTip(options.loopState, tipKey);
+    let gateSnapshot: Pick<
+      CompetitivenessDecision,
+      "higherRankedCompetitorDomainCount"
+      | "dedupedCompetitorDomainCount"
+      | "mempoolSequenceCacheStatus"
+      | "lastMempoolSequence"
+    > = {
+        higherRankedCompetitorDomainCount: 0,
+        dedupedCompetitorDomainCount: 0,
+        mempoolSequenceCacheStatus: null,
+        lastMempoolSequence: null,
+      };
 
-    await appendEvent(options.paths, createEvent(
-      "sentence-generation-start",
-      "Started mining sentence generation.",
-      {
-        targetBlockHeight,
-        referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-        runId: options.backgroundWorkerRunId,
-      },
-    ));
-    let candidates: MiningCandidate[];
+    if (selectedCandidate === null) {
+      const domains = resolveEligibleAnchoredRoots(effectiveReadContext);
+      if (domains.length === 0) {
+        await refreshAndSaveStatus({
+          paths: options.paths,
+          provider: options.provider,
+          readContext: effectiveReadContext,
+          overrides: {
+            runMode: options.runMode,
+            currentPhase: "idle",
+            note: "No locally controlled anchored root domains are currently eligible to mine.",
+          },
+          visualizer: options.visualizer,
+          visualizerState: options.loopState.ui,
+        });
+        return;
+      }
 
-    try {
-      candidates = await generateCandidatesForDomains({
-        rpc,
-        readContext: effectiveReadContext as WalletReadContext & {
-          localState: { availability: "ready"; state: WalletStateV1 };
-          snapshot: NonNullable<WalletReadContext["snapshot"]>;
-          model: NonNullable<WalletReadContext["model"]>;
-        },
-        domains,
-        provider: options.provider,
+      await refreshAndSaveStatus({
         paths: options.paths,
-        indexerTruthKey,
-        runId: options.backgroundWorkerRunId,
-        fetchImpl: options.fetchImpl,
+        provider: options.provider,
+        readContext: effectiveReadContext,
+        overrides: {
+          runMode: options.runMode,
+          currentPhase: "generating",
+          note: "Generating mining sentences for eligible root domains.",
+        },
+        visualizer: options.visualizer,
+        visualizerState: options.loopState.ui,
       });
-      checkpointMiningSuspendDetector(options.suspendDetector);
-    } catch (error) {
-      if (error instanceof MiningProviderRequestError) {
+
+      await appendEvent(options.paths, createEvent(
+        "sentence-generation-start",
+        "Started mining sentence generation.",
+        {
+          targetBlockHeight,
+          referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
+          runId: options.backgroundWorkerRunId,
+        },
+      ));
+      let candidates: MiningCandidate[];
+
+      try {
+        candidates = await generateCandidatesForDomains({
+          rpc,
+          readContext: effectiveReadContext as WalletReadContext & {
+            localState: { availability: "ready"; state: WalletStateV1 };
+            snapshot: NonNullable<WalletReadContext["snapshot"]>;
+            model: NonNullable<WalletReadContext["model"]>;
+          },
+          domains,
+          provider: options.provider,
+          paths: options.paths,
+          indexerTruthKey,
+          runId: options.backgroundWorkerRunId,
+          fetchImpl: options.fetchImpl,
+        });
+        checkpointMiningSuspendDetector(options.suspendDetector);
+      } catch (error) {
+        if (error instanceof MiningProviderRequestError) {
+          if (tipKey !== null) {
+            options.loopState.attemptedTipKey = tipKey;
+            options.loopState.waitingNote = "Mining is waiting for the sentence provider to recover.";
+          }
+          await refreshAndSaveStatus({
+            paths: options.paths,
+            provider: options.provider,
+            readContext: effectiveReadContext,
+            overrides: {
+              runMode: options.runMode,
+              currentPhase: "waiting-provider",
+              providerState: error.providerState,
+              lastError: error.message,
+              note: "Mining is waiting for the sentence provider to recover.",
+            },
+            visualizer: options.visualizer,
+            visualizerState: options.loopState.ui,
+          });
+          await appendEvent(options.paths, createEvent(
+            "publish-paused-provider",
+            error.message,
+            {
+              level: "warn",
+              targetBlockHeight,
+              referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
+              runId: options.backgroundWorkerRunId,
+            },
+          ));
+          return;
+        }
+
+        if (error instanceof Error && error.message === "mining_generation_stale_tip") {
+          await appendEvent(options.paths, createEvent(
+            "generation-restarted-new-tip",
+            "Detected a new best tip during sentence generation; restarting on the next tick.",
+            {
+              level: "warn",
+              targetBlockHeight,
+              referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
+              runId: options.backgroundWorkerRunId,
+            },
+          ));
+          return;
+        }
+
+        if (error instanceof Error && error.message === "mining_generation_stale_indexer_truth") {
+          clearMiningGateCache(walletRootId);
+          await appendEvent(options.paths, createEvent(
+            "generation-restarted-indexer-truth",
+            "Detected updated coherent indexer truth during mining; restarting on the next tick.",
+            {
+              level: "warn",
+              targetBlockHeight,
+              referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
+              runId: options.backgroundWorkerRunId,
+            },
+          ));
+          return;
+        }
+
+        if (error instanceof Error && error.message === "mining_generation_preempted") {
+          await appendEvent(options.paths, createEvent(
+            "generation-paused-preempted",
+            "Stopped sentence generation because another wallet command requested mining preemption.",
+            {
+              level: "warn",
+              targetBlockHeight,
+              referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
+              runId: options.backgroundWorkerRunId,
+            },
+          ));
+          return;
+        }
+
+        const failureMessage = error instanceof Error ? error.message : String(error);
         if (tipKey !== null) {
           options.loopState.attemptedTipKey = tipKey;
-          options.loopState.waitingNote = "Mining is waiting for the sentence provider to recover.";
+          options.loopState.waitingNote = "Mining sentence generation failed for the current tip.";
         }
+
         await refreshAndSaveStatus({
           paths: options.paths,
           provider: options.provider,
@@ -2855,73 +3249,24 @@ async function performMiningCycle(options: {
           overrides: {
             runMode: options.runMode,
             currentPhase: "waiting-provider",
-            providerState: error.providerState,
-            lastError: error.message,
-            note: "Mining is waiting for the sentence provider to recover.",
+            providerState: "unavailable",
+            lastError: failureMessage,
+            note: "Mining sentence generation failed for the current tip.",
           },
           visualizer: options.visualizer,
           visualizerState: options.loopState.ui,
         });
         await appendEvent(options.paths, createEvent(
-          "publish-paused-provider",
-          error.message,
+          "sentence-generation-failed",
+          failureMessage,
           {
-            level: "warn",
+            level: "error",
             targetBlockHeight,
             referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
             runId: options.backgroundWorkerRunId,
           },
         ));
         return;
-      }
-
-      if (error instanceof Error && error.message === "mining_generation_stale_tip") {
-        await appendEvent(options.paths, createEvent(
-          "generation-restarted-new-tip",
-          "Detected a new best tip during sentence generation; restarting on the next tick.",
-          {
-            level: "warn",
-            targetBlockHeight,
-            referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-            runId: options.backgroundWorkerRunId,
-          },
-        ));
-        return;
-      }
-
-      if (error instanceof Error && error.message === "mining_generation_stale_indexer_truth") {
-        clearMiningGateCache(walletRootId);
-        await appendEvent(options.paths, createEvent(
-          "generation-restarted-indexer-truth",
-          "Detected updated coherent indexer truth during sentence generation; restarting on the next tick.",
-          {
-            level: "warn",
-            targetBlockHeight,
-            referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-            runId: options.backgroundWorkerRunId,
-          },
-        ));
-        return;
-      }
-
-      if (error instanceof Error && error.message === "mining_generation_preempted") {
-        await appendEvent(options.paths, createEvent(
-          "generation-paused-preempted",
-          "Stopped sentence generation because another wallet command requested mining preemption.",
-          {
-            level: "warn",
-            targetBlockHeight,
-            referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-            runId: options.backgroundWorkerRunId,
-          },
-        ));
-        return;
-      }
-
-      const failureMessage = error instanceof Error ? error.message : String(error);
-      if (tipKey !== null) {
-        options.loopState.attemptedTipKey = tipKey;
-        options.loopState.waitingNote = "Mining sentence generation failed for the current tip.";
       }
 
       await refreshAndSaveStatus({
@@ -2930,139 +3275,55 @@ async function performMiningCycle(options: {
         readContext: effectiveReadContext,
         overrides: {
           runMode: options.runMode,
-          currentPhase: "waiting-provider",
-          providerState: "unavailable",
-          lastError: failureMessage,
-          note: "Mining sentence generation failed for the current tip.",
+          currentPhase: "scoring",
+          note: "Scoring mining candidates for the current tip.",
         },
         visualizer: options.visualizer,
         visualizerState: options.loopState.ui,
       });
-      await appendEvent(options.paths, createEvent(
-        "sentence-generation-failed",
-        failureMessage,
-        {
-          level: "error",
-          targetBlockHeight,
-          referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-          runId: options.backgroundWorkerRunId,
-        },
-      ));
-      return;
-    }
 
-    await refreshAndSaveStatus({
-      paths: options.paths,
-      provider: options.provider,
-      readContext: effectiveReadContext,
-      overrides: {
-        runMode: options.runMode,
-        currentPhase: "scoring",
-        note: "Scoring mining candidates for the current tip.",
-      },
-      visualizer: options.visualizer,
-      visualizerState: options.loopState.ui,
-    });
-
-    const best = await chooseBestLocalCandidate(candidates);
-    if (best === null) {
-      if (tipKey !== null) {
-        options.loopState.attemptedTipKey = tipKey;
-        options.loopState.waitingNote = "No publishable mining candidate passed scoring gates for the current tip.";
+      const best = await chooseBestLocalCandidate(candidates);
+      if (best === null) {
+        if (tipKey !== null) {
+          options.loopState.attemptedTipKey = tipKey;
+          options.loopState.waitingNote = "No publishable mining candidate passed scoring gates for the current tip.";
+        }
+        clearSelectedCandidate(options.loopState);
+        await refreshAndSaveStatus({
+          paths: options.paths,
+          provider: options.provider,
+          readContext: effectiveReadContext,
+          overrides: {
+            runMode: options.runMode,
+            currentPhase: "idle",
+            currentPublishDecision: "publish-skipped-no-candidate",
+            note: "No publishable mining candidate passed scoring gates for the current tip.",
+          },
+          visualizer: options.visualizer,
+          visualizerState: options.loopState.ui,
+        });
+        await appendEvent(options.paths, createEvent(
+          "publish-skipped-no-candidate",
+          "No publishable mining candidate passed scoring gates.",
+          {
+            targetBlockHeight,
+            referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
+            runId: options.backgroundWorkerRunId,
+          },
+        ));
+        return;
       }
-      await refreshAndSaveStatus({
-        paths: options.paths,
-        provider: options.provider,
-        readContext: effectiveReadContext,
-        overrides: {
-          runMode: options.runMode,
-          currentPhase: "idle",
-          currentPublishDecision: "publish-skipped-no-candidate",
-          note: "No publishable mining candidate passed scoring gates for the current tip.",
-        },
-        visualizer: options.visualizer,
-        visualizerState: options.loopState.ui,
-      });
-      await appendEvent(options.paths, createEvent(
-        "publish-skipped-no-candidate",
-        "No publishable mining candidate passed scoring gates.",
-        {
-          targetBlockHeight,
-          referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-          runId: options.backgroundWorkerRunId,
-        },
-      ));
-      return;
-    }
 
-    if (!await ensureCurrentIndexerTruthOrRestart()) {
-      return;
-    }
-
-    options.loopState.ui.recentWin = null;
-    setMiningUiCandidate(options.loopState, best);
-    await appendEvent(options.paths, createEvent(
-      "candidate-selected",
-      `Selected ${best.domainName} with score ${best.canonicalBlend.toString()}.`,
-      {
-        targetBlockHeight: best.targetBlockHeight,
-        referencedBlockHashDisplay: best.referencedBlockHashDisplay,
-        domainId: best.domainId,
-        domainName: best.domainName,
-        score: best.canonicalBlend.toString(),
-        runId: options.backgroundWorkerRunId,
-      },
-    ));
-
-    const gate = await runCompetitivenessGate({
-      rpc,
-      readContext: effectiveReadContext as WalletReadContext & { snapshot: NonNullable<WalletReadContext["snapshot"]> },
-      candidate: best,
-      currentTxid: effectiveReadContext.localState.state.miningState.currentTxid,
-    });
-    checkpointMiningSuspendDetector(options.suspendDetector);
-
-    if (!gate.allowed) {
-      if (tipKey !== null) {
-        options.loopState.attemptedTipKey = tipKey;
+      if (!await ensureCurrentIndexerTruthOrRestart()) {
+        return;
       }
-      setMiningUiCandidate(options.loopState, best);
-      options.loopState.waitingNote = gate.decision === "suppressed-same-domain-mempool"
-        ? "Best local sentence found, but a same-domain mempool competitor already matches or beats it."
-        : gate.decision === "suppressed-top5-mempool"
-          ? `Best local sentence found, but ${gate.higherRankedCompetitorDomainCount} stronger competitor root domains are already in mempool.`
-          : "Mining skipped this tick because the mempool competitiveness gate could not be verified safely.";
-      await refreshAndSaveStatus({
-        paths: options.paths,
-        provider: options.provider,
-        readContext: effectiveReadContext,
-        overrides: {
-          runMode: options.runMode,
-          currentPhase: "waiting",
-          currentPublishDecision: gate.decision,
-          sameDomainCompetitorSuppressed: gate.sameDomainCompetitorSuppressed,
-          higherRankedCompetitorDomainCount: gate.higherRankedCompetitorDomainCount,
-          dedupedCompetitorDomainCount: gate.dedupedCompetitorDomainCount,
-          competitivenessGateIndeterminate: gate.competitivenessGateIndeterminate,
-          mempoolSequenceCacheStatus: gate.mempoolSequenceCacheStatus,
-          lastMempoolSequence: gate.lastMempoolSequence,
-          lastCompetitivenessGateAtUnixMs: Date.now(),
-          note: options.loopState.waitingNote,
-        },
-        visualizer: options.visualizer,
-        visualizerState: options.loopState.ui,
-      });
+
+      options.loopState.ui.recentWin = null;
+      cacheSelectedCandidateForTip(options.loopState, tipKey, best);
+      selectedCandidate = best;
       await appendEvent(options.paths, createEvent(
-        gate.decision === "suppressed-same-domain-mempool"
-          ? "publish-skipped-same-domain-mempool"
-          : gate.decision === "suppressed-top5-mempool"
-            ? "publish-skipped-top5-mempool"
-            : "publish-skipped-gate-indeterminate",
-        gate.decision === "suppressed-same-domain-mempool"
-          ? "Skipped publish because a same-domain mempool competitor already outranks the local candidate."
-          : gate.decision === "suppressed-top5-mempool"
-            ? `Skipped publish because ${gate.higherRankedCompetitorDomainCount} stronger competitor root domains are already in mempool.`
-            : "Skipped publish because the competitiveness gate could not be evaluated safely.",
+        "candidate-selected",
+        `Selected ${best.domainName} with score ${best.canonicalBlend.toString()}.`,
         {
           targetBlockHeight: best.targetBlockHeight,
           referencedBlockHashDisplay: best.referencedBlockHashDisplay,
@@ -3070,10 +3331,80 @@ async function performMiningCycle(options: {
           domainName: best.domainName,
           score: best.canonicalBlend.toString(),
           runId: options.backgroundWorkerRunId,
-          reason: gate.decision,
         },
       ));
-      return;
+
+      const gate = await runCompetitivenessGate({
+        rpc,
+        readContext: effectiveReadContext as WalletReadContext & { snapshot: NonNullable<WalletReadContext["snapshot"]> },
+        candidate: best,
+        currentTxid: effectiveReadContext.localState.state.miningState.currentTxid,
+      });
+      checkpointMiningSuspendDetector(options.suspendDetector);
+      gateSnapshot = {
+        higherRankedCompetitorDomainCount: gate.higherRankedCompetitorDomainCount,
+        dedupedCompetitorDomainCount: gate.dedupedCompetitorDomainCount,
+        mempoolSequenceCacheStatus: gate.mempoolSequenceCacheStatus,
+        lastMempoolSequence: gate.lastMempoolSequence,
+      };
+
+      if (!gate.allowed) {
+        if (tipKey !== null) {
+          options.loopState.attemptedTipKey = tipKey;
+        }
+        clearSelectedCandidate(options.loopState);
+        setMiningUiCandidate(options.loopState, best);
+        options.loopState.waitingNote = gate.decision === "suppressed-same-domain-mempool"
+          ? "Best local sentence found, but a same-domain mempool competitor already matches or beats it."
+          : gate.decision === "suppressed-top5-mempool"
+            ? `Best local sentence found, but ${gate.higherRankedCompetitorDomainCount} stronger competitor root domains are already in mempool.`
+            : "Mining skipped this tick because the mempool competitiveness gate could not be verified safely.";
+        await refreshAndSaveStatus({
+          paths: options.paths,
+          provider: options.provider,
+          readContext: effectiveReadContext,
+          overrides: {
+            runMode: options.runMode,
+            currentPhase: "waiting",
+            currentPublishDecision: gate.decision,
+            sameDomainCompetitorSuppressed: gate.sameDomainCompetitorSuppressed,
+            higherRankedCompetitorDomainCount: gate.higherRankedCompetitorDomainCount,
+            dedupedCompetitorDomainCount: gate.dedupedCompetitorDomainCount,
+            competitivenessGateIndeterminate: gate.competitivenessGateIndeterminate,
+            mempoolSequenceCacheStatus: gate.mempoolSequenceCacheStatus,
+            lastMempoolSequence: gate.lastMempoolSequence,
+            lastCompetitivenessGateAtUnixMs: Date.now(),
+            note: options.loopState.waitingNote,
+          },
+          visualizer: options.visualizer,
+          visualizerState: options.loopState.ui,
+        });
+        await appendEvent(options.paths, createEvent(
+          gate.decision === "suppressed-same-domain-mempool"
+            ? "publish-skipped-same-domain-mempool"
+            : gate.decision === "suppressed-top5-mempool"
+              ? "publish-skipped-top5-mempool"
+              : "publish-skipped-gate-indeterminate",
+          gate.decision === "suppressed-same-domain-mempool"
+            ? "Skipped publish because a same-domain mempool competitor already outranks the local candidate."
+            : gate.decision === "suppressed-top5-mempool"
+              ? `Skipped publish because ${gate.higherRankedCompetitorDomainCount} stronger competitor root domains are already in mempool.`
+              : "Skipped publish because the competitiveness gate could not be evaluated safely.",
+          {
+            targetBlockHeight: best.targetBlockHeight,
+            referencedBlockHashDisplay: best.referencedBlockHashDisplay,
+            domainId: best.domainId,
+            domainName: best.domainName,
+            score: best.canonicalBlend.toString(),
+            runId: options.backgroundWorkerRunId,
+            reason: gate.decision,
+          },
+        ));
+        return;
+      }
+    } else {
+      options.loopState.ui.recentWin = null;
+      setMiningUiCandidate(options.loopState, selectedCandidate);
     }
 
     if (!await ensureCurrentIndexerTruthOrRestart()) {
@@ -3110,27 +3441,91 @@ async function performMiningCycle(options: {
 
       checkpointMiningSuspendDetector(options.suspendDetector);
       const published = await publishCandidate({
-        readContext: effectiveReadContext as WalletReadContext & {
-          localState: { availability: "ready"; state: WalletStateV1 };
-          snapshot: NonNullable<WalletReadContext["snapshot"]>;
-          model: NonNullable<WalletReadContext["model"]>;
-        },
-        candidate: best,
         dataDir: options.dataDir,
+        databasePath: options.databasePath,
         provider: options.provider,
         paths: options.paths,
+        fallbackState: effectiveReadContext.localState.state,
+        openReadContext: options.openReadContext,
         attachService: options.attachService,
         rpcFactory: options.rpcFactory,
+        candidate: selectedCandidate,
         runId: options.backgroundWorkerRunId,
       });
       checkpointMiningSuspendDetector(options.suspendDetector);
-      if (tipKey !== null) {
+      if (tipKey !== null && published.retryable !== true) {
         options.loopState.attemptedTipKey = tipKey;
       }
+      if (published.retryable === true) {
+        cacheSelectedCandidateForTip(options.loopState, tipKey, published.candidate);
+        options.loopState.waitingNote = published.note;
+        await refreshAndSaveStatus({
+          paths: options.paths,
+          provider: options.provider,
+          readContext: {
+            ...effectiveReadContext,
+            localState: {
+              ...effectiveReadContext.localState,
+              state: published.state,
+            },
+          },
+          overrides: {
+            runMode: options.runMode,
+            currentPhase: "waiting",
+            currentPublishDecision: published.decision,
+            sameDomainCompetitorSuppressed: false,
+            higherRankedCompetitorDomainCount: gateSnapshot.higherRankedCompetitorDomainCount,
+            dedupedCompetitorDomainCount: gateSnapshot.dedupedCompetitorDomainCount,
+            competitivenessGateIndeterminate: false,
+            mempoolSequenceCacheStatus: gateSnapshot.mempoolSequenceCacheStatus,
+            lastMempoolSequence: gateSnapshot.lastMempoolSequence,
+            lastCompetitivenessGateAtUnixMs: Date.now(),
+            note: published.note,
+            livePublishInMempool: published.state.miningState.livePublishInMempool,
+          },
+          visualizer: options.visualizer,
+          visualizerState: options.loopState.ui,
+        });
+        return;
+      }
+      if (published.skipped === true) {
+        clearSelectedCandidate(options.loopState);
+        setMiningUiCandidate(options.loopState, selectedCandidate);
+        options.loopState.waitingNote = published.note;
+        await refreshAndSaveStatus({
+          paths: options.paths,
+          provider: options.provider,
+          readContext: {
+            ...effectiveReadContext,
+            localState: {
+              ...effectiveReadContext.localState,
+              state: published.state,
+            },
+          },
+          overrides: {
+            runMode: options.runMode,
+            currentPhase: "waiting",
+            currentPublishDecision: published.decision,
+            sameDomainCompetitorSuppressed: false,
+            higherRankedCompetitorDomainCount: gateSnapshot.higherRankedCompetitorDomainCount,
+            dedupedCompetitorDomainCount: gateSnapshot.dedupedCompetitorDomainCount,
+            competitivenessGateIndeterminate: false,
+            mempoolSequenceCacheStatus: gateSnapshot.mempoolSequenceCacheStatus,
+            lastMempoolSequence: gateSnapshot.lastMempoolSequence,
+            lastCompetitivenessGateAtUnixMs: Date.now(),
+            note: published.note,
+            livePublishInMempool: published.state.miningState.livePublishInMempool,
+          },
+          visualizer: options.visualizer,
+          visualizerState: options.loopState.ui,
+        });
+        return;
+      }
+      clearSelectedCandidate(options.loopState);
       if (published.txid !== null) {
         options.loopState.ui.latestTxid = published.txid;
       }
-      setMiningUiCandidate(options.loopState, best);
+      setMiningUiCandidate(options.loopState, published.candidate);
       options.loopState.waitingNote = published.decision === "kept-live-publish"
         ? "Existing live mining publish already covers this block attempt. Waiting for the next block."
         : published.txid === null
@@ -3154,11 +3549,11 @@ async function performMiningCycle(options: {
           currentPhase: "waiting",
           currentPublishDecision: published.decision,
           sameDomainCompetitorSuppressed: false,
-          higherRankedCompetitorDomainCount: gate.higherRankedCompetitorDomainCount,
-          dedupedCompetitorDomainCount: gate.dedupedCompetitorDomainCount,
+          higherRankedCompetitorDomainCount: gateSnapshot.higherRankedCompetitorDomainCount,
+          dedupedCompetitorDomainCount: gateSnapshot.dedupedCompetitorDomainCount,
           competitivenessGateIndeterminate: false,
-          mempoolSequenceCacheStatus: gate.mempoolSequenceCacheStatus,
-          lastMempoolSequence: gate.lastMempoolSequence,
+          mempoolSequenceCacheStatus: gateSnapshot.mempoolSequenceCacheStatus,
+          lastMempoolSequence: gateSnapshot.lastMempoolSequence,
           lastCompetitivenessGateAtUnixMs: Date.now(),
           note: options.loopState.waitingNote,
           livePublishInMempool: published.state.miningState.livePublishInMempool,
