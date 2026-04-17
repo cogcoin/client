@@ -1,8 +1,84 @@
 # `@cogcoin/client`
 
-`@cogcoin/client@0.5.16` is the store-backed Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
+`@cogcoin/client@1.0.0` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
 
 Use Node 22 or newer.
+
+## Quick Start
+
+Install the package:
+
+```bash
+npm install -g @cogcoin/client
+cogcoin init
+cogcoin register <domainname>
+cogcoin anchor <domainname>
+cogcoin mine setup
+cogcoin mine
+```
+
+## Preview
+
+```bash
+
+     ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+   ▄▀                  ▀▄
+   █  ▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄  █    Welcome to...
+   █  █              █  █
+   █  █   █   █  █   █  █     █████  █████   █████   █████  █████  ██ ███    ██
+   █  █       █      █  █    ██     ██   ██ ██      ██     ██   ██ ██ ████   ██
+   █  █      ▄█      █  █    ██     ██   ██ ██  ███ ██     ██   ██ ██ ██ ██  ██
+   █  █    ▄    ▄    █  █    ██     ██   ██ ██   ██ ██     ██   ██ ██ ██  ██ ██
+   █  █     ▀▀▀▀     █  █     █████  █████   █████   █████  █████  ██ ██   ████
+   █  ▀▄▄▄▄▄▄▄▄▄▄▄▄▄▄▀  █
+   █                    █        ┏┳┓╻┏┓╻┏━╸   ╻ ╻╻╺┳╸╻ ╻   ╻ ╻┏━┓┏━┓╺┳┓┏━┓    
+   █                    █        ┃┃┃┃┃┗┫┣╸    ┃╻┃┃ ┃ ┣━┫   ┃╻┃┃ ┃┣┳┛ ┃┃┗━┓
+   █   ▄▄      ▄▄▄▄▄▄   █        ╹ ╹╹╹ ╹┗━╸   ┗┻┛╹ ╹ ╹ ╹   ┗┻┛┗━┛╹┗╸╺┻┛┗━┛
+   █                    █
+   ▀▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▀            We are so happy to have you here!        
+    █▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄█
+
+
+```
+
+```bash
+                            ⛭ Behold, your Cogcoin wallet. ⛭                    
+▐▀▀▀▀▀▀▀▀▚  ╔──────────────────────────────────────────────────────────────────╗
+▛▞▀▀▀▀▀▀▀▀▚ │                                                                  │
+▌▝▀▀▀▀▀▀▀▀▀▌│ Funding address: bc1qsamplewallet0000000000000000000000000      │
+▌   ▗▙▙    ▌│                                                                  │
+▌   ▐  ▌   ▌│ Bitcoin Balance: 0.00150000 BTC                                  │
+▌   ▐▀▀▚   ▌│ Cogcoin Balance: 12.50000000 COG                                  │
+▌   ▐▄▄▞   ▌│                                                                  │
+▌    ▘▘    ▌│ mempool.space/address/bc1qsamplewallet0000000000000000000000000 |
+▝▀▀▀▀▀▀▀▀▀▀▘╚──────────────────────────────────────────────────────────────────╝
+
+Anchored Domains
+⌂ cogdemo
+
+Unanchored Domains
+--- No unanchored domains ---
+```
+
+```bash
+ _____                                                                    _____ 
+( ___ ) 3.125 COG             ⛭  C O G C O I N  ⛭              150000 SAT ( ___ )
+ |   |~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~|   | 
+ |   |                                                                    |   | 
+ |   |                                                                    |   | 
+ |   |                              945516  945515  945514  945513  945512|   | 
+ |   |_|"""""|                     _|"""""|_|"""""|_|"""""|_|"""""|_|"""""|   | 
+ |   |"`-0-0-'                     "`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-|   | 
+ |   | ~10 min                                                            |   | 
+ |   |                                                                    |   | 
+ |   |                                                                    |   | 
+ |___|~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~|___| 
+(_____)                       Waiting for indexer                        (_____)
+
+[░░░░░░░░░░░░░░░░████] Mining is waiting for Bitcoin Core and the indexer to align.
+Required words: OWNER, OLYMPIC, ERODE, DESK, DIFFER
+@cogdemo: By the desk, the owner observed that Olympic lettering could erode over time, though experts differ.
+```bash
 
 ## Links
 
@@ -13,25 +89,6 @@ Use Node 22 or newer.
 - Genesis package: [npmjs.com/package/@cogcoin/genesis](https://www.npmjs.com/package/@cogcoin/genesis)
 - Indexer package: [npmjs.com/package/@cogcoin/indexer](https://www.npmjs.com/package/@cogcoin/indexer)
 - Scoring package: [npmjs.com/package/@cogcoin/scoring](https://www.npmjs.com/package/@cogcoin/scoring)
-
-## Quick Start
-
-Install the package:
-
-```bash
-npm install @cogcoin/client
-```
-
-Then, from your project root, run:
-
-```bash
-node node_modules/@cogcoin/genesis/verify.mjs
-npx cogcoin init
-npx cogcoin sync
-```
-
-Verify the installed genesis artifacts before using the client in a production implementation.
-The installed package provides the `cogcoin` command for local wallet setup, sync, reads, writes, and mining workflows.
 
 ## Dependency Surface
 
