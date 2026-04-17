@@ -6,6 +6,7 @@ import type {
   FieldMutationResult,
   RegisterDomainResult,
   ReputationMutationResult,
+  WalletMutationFeeSummary,
 } from "../wallet/tx/index.js";
 import type { WalletRepairResult, WalletResetPreview } from "../wallet/lifecycle.js";
 import type { MiningControlPlaneView, MiningRuntimeStatusV1 } from "../wallet/mining/index.js";
@@ -33,6 +34,7 @@ export function buildSingleTxMutationPreviewData(options: {
   wtxid?: string | null | undefined;
   reusedExisting: boolean;
   intent: Record<string, unknown>;
+  fees: WalletMutationFeeSummary;
   journalKind?: string | null;
   intentFingerprintHex?: string | null;
 }) {
@@ -46,6 +48,7 @@ export function buildSingleTxMutationPreviewData(options: {
       intentFingerprintHex: options.intentFingerprintHex ?? null,
     },
     transaction: normalizeTxSummary(options.txid, options.wtxid),
+    fees: options.fees,
     intent: options.intent,
   };
 }
@@ -94,6 +97,7 @@ export function buildRegisterPreviewData(
       localStatus: result.status,
       txid: result.txid,
       reusedExisting: result.reusedExisting,
+      fees: result.fees,
       intent: {
         domainName: result.domainName,
         registerKind: result.registerKind,
@@ -121,6 +125,7 @@ export function buildDomainMarketPreviewData(
     localStatus: result.status,
     txid: result.txid,
     reusedExisting: result.reusedExisting,
+    fees: result.fees,
     intent,
     journalKind: result.kind,
   });
@@ -152,6 +157,7 @@ export function buildCogPreviewData(
     localStatus: result.status,
     txid: result.txid,
     reusedExisting: result.reusedExisting,
+    fees: result.fees,
     intent: {
       amountCogtoshi: decimalOrNull(result.amountCogtoshi),
       recipientScriptPubKeyHex: result.recipientScriptPubKeyHex ?? null,
@@ -181,6 +187,7 @@ export function buildAnchorPreviewData(
     localStatus: result.status,
     txid: result.txid,
     reusedExisting: result.reusedExisting,
+    fees: result.fees,
     intent: {
       domainName: result.domainName,
       foundingMessageIncluded: options.foundingMessageText !== null,
@@ -206,6 +213,7 @@ export function buildDomainAdminPreviewData(
     localStatus: result.status,
     txid: result.txid,
     reusedExisting: result.reusedExisting,
+    fees: result.fees,
     intent: {
       domainName: result.domainName,
       recipientScriptPubKeyHex: result.recipientScriptPubKeyHex ?? null,
@@ -230,6 +238,7 @@ export function buildFieldPreviewData(result: FieldMutationResult) {
       localStatus: result.status,
       txid: result.txid,
       reusedExisting: result.reusedExisting,
+      fees: result.fees,
       intent: {
         domainName: result.domainName,
         fieldName: result.fieldName,
@@ -246,9 +255,10 @@ export function buildReputationPreviewData(result: ReputationMutationResult) {
   const data = buildSingleTxMutationPreviewData({
     kind: result.kind === "give" ? "rep-give" : "rep-revoke",
     localStatus: result.status,
-    txid: result.txid,
-    reusedExisting: result.reusedExisting,
-    intent: {
+      txid: result.txid,
+      reusedExisting: result.reusedExisting,
+      fees: result.fees,
+      intent: {
       sourceDomainName: result.sourceDomainName,
       targetDomainName: result.targetDomainName,
       amountCogtoshi: result.amountCogtoshi.toString(),

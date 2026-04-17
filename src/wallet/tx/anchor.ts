@@ -29,15 +29,21 @@ import { openWalletReadContext, type WalletReadContext } from "../read/index.js"
 import {
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  createBuiltWalletMutationFeeSummary,
+  createWalletMutationFeeMetadata,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
+  mergeFixedWalletInputs,
   outpointKey,
   pauseMiningForWalletMutation,
+  resolvePendingMutationReuseDecision,
+  resolveWalletMutationFeeSelection,
   saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
   type BuiltWalletMutationTransaction,
   type FixedWalletInput,
+  type WalletMutationFeeSummary,
   type WalletMutationRpcClient,
 } from "./common.js";
 import { findPendingMutationByIntent, upsertPendingMutation } from "./journal.js";
@@ -64,6 +70,7 @@ export interface AnchorDomainOptions {
   domainName: string;
   foundingMessageText?: string | null;
   promptForFoundingMessageWhenMissing?: boolean;
+  feeRateSatVb?: number | null;
   dataDir: string;
   databasePath: string;
   provider?: WalletSecretProvider;
@@ -81,6 +88,7 @@ export interface AnchorDomainResult {
   status: "live" | "confirmed";
   reusedExisting: boolean;
   foundingMessageText?: string | null;
+  fees: WalletMutationFeeSummary;
 }
 
 function normalizeDomainName(domainName: string): string {
@@ -299,6 +307,10 @@ function createDraftAnchorMutation(options: {
   domainName: string;
   intentFingerprintHex: string;
   nowUnixMs: number;
+  feeSelection: {
+    feeRateSatVb: number;
+    source: "custom-satvb" | "estimated-next-block-plus-one" | "fallback-default";
+  };
   existing?: PendingMutationRecord | null;
 }): PendingMutationRecord {
   const existing = options.existing ?? null;
@@ -315,6 +327,7 @@ function createDraftAnchorMutation(options: {
       lastUpdatedAtUnixMs: options.nowUnixMs,
       attemptedTxid: null,
       attemptedWtxid: null,
+      ...createWalletMutationFeeMetadata(options.feeSelection),
       temporaryBuilderLockedOutpoints: [],
     };
   }
@@ -332,6 +345,7 @@ function createDraftAnchorMutation(options: {
     lastUpdatedAtUnixMs: options.nowUnixMs,
     attemptedTxid: null,
     attemptedWtxid: null,
+    ...createWalletMutationFeeMetadata(options.feeSelection),
     temporaryBuilderLockedOutpoints: [],
   };
 }
@@ -600,8 +614,13 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
       const walletName = state.managedCoreWallet.walletName;
+      const feeSelection = await resolveWalletMutationFeeSelection({
+        rpc,
+        feeRateSatVb: options.feeRateSatVb ?? null,
+      });
       const existingMutation = findPendingMutationByIntent(state, intentFingerprintHex);
       let workingState = state;
+      let replacementFixedInputs: FixedWalletInput[] | null = null;
 
       if (existingMutation !== null) {
         const reconciled = await reconcilePendingAnchorMutation({
@@ -618,13 +637,25 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
         workingState = reconciled.state;
 
         if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          return {
-            domainName: normalizedDomainName,
-            txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            status: reconciled.resolution,
-            reusedExisting: true,
-            foundingMessageText: message.text,
-          };
+          const reuse = await resolvePendingMutationReuseDecision({
+            rpc,
+            walletName,
+            mutation: reconciled.mutation,
+            nextFeeSelection: feeSelection,
+          });
+
+          if (reuse.reuseExisting) {
+            return {
+              domainName: normalizedDomainName,
+              txid: reconciled.mutation.attemptedTxid ?? "unknown",
+              status: reconciled.resolution,
+              reusedExisting: true,
+              foundingMessageText: message.text,
+              fees: reuse.fees,
+            };
+          }
+
+          replacementFixedInputs = reuse.replacementFixedInputs;
         }
 
         if (reconciled.resolution === "repair-required") {
@@ -645,6 +676,7 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
           domainName: normalizedDomainName,
           intentFingerprintHex,
           nowUnixMs,
+          feeSelection,
           existing: existingMutation ?? null,
         }),
       );
@@ -655,19 +687,24 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
         paths,
       });
 
+      const directAnchorPlan = buildDirectAnchorPlan({
+        state: nextState,
+        allUtxos: await rpc.listUnspent(walletName, 1),
+        domainId: chainDomain.domainId,
+        foundingMessagePayloadHex: message.payloadHex,
+      });
       const built = await buildWalletMutationTransactionWithReserveFallback({
         rpc,
         walletName,
         state: nextState,
-        plan: buildDirectAnchorPlan({
-          state: nextState,
-          allUtxos: await rpc.listUnspent(walletName, 1),
-          domainId: chainDomain.domainId,
-          foundingMessagePayloadHex: message.payloadHex,
-        }),
+        plan: {
+          ...directAnchorPlan,
+          fixedInputs: mergeFixedWalletInputs(directAnchorPlan.fixedInputs, replacementFixedInputs),
+        },
         validateFundedDraft: validateDirectAnchorDraft,
         finalizeErrorCode: "wallet_anchor_finalize_failed",
         mempoolRejectPrefix: "wallet_anchor_mempool_rejected",
+        feeRate: feeSelection.feeRateSatVb,
       });
 
       const currentMutation = nextState.pendingMutations?.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)
@@ -676,6 +713,7 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
           domainName: normalizedDomainName,
           intentFingerprintHex,
           nowUnixMs,
+          feeSelection,
         });
       const broadcastingMutation = updateMutationRecord(
         currentMutation,
@@ -768,6 +806,10 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
         status: finalStatus,
         reusedExisting: false,
         foundingMessageText: message.text,
+        fees: createBuiltWalletMutationFeeSummary({
+          selection: feeSelection,
+          built,
+        }),
       };
     } finally {
       await readContext.close();

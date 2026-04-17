@@ -20,6 +20,7 @@ import {
   writeHandledCliError,
   writeJsonValue,
 } from "../output.js";
+import { loadWelcomeArtText } from "../art.js";
 import {
   formatNextStepLines,
   getFundingQuickstartGuidance,
@@ -196,6 +197,9 @@ export async function runWalletAdminCommand(
           ));
           return 0;
         }
+        writeLine(context.stdout, "");
+        writeLine(context.stdout, loadWelcomeArtText());
+        writeLine(context.stdout, "");
         writeLine(
           context.stdout,
           result.walletAction === "already-initialized"

@@ -1,4 +1,5 @@
 import type { CommandName, OutputMode, ParsedCliArgs, ProgressOutput } from "./types.js";
+import { isWalletMutationCommand } from "./mutation-command-groups.js";
 import {
   isJsonOutputSupportedCommand,
   isPreviewJsonOutputSupportedCommand,
@@ -11,6 +12,7 @@ Commands:
   status --output json    Emit the stable v1 machine-readable status envelope
   client unlock           Unlock password-protected local wallet secrets for a limited time
   client lock             Flush the cached client password unlock session
+  client change-password  Rotate the client password that protects local wallet secrets
   bitcoin start           Start the managed Bitcoin daemon
   bitcoin stop            Stop the managed Bitcoin daemon and paired indexer
   bitcoin status          Show managed Bitcoin daemon status without starting it
@@ -90,6 +92,7 @@ Options:
   --preimage <32-byte-hex>
                     Claim preimage for an active lock
   --review <text>   Optional public review text for reputation operations
+  --satvb <n>       Override the mutation fee rate in sat/vB
   --text <utf8>     UTF-8 payload text for endpoint or field writes
   --json <json>     UTF-8 payload JSON text for endpoint or field writes
   --bytes <spec>    Payload bytes as hex:<hex> or @<path>
@@ -128,6 +131,7 @@ Examples:
   cogcoin domain list --mineable
   cogcoin register alpha-child
   cogcoin anchor alpha
+  cogcoin register alpha --satvb 12.5
   cogcoin buy alpha
   cogcoin field set alpha bio --text "hello"
   cogcoin rep give alpha beta 10 --review "great operator"
@@ -275,6 +279,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   let untilHeight: string | null = null;
   let preimageHex: string | null = null;
   let reviewText: string | null = null;
+  let satvb: number | null = null;
   let locksClaimableOnly = false;
   let locksReclaimableOnly = false;
   let domainsAnchoredOnly = false;
@@ -510,6 +515,23 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
       continue;
     }
 
+    if (token === "--satvb") {
+      index += 1;
+      const value = argv[index] ?? null;
+
+      if (value === null || value.startsWith("--")) {
+        throw new Error("cli_missing_satvb");
+      }
+
+      satvb = Number(value);
+
+      if (!Number.isFinite(satvb) || satvb <= 0) {
+        throw new Error("cli_invalid_satvb");
+      }
+
+      continue;
+    }
+
     if (token === "--claimable") {
       locksClaimableOnly = true;
       continue;
@@ -673,6 +695,12 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
         if (subcommand === "lock") {
           command = "client-lock";
+          index += 1;
+          continue;
+        }
+
+        if (subcommand === "change-password") {
+          command = "client-change-password";
           index += 1;
           continue;
         }
@@ -1218,6 +1246,10 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_review_not_supported_for_command");
   }
 
+  if (satvb !== null && !isWalletMutationCommand(command)) {
+    throw new Error("cli_satvb_not_supported_for_command");
+  }
+
   if ((locksClaimableOnly || locksReclaimableOnly)
     && command !== "locks"
     && command !== "cog-locks") {
@@ -1314,6 +1346,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     untilHeight,
     preimageHex,
     reviewText,
+    satvb,
     locksClaimableOnly,
     locksReclaimableOnly,
     domainsAnchoredOnly,

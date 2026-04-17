@@ -36,20 +36,26 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  createBuiltWalletMutationFeeSummary,
   createFundingMutationSender,
+  createWalletMutationFeeMetadata,
   formatCogAmount,
   getDecodedInputScriptPubKeyHex,
   isLocalWalletScript,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
+  mergeFixedWalletInputs,
   outpointKey,
   pauseMiningForWalletMutation,
+  resolvePendingMutationReuseDecision,
+  resolveWalletMutationFeeSelection,
   saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
   type BuiltWalletMutationTransaction,
   type FixedWalletInput,
   type MutationSender,
+  type WalletMutationFeeSummary,
   type WalletMutationRpcClient,
 } from "./common.js";
 import {
@@ -118,6 +124,7 @@ export interface ReputationMutationResult {
   reusedExisting: boolean;
   reviewIncluded: boolean;
   resolved?: ReputationResolvedSummary | null;
+  fees: WalletMutationFeeSummary;
 }
 
 export interface ReputationResolvedSenderSummary {
@@ -148,6 +155,7 @@ interface ReputationBaseOptions {
   targetDomainName: string;
   amountCogtoshi: bigint;
   reviewText?: string | null;
+  feeRateSatVb?: number | null;
   dataDir: string;
   databasePath: string;
   provider?: WalletSecretProvider;
@@ -427,6 +435,7 @@ async function buildTransaction(options: {
   walletName: string;
   state: WalletStateV1;
   plan: ReputationPlan;
+  feeRateSatVb: number;
 }): Promise<BuiltReputationTransaction> {
   return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
@@ -436,6 +445,7 @@ async function buildTransaction(options: {
     validateFundedDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
+    feeRate: options.feeRateSatVb,
   });
 }
 
@@ -448,6 +458,10 @@ function createDraftMutation(options: {
   intentFingerprintHex: string;
   nowUnixMs: number;
   reviewPayloadHex: string | null;
+  feeSelection: {
+    feeRateSatVb: number;
+    source: "custom-satvb" | "estimated-next-block-plus-one" | "fallback-default";
+  };
   existing?: PendingMutationRecord | null;
 }): PendingMutationRecord {
   if (options.existing !== null && options.existing !== undefined) {
@@ -464,6 +478,7 @@ function createDraftMutation(options: {
       lastUpdatedAtUnixMs: options.nowUnixMs,
       attemptedTxid: null,
       attemptedWtxid: null,
+      ...createWalletMutationFeeMetadata(options.feeSelection),
       temporaryBuilderLockedOutpoints: [],
     };
   }
@@ -484,6 +499,7 @@ function createDraftMutation(options: {
     lastUpdatedAtUnixMs: options.nowUnixMs,
     attemptedTxid: null,
     attemptedWtxid: null,
+    ...createWalletMutationFeeMetadata(options.feeSelection),
     temporaryBuilderLockedOutpoints: [],
   };
 }
@@ -912,7 +928,13 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
       const walletName = operation.state.managedCoreWallet.walletName;
+      const feeSelection = await resolveWalletMutationFeeSelection({
+        rpc,
+        feeRateSatVb: options.feeRateSatVb ?? null,
+      });
       const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
+      let workingState = operation.state;
+      let replacementFixedInputs: FixedWalletInput[] | null = null;
 
       if (existingMutation !== null) {
         const reconciled = await reconcilePendingReputationMutation({
@@ -925,19 +947,32 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
           walletName,
           context: readContext,
         });
+        workingState = reconciled.state;
 
         if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          return {
-            kind: options.kind === "rep-give" ? "give" : "revoke",
-            sourceDomainName: normalizedSourceDomainName,
-            targetDomainName: normalizedTargetDomainName,
-            amountCogtoshi: options.amountCogtoshi,
-            txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            status: reconciled.resolution,
-            reusedExisting: true,
-            reviewIncluded: review.payloadHex !== null,
-            resolved,
-          };
+          const reuse = await resolvePendingMutationReuseDecision({
+            rpc,
+            walletName,
+            mutation: reconciled.mutation,
+            nextFeeSelection: feeSelection,
+          });
+
+          if (reuse.reuseExisting) {
+            return {
+              kind: options.kind === "rep-give" ? "give" : "revoke",
+              sourceDomainName: normalizedSourceDomainName,
+              targetDomainName: normalizedTargetDomainName,
+              amountCogtoshi: options.amountCogtoshi,
+              txid: reconciled.mutation.attemptedTxid ?? "unknown",
+              status: reconciled.resolution,
+              reusedExisting: true,
+              reviewIncluded: review.payloadHex !== null,
+              resolved,
+              fees: reuse.fees,
+            };
+          }
+
+          replacementFixedInputs = reuse.replacementFixedInputs;
         }
 
         if (reconciled.resolution === "repair-required") {
@@ -956,7 +991,7 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
       });
 
       let nextState = upsertPendingMutation(
-        operation.state,
+        workingState,
         createDraftMutation({
           kind: options.kind,
           sourceDomainName: normalizedSourceDomainName,
@@ -966,6 +1001,7 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
           intentFingerprintHex,
           nowUnixMs,
           reviewPayloadHex: review.payloadHex,
+          feeSelection,
           existing: existingMutation,
         }),
       );
@@ -989,18 +1025,23 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
           options.amountCogtoshi,
           review.payload,
         ).opReturnData;
+      const reputationPlan = buildPlanForReputationOperation({
+        state: nextState,
+        allUtxos: await rpc.listUnspent(walletName, 1),
+        sender: operation.sender,
+        anchorOutpoint: operation.anchorOutpoint,
+        opReturnData,
+        errorPrefix: options.errorPrefix,
+      });
       const built = await buildTransaction({
         rpc,
         walletName,
         state: nextState,
-        plan: buildPlanForReputationOperation({
-          state: nextState,
-          allUtxos: await rpc.listUnspent(walletName, 1),
-          sender: operation.sender,
-          anchorOutpoint: operation.anchorOutpoint,
-          opReturnData,
-          errorPrefix: options.errorPrefix,
-        }),
+        plan: {
+          ...reputationPlan,
+          fixedInputs: mergeFixedWalletInputs(reputationPlan.fixedInputs, replacementFixedInputs),
+        },
+        feeRateSatVb: feeSelection.feeRateSatVb,
       });
 
       const final = await sendBuiltTransaction({
@@ -1026,6 +1067,10 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
         reusedExisting: false,
         reviewIncluded: review.payloadHex !== null,
         resolved,
+        fees: createBuiltWalletMutationFeeSummary({
+          selection: feeSelection,
+          built,
+        }),
       };
     } finally {
       await readContext.close();

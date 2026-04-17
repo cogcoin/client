@@ -72,6 +72,7 @@ export type CommandName =
   | "sync"
   | "status"
   | "client-lock"
+  | "client-change-password"
   | "client-unlock"
   | "follow"
   | "bitcoin-start"
@@ -180,6 +181,7 @@ export interface ParsedCliArgs {
   untilHeight: string | null;
   preimageHex: string | null;
   reviewText: string | null;
+  satvb: number | null;
   locksClaimableOnly: boolean;
   locksReclaimableOnly: boolean;
   domainsAnchoredOnly: boolean;

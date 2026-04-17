@@ -375,6 +375,12 @@ export interface RpcMempoolEntry {
   descendantsize?: number;
 }
 
+export interface RpcEstimateSmartFeeResult {
+  feerate?: number;
+  errors?: string[];
+  blocks?: number;
+}
+
 export interface RpcRawMempoolVerbose {
   txids: string[];
   mempool_sequence: string | number;

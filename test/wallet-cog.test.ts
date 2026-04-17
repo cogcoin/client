@@ -30,6 +30,11 @@ test("COG mutation JSON stays single-tx in the one-address model", () => {
     reusedExisting: false,
     amountCogtoshi: 123n,
     recipientScriptPubKeyHex: "0014" + "22".repeat(20),
+    fees: {
+      feeRateSatVb: 8,
+      feeSats: "180",
+      source: "fallback-default",
+    },
     resolved: {
       sender,
       claimPath: "recipient-claim",

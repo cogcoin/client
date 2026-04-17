@@ -3,6 +3,10 @@ export {
   registerDomain,
   type RegisterDomainResult,
 } from "./register.js";
+export type {
+  WalletMutationFeeSelectionSource,
+  WalletMutationFeeSummary,
+} from "./common.js";
 export {
   buyDomain,
   parseCogAmountToCogtoshi,

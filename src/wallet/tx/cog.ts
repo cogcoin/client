@@ -32,20 +32,26 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  createBuiltWalletMutationFeeSummary,
   createFundingMutationSender,
+  createWalletMutationFeeMetadata,
   formatCogAmount,
   getDecodedInputScriptPubKeyHex,
   isLocalWalletScript,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
+  mergeFixedWalletInputs,
   outpointKey,
   pauseMiningForWalletMutation,
+  resolvePendingMutationReuseDecision,
+  resolveWalletMutationFeeSelection,
   saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
   type BuiltWalletMutationTransaction,
   type FixedWalletInput,
   type MutationSender,
+  type WalletMutationFeeSummary,
   type WalletMutationRpcClient,
 } from "./common.js";
 import { confirmTypedAcknowledgement, confirmYesNo } from "./confirm.js";
@@ -107,12 +113,14 @@ export interface CogMutationResult {
   recipientDomainName?: string | null;
   lockId?: number | null;
   resolved: CogResolvedSummary;
+  fees: WalletMutationFeeSummary;
 }
 
 export interface SendCogOptions {
   amountCogtoshi: bigint;
   target: string;
   fromIdentity?: string | null;
+  feeRateSatVb?: number | null;
   dataDir: string;
   databasePath: string;
   provider?: WalletSecretProvider;
@@ -129,6 +137,7 @@ export interface LockCogToDomainOptions {
   amountCogtoshi: bigint;
   recipientDomainName: string;
   fromIdentity?: string | null;
+  feeRateSatVb?: number | null;
   timeoutHeight?: number | null;
   timeoutBlocksOrDuration?: string | null;
   conditionHex: string;
@@ -147,6 +156,7 @@ export interface LockCogToDomainOptions {
 export interface ClaimCogLockOptions {
   lockId: number;
   preimageHex: string;
+  feeRateSatVb?: number | null;
   dataDir: string;
   databasePath: string;
   provider?: WalletSecretProvider;
@@ -555,6 +565,7 @@ async function buildTransaction(options: {
   walletName: string;
   state: WalletStateV1;
   plan: CogMutationPlan;
+  feeRateSatVb: number;
 }): Promise<BuiltCogMutationTransaction> {
   return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
@@ -564,6 +575,7 @@ async function buildTransaction(options: {
     validateFundedDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
+    feeRate: options.feeRateSatVb,
   });
 }
 
@@ -572,6 +584,10 @@ function createDraftMutation(options: {
   sender: MutationSender;
   intentFingerprintHex: string;
   nowUnixMs: number;
+  feeSelection: {
+    feeRateSatVb: number;
+    source: "custom-satvb" | "estimated-next-block-plus-one" | "fallback-default";
+  };
   domainName?: string | null;
   recipientScriptPubKeyHex?: string | null;
   recipientDomainName?: string | null;
@@ -600,6 +616,7 @@ function createDraftMutation(options: {
       lastUpdatedAtUnixMs: options.nowUnixMs,
       attemptedTxid: null,
       attemptedWtxid: null,
+      ...createWalletMutationFeeMetadata(options.feeSelection),
       temporaryBuilderLockedOutpoints: [],
     };
   }
@@ -624,6 +641,7 @@ function createDraftMutation(options: {
     lastUpdatedAtUnixMs: options.nowUnixMs,
     attemptedTxid: null,
     attemptedWtxid: null,
+    ...createWalletMutationFeeMetadata(options.feeSelection),
     temporaryBuilderLockedOutpoints: [],
   };
 }
@@ -940,7 +958,13 @@ export async function sendCog(options: SendCogOptions): Promise<CogMutationResul
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
       const walletName = operation.state.managedCoreWallet.walletName;
+      const feeSelection = await resolveWalletMutationFeeSelection({
+        rpc,
+        feeRateSatVb: options.feeRateSatVb ?? null,
+      });
       const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
+      let workingState = operation.state;
+      let replacementFixedInputs: FixedWalletInput[] | null = null;
 
       if (existingMutation !== null) {
         const reconciled = await reconcilePendingCogMutation({
@@ -953,17 +977,30 @@ export async function sendCog(options: SendCogOptions): Promise<CogMutationResul
           walletName,
           context: readContext,
         });
+        workingState = reconciled.state;
 
         if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          return {
-            kind: "send",
-            txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            status: reconciled.resolution,
-            reusedExisting: true,
-            amountCogtoshi,
-            recipientScriptPubKeyHex: recipient.scriptPubKeyHex,
-            resolved: operation.resolved,
-          };
+          const reuse = await resolvePendingMutationReuseDecision({
+            rpc,
+            walletName,
+            mutation: reconciled.mutation,
+            nextFeeSelection: feeSelection,
+          });
+
+          if (reuse.reuseExisting) {
+            return {
+              kind: "send",
+              txid: reconciled.mutation.attemptedTxid ?? "unknown",
+              status: reconciled.resolution,
+              reusedExisting: true,
+              amountCogtoshi,
+              recipientScriptPubKeyHex: recipient.scriptPubKeyHex,
+              resolved: operation.resolved,
+              fees: reuse.fees,
+            };
+          }
+
+          replacementFixedInputs = reuse.replacementFixedInputs;
         }
 
         if (reconciled.resolution === "repair-required") {
@@ -974,7 +1011,7 @@ export async function sendCog(options: SendCogOptions): Promise<CogMutationResul
       await confirmSend(options.prompter, operation.resolved, options.target, recipient, amountCogtoshi, options.assumeYes);
 
       let nextState = upsertPendingMutation(
-        operation.state,
+        workingState,
         createDraftMutation({
           kind: "send",
           sender: operation.sender,
@@ -982,6 +1019,7 @@ export async function sendCog(options: SendCogOptions): Promise<CogMutationResul
           amountCogtoshi,
           intentFingerprintHex,
           nowUnixMs,
+          feeSelection,
           existing: existingMutation,
         }),
       );
@@ -997,19 +1035,24 @@ export async function sendCog(options: SendCogOptions): Promise<CogMutationResul
         paths,
       });
 
+      const sendPlan = buildPlanForCogOperation({
+        state: nextState,
+        allUtxos: await rpc.listUnspent(walletName, 1),
+        sender: operation.sender,
+        anchorOutpoint: operation.anchorOutpoint,
+        opReturnData: serializeCogTransfer(amountCogtoshi, Buffer.from(recipient.scriptPubKeyHex, "hex")).opReturnData,
+        anchorValueSats: BigInt(nextState.anchorValueSats),
+        errorPrefix: "wallet_send",
+      });
       const built = await buildTransaction({
         rpc,
         walletName,
         state: nextState,
-        plan: buildPlanForCogOperation({
-          state: nextState,
-          allUtxos: await rpc.listUnspent(walletName, 1),
-          sender: operation.sender,
-          anchorOutpoint: operation.anchorOutpoint,
-          opReturnData: serializeCogTransfer(amountCogtoshi, Buffer.from(recipient.scriptPubKeyHex, "hex")).opReturnData,
-          anchorValueSats: BigInt(nextState.anchorValueSats),
-          errorPrefix: "wallet_send",
-        }),
+        plan: {
+          ...sendPlan,
+          fixedInputs: mergeFixedWalletInputs(sendPlan.fixedInputs, replacementFixedInputs),
+        },
+        feeRateSatVb: feeSelection.feeRateSatVb,
       });
 
       const final = await sendBuiltTransaction({
@@ -1033,6 +1076,10 @@ export async function sendCog(options: SendCogOptions): Promise<CogMutationResul
         amountCogtoshi,
         recipientScriptPubKeyHex: recipient.scriptPubKeyHex,
         resolved: operation.resolved,
+        fees: createBuiltWalletMutationFeeSummary({
+          selection: feeSelection,
+          built,
+        }),
       };
     } finally {
       await readContext.close();
@@ -1112,7 +1159,13 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
       const walletName = operation.state.managedCoreWallet.walletName;
+      const feeSelection = await resolveWalletMutationFeeSelection({
+        rpc,
+        feeRateSatVb: options.feeRateSatVb ?? null,
+      });
       const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
+      let workingState = operation.state;
+      let replacementFixedInputs: FixedWalletInput[] | null = null;
 
       if (existingMutation !== null) {
         const reconciled = await reconcilePendingCogMutation({
@@ -1125,17 +1178,30 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
           walletName,
           context: readContext,
         });
+        workingState = reconciled.state;
 
         if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          return {
-            kind: "lock",
-            txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            status: reconciled.resolution,
-            reusedExisting: true,
-            amountCogtoshi,
-            recipientDomainName: normalizedRecipientDomainName,
-            resolved: operation.resolved,
-          };
+          const reuse = await resolvePendingMutationReuseDecision({
+            rpc,
+            walletName,
+            mutation: reconciled.mutation,
+            nextFeeSelection: feeSelection,
+          });
+
+          if (reuse.reuseExisting) {
+            return {
+              kind: "lock",
+              txid: reconciled.mutation.attemptedTxid ?? "unknown",
+              status: reconciled.resolution,
+              reusedExisting: true,
+              amountCogtoshi,
+              recipientDomainName: normalizedRecipientDomainName,
+              resolved: operation.resolved,
+              fees: reuse.fees,
+            };
+          }
+
+          replacementFixedInputs = reuse.replacementFixedInputs;
         }
 
         if (reconciled.resolution === "repair-required") {
@@ -1153,7 +1219,7 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
       );
 
       let nextState = upsertPendingMutation(
-        operation.state,
+        workingState,
         createDraftMutation({
           kind: "lock",
           sender: operation.sender,
@@ -1163,6 +1229,7 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
           conditionHex: Buffer.from(condition).toString("hex"),
           intentFingerprintHex,
           nowUnixMs,
+          feeSelection,
           existing: existingMutation,
         }),
       );
@@ -1178,24 +1245,29 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
         paths,
       });
 
+      const lockPlan = buildPlanForCogOperation({
+        state: nextState,
+        allUtxos: await rpc.listUnspent(walletName, 1),
+        sender: operation.sender,
+        anchorOutpoint: operation.anchorOutpoint,
+        opReturnData: serializeCogLock(
+          amountCogtoshi,
+          timeoutHeight,
+          recipientDomain.domainId,
+          condition,
+        ).opReturnData,
+        anchorValueSats: BigInt(nextState.anchorValueSats),
+        errorPrefix: "wallet_lock",
+      });
       const built = await buildTransaction({
         rpc,
         walletName,
         state: nextState,
-        plan: buildPlanForCogOperation({
-          state: nextState,
-          allUtxos: await rpc.listUnspent(walletName, 1),
-          sender: operation.sender,
-          anchorOutpoint: operation.anchorOutpoint,
-          opReturnData: serializeCogLock(
-            amountCogtoshi,
-            timeoutHeight,
-            recipientDomain.domainId,
-            condition,
-          ).opReturnData,
-          anchorValueSats: BigInt(nextState.anchorValueSats),
-          errorPrefix: "wallet_lock",
-        }),
+        plan: {
+          ...lockPlan,
+          fixedInputs: mergeFixedWalletInputs(lockPlan.fixedInputs, replacementFixedInputs),
+        },
+        feeRateSatVb: feeSelection.feeRateSatVb,
       });
 
       const final = await sendBuiltTransaction({
@@ -1219,6 +1291,10 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
         amountCogtoshi,
         recipientDomainName: normalizedRecipientDomainName,
         resolved: operation.resolved,
+        fees: createBuiltWalletMutationFeeSummary({
+          selection: feeSelection,
+          built,
+        }),
       };
     } finally {
       await readContext.close();
@@ -1273,7 +1349,13 @@ async function runClaimLikeMutation(
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
       const walletName = operation.state.managedCoreWallet.walletName;
+      const feeSelection = await resolveWalletMutationFeeSelection({
+        rpc,
+        feeRateSatVb: options.feeRateSatVb ?? null,
+      });
       const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
+      let workingState = operation.state;
+      let replacementFixedInputs: FixedWalletInput[] | null = null;
 
       if (existingMutation !== null) {
         const reconciled = await reconcilePendingCogMutation({
@@ -1286,18 +1368,31 @@ async function runClaimLikeMutation(
           walletName,
           context: readContext,
         });
+        workingState = reconciled.state;
 
         if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          return {
-            kind: "claim",
-            txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            status: reconciled.resolution,
-            reusedExisting: true,
-            amountCogtoshi: operation.amountCogtoshi,
-            recipientDomainName: operation.recipientDomainName,
-            lockId: options.lockId,
-            resolved: operation.resolved,
-          };
+          const reuse = await resolvePendingMutationReuseDecision({
+            rpc,
+            walletName,
+            mutation: reconciled.mutation,
+            nextFeeSelection: feeSelection,
+          });
+
+          if (reuse.reuseExisting) {
+            return {
+              kind: "claim",
+              txid: reconciled.mutation.attemptedTxid ?? "unknown",
+              status: reconciled.resolution,
+              reusedExisting: true,
+              amountCogtoshi: operation.amountCogtoshi,
+              recipientDomainName: operation.recipientDomainName,
+              lockId: options.lockId,
+              resolved: operation.resolved,
+              fees: reuse.fees,
+            };
+          }
+
+          replacementFixedInputs = reuse.replacementFixedInputs;
         }
 
         if (reconciled.resolution === "repair-required") {
@@ -1315,7 +1410,7 @@ async function runClaimLikeMutation(
       });
 
       let nextState = upsertPendingMutation(
-        operation.state,
+        workingState,
         createDraftMutation({
           kind: "claim",
           sender: operation.sender,
@@ -1325,6 +1420,7 @@ async function runClaimLikeMutation(
           preimageHex,
           intentFingerprintHex,
           nowUnixMs,
+          feeSelection,
           existing: existingMutation,
         }),
       );
@@ -1340,19 +1436,24 @@ async function runClaimLikeMutation(
         paths,
       });
 
+      const claimPlan = buildPlanForCogOperation({
+        state: nextState,
+        allUtxos: await rpc.listUnspent(walletName, 1),
+        sender: operation.sender,
+        anchorOutpoint: operation.anchorOutpoint,
+        opReturnData: serializeCogClaim(options.lockId, Buffer.from(preimageHex, "hex")).opReturnData,
+        anchorValueSats: BigInt(nextState.anchorValueSats),
+        errorPrefix,
+      });
       const built = await buildTransaction({
         rpc,
         walletName,
         state: nextState,
-        plan: buildPlanForCogOperation({
-          state: nextState,
-          allUtxos: await rpc.listUnspent(walletName, 1),
-          sender: operation.sender,
-          anchorOutpoint: operation.anchorOutpoint,
-          opReturnData: serializeCogClaim(options.lockId, Buffer.from(preimageHex, "hex")).opReturnData,
-          anchorValueSats: BigInt(nextState.anchorValueSats),
-          errorPrefix,
-        }),
+        plan: {
+          ...claimPlan,
+          fixedInputs: mergeFixedWalletInputs(claimPlan.fixedInputs, replacementFixedInputs),
+        },
+        feeRateSatVb: feeSelection.feeRateSatVb,
       });
 
       const final = await sendBuiltTransaction({
@@ -1377,6 +1478,10 @@ async function runClaimLikeMutation(
         recipientDomainName: operation.recipientDomainName,
         lockId: options.lockId,
         resolved: operation.resolved,
+        fees: createBuiltWalletMutationFeeSummary({
+          selection: feeSelection,
+          built,
+        }),
       };
     } finally {
       await readContext.close();

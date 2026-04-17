@@ -62,6 +62,8 @@ export interface PendingMutationRecord {
   lastUpdatedAtUnixMs: number;
   attemptedTxid: string | null;
   attemptedWtxid: string | null;
+  selectedFeeRateSatVb?: number | null;
+  feeSelectionSource?: "custom-satvb" | "estimated-next-block-plus-one" | "fallback-default" | null;
   temporaryBuilderLockedOutpoints: OutpointRecord[];
 }
 

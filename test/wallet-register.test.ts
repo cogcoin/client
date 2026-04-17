@@ -11,6 +11,11 @@ test("register mutation JSON stays single-tx", () => {
     txid: "aa".repeat(32),
     status: "live",
     reusedExisting: false,
+    fees: {
+      feeRateSatVb: 11,
+      feeSats: "200",
+      source: "estimated-next-block-plus-one",
+    },
     resolved: {
       sender: {
         selector: "wallet",

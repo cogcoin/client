@@ -7,8 +7,11 @@ import { formatCliTextError } from "../src/cli/output.js";
 test("help text reflects the one-address model", () => {
   assert.match(HELP_TEXT, /anchor <domain>\s+Anchor an owned unanchored domain with the wallet address/);
   assert.match(HELP_TEXT, /balance\s+Show local wallet COG balances/);
+  assert.match(HELP_TEXT, /--satvb <n>\s+Override the mutation fee rate in sat\/vB/);
+  assert.match(HELP_TEXT, /cogcoin register alpha --satvb 12\.5/);
   assert.match(HELP_TEXT, /client unlock\s+Unlock password-protected local wallet secrets/i);
   assert.match(HELP_TEXT, /client lock\s+Flush the cached client password unlock session/i);
+  assert.match(HELP_TEXT, /client change-password\s+Rotate the client password that protects local wallet secrets/i);
   assert.doesNotMatch(HELP_TEXT, /--from/);
   assert.doesNotMatch(HELP_TEXT, /per-identity/);
   assert.doesNotMatch(HELP_TEXT, /wallet export <path>/);
@@ -46,9 +49,43 @@ test("parser rejects removed selector-based commands", () => {
   );
 });
 
-test("parser accepts client lock and client unlock", () => {
+test("parser accepts client lock, unlock, and change-password", () => {
   assert.equal(parseCliArgs(["client", "unlock"]).command, "client-unlock");
   assert.equal(parseCliArgs(["client", "lock"]).command, "client-lock");
+  assert.equal(parseCliArgs(["client", "change-password"]).command, "client-change-password");
+});
+
+test("parser accepts --satvb for wallet mutation commands", () => {
+  const parsed = parseCliArgs(["register", "alpha", "--satvb", "12.5"]);
+
+  assert.equal(parsed.command, "register");
+  assert.equal(parsed.satvb, 12.5);
+});
+
+test("parser rejects invalid --satvb values", () => {
+  assert.throws(
+    () => parseCliArgs(["register", "alpha", "--satvb"]),
+    /cli_missing_satvb/,
+  );
+  assert.throws(
+    () => parseCliArgs(["register", "alpha", "--satvb", "0"]),
+    /cli_invalid_satvb/,
+  );
+  assert.throws(
+    () => parseCliArgs(["register", "alpha", "--satvb", "-1"]),
+    /cli_invalid_satvb/,
+  );
+  assert.throws(
+    () => parseCliArgs(["register", "alpha", "--satvb", "nope"]),
+    /cli_invalid_satvb/,
+  );
+});
+
+test("parser rejects --satvb for non-mutation commands", () => {
+  assert.throws(
+    () => parseCliArgs(["status", "--satvb", "12.5"]),
+    /cli_satvb_not_supported_for_command/,
+  );
 });
 
 test("CLI error text uses wallet-address wording", () => {
@@ -104,11 +141,14 @@ test("CLI error text explains unsupported legacy wallet state", () => {
 test("CLI error text explains client password setup and lock guidance", () => {
   const setup = (formatCliTextError(new Error("wallet_client_password_setup_required")) ?? []).join("\n");
   const locked = (formatCliTextError(new Error("wallet_client_password_locked")) ?? []).join("\n");
+  const changeRequiresTty = (formatCliTextError(new Error("wallet_client_password_change_requires_tty")) ?? []).join("\n");
 
   assert.match(setup, /client password setup/i);
   assert.match(setup, /cogcoin init/i);
   assert.match(locked, /client password is locked/i);
   assert.match(locked, /client unlock/i);
+  assert.match(changeRequiresTty, /interactive terminal/i);
+  assert.match(changeRequiresTty, /client change-password/i);
 });
 
 test("CLI error text describes Linux local-file secret failures", () => {
@@ -117,4 +157,16 @@ test("CLI error text describes Linux local-file secret failures", () => {
 
   assert.match(rendered, /Linux local wallet-secret access failed/);
   assert.match(rendered, /state directory/i);
+});
+
+test("CLI error text explains sat/vB parsing and command support", () => {
+  const missing = (formatCliTextError(new Error("cli_missing_satvb")) ?? []).join("\n");
+  const invalid = (formatCliTextError(new Error("cli_invalid_satvb")) ?? []).join("\n");
+  const unsupported = (formatCliTextError(new Error("cli_satvb_not_supported_for_command")) ?? []).join("\n");
+
+  assert.match(missing, /--satvb/);
+  assert.match(missing, /sat\/vB/i);
+  assert.match(invalid, /positive finite decimal number/i);
+  assert.match(unsupported, /does not support `--satvb`/i);
+  assert.match(unsupported, /register|send/i);
 });

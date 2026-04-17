@@ -13,11 +13,21 @@ test("single-tx preview data uses the simplified envelope", () => {
     localStatus: "live",
     txid: "aa".repeat(32),
     reusedExisting: false,
+    fees: {
+      feeRateSatVb: 12.5,
+      feeSats: "321",
+      source: "custom-satvb",
+    },
     intent: { domainName: "alpha" },
   });
 
   assert.equal(data.resultType, "single-tx-mutation");
   assert.deepEqual(data.transaction, { txid: "aa".repeat(32), wtxid: null });
+  assert.deepEqual(data.fees, {
+    feeRateSatVb: 12.5,
+    feeSats: "321",
+    source: "custom-satvb",
+  });
 });
 
 test("anchor preview data is single-tx only", () => {
@@ -28,6 +38,11 @@ test("anchor preview data is single-tx only", () => {
       status: "confirmed",
       reusedExisting: false,
       foundingMessageText: "hello",
+      fees: {
+        feeRateSatVb: 9,
+        feeSats: null,
+        source: "fallback-default",
+      },
     },
     { foundingMessageText: "hello" },
   );
@@ -49,6 +64,11 @@ test("field-create preview data is single-tx and empty-create only", () => {
     format: null,
     status: "live",
     reusedExisting: false,
+    fees: {
+      feeRateSatVb: 14,
+      feeSats: "456",
+      source: "estimated-next-block-plus-one",
+    },
     resolved: {
       sender: {
         selector: "wallet",

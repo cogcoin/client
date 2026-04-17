@@ -13,6 +13,7 @@ import {
   lockClientPasswordSession,
   readClientPasswordSessionStatus,
   storeClientProtectedSecret,
+  changeClientPassword as changeClientPasswordWithLocalFile,
   type ClientPasswordPrompt,
   type ClientPasswordReadiness,
   type ClientPasswordSessionStatus,
@@ -42,6 +43,7 @@ export interface WalletSecretProvider {
   withPrompter?(prompter: ClientPasswordPrompt): WalletSecretProvider;
   inspectClientPasswordReadiness?(): Promise<ClientPasswordReadiness>;
   ensureClientPasswordConfigured?(prompter: ClientPasswordPrompt): Promise<ClientPasswordSetupAction>;
+  changeClientPassword?(prompter: ClientPasswordPrompt): Promise<ClientPasswordSessionStatus>;
   unlockClientPasswordSession?(prompter: ClientPasswordPrompt): Promise<ClientPasswordSessionStatus>;
   lockClientPasswordSession?(): Promise<ClientPasswordSessionStatus>;
   readClientPasswordSessionStatus?(): Promise<ClientPasswordSessionStatus>;
@@ -124,6 +126,13 @@ export class MemoryWalletSecretProvider implements WalletSecretProvider {
   }
 
   async unlockClientPasswordSession(_prompter: ClientPasswordPrompt): Promise<ClientPasswordSessionStatus> {
+    return {
+      unlocked: true,
+      unlockUntilUnixMs: null,
+    };
+  }
+
+  async changeClientPassword(_prompter: ClientPasswordPrompt): Promise<ClientPasswordSessionStatus> {
     return {
       unlocked: true,
       unlockUntilUnixMs: null,
@@ -305,6 +314,18 @@ class LocalFileWalletSecretProvider implements WalletSecretProvider {
     });
   }
 
+  async changeClientPassword(prompter: ClientPasswordPrompt): Promise<ClientPasswordSessionStatus> {
+    return await changeClientPasswordWithLocalFile({
+      platform: this.#platform,
+      stateRoot: this.#stateRoot,
+      runtimeRoot: this.#runtimeRoot,
+      directoryPath: this.#directoryPath,
+      runtimeErrorCode: this.#runtimeErrorCode,
+      legacyMacKeychainReader: this.#legacyMacKeychainReader,
+      prompt: prompter,
+    });
+  }
+
   async lockClientPasswordSession(): Promise<ClientPasswordSessionStatus> {
     return await lockClientPasswordSession({
       platform: this.#platform,
@@ -415,6 +436,12 @@ export function createLazyDefaultWalletSecretProvider(): WalletSecretProvider {
         unlockUntilUnixMs: null,
       };
     },
+    async changeClientPassword(prompter: ClientPasswordPrompt): Promise<ClientPasswordSessionStatus> {
+      return await getResolved().changeClientPassword?.(prompter) ?? {
+        unlocked: true,
+        unlockUntilUnixMs: null,
+      };
+    },
     async lockClientPasswordSession(): Promise<ClientPasswordSessionStatus> {
       return await getResolved().lockClientPasswordSession?.() ?? {
         unlocked: false,
@@ -459,6 +486,16 @@ export async function unlockClientPassword(
   prompter: ClientPasswordPrompt,
 ): Promise<ClientPasswordSessionStatus> {
   return await provider.unlockClientPasswordSession?.(prompter) ?? {
+    unlocked: true,
+    unlockUntilUnixMs: null,
+  };
+}
+
+export async function changeClientPassword(
+  provider: WalletSecretProvider,
+  prompter: ClientPasswordPrompt,
+): Promise<ClientPasswordSessionStatus> {
+  return await provider.changeClientPassword?.(prompter) ?? {
     unlocked: true,
     unlockUntilUnixMs: null,
   };

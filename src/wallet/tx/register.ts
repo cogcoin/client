@@ -36,20 +36,26 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  createBuiltWalletMutationFeeSummary,
   createFundingMutationSender,
+  createWalletMutationFeeMetadata,
   formatCogAmount,
   getDecodedInputScriptPubKeyHex,
   isLocalWalletScript,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
+  mergeFixedWalletInputs,
   outpointKey,
   pauseMiningForWalletMutation,
+  resolvePendingMutationReuseDecision,
+  resolveWalletMutationFeeSelection,
   saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
   type BuiltWalletMutationTransaction,
   type FixedWalletInput,
   type MutationSender,
+  type WalletMutationFeeSummary,
   type WalletMutationRpcClient,
 } from "./common.js";
 import { confirmTypedAcknowledgement, confirmYesNo } from "./confirm.js";
@@ -132,11 +138,13 @@ export interface RegisterDomainResult {
   txid: string;
   status: "live" | "confirmed";
   reusedExisting: boolean;
+  fees: WalletMutationFeeSummary;
 }
 
 export interface RegisterDomainOptions {
   domainName: string;
   fromIdentity?: string | null;
+  feeRateSatVb?: number | null;
   dataDir: string;
   databasePath: string;
   forceRace?: boolean;
@@ -570,6 +578,10 @@ function createDraftMutation(options: {
   registerKind: "root" | "subdomain";
   intentFingerprintHex: string;
   nowUnixMs: number;
+  feeSelection: {
+    feeRateSatVb: number;
+    source: "custom-satvb" | "estimated-next-block-plus-one" | "fallback-default";
+  };
   existing?: PendingMutationRecord | null;
 }): PendingMutationRecord {
   if (options.existing !== null && options.existing !== undefined) {
@@ -583,6 +595,7 @@ function createDraftMutation(options: {
       lastUpdatedAtUnixMs: options.nowUnixMs,
       attemptedTxid: null,
       attemptedWtxid: null,
+      ...createWalletMutationFeeMetadata(options.feeSelection),
       temporaryBuilderLockedOutpoints: [],
     };
   }
@@ -601,6 +614,7 @@ function createDraftMutation(options: {
     lastUpdatedAtUnixMs: options.nowUnixMs,
     attemptedTxid: null,
     attemptedWtxid: null,
+    ...createWalletMutationFeeMetadata(options.feeSelection),
     temporaryBuilderLockedOutpoints: [],
   };
 }
@@ -786,6 +800,7 @@ async function buildRegisterTransaction(options: {
   walletName: string;
   state: WalletStateV1;
   plan: RegisterTransactionPlan;
+  feeRateSatVb: number;
 }): Promise<BuiltRegisterTransaction> {
   return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
@@ -795,6 +810,7 @@ async function buildRegisterTransaction(options: {
     validateFundedDraft,
     finalizeErrorCode: "wallet_register_finalize_failed",
     mempoolRejectPrefix: "wallet_register_mempool_rejected",
+    feeRate: options.feeRateSatVb,
   });
 }
 
@@ -985,7 +1001,13 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
       const walletName = state.managedCoreWallet.walletName;
+      const feeSelection = await resolveWalletMutationFeeSelection({
+        rpc,
+        feeRateSatVb: options.feeRateSatVb ?? null,
+      });
       const existingMutation = findPendingMutationByIntent(state, intentFingerprintHex);
+      let workingState = state;
+      let replacementFixedInputs: FixedWalletInput[] | null = null;
 
       if (existingMutation !== null) {
         const reconciled = await reconcilePendingRegisterMutation({
@@ -999,23 +1021,36 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
           context: readContext,
           sender: senderResolution.sender,
         });
+        workingState = reconciled.state;
 
         if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          return {
-            domainName: normalizedDomainName,
-            registerKind: senderResolution.registerKind,
-            parentDomainName: senderResolution.parentDomainName,
-            senderSelector: senderResolution.senderSelector,
-            senderLocalIndex: senderResolution.sender.localIndex,
-            senderScriptPubKeyHex: senderResolution.sender.scriptPubKeyHex,
-            senderAddress: senderResolution.sender.address,
-            economicEffectKind: senderResolution.registerKind === "root" ? "treasury-payment" : "cog-burn",
-            economicEffectAmount: senderResolution.registerKind === "root" ? rootPriceSats : SUBDOMAIN_REGISTRATION_FEE_COGTOSHI,
-            resolved: resolvedSummary,
-            txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            status: reconciled.resolution,
-            reusedExisting: true,
-          };
+          const reuse = await resolvePendingMutationReuseDecision({
+            rpc,
+            walletName,
+            mutation: reconciled.mutation,
+            nextFeeSelection: feeSelection,
+          });
+
+          if (reuse.reuseExisting) {
+            return {
+              domainName: normalizedDomainName,
+              registerKind: senderResolution.registerKind,
+              parentDomainName: senderResolution.parentDomainName,
+              senderSelector: senderResolution.senderSelector,
+              senderLocalIndex: senderResolution.sender.localIndex,
+              senderScriptPubKeyHex: senderResolution.sender.scriptPubKeyHex,
+              senderAddress: senderResolution.sender.address,
+              economicEffectKind: senderResolution.registerKind === "root" ? "treasury-payment" : "cog-burn",
+              economicEffectAmount: senderResolution.registerKind === "root" ? rootPriceSats : SUBDOMAIN_REGISTRATION_FEE_COGTOSHI,
+              resolved: resolvedSummary,
+              txid: reconciled.mutation.attemptedTxid ?? "unknown",
+              status: reconciled.resolution,
+              reusedExisting: true,
+              fees: reuse.fees,
+            };
+          }
+
+          replacementFixedInputs = reuse.replacementFixedInputs;
         }
 
         if (reconciled.resolution === "repair-required") {
@@ -1058,7 +1093,7 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
       }
 
       let nextState = upsertPendingMutation(
-        state,
+        workingState,
         createDraftMutation({
           domainName: normalizedDomainName,
           parentDomainName: senderResolution.parentDomainName,
@@ -1066,6 +1101,7 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
           registerKind: senderResolution.registerKind,
           intentFingerprintHex,
           nowUnixMs,
+          feeSelection,
           existing: existingMutation,
         }),
       );
@@ -1100,7 +1136,11 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
         rpc,
         walletName,
         state: nextState,
-        plan,
+        plan: {
+          ...plan,
+          fixedInputs: mergeFixedWalletInputs(plan.fixedInputs, replacementFixedInputs),
+        },
+        feeRateSatVb: feeSelection.feeRateSatVb,
       });
 
       const currentMutation = nextState.pendingMutations?.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)
@@ -1111,6 +1151,7 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
           registerKind: senderResolution.registerKind,
           intentFingerprintHex,
           nowUnixMs,
+          feeSelection,
         });
       const broadcastingMutation = updateMutationRecord(
         currentMutation,
@@ -1235,6 +1276,10 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
         txid: built.txid,
         status: finalStatus,
         reusedExisting: false,
+        fees: createBuiltWalletMutationFeeSummary({
+          selection: feeSelection,
+          built,
+        }),
       };
     } finally {
       await readContext.close();

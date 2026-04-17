@@ -43,16 +43,22 @@ import {
 import {
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  createBuiltWalletMutationFeeSummary,
+  createWalletMutationFeeMetadata,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
+  mergeFixedWalletInputs,
   outpointKey,
   pauseMiningForWalletMutation,
+  resolvePendingMutationReuseDecision,
+  resolveWalletMutationFeeSelection,
   saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
   type BuiltWalletMutationTransaction,
   type FixedWalletInput,
   type MutationSender,
+  type WalletMutationFeeSummary,
   type WalletMutationRpcClient,
 } from "./common.js";
 import {
@@ -116,6 +122,7 @@ export interface CreateFieldOptions {
   domainName: string;
   fieldName: string;
   permanent?: boolean;
+  feeRateSatVb?: number | null;
   dataDir: string;
   databasePath: string;
   provider?: WalletSecretProvider;
@@ -145,6 +152,7 @@ export interface FieldMutationResult {
   status: "live" | "confirmed";
   reusedExisting: boolean;
   resolved?: FieldResolvedSummary | null;
+  fees: WalletMutationFeeSummary;
 }
 
 export interface FieldResolvedSenderSummary {
@@ -485,6 +493,7 @@ async function buildFieldTransaction(options: {
   walletName: string;
   state: WalletStateV1;
   plan: FieldPlan;
+  feeRateSatVb: number;
   availableFundingMinConf?: number;
 }): Promise<BuiltWalletMutationTransaction> {
   return buildWalletMutationTransactionWithReserveFallback({
@@ -495,6 +504,7 @@ async function buildFieldTransaction(options: {
     validateFundedDraft: validateFieldDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
+    feeRate: options.feeRateSatVb,
     availableFundingMinConf: options.availableFundingMinConf,
   });
 }
@@ -526,6 +536,10 @@ function createStandaloneFieldMutation(options: {
   sender: MutationSender;
   intentFingerprintHex: string;
   nowUnixMs: number;
+  feeSelection: {
+    feeRateSatVb: number;
+    source: "custom-satvb" | "estimated-next-block-plus-one" | "fallback-default";
+  };
   existing?: PendingMutationRecord | null;
   fieldId?: number | null;
   fieldPermanent?: boolean | null;
@@ -548,6 +562,7 @@ function createStandaloneFieldMutation(options: {
       lastUpdatedAtUnixMs: options.nowUnixMs,
       attemptedTxid: null,
       attemptedWtxid: null,
+      ...createWalletMutationFeeMetadata(options.feeSelection),
       temporaryBuilderLockedOutpoints: [],
     };
   }
@@ -570,6 +585,7 @@ function createStandaloneFieldMutation(options: {
     lastUpdatedAtUnixMs: options.nowUnixMs,
     attemptedTxid: null,
     attemptedWtxid: null,
+    ...createWalletMutationFeeMetadata(options.feeSelection),
     temporaryBuilderLockedOutpoints: [],
   };
 }
@@ -1085,6 +1101,7 @@ async function submitStandaloneFieldMutation(options: {
   errorPrefix: string;
   domainName: string;
   fieldName: string;
+  feeRateSatVb?: number | null;
   dataDir: string;
   databasePath: string;
   provider?: WalletSecretProvider;
@@ -1095,7 +1112,14 @@ async function submitStandaloneFieldMutation(options: {
   openReadContext?: typeof openWalletReadContext;
   attachService?: typeof attachOrStartManagedBitcoindService;
   rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => FieldRpcClient;
-  createMutation(operation: FieldOperation, existing: PendingMutationRecord | null): Promise<{
+  createMutation(
+    operation: FieldOperation,
+    existing: PendingMutationRecord | null,
+    feeSelection: {
+      feeRateSatVb: number;
+      source: "custom-satvb" | "estimated-next-block-plus-one" | "fallback-default";
+    },
+  ): Promise<{
     opReturnData: Uint8Array;
     mutation: PendingMutationRecord;
   }>;
@@ -1137,17 +1161,23 @@ async function submitStandaloneFieldMutation(options: {
         normalizedDomainName,
         normalizedFieldName,
       ]);
+      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
+        dataDir: options.dataDir,
+        chain: "main",
+        startHeight: 0,
+        walletRootId: operation.state.walletRootId,
+      });
+      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
+      const walletName = operation.state.managedCoreWallet.walletName;
+      const feeSelection = await resolveWalletMutationFeeSelection({
+        rpc,
+        feeRateSatVb: options.feeRateSatVb ?? null,
+      });
       const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
+      let workingState = operation.state;
+      let replacementFixedInputs: FixedWalletInput[] | null = null;
 
       if (existingMutation !== null) {
-        const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-          dataDir: options.dataDir,
-          chain: "main",
-          startHeight: 0,
-          walletRootId: operation.state.walletRootId,
-        });
-        const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-        const walletName = operation.state.managedCoreWallet.walletName;
         const reconciled = await reconcilePendingFieldMutation({
           state: operation.state,
           mutation: existingMutation,
@@ -1158,29 +1188,42 @@ async function submitStandaloneFieldMutation(options: {
           walletName,
           context: readContext,
         });
+        workingState = reconciled.state;
 
         if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          return {
-            kind: options.kind,
-            domainName: normalizedDomainName,
-            fieldName: normalizedFieldName,
-            fieldId: reconciled.mutation.fieldId ?? existingObservedField?.fieldId ?? null,
-            txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            permanent: reconciled.mutation.fieldPermanent ?? existingObservedField?.permanent ?? null,
-            format: reconciled.mutation.fieldFormat ?? existingObservedField?.format ?? null,
-            status: reconciled.resolution,
-            reusedExisting: true,
-            resolved: createResolvedFieldSummary({
-              sender: operation.sender,
-              senderSelector: operation.senderSelector,
+          const reuse = await resolvePendingMutationReuseDecision({
+            rpc,
+            walletName,
+            mutation: reconciled.mutation,
+            nextFeeSelection: feeSelection,
+          });
+
+          if (reuse.reuseExisting) {
+            return {
               kind: options.kind,
-              value: createResolvedFieldValueFromStoredData(
-                options.kind,
-                reconciled.mutation.fieldFormat ?? existingObservedField?.format ?? null,
-                reconciled.mutation.fieldValueHex,
-              ),
-            }),
-          };
+              domainName: normalizedDomainName,
+              fieldName: normalizedFieldName,
+              fieldId: reconciled.mutation.fieldId ?? existingObservedField?.fieldId ?? null,
+              txid: reconciled.mutation.attemptedTxid ?? "unknown",
+              permanent: reconciled.mutation.fieldPermanent ?? existingObservedField?.permanent ?? null,
+              format: reconciled.mutation.fieldFormat ?? existingObservedField?.format ?? null,
+              status: reconciled.resolution,
+              reusedExisting: true,
+              resolved: createResolvedFieldSummary({
+                sender: operation.sender,
+                senderSelector: operation.senderSelector,
+                kind: options.kind,
+                value: createResolvedFieldValueFromStoredData(
+                  options.kind,
+                  reconciled.mutation.fieldFormat ?? existingObservedField?.format ?? null,
+                  reconciled.mutation.fieldValueHex,
+                ),
+              }),
+              fees: reuse.fees,
+            };
+          }
+
+          replacementFixedInputs = reuse.replacementFixedInputs;
         }
 
         if (reconciled.resolution === "repair-required") {
@@ -1190,8 +1233,8 @@ async function submitStandaloneFieldMutation(options: {
 
       await options.confirm(operation);
 
-      const planned = await options.createMutation(operation, existingMutation);
-      let nextState = upsertPendingMutation(operation.state, planned.mutation);
+      const planned = await options.createMutation(operation, existingMutation, feeSelection);
+      let nextState = upsertPendingMutation(workingState, planned.mutation);
       nextState = await saveUpdatedState({
         state: nextState,
         provider,
@@ -1199,26 +1242,23 @@ async function submitStandaloneFieldMutation(options: {
         paths,
       });
 
-      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-        dataDir: options.dataDir,
-        chain: "main",
-        startHeight: 0,
-        walletRootId: operation.state.walletRootId,
+      const fieldPlan = buildAnchoredFieldPlan({
+        state: nextState,
+        allUtxos: await rpc.listUnspent(walletName, 1),
+        sender: operation.sender,
+        anchorOutpoint: operation.anchorOutpoint,
+        opReturnData: planned.opReturnData,
+        errorPrefix: options.errorPrefix,
       });
-      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-      const walletName = operation.state.managedCoreWallet.walletName;
       const built = await buildFieldTransaction({
         rpc,
         walletName,
         state: nextState,
-        plan: buildAnchoredFieldPlan({
-          state: nextState,
-          allUtxos: await rpc.listUnspent(walletName, 1),
-          sender: operation.sender,
-          anchorOutpoint: operation.anchorOutpoint,
-          opReturnData: planned.opReturnData,
-          errorPrefix: options.errorPrefix,
-        }),
+        plan: {
+          ...fieldPlan,
+          fixedInputs: mergeFixedWalletInputs(fieldPlan.fixedInputs, replacementFixedInputs),
+        },
+        feeRateSatVb: feeSelection.feeRateSatVb,
       });
 
       const final = await sendStandaloneMutation({
@@ -1254,6 +1294,10 @@ async function submitStandaloneFieldMutation(options: {
             planned.mutation.fieldValueHex,
           ),
         }),
+        fees: createBuiltWalletMutationFeeSummary({
+          selection: feeSelection,
+          built,
+        }),
       };
     } finally {
       await readContext.close();
@@ -1284,7 +1328,7 @@ export async function createField(
     openReadContext: options.openReadContext,
     attachService: options.attachService,
     rpcFactory: options.rpcFactory,
-    async createMutation(operation, existing) {
+    async createMutation(operation, existing, feeSelection) {
       const existingField = getObservedFieldState(operation.readContext, normalizeDomainName(options.domainName), normalizeFieldName(options.fieldName));
       if (existingField !== null) {
         throw new Error("wallet_field_create_field_exists");
@@ -1322,6 +1366,7 @@ export async function createField(
           sender: operation.sender,
           intentFingerprintHex,
           nowUnixMs: options.nowUnixMs ?? Date.now(),
+          feeSelection,
           existing,
           fieldId: operation.chainDomain.nextFieldId,
           fieldPermanent: permanent,
@@ -1360,7 +1405,7 @@ export async function setField(
     openReadContext: options.openReadContext,
     attachService: options.attachService,
     rpcFactory: options.rpcFactory,
-    async createMutation(operation, existing) {
+    async createMutation(operation, existing, feeSelection) {
       const normalizedDomainName = normalizeDomainName(options.domainName);
       const normalizedFieldName = normalizeFieldName(options.fieldName);
       const observedField = getObservedFieldState(operation.readContext, normalizedDomainName, normalizedFieldName);
@@ -1393,6 +1438,7 @@ export async function setField(
           sender: operation.sender,
           intentFingerprintHex,
           nowUnixMs: options.nowUnixMs ?? Date.now(),
+          feeSelection,
           existing,
           fieldId: observedField.fieldId,
           fieldPermanent: observedField.permanent,
@@ -1439,7 +1485,7 @@ export async function clearField(
     openReadContext: options.openReadContext,
     attachService: options.attachService,
     rpcFactory: options.rpcFactory,
-    async createMutation(operation, existing) {
+    async createMutation(operation, existing, feeSelection) {
       const normalizedDomainName = normalizeDomainName(options.domainName);
       const normalizedFieldName = normalizeFieldName(options.fieldName);
       const observedField = getObservedFieldState(operation.readContext, normalizedDomainName, normalizedFieldName);
@@ -1465,6 +1511,7 @@ export async function clearField(
           sender: operation.sender,
           intentFingerprintHex,
           nowUnixMs: options.nowUnixMs ?? Date.now(),
+          feeSelection,
           existing,
           fieldId: observedField.fieldId,
           fieldPermanent: observedField.permanent,

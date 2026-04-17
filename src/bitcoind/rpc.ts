@@ -9,6 +9,7 @@ import type {
   RpcCreateWalletResult,
   RpcDecodedPsbt,
   RpcDescriptorInfo,
+  RpcEstimateSmartFeeResult,
   RpcFinalizePsbtResult,
   RpcImportDescriptorRequest,
   RpcImportDescriptorResult,
@@ -459,6 +460,13 @@ export class BitcoinRpcClient {
 
   getMempoolEntry(txid: string): Promise<RpcMempoolEntry> {
     return this.call<RpcMempoolEntry>("getmempoolentry", [txid]);
+  }
+
+  estimateSmartFee(
+    confirmTarget: number,
+    mode: "conservative" | "economical",
+  ): Promise<RpcEstimateSmartFeeResult> {
+    return this.call<RpcEstimateSmartFeeResult>("estimatesmartfee", [confirmTarget, mode]);
   }
 
   saveMempool(): Promise<null> {

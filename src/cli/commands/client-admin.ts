@@ -9,6 +9,7 @@ import {
 } from "../output.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import {
+  changeClientPassword,
   lockClientPassword,
   unlockClientPassword,
 } from "../../wallet/state/provider.js";
@@ -85,6 +86,42 @@ export async function runClientAdminCommand(
         status.unlockUntilUnixMs === null
           ? "Client unlocked."
           : `Client unlocked until ${new Date(status.unlockUntilUnixMs).toISOString()}.`,
+      );
+      return 0;
+    }
+
+    if (parsed.command === "client-change-password") {
+      const prompter = createCommandPrompter(parsed, context);
+      const status = await changeClientPassword(context.walletSecretProvider, prompter);
+
+      if (parsed.outputMode === "json") {
+        writeJsonValue(context.stdout, createMutationSuccessEnvelope(
+          resolveStableMutationJsonSchema(parsed)!,
+          describeCanonicalCommand(parsed),
+          "changed",
+          {
+            resultType: "operation",
+            operation: {
+              kind: "client-change-password",
+              changed: true,
+              unlocked: status.unlocked,
+              unlockUntilUnixMs: status.unlockUntilUnixMs,
+            },
+            state: {
+              changed: true,
+              unlocked: status.unlocked,
+              unlockUntilUnixMs: status.unlockUntilUnixMs,
+            },
+          },
+        ));
+        return 0;
+      }
+
+      writeLine(
+        context.stdout,
+        status.unlockUntilUnixMs === null
+          ? "Client password changed."
+          : `Client password changed. Client unlocked until ${new Date(status.unlockUntilUnixMs).toISOString()}.`,
       );
       return 0;
     }

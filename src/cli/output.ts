@@ -598,6 +598,14 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode === "wallet_client_password_change_requires_tty") {
+    return {
+      what: "Client password change needs an interactive terminal.",
+      why: "Cogcoin has to securely prompt for the current client password and the new password twice before it can rotate local wallet-secret protection.",
+      next: "Run `cogcoin client change-password` in an interactive terminal.",
+    };
+  }
+
   if (errorCode === "wallet_restore_requires_main_wallet") {
     return {
       what: "Main wallet is required before importing another seed.",
@@ -715,6 +723,30 @@ export function createCliErrorPresentation(
       what: "`--from` is no longer supported.",
       why: "Cogcoin now uses a single wallet address for local transaction authorship, so sender selection is no longer part of the CLI.",
       next: "Retry the command without `--from`.",
+    };
+  }
+
+  if (errorCode === "cli_missing_satvb") {
+    return {
+      what: "A sat/vB value is required.",
+      why: "`--satvb` needs an explicit positive fee rate value in sat/vB for the mutation you are submitting.",
+      next: "Rerun the command with `--satvb <number>`.",
+    };
+  }
+
+  if (errorCode === "cli_invalid_satvb") {
+    return {
+      what: "The sat/vB value is invalid.",
+      why: "`--satvb` accepts only a positive finite decimal number such as `12` or `12.5`.",
+      next: "Choose a positive sat/vB value and retry.",
+    };
+  }
+
+  if (errorCode === "cli_satvb_not_supported_for_command") {
+    return {
+      what: "This command does not support `--satvb`.",
+      why: "The fee-rate override only applies to wallet mutation commands that build and broadcast transactions.",
+      next: "Drop `--satvb` for this command, or use it with a wallet mutation command like `cogcoin register` or `cogcoin send`.",
     };
   }
 
@@ -1180,6 +1212,8 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
       return "cogcoin client unlock";
     case "client-lock":
       return "cogcoin client lock";
+    case "client-change-password":
+      return "cogcoin client change-password";
     case "reset":
       return "cogcoin reset";
     case "repair":
@@ -1358,6 +1392,8 @@ export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string |
       return "cogcoin/client-unlock/v1";
     case "client-lock":
       return "cogcoin/client-lock/v1";
+    case "client-change-password":
+      return "cogcoin/client-change-password/v1";
     case "wallet-delete":
       return "cogcoin/wallet-delete/v1";
     case "reset":
@@ -1515,6 +1551,7 @@ function createSchemaProbe(command: CommandName | null): ParsedCliArgs {
     untilHeight: null,
     preimageHex: null,
     reviewText: null,
+    satvb: null,
     locksClaimableOnly: false,
     locksReclaimableOnly: false,
     domainsAnchoredOnly: false,

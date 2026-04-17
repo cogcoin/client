@@ -35,19 +35,25 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
+  createBuiltWalletMutationFeeSummary,
   createFundingMutationSender,
+  createWalletMutationFeeMetadata,
   getDecodedInputScriptPubKeyHex,
   isLocalWalletScript,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
+  mergeFixedWalletInputs,
   outpointKey,
   pauseMiningForWalletMutation,
+  resolvePendingMutationReuseDecision,
+  resolveWalletMutationFeeSelection,
   saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
   type BuiltWalletMutationTransaction,
   type FixedWalletInput,
   type MutationSender,
+  type WalletMutationFeeSummary,
   type WalletMutationRpcClient,
 } from "./common.js";
 import { confirmTypedAcknowledgement, confirmYesNo } from "./confirm.js";
@@ -194,6 +200,7 @@ export interface DomainMarketResolvedSummary {
 export interface TransferDomainOptions {
   domainName: string;
   target: string;
+  feeRateSatVb?: number | null;
   dataDir: string;
   databasePath: string;
   provider?: WalletSecretProvider;
@@ -209,6 +216,7 @@ export interface TransferDomainOptions {
 export interface SellDomainOptions {
   domainName: string;
   listedPriceCogtoshi: bigint;
+  feeRateSatVb?: number | null;
   dataDir: string;
   databasePath: string;
   provider?: WalletSecretProvider;
@@ -224,6 +232,7 @@ export interface SellDomainOptions {
 export interface BuyDomainOptions {
   domainName: string;
   fromIdentity?: string | null;
+  feeRateSatVb?: number | null;
   dataDir: string;
   databasePath: string;
   provider?: WalletSecretProvider;
@@ -247,6 +256,7 @@ export interface DomainMarketMutationResult {
   resolved?: DomainMarketResolvedSummary | null;
   resolvedBuyer?: DomainMarketResolvedBuyerSummary | null;
   resolvedSeller?: DomainMarketResolvedSellerSummary | null;
+  fees: WalletMutationFeeSummary;
 }
 
 function normalizeDomainName(domainName: string): string {
@@ -643,6 +653,7 @@ async function buildTransaction(options: {
   walletName: string;
   state: WalletStateV1;
   plan: DomainMarketPlan;
+  feeRateSatVb: number;
 }): Promise<BuiltDomainMarketTransaction> {
   return buildWalletMutationTransactionWithReserveFallback({
     rpc: options.rpc,
@@ -652,6 +663,7 @@ async function buildTransaction(options: {
     validateFundedDraft,
     finalizeErrorCode: `${options.plan.errorPrefix}_finalize_failed`,
     mempoolRejectPrefix: `${options.plan.errorPrefix}_mempool_rejected`,
+    feeRate: options.feeRateSatVb,
   });
 }
 
@@ -661,6 +673,10 @@ function createDraftMutation(options: {
   sender: MutationSender;
   intentFingerprintHex: string;
   nowUnixMs: number;
+  feeSelection: {
+    feeRateSatVb: number;
+    source: "custom-satvb" | "estimated-next-block-plus-one" | "fallback-default";
+  };
   parentDomainName?: string | null;
   recipientScriptPubKeyHex?: string | null;
   priceCogtoshi?: bigint | null;
@@ -679,6 +695,7 @@ function createDraftMutation(options: {
       lastUpdatedAtUnixMs: options.nowUnixMs,
       attemptedTxid: null,
       attemptedWtxid: null,
+      ...createWalletMutationFeeMetadata(options.feeSelection),
       temporaryBuilderLockedOutpoints: [],
     };
   }
@@ -698,6 +715,7 @@ function createDraftMutation(options: {
     lastUpdatedAtUnixMs: options.nowUnixMs,
     attemptedTxid: null,
     attemptedWtxid: null,
+    ...createWalletMutationFeeMetadata(options.feeSelection),
     temporaryBuilderLockedOutpoints: [],
   };
 }
@@ -1095,7 +1113,13 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
       const walletName = operation.state.managedCoreWallet.walletName;
+      const feeSelection = await resolveWalletMutationFeeSelection({
+        rpc,
+        feeRateSatVb: options.feeRateSatVb ?? null,
+      });
       const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
+      let workingState = operation.state;
+      let replacementFixedInputs: FixedWalletInput[] | null = null;
 
       if (existingMutation !== null) {
         const reconciled = await reconcilePendingMutation({
@@ -1108,21 +1132,34 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
           walletName,
           context: readContext,
         });
+        workingState = reconciled.state;
 
         if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          return {
-            kind: "transfer",
-            domainName: normalizedDomainName,
-            txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            status: reconciled.resolution,
-            reusedExisting: true,
-            recipientScriptPubKeyHex: recipient.scriptPubKeyHex,
-            resolved: {
-              sender: resolvedSender,
-              recipient: resolvedRecipient,
-              economicEffect: resolvedEconomicEffect,
-            },
-          };
+          const reuse = await resolvePendingMutationReuseDecision({
+            rpc,
+            walletName,
+            mutation: reconciled.mutation,
+            nextFeeSelection: feeSelection,
+          });
+
+          if (reuse.reuseExisting) {
+            return {
+              kind: "transfer",
+              domainName: normalizedDomainName,
+              txid: reconciled.mutation.attemptedTxid ?? "unknown",
+              status: reconciled.resolution,
+              reusedExisting: true,
+              recipientScriptPubKeyHex: recipient.scriptPubKeyHex,
+              resolved: {
+                sender: resolvedSender,
+                recipient: resolvedRecipient,
+                economicEffect: resolvedEconomicEffect,
+              },
+              fees: reuse.fees,
+            };
+          }
+
+          replacementFixedInputs = reuse.replacementFixedInputs;
         }
 
         if (reconciled.resolution === "repair-required") {
@@ -1140,7 +1177,7 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
       );
 
       let nextState = upsertPendingMutation(
-        operation.state,
+        workingState,
         createDraftMutation({
           kind: "transfer",
           domainName: normalizedDomainName,
@@ -1148,6 +1185,7 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
           recipientScriptPubKeyHex: recipient.scriptPubKeyHex,
           intentFingerprintHex,
           nowUnixMs,
+          feeSelection,
           existing: existingMutation,
         }),
       );
@@ -1174,19 +1212,24 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
       });
       nextState = buildPreparation.state;
 
+      const transferPlan = buildPlanForDomainOperation({
+        state: nextState,
+        allUtxos: buildPreparation.allUtxos,
+        sender: operation.sender,
+        anchorOutpoint: operation.anchorOutpoint,
+        opReturnData: serializeDomainTransfer(operation.chainDomain.domainId, Buffer.from(recipient.scriptPubKeyHex, "hex")).opReturnData,
+        anchorValueSats: BigInt(nextState.anchorValueSats),
+        errorPrefix: "wallet_transfer",
+      });
       const built = await buildTransaction({
         rpc,
         walletName,
         state: nextState,
-        plan: buildPlanForDomainOperation({
-          state: nextState,
-          allUtxos: buildPreparation.allUtxos,
-          sender: operation.sender,
-          anchorOutpoint: operation.anchorOutpoint,
-          opReturnData: serializeDomainTransfer(operation.chainDomain.domainId, Buffer.from(recipient.scriptPubKeyHex, "hex")).opReturnData,
-          anchorValueSats: BigInt(nextState.anchorValueSats),
-          errorPrefix: "wallet_transfer",
-        }),
+        plan: {
+          ...transferPlan,
+          fixedInputs: mergeFixedWalletInputs(transferPlan.fixedInputs, replacementFixedInputs),
+        },
+        feeRateSatVb: feeSelection.feeRateSatVb,
       });
 
       const broadcasting = updateMutationRecord(
@@ -1303,6 +1346,10 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
           recipient: resolvedRecipient,
           economicEffect: resolvedEconomicEffect,
         },
+        fees: createBuiltWalletMutationFeeSummary({
+          selection: feeSelection,
+          built,
+        }),
       };
     } finally {
       await readContext.close();
@@ -1356,7 +1403,13 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
       const walletName = operation.state.managedCoreWallet.walletName;
+      const feeSelection = await resolveWalletMutationFeeSelection({
+        rpc,
+        feeRateSatVb: options.feeRateSatVb ?? null,
+      });
       const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
+      let workingState = operation.state;
+      let replacementFixedInputs: FixedWalletInput[] | null = null;
 
       if (existingMutation !== null) {
         const reconciled = await reconcilePendingMutation({
@@ -1369,20 +1422,33 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
           walletName,
           context: readContext,
         });
+        workingState = reconciled.state;
 
         if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          return {
-            kind: "sell",
-            domainName: normalizedDomainName,
-            txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            status: reconciled.resolution,
-            reusedExisting: true,
-            listedPriceCogtoshi: options.listedPriceCogtoshi,
-            resolved: {
-              sender: resolvedSender,
-              economicEffect: resolvedEconomicEffect,
-            },
-          };
+          const reuse = await resolvePendingMutationReuseDecision({
+            rpc,
+            walletName,
+            mutation: reconciled.mutation,
+            nextFeeSelection: feeSelection,
+          });
+
+          if (reuse.reuseExisting) {
+            return {
+              kind: "sell",
+              domainName: normalizedDomainName,
+              txid: reconciled.mutation.attemptedTxid ?? "unknown",
+              status: reconciled.resolution,
+              reusedExisting: true,
+              listedPriceCogtoshi: options.listedPriceCogtoshi,
+              resolved: {
+                sender: resolvedSender,
+                economicEffect: resolvedEconomicEffect,
+              },
+              fees: reuse.fees,
+            };
+          }
+
+          replacementFixedInputs = reuse.replacementFixedInputs;
         }
 
         if (reconciled.resolution === "repair-required") {
@@ -1401,7 +1467,7 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
       }
 
       let nextState = upsertPendingMutation(
-        operation.state,
+        workingState,
         createDraftMutation({
           kind: "sell",
           domainName: normalizedDomainName,
@@ -1409,6 +1475,7 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
           priceCogtoshi: options.listedPriceCogtoshi,
           intentFingerprintHex,
           nowUnixMs,
+          feeSelection,
           existing: existingMutation,
         }),
       );
@@ -1435,19 +1502,24 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
       });
       nextState = buildPreparation.state;
 
+      const sellPlan = buildPlanForDomainOperation({
+        state: nextState,
+        allUtxos: buildPreparation.allUtxos,
+        sender: operation.sender,
+        anchorOutpoint: operation.anchorOutpoint,
+        opReturnData: serializeDomainSell(operation.chainDomain.domainId, options.listedPriceCogtoshi).opReturnData,
+        anchorValueSats: BigInt(nextState.anchorValueSats),
+        errorPrefix: "wallet_sell",
+      });
       const built = await buildTransaction({
         rpc,
         walletName,
         state: nextState,
-        plan: buildPlanForDomainOperation({
-          state: nextState,
-          allUtxos: buildPreparation.allUtxos,
-          sender: operation.sender,
-          anchorOutpoint: operation.anchorOutpoint,
-          opReturnData: serializeDomainSell(operation.chainDomain.domainId, options.listedPriceCogtoshi).opReturnData,
-          anchorValueSats: BigInt(nextState.anchorValueSats),
-          errorPrefix: "wallet_sell",
-        }),
+        plan: {
+          ...sellPlan,
+          fixedInputs: mergeFixedWalletInputs(sellPlan.fixedInputs, replacementFixedInputs),
+        },
+        feeRateSatVb: feeSelection.feeRateSatVb,
       });
 
       const broadcasting = updateMutationRecord(
@@ -1557,6 +1629,10 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
           sender: resolvedSender,
           economicEffect: resolvedEconomicEffect,
         },
+        fees: createBuiltWalletMutationFeeSummary({
+          selection: feeSelection,
+          built,
+        }),
       };
     } finally {
       await readContext.close();
@@ -1629,7 +1705,13 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
       const walletName = operation.state.managedCoreWallet.walletName;
+      const feeSelection = await resolveWalletMutationFeeSelection({
+        rpc,
+        feeRateSatVb: options.feeRateSatVb ?? null,
+      });
       const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
+      let workingState = operation.state;
+      let replacementFixedInputs: FixedWalletInput[] | null = null;
 
       if (existingMutation !== null) {
         const reconciled = await reconcilePendingMutation({
@@ -1642,18 +1724,31 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
           walletName,
           context: readContext,
         });
+        workingState = reconciled.state;
 
         if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          return {
-            kind: "buy",
-            domainName: normalizedDomainName,
-            txid: reconciled.mutation.attemptedTxid ?? "unknown",
-            status: reconciled.resolution,
-            reusedExisting: true,
-            listedPriceCogtoshi: operation.listingPriceCogtoshi,
-            resolvedBuyer,
-            resolvedSeller,
-          };
+          const reuse = await resolvePendingMutationReuseDecision({
+            rpc,
+            walletName,
+            mutation: reconciled.mutation,
+            nextFeeSelection: feeSelection,
+          });
+
+          if (reuse.reuseExisting) {
+            return {
+              kind: "buy",
+              domainName: normalizedDomainName,
+              txid: reconciled.mutation.attemptedTxid ?? "unknown",
+              status: reconciled.resolution,
+              reusedExisting: true,
+              listedPriceCogtoshi: operation.listingPriceCogtoshi,
+              resolvedBuyer,
+              resolvedSeller,
+              fees: reuse.fees,
+            };
+          }
+
+          replacementFixedInputs = reuse.replacementFixedInputs;
         }
 
         if (reconciled.resolution === "repair-required") {
@@ -1673,7 +1768,7 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
       );
 
       let nextState = upsertPendingMutation(
-        operation.state,
+        workingState,
         createDraftMutation({
           kind: "buy",
           domainName: normalizedDomainName,
@@ -1681,6 +1776,7 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
           priceCogtoshi: operation.listingPriceCogtoshi,
           intentFingerprintHex,
           nowUnixMs,
+          feeSelection,
           existing: existingMutation,
         }),
       );
@@ -1707,19 +1803,24 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
       });
       nextState = buildPreparation.state;
 
+      const buyPlan = buildPlanForDomainOperation({
+        state: nextState,
+        allUtxos: buildPreparation.allUtxos,
+        sender: operation.sender,
+        anchorOutpoint: operation.anchorOutpoint,
+        opReturnData: serializeDomainBuy(operation.chainDomain.domainId, operation.listingPriceCogtoshi).opReturnData,
+        anchorValueSats: BigInt(nextState.anchorValueSats),
+        errorPrefix: "wallet_buy",
+      });
       const built = await buildTransaction({
         rpc,
         walletName,
         state: nextState,
-        plan: buildPlanForDomainOperation({
-          state: nextState,
-          allUtxos: buildPreparation.allUtxos,
-          sender: operation.sender,
-          anchorOutpoint: operation.anchorOutpoint,
-          opReturnData: serializeDomainBuy(operation.chainDomain.domainId, operation.listingPriceCogtoshi).opReturnData,
-          anchorValueSats: BigInt(nextState.anchorValueSats),
-          errorPrefix: "wallet_buy",
-        }),
+        plan: {
+          ...buyPlan,
+          fixedInputs: mergeFixedWalletInputs(buyPlan.fixedInputs, replacementFixedInputs),
+        },
+        feeRateSatVb: feeSelection.feeRateSatVb,
       });
 
       const currentSellerHex = Buffer.from(operation.chainDomain.ownerScriptPubKey).toString("hex");
@@ -1839,6 +1940,10 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
         listedPriceCogtoshi: operation.listingPriceCogtoshi,
         resolvedBuyer,
         resolvedSeller,
+        fees: createBuiltWalletMutationFeeSummary({
+          selection: feeSelection,
+          built,
+        }),
       };
     } finally {
       await readContext.close();

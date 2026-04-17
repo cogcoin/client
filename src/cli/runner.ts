@@ -104,7 +104,11 @@ export async function runCli(
       return runStatusCommand(parsed, context);
     }
 
-    if (parsed.command === "client-lock" || parsed.command === "client-unlock") {
+    if (
+      parsed.command === "client-lock"
+      || parsed.command === "client-unlock"
+      || parsed.command === "client-change-password"
+    ) {
       return runClientAdminCommand(parsed, context);
     }
 

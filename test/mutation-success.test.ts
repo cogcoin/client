@@ -111,6 +111,45 @@ test("writeMutationCommandSuccess skips explorer links for non-interactive text 
   ].join("\n"));
 });
 
+test("writeMutationCommandSuccess appends fee summary fields when provided", () => {
+  const stdout = new MemoryStream();
+  const parsed = {
+    command: "register",
+    args: ["alpha"],
+    outputMode: "text",
+  } as ParsedCliArgs;
+  const context = {
+    stdout,
+  } as unknown as RequiredCliRunnerContext;
+
+  const code = writeMutationCommandSuccess(parsed, context, {
+    data: { domainName: "alpha" },
+    reusedExisting: false,
+    reusedMessage: "",
+    fees: {
+      feeRateSatVb: 12.5,
+      feeSats: "321",
+      source: "custom-satvb",
+    },
+    interactive: false,
+    nextSteps: commandMutationNextSteps("cogcoin show alpha"),
+    text: {
+      heading: "Register submitted.",
+      fields: [{ label: "Domain", value: "alpha" }],
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.equal(stdout.toString(), [
+    "Register submitted.",
+    "Domain: alpha",
+    "Fee rate: 12.5 sat/vB",
+    "Fee: 321 sats",
+    "Next step: cogcoin show alpha",
+    "",
+  ].join("\n"));
+});
+
 test("writeMutationCommandSuccess writes mutation json output with shared explanations and next steps", () => {
   const stdout = new MemoryStream();
   const parsed = {

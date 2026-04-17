@@ -1,8 +1,10 @@
 import type {
   RpcDecodedPsbt,
+  RpcEstimateSmartFeeResult,
   RpcFinalizePsbtResult,
   RpcListUnspentEntry,
   RpcLockedUnspent,
+  RpcMempoolEntry,
   RpcTestMempoolAcceptResult,
   RpcTransaction,
   RpcVin,
@@ -31,6 +33,21 @@ import type { WalletRuntimePaths } from "../runtime.js";
 import { requestMiningGenerationPreemption, type MiningPreemptionHandle } from "../mining/coordination.js";
 
 export const DEFAULT_WALLET_MUTATION_FEE_RATE_SAT_VB = 10;
+export const NEXT_BLOCK_FEE_CONFIRM_TARGET = 1;
+
+export type WalletMutationFeeSelectionSource =
+  | "custom-satvb"
+  | "estimated-next-block-plus-one"
+  | "fallback-default";
+
+export interface WalletMutationFeeSelection {
+  feeRateSatVb: number;
+  source: WalletMutationFeeSelectionSource;
+}
+
+export interface WalletMutationFeeSummary extends WalletMutationFeeSelection {
+  feeSats: string | null;
+}
 
 export interface MutationSender {
   localIndex: number;
@@ -60,6 +77,12 @@ export interface WalletMutationRpcClient {
   listLockUnspent?(walletName: string): Promise<RpcLockedUnspent[]>;
   lockUnspent?(walletName: string, unlock: boolean, outputs: RpcLockedUnspent[]): Promise<boolean>;
   getTransaction?(walletName: string, txid: string): Promise<RpcWalletTransaction>;
+  getRawTransaction?(txid: string, verbose?: boolean): Promise<RpcTransaction>;
+  getMempoolEntry?(txid: string): Promise<RpcMempoolEntry>;
+  estimateSmartFee?(
+    confirmTarget: number,
+    mode: "conservative" | "economical",
+  ): Promise<RpcEstimateSmartFeeResult>;
   walletCreateFundedPsbt(
     walletName: string,
     inputs: Array<{ txid: string; vout: number }>,
@@ -98,10 +121,242 @@ function btcNumberToSats(value: number): bigint {
   return BigInt(Math.round(value * 100_000_000));
 }
 
+function normalizeSatVb(value: number): number {
+  return Number.parseFloat(value.toFixed(8));
+}
+
+function satVbFromBtcPerKvB(value: number): number {
+  return normalizeSatVb((value * 100_000_000) / 1_000);
+}
+
 function valueToSats(value: number | string): bigint {
   return typeof value === "string"
     ? BigInt(Math.round(Number(value) * 100_000_000))
     : btcNumberToSats(value);
+}
+
+function feeRateFromMempoolEntry(entry: RpcMempoolEntry): number | null {
+  if (!Number.isFinite(entry.vsize) || entry.vsize <= 0) {
+    return null;
+  }
+
+  const feeSats = Number(btcNumberToSats(entry.fees.base));
+  if (!Number.isFinite(feeSats) || feeSats <= 0) {
+    return null;
+  }
+
+  return normalizeSatVb(feeSats / entry.vsize);
+}
+
+export function formatSatVb(value: number): string {
+  return normalizeSatVb(value).toString();
+}
+
+export function createWalletMutationFeeMetadata(
+  selection: WalletMutationFeeSelection,
+): {
+  selectedFeeRateSatVb: number;
+  feeSelectionSource: WalletMutationFeeSelectionSource;
+} {
+  return {
+    selectedFeeRateSatVb: selection.feeRateSatVb,
+    feeSelectionSource: selection.source,
+  };
+}
+
+export async function resolveWalletMutationFeeSelection(options: {
+  rpc: Pick<WalletMutationRpcClient, "estimateSmartFee">;
+  feeRateSatVb?: number | null;
+}): Promise<WalletMutationFeeSelection> {
+  if (typeof options.feeRateSatVb === "number") {
+    return {
+      feeRateSatVb: normalizeSatVb(options.feeRateSatVb),
+      source: "custom-satvb",
+    };
+  }
+
+  if (options.rpc.estimateSmartFee !== undefined) {
+    try {
+      const estimate = await options.rpc.estimateSmartFee(
+        NEXT_BLOCK_FEE_CONFIRM_TARGET,
+        "conservative",
+      );
+      const estimatedSatVb = typeof estimate.feerate === "number"
+        ? satVbFromBtcPerKvB(estimate.feerate)
+        : null;
+
+      if (estimatedSatVb !== null && Number.isFinite(estimatedSatVb) && estimatedSatVb > 0) {
+        return {
+          feeRateSatVb: normalizeSatVb(estimatedSatVb + 1),
+          source: "estimated-next-block-plus-one",
+        };
+      }
+    } catch {
+      // Fall through to the compatibility default.
+    }
+  }
+
+  return {
+    feeRateSatVb: DEFAULT_WALLET_MUTATION_FEE_RATE_SAT_VB,
+    source: "fallback-default",
+  };
+}
+
+export function createWalletMutationFeeSummary(
+  selection: WalletMutationFeeSelection,
+  feeSats: string | null,
+): WalletMutationFeeSummary {
+  return {
+    feeRateSatVb: selection.feeRateSatVb,
+    feeSats,
+    source: selection.source,
+  };
+}
+
+export function createBuiltWalletMutationFeeSummary(options: {
+  selection: WalletMutationFeeSelection;
+  built: BuiltWalletMutationTransaction;
+}): WalletMutationFeeSummary {
+  return createWalletMutationFeeSummary(
+    options.selection,
+    btcNumberToSats(options.built.funded.fee).toString(),
+  );
+}
+
+export async function resolvePendingMutationFeeSummary(options: {
+  rpc: Pick<WalletMutationRpcClient, "getMempoolEntry">;
+  mutation: PendingMutationRecord;
+}): Promise<WalletMutationFeeSummary> {
+  const source = options.mutation.feeSelectionSource ?? "fallback-default";
+  const selectedFeeRateSatVb = typeof options.mutation.selectedFeeRateSatVb === "number"
+    && Number.isFinite(options.mutation.selectedFeeRateSatVb)
+    && options.mutation.selectedFeeRateSatVb > 0
+    ? normalizeSatVb(options.mutation.selectedFeeRateSatVb)
+    : DEFAULT_WALLET_MUTATION_FEE_RATE_SAT_VB;
+
+  if (options.mutation.attemptedTxid !== null && options.rpc.getMempoolEntry !== undefined) {
+    try {
+      const entry = await options.rpc.getMempoolEntry(options.mutation.attemptedTxid);
+      const feeRateSatVb = feeRateFromMempoolEntry(entry);
+
+      if (feeRateSatVb !== null) {
+        return {
+          feeRateSatVb,
+          feeSats: btcNumberToSats(entry.fees.base).toString(),
+          source,
+        };
+      }
+    } catch {
+      // Fall back to stored metadata or the historical default.
+    }
+  }
+
+  return {
+    feeRateSatVb: selectedFeeRateSatVb,
+    feeSats: null,
+    source,
+  };
+}
+
+export async function loadAttemptedMutationFixedInputs(options: {
+  rpc: Pick<WalletMutationRpcClient, "getTransaction" | "getRawTransaction">;
+  walletName: string;
+  mutation: PendingMutationRecord;
+}): Promise<FixedWalletInput[] | null> {
+  if (options.mutation.attemptedTxid === null) {
+    return null;
+  }
+
+  const txid = options.mutation.attemptedTxid;
+  let decoded: RpcTransaction | null = null;
+
+  if (options.rpc.getTransaction !== undefined) {
+    try {
+      decoded = (await options.rpc.getTransaction(options.walletName, txid)).decoded ?? null;
+    } catch {
+      decoded = null;
+    }
+  }
+
+  if (decoded === null && options.rpc.getRawTransaction !== undefined) {
+    try {
+      decoded = await options.rpc.getRawTransaction(txid, true);
+    } catch {
+      decoded = null;
+    }
+  }
+
+  if (decoded === null) {
+    return null;
+  }
+
+  const fixedInputs = decoded.vin
+    .filter((input): input is RpcVin & { txid: string; vout: number } =>
+      typeof input.txid === "string" && typeof input.vout === "number")
+    .map((input) => ({
+      txid: input.txid,
+      vout: input.vout,
+    }));
+
+  return fixedInputs.length > 0 ? fixedInputs : null;
+}
+
+export async function resolvePendingMutationReuseDecision(options: {
+  rpc: Pick<WalletMutationRpcClient, "getMempoolEntry" | "getTransaction" | "getRawTransaction">;
+  walletName: string;
+  mutation: PendingMutationRecord;
+  nextFeeSelection: WalletMutationFeeSelection;
+}): Promise<{
+  reuseExisting: boolean;
+  fees: WalletMutationFeeSummary;
+  replacementFixedInputs: FixedWalletInput[] | null;
+}> {
+  const fees = await resolvePendingMutationFeeSummary({
+    rpc: options.rpc,
+    mutation: options.mutation,
+  });
+
+  if (
+    options.mutation.status === "confirmed"
+    || options.nextFeeSelection.feeRateSatVb <= fees.feeRateSatVb
+  ) {
+    return {
+      reuseExisting: true,
+      fees,
+      replacementFixedInputs: null,
+    };
+  }
+
+  return {
+    reuseExisting: false,
+    fees,
+    replacementFixedInputs: await loadAttemptedMutationFixedInputs({
+      rpc: options.rpc,
+      walletName: options.walletName,
+      mutation: options.mutation,
+    }),
+  };
+}
+
+export function mergeFixedWalletInputs(
+  fixedInputs: readonly FixedWalletInput[],
+  replacementInputs: readonly FixedWalletInput[] | null,
+): FixedWalletInput[] {
+  if (replacementInputs === null || replacementInputs.length === 0) {
+    return [...fixedInputs];
+  }
+
+  const merged = new Map<string, FixedWalletInput>();
+
+  for (const input of fixedInputs) {
+    merged.set(outpointKey(input), { txid: input.txid, vout: input.vout });
+  }
+
+  for (const input of replacementInputs) {
+    merged.set(outpointKey(input), { txid: input.txid, vout: input.vout });
+  }
+
+  return [...merged.values()];
 }
 
 export async function saveWalletStatePreservingUnlock(options: {
@@ -177,6 +432,8 @@ export function updateMutationRecord(
     attemptedTxid?: string | null;
     attemptedWtxid?: string | null;
     temporaryBuilderLockedOutpoints?: OutpointRecord[];
+    selectedFeeRateSatVb?: number | null;
+    feeSelectionSource?: WalletMutationFeeSelectionSource | null;
   } = {},
 ): PendingMutationRecord {
   return {
@@ -186,6 +443,8 @@ export function updateMutationRecord(
     attemptedTxid: options.attemptedTxid ?? mutation.attemptedTxid,
     attemptedWtxid: options.attemptedWtxid ?? mutation.attemptedWtxid,
     temporaryBuilderLockedOutpoints: options.temporaryBuilderLockedOutpoints ?? mutation.temporaryBuilderLockedOutpoints,
+    selectedFeeRateSatVb: options.selectedFeeRateSatVb ?? mutation.selectedFeeRateSatVb,
+    feeSelectionSource: options.feeSelectionSource ?? mutation.feeSelectionSource,
   };
 }
 

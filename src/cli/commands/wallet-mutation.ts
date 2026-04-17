@@ -135,6 +135,7 @@ export async function runWalletMutationCommand(
           domainName: parsed.args[0]!,
           foundingMessageText: parsed.anchorMessage,
           promptForFoundingMessageWhenMissing: parsed.anchorMessage === null,
+          feeRateSatVb: parsed.satvb,
           dataDir,
           databasePath: dbPath,
           provider,
@@ -151,6 +152,7 @@ export async function runWalletMutationCommand(
           }),
           reusedExisting: result.reusedExisting,
           reusedMessage: "The existing pending anchor was reconciled instead of creating a duplicate.",
+          fees: result.fees,
           interactive,
           explorerTxid: result.txid,
           nextSteps: workflowMutationNextSteps(nextSteps),
@@ -168,6 +170,7 @@ export async function runWalletMutationCommand(
     if (isRegisterMutationCommand(parsed.command)) {
       const result = await context.registerDomain({
         domainName: parsed.args[0]!,
+        feeRateSatVb: parsed.satvb,
         dataDir,
         databasePath: dbPath,
         forceRace: parsed.forceRace,
@@ -186,6 +189,7 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending registration was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: workflowMutationNextSteps(nextSteps),
@@ -208,6 +212,7 @@ export async function runWalletMutationCommand(
       const result = await context.transferDomain({
         domainName: parsed.args[0]!,
         target: parsed.transferTarget!,
+        feeRateSatVb: parsed.satvb,
         dataDir,
         databasePath: dbPath,
         provider,
@@ -224,6 +229,7 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending transfer was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
@@ -248,6 +254,7 @@ export async function runWalletMutationCommand(
       const result = await context.sellDomain({
         domainName: parsed.args[0]!,
         listedPriceCogtoshi,
+        feeRateSatVb: parsed.satvb,
         dataDir,
         databasePath: dbPath,
         provider,
@@ -264,6 +271,7 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending listing mutation was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
@@ -290,6 +298,7 @@ export async function runWalletMutationCommand(
             : parsed.endpointJson !== null
               ? { kind: "json", value: parsed.endpointJson }
               : { kind: "bytes", value: parsed.endpointBytes! },
+          feeRateSatVb: parsed.satvb,
           dataDir,
           databasePath: dbPath,
           provider,
@@ -299,6 +308,7 @@ export async function runWalletMutationCommand(
         })
         : await context.clearDomainEndpoint({
           domainName: parsed.args[0]!,
+          feeRateSatVb: parsed.satvb,
           dataDir,
           databasePath: dbPath,
           provider,
@@ -315,6 +325,7 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending endpoint mutation was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
@@ -337,6 +348,7 @@ export async function runWalletMutationCommand(
         ? await context.setDomainDelegate({
           domainName: parsed.args[0]!,
           target: parsed.args[1]!,
+          feeRateSatVb: parsed.satvb,
           dataDir,
           databasePath: dbPath,
           provider,
@@ -346,6 +358,7 @@ export async function runWalletMutationCommand(
         })
         : await context.clearDomainDelegate({
           domainName: parsed.args[0]!,
+          feeRateSatVb: parsed.satvb,
           dataDir,
           databasePath: dbPath,
           provider,
@@ -362,6 +375,7 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending delegate mutation was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
@@ -384,6 +398,7 @@ export async function runWalletMutationCommand(
         ? await context.setDomainMiner({
           domainName: parsed.args[0]!,
           target: parsed.args[1]!,
+          feeRateSatVb: parsed.satvb,
           dataDir,
           databasePath: dbPath,
           provider,
@@ -393,6 +408,7 @@ export async function runWalletMutationCommand(
         })
         : await context.clearDomainMiner({
           domainName: parsed.args[0]!,
+          feeRateSatVb: parsed.satvb,
           dataDir,
           databasePath: dbPath,
           provider,
@@ -409,6 +425,7 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending miner mutation was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
@@ -429,6 +446,7 @@ export async function runWalletMutationCommand(
     if (parsed.command === "domain-canonical") {
       const result = await context.setDomainCanonical({
         domainName: parsed.args[0]!,
+        feeRateSatVb: parsed.satvb,
         dataDir,
         databasePath: dbPath,
         provider,
@@ -445,6 +463,7 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending canonical mutation was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),
@@ -466,6 +485,7 @@ export async function runWalletMutationCommand(
         domainName: parsed.args[0]!,
         fieldName: parsed.args[1]!,
         permanent: parsed.fieldPermanent,
+        feeRateSatVb: parsed.satvb,
         dataDir,
         databasePath: dbPath,
         provider,
@@ -478,6 +498,7 @@ export async function runWalletMutationCommand(
         previewData: buildFieldPreviewData(result),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending field creation was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: workflowMutationNextSteps([
@@ -505,6 +526,7 @@ export async function runWalletMutationCommand(
         domainName: parsed.args[0]!,
         fieldName: parsed.args[1]!,
         source: createFieldValueSource(parsed),
+        feeRateSatVb: parsed.satvb,
         dataDir,
         databasePath: dbPath,
         provider,
@@ -517,6 +539,7 @@ export async function runWalletMutationCommand(
         previewData: buildFieldPreviewData(result),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending field update was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin field show ${result.domainName} ${result.fieldName}`),
@@ -539,6 +562,7 @@ export async function runWalletMutationCommand(
       const result = await context.clearField({
         domainName: parsed.args[0]!,
         fieldName: parsed.args[1]!,
+        feeRateSatVb: parsed.satvb,
         dataDir,
         databasePath: dbPath,
         provider,
@@ -551,6 +575,7 @@ export async function runWalletMutationCommand(
         previewData: buildFieldPreviewData(result),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending field clear was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin field show ${result.domainName} ${result.fieldName}`),
@@ -572,6 +597,7 @@ export async function runWalletMutationCommand(
       const result = await context.sendCog({
         amountCogtoshi: parseCogAmountToCogtoshi(parsed.args[0]!),
         target: parsed.transferTarget!,
+        feeRateSatVb: parsed.satvb,
         dataDir,
         databasePath: dbPath,
         provider,
@@ -588,6 +614,7 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending COG transfer was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps("cogcoin balance"),
@@ -611,6 +638,7 @@ export async function runWalletMutationCommand(
         timeoutBlocksOrDuration: parsed.unlockFor,
         timeoutHeight: parsed.untilHeight === null ? null : Number.parseInt(parsed.untilHeight, 10),
         conditionHex: parsed.conditionHex!,
+        feeRateSatVb: parsed.satvb,
         dataDir,
         databasePath: dbPath,
         provider,
@@ -633,6 +661,7 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending lock was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps("cogcoin locks"),
@@ -653,6 +682,7 @@ export async function runWalletMutationCommand(
       const result = await context.claimCogLock({
         lockId: Number.parseInt(parsed.args[0]!, 10),
         preimageHex: parsed.preimageHex!,
+        feeRateSatVb: parsed.satvb,
         dataDir,
         databasePath: dbPath,
         provider,
@@ -668,6 +698,7 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending claim was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps("cogcoin locks --claimable"),
@@ -688,6 +719,7 @@ export async function runWalletMutationCommand(
     if (isReclaimMutationCommand(parsed.command)) {
       const result = await context.reclaimCogLock({
         lockId: Number.parseInt(parsed.args[0]!, 10),
+        feeRateSatVb: parsed.satvb,
         dataDir,
         databasePath: dbPath,
         provider,
@@ -703,6 +735,7 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending reclaim was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps("cogcoin locks --reclaimable"),
@@ -727,6 +760,7 @@ export async function runWalletMutationCommand(
           targetDomainName: parsed.args[1]!,
           amountCogtoshi: parseCogAmountToCogtoshi(parsed.args[2]!),
           reviewText: parsed.reviewText,
+          feeRateSatVb: parsed.satvb,
           dataDir,
           databasePath: dbPath,
           provider,
@@ -739,6 +773,7 @@ export async function runWalletMutationCommand(
           targetDomainName: parsed.args[1]!,
           amountCogtoshi: parseCogAmountToCogtoshi(parsed.args[2]!),
           reviewText: parsed.reviewText,
+          feeRateSatVb: parsed.satvb,
           dataDir,
           databasePath: dbPath,
           provider,
@@ -751,6 +786,7 @@ export async function runWalletMutationCommand(
         previewData: buildReputationPreviewData(result),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending reputation mutation was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.targetDomainName}`),
@@ -773,6 +809,7 @@ export async function runWalletMutationCommand(
     if (isBuyMutationCommand(parsed.command)) {
       const result = await context.buyDomain({
         domainName: parsed.args[0]!,
+        feeRateSatVb: parsed.satvb,
         dataDir,
         databasePath: dbPath,
         provider,
@@ -789,6 +826,7 @@ export async function runWalletMutationCommand(
         }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending purchase was reconciled instead of creating a duplicate.",
+        fees: result.fees,
         interactive,
         explorerTxid: result.txid,
         nextSteps: commandMutationNextSteps(`cogcoin show ${result.domainName}`),

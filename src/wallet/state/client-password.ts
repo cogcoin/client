@@ -12,6 +12,7 @@ import { writeFileAtomic, writeJsonFileAtomic } from "../fs/atomic.js";
 import { decryptBytesWithKey, encryptBytesWithKey } from "./crypto.js";
 
 const CLIENT_PASSWORD_STATE_FORMAT = "cogcoin-client-password";
+const CLIENT_PASSWORD_ROTATION_JOURNAL_FORMAT = "cogcoin-client-password-rotation";
 const CLIENT_PASSWORD_VERIFIER_FORMAT = "cogcoin-client-password-verifier";
 const LOCAL_SECRET_ENVELOPE_FORMAT = "cogcoin-local-wallet-secret";
 const CLIENT_PASSWORD_VERIFIER_TEXT = "cogcoin-client-password-verifier-v1";
@@ -76,6 +77,26 @@ interface ClientPasswordStateV1 {
   };
 }
 
+interface WrappedSecretEnvelopeV1 {
+  format: typeof LOCAL_SECRET_ENVELOPE_FORMAT;
+  version: 1;
+  cipher: "aes-256-gcm";
+  wrappedBy: "client-password";
+  nonce: string;
+  tag: string;
+  ciphertext: string;
+}
+
+interface ClientPasswordRotationJournalV1 {
+  format: typeof CLIENT_PASSWORD_ROTATION_JOURNAL_FORMAT;
+  version: 1;
+  nextState: ClientPasswordStateV1;
+  secrets: Array<{
+    keyId: string;
+    envelope: WrappedSecretEnvelopeV1;
+  }>;
+}
+
 interface AgentRequest {
   command: "status" | "lock" | "refresh" | "encrypt" | "decrypt";
   secretBase64?: string;
@@ -102,7 +123,7 @@ interface AgentResponse {
 type LocalSecretFile =
   | { state: "missing" }
   | { state: "raw"; secret: Uint8Array }
-  | { state: "wrapped"; envelope: { nonce: string; tag: string; ciphertext: string } };
+  | { state: "wrapped"; envelope: WrappedSecretEnvelopeV1 };
 
 function sanitizeSecretKeyId(keyId: string): string {
   return keyId.replace(/[^a-zA-Z0-9._-]+/g, "-");
@@ -114,6 +135,10 @@ export function resolveLocalSecretFilePath(directoryPath: string, keyId: string)
 
 function resolveClientPasswordStatePath(directoryPath: string): string {
   return join(directoryPath, "client-password.json");
+}
+
+function resolveClientPasswordRotationJournalPath(directoryPath: string): string {
+  return join(directoryPath, "client-password-rotation.json");
 }
 
 function resolveAgentEndpoint(platform: NodeJS.Platform, stateRoot: string): string {
@@ -136,22 +161,44 @@ function createRuntimeError(code: string, cause?: unknown): Error {
   return cause === undefined ? new Error(code) : new Error(code, { cause });
 }
 
-function isWrappedSecretEnvelope(value: unknown): value is {
-  format: string;
-  version: 1;
-  wrappedBy: string;
-  nonce: string;
-  tag: string;
-  ciphertext: string;
-} {
+function isClientPasswordStateV1(value: unknown): value is ClientPasswordStateV1 {
+  return value !== null
+    && typeof value === "object"
+    && (value as { format?: unknown }).format === CLIENT_PASSWORD_STATE_FORMAT
+    && (value as { version?: unknown }).version === 1
+    && typeof (value as { passwordHint?: unknown }).passwordHint === "string"
+    && (value as { kdf?: { name?: unknown } }).kdf?.name === "argon2id"
+    && typeof (value as { verifier?: { nonce?: unknown } }).verifier?.nonce === "string"
+    && typeof (value as { verifier?: { tag?: unknown } }).verifier?.tag === "string"
+    && typeof (value as { verifier?: { ciphertext?: unknown } }).verifier?.ciphertext === "string";
+}
+
+function isWrappedSecretEnvelope(value: unknown): value is WrappedSecretEnvelopeV1 {
   return value !== null
     && typeof value === "object"
     && (value as { format?: unknown }).format === LOCAL_SECRET_ENVELOPE_FORMAT
     && (value as { version?: unknown }).version === 1
+    && (value as { cipher?: unknown }).cipher === "aes-256-gcm"
     && (value as { wrappedBy?: unknown }).wrappedBy === "client-password"
     && typeof (value as { nonce?: unknown }).nonce === "string"
     && typeof (value as { tag?: unknown }).tag === "string"
     && typeof (value as { ciphertext?: unknown }).ciphertext === "string";
+}
+
+function isClientPasswordRotationJournalV1(value: unknown): value is ClientPasswordRotationJournalV1 {
+  return value !== null
+    && typeof value === "object"
+    && (value as { format?: unknown }).format === CLIENT_PASSWORD_ROTATION_JOURNAL_FORMAT
+    && (value as { version?: unknown }).version === 1
+    && isClientPasswordStateV1((value as { nextState?: unknown }).nextState)
+    && Array.isArray((value as { secrets?: unknown }).secrets)
+    && ((value as { secrets: unknown[] }).secrets).every((entry) => (
+      entry !== null
+      && typeof entry === "object"
+      && typeof (entry as { keyId?: unknown }).keyId === "string"
+      && (entry as { keyId?: string }).keyId!.trim().length > 0
+      && isWrappedSecretEnvelope((entry as { envelope?: unknown }).envelope)
+    ));
 }
 
 async function readLocalSecretFile(path: string): Promise<LocalSecretFile> {
@@ -165,11 +212,7 @@ async function readLocalSecretFile(path: string): Promise<LocalSecretFile> {
       if (isWrappedSecretEnvelope(parsed)) {
         return {
           state: "wrapped",
-          envelope: {
-            nonce: parsed.nonce,
-            tag: parsed.tag,
-            ciphertext: parsed.ciphertext,
-          },
+          envelope: parsed,
         };
       }
     } catch {
@@ -191,14 +234,29 @@ async function readLocalSecretFile(path: string): Promise<LocalSecretFile> {
 
 async function loadClientPasswordStateOrNull(path: string): Promise<ClientPasswordStateV1 | null> {
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8")) as ClientPasswordStateV1;
+    const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
 
-    if (
-      parsed.format !== CLIENT_PASSWORD_STATE_FORMAT
-      || parsed.version !== 1
-      || parsed.kdf?.name !== "argon2id"
-      || typeof parsed.passwordHint !== "string"
-    ) {
+    if (!isClientPasswordStateV1(parsed)) {
+      return null;
+    }
+
+    return parsed;
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return null;
+    }
+
+    return null;
+  }
+}
+
+async function loadClientPasswordRotationJournalOrNull(
+  path: string,
+): Promise<ClientPasswordRotationJournalV1 | null> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+
+    if (!isClientPasswordRotationJournalV1(parsed)) {
       return null;
     }
 
@@ -262,6 +320,23 @@ async function createClientPasswordState(options: {
       },
     },
     derivedKey,
+  };
+}
+
+function createWrappedSecretEnvelope(secret: Uint8Array, derivedKey: Uint8Array): WrappedSecretEnvelopeV1 {
+  const envelope = encryptBytesWithKey(secret, derivedKey, {
+    format: LOCAL_SECRET_ENVELOPE_FORMAT,
+    wrappedBy: "client-password",
+  });
+
+  return {
+    format: LOCAL_SECRET_ENVELOPE_FORMAT,
+    version: 1,
+    cipher: "aes-256-gcm",
+    wrappedBy: "client-password",
+    nonce: envelope.nonce,
+    tag: envelope.tag,
+    ciphertext: envelope.ciphertext,
   };
 }
 
@@ -365,6 +440,35 @@ async function collectReferencedSecretIds(stateRoot: string): Promise<string[]> 
   return [...ids].sort((left, right) => left.localeCompare(right));
 }
 
+async function finalizePendingClientPasswordRotationIfNeeded(
+  options: ClientPasswordStorageOptions,
+): Promise<void> {
+  const journal = await loadClientPasswordRotationJournalOrNull(
+    resolveClientPasswordRotationJournalPath(options.directoryPath),
+  );
+
+  if (journal === null) {
+    return;
+  }
+
+  await mkdir(options.directoryPath, { recursive: true, mode: 0o700 });
+
+  for (const secretEntry of journal.secrets) {
+    await writeJsonFileAtomic(
+      resolveLocalSecretFilePath(options.directoryPath, secretEntry.keyId),
+      secretEntry.envelope,
+      { mode: 0o600 },
+    );
+  }
+
+  await writeJsonFileAtomic(
+    resolveClientPasswordStatePath(options.directoryPath),
+    journal.nextState,
+    { mode: 0o600 },
+  );
+  await rm(resolveClientPasswordRotationJournalPath(options.directoryPath), { force: true });
+}
+
 async function legacyMacKeychainHasSecret(
   options: ClientPasswordStorageOptions,
   keyId: string,
@@ -396,6 +500,7 @@ async function inspectReadinessForKey(
 export async function inspectClientPasswordReadiness(
   options: ClientPasswordStorageOptions,
 ): Promise<ClientPasswordReadiness> {
+  await finalizePendingClientPasswordRotationIfNeeded(options);
   const passwordState = await loadClientPasswordStateOrNull(resolveClientPasswordStatePath(options.directoryPath));
   const keyIds = await collectReferencedSecretIds(options.stateRoot);
 
@@ -636,7 +741,17 @@ async function startClientPasswordSession(options: ClientPasswordStorageOptions 
   derivedKey: Buffer;
   unlockDurationSeconds: number;
 }): Promise<ClientPasswordSessionStatus> {
-  const unlockUntilUnixMs = Date.now() + (options.unlockDurationSeconds * 1_000);
+  return await startClientPasswordSessionWithExpiry({
+    ...options,
+    unlockUntilUnixMs: Date.now() + (options.unlockDurationSeconds * 1_000),
+  });
+}
+
+async function startClientPasswordSessionWithExpiry(options: ClientPasswordStorageOptions & {
+  derivedKey: Buffer;
+  unlockUntilUnixMs: number;
+}): Promise<ClientPasswordSessionStatus> {
+  const unlockUntilUnixMs = options.unlockUntilUnixMs;
   const endpoint = resolveAgentEndpoint(options.platform, options.stateRoot);
 
   await lockClientPasswordSession(options).catch(() => undefined);
@@ -711,6 +826,14 @@ function resolveRemainingUnlockSeconds(status: ClientPasswordSessionStatus): num
   return Math.max(1, Math.ceil((status.unlockUntilUnixMs - Date.now()) / 1_000));
 }
 
+function resolvePostChangeUnlockUntilUnixMs(status: ClientPasswordSessionStatus): number {
+  if (status.unlocked && status.unlockUntilUnixMs != null) {
+    return status.unlockUntilUnixMs;
+  }
+
+  return Date.now() + (CLIENT_PASSWORD_SETUP_AUTO_UNLOCK_SECONDS * 1_000);
+}
+
 async function refreshClientPasswordSession(
   options: ClientPasswordStorageOptions & {
     unlockUntilUnixMs: number;
@@ -736,6 +859,26 @@ async function unlockClientPasswordSessionWithPrompt(
     prompt: ClientPasswordPrompt;
   },
 ): Promise<ClientPasswordSessionStatus> {
+  const derivedKey = await promptForVerifiedClientPassword({
+    ...options,
+    promptMessage: "Client password: ",
+    ttyErrorCode: "wallet_client_password_unlock_requires_tty",
+  });
+  const unlockDurationSeconds = await promptForUnlockDuration(options.prompt);
+  return await startClientPasswordSession({
+    ...options,
+    derivedKey,
+    unlockDurationSeconds,
+  });
+}
+
+async function promptForVerifiedClientPassword(
+  options: ClientPasswordStorageOptions & {
+    prompt: ClientPasswordPrompt;
+    promptMessage: string;
+    ttyErrorCode: string;
+  },
+): Promise<Buffer> {
   const readiness = await inspectClientPasswordReadiness(options);
 
   if (readiness !== "ready") {
@@ -743,7 +886,7 @@ async function unlockClientPasswordSessionWithPrompt(
   }
 
   if (!options.prompt.isInteractive) {
-    throw new Error("wallet_client_password_unlock_requires_tty");
+    throw new Error(options.ttyErrorCode);
   }
 
   const state = await loadClientPasswordStateOrNull(resolveClientPasswordStatePath(options.directoryPath));
@@ -759,7 +902,7 @@ async function unlockClientPasswordSessionWithPrompt(
       options.prompt.writeLine(`Hint: ${state.passwordHint}`);
     }
 
-    const passwordText = await promptForHiddenValue(options.prompt, "Client password: ");
+    const passwordText = await promptForHiddenValue(options.prompt, options.promptMessage);
     const passwordBytes = Buffer.from(passwordText, "utf8");
     let derivedKey: Buffer | null = null;
 
@@ -772,18 +915,12 @@ async function unlockClientPasswordSessionWithPrompt(
       zeroizeBuffer(passwordBytes);
     }
 
-    if (derivedKey === null) {
-      attempts += 1;
-      options.prompt.writeLine("Incorrect client password.");
-      continue;
+    if (derivedKey !== null) {
+      return derivedKey;
     }
 
-    const unlockDurationSeconds = await promptForUnlockDuration(options.prompt);
-    return await startClientPasswordSession({
-      ...options,
-      derivedKey,
-      unlockDurationSeconds,
-    });
+    attempts += 1;
+    options.prompt.writeLine("Incorrect client password.");
   }
 }
 
@@ -792,12 +929,8 @@ async function writeWrappedSecret(options: {
   secret: Uint8Array;
   derivedKey: Uint8Array;
 }): Promise<void> {
-  const envelope = encryptBytesWithKey(options.secret, options.derivedKey, {
-    format: LOCAL_SECRET_ENVELOPE_FORMAT,
-    wrappedBy: "client-password",
-  });
-
-  await writeFileAtomic(options.path, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
+  const envelope = createWrappedSecretEnvelope(options.secret, options.derivedKey);
+  await writeJsonFileAtomic(options.path, envelope, { mode: 0o600 });
 }
 
 async function migrateReferencedSecrets(options: ClientPasswordStorageOptions & {
@@ -894,6 +1027,7 @@ export async function ensureClientPasswordConfigured(
     prompt: ClientPasswordPrompt;
   },
 ): Promise<{ action: ClientPasswordSetupAction; session: ClientPasswordSessionStatus }> {
+  await finalizePendingClientPasswordRotationIfNeeded(options);
   const readiness = await inspectClientPasswordReadiness(options);
 
   if (readiness === "ready") {
@@ -1003,6 +1137,7 @@ export async function loadClientProtectedSecret(
   },
 ): Promise<Uint8Array> {
   try {
+    await finalizePendingClientPasswordRotationIfNeeded(options);
     const passwordState = await loadClientPasswordStateOrNull(resolveClientPasswordStatePath(options.directoryPath));
     const localState = await readLocalSecretFile(resolveLocalSecretFilePath(options.directoryPath, options.keyId));
 
@@ -1052,6 +1187,7 @@ export async function storeClientProtectedSecret(
   },
 ): Promise<void> {
   try {
+    await finalizePendingClientPasswordRotationIfNeeded(options);
     const passwordState = await loadClientPasswordStateOrNull(resolveClientPasswordStatePath(options.directoryPath));
 
     if (passwordState === null) {
@@ -1097,6 +1233,7 @@ export async function unlockClientPasswordSession(
     prompt: ClientPasswordPrompt;
   },
 ): Promise<ClientPasswordSessionStatus> {
+  await finalizePendingClientPasswordRotationIfNeeded(options);
   if (!options.prompt.isInteractive) {
     throw new Error("wallet_client_password_unlock_requires_tty");
   }
@@ -1119,6 +1256,108 @@ export async function unlockClientPasswordSession(
   }
 
   return await unlockClientPasswordSessionWithPrompt(options);
+}
+
+async function prepareClientPasswordRotation(
+  options: ClientPasswordStorageOptions & {
+    currentDerivedKey: Uint8Array;
+    newPasswordBytes: Uint8Array;
+    newPasswordHint: string;
+  },
+): Promise<{
+  journal: ClientPasswordRotationJournalV1;
+  newDerivedKey: Buffer;
+}> {
+  const next = await createClientPasswordState({
+    passwordBytes: options.newPasswordBytes,
+    passwordHint: options.newPasswordHint,
+  });
+  const keyIds = await collectReferencedSecretIds(options.stateRoot);
+  const secrets: ClientPasswordRotationJournalV1["secrets"] = [];
+
+  try {
+    for (const keyId of keyIds) {
+      const localState = await readLocalSecretFile(resolveLocalSecretFilePath(options.directoryPath, keyId));
+
+      if (localState.state === "missing") {
+        throw new Error(`wallet_secret_missing_${keyId}`);
+      }
+
+      if (localState.state === "raw") {
+        throw new Error("wallet_client_password_migration_required");
+      }
+
+      const secret = decryptBytesWithKey(localState.envelope, options.currentDerivedKey);
+
+      try {
+        secrets.push({
+          keyId,
+          envelope: createWrappedSecretEnvelope(secret, next.derivedKey),
+        });
+      } finally {
+        zeroizeBuffer(secret);
+      }
+    }
+
+    return {
+      journal: {
+        format: CLIENT_PASSWORD_ROTATION_JOURNAL_FORMAT,
+        version: 1,
+        nextState: next.state,
+        secrets,
+      },
+      newDerivedKey: next.derivedKey,
+    };
+  } catch (error) {
+    zeroizeBuffer(next.derivedKey);
+    throw error;
+  }
+}
+
+export async function changeClientPassword(
+  options: ClientPasswordStorageOptions & {
+    prompt: ClientPasswordPrompt;
+  },
+): Promise<ClientPasswordSessionStatus> {
+  await finalizePendingClientPasswordRotationIfNeeded(options);
+  const previousSession = await readClientPasswordSessionStatus(options);
+  const currentDerivedKey = await promptForVerifiedClientPassword({
+    ...options,
+    promptMessage: "Current client password: ",
+    ttyErrorCode: "wallet_client_password_change_requires_tty",
+  });
+  const nextPassword = await promptForNewPassword(options.prompt);
+  let newDerivedKey: Buffer | null = null;
+
+  try {
+    const prepared = await prepareClientPasswordRotation({
+      ...options,
+      currentDerivedKey,
+      newPasswordBytes: nextPassword.passwordBytes,
+      newPasswordHint: nextPassword.passwordHint,
+    });
+    newDerivedKey = prepared.newDerivedKey;
+
+    await mkdir(options.directoryPath, { recursive: true, mode: 0o700 });
+    await writeJsonFileAtomic(
+      resolveClientPasswordRotationJournalPath(options.directoryPath),
+      prepared.journal,
+      { mode: 0o600 },
+    );
+    await finalizePendingClientPasswordRotationIfNeeded(options);
+
+    const session = await startClientPasswordSessionWithExpiry({
+      ...options,
+      derivedKey: newDerivedKey,
+      unlockUntilUnixMs: resolvePostChangeUnlockUntilUnixMs(previousSession),
+    });
+    newDerivedKey = null;
+    return session;
+  } finally {
+    zeroizeBuffer(currentDerivedKey);
+    zeroizeBuffer(nextPassword.passwordBytes);
+    zeroizeBuffer(newDerivedKey);
+  }
 }
 
 export function createLegacyKeychainServiceName(): string {

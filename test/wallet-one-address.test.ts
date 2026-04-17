@@ -270,6 +270,11 @@ test("anchor and field-create emit single-tx mutation envelopes", () => {
     status: "live" as const,
     reusedExisting: false,
     foundingMessageText: "hello",
+    fees: {
+      feeRateSatVb: 9,
+      feeSats: "140",
+      source: "estimated-next-block-plus-one" as const,
+    },
   };
   const fieldResult = {
     kind: "field-create" as const,
@@ -281,6 +286,11 @@ test("anchor and field-create emit single-tx mutation envelopes", () => {
     format: null,
     status: "live" as const,
     reusedExisting: false,
+    fees: {
+      feeRateSatVb: 7,
+      feeSats: "120",
+      source: "fallback-default" as const,
+    },
     resolved: {
       sender: {
         selector: "wallet",
@@ -312,4 +322,6 @@ test("anchor and field-create emit single-tx mutation envelopes", () => {
   assert.equal(fieldPreview.resultType, "single-tx-mutation");
   assert.deepEqual(anchorData.transaction, { txid: anchorResult.txid, wtxid: null });
   assert.deepEqual(fieldData.transaction, { txid: fieldResult.txid, wtxid: null });
+  assert.deepEqual(anchorData.fees, anchorResult.fees);
+  assert.deepEqual(fieldPreview.fees, fieldResult.fees);
 });
