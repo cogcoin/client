@@ -29,7 +29,7 @@ import {
   type RenderClock,
   type TtyRenderStream,
 } from "./render-policy.js";
-import { TtyProgressRenderer } from "./tty-renderer.js";
+import { TtyProgressRenderer, type FollowSceneRenderOptions } from "./tty-renderer.js";
 
 interface QuoteRotatorLike {
   current(now?: number): Promise<{
@@ -63,6 +63,7 @@ interface ProgressRendererLike {
     cogcoinSyncTargetHeight: number | null,
     followScene: FollowSceneStateForTesting,
     statusFieldText?: string,
+    renderOptions?: FollowSceneRenderOptions,
   ): void;
   close(): void;
 }

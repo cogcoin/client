@@ -20,6 +20,11 @@ interface StreamWriteObserver {
   originalWrite: RenderStream["write"];
 }
 
+export interface FollowSceneRenderOptions {
+  artworkBalanceText?: string | null;
+  extraLines?: string[];
+}
+
 const STREAM_WRITE_OBSERVERS = new WeakMap<RenderStream, StreamWriteObserver>();
 
 function getStreamWriteObserver(stream: RenderStream): StreamWriteObserver {
@@ -155,6 +160,7 @@ export class TtyProgressRenderer {
     cogcoinSyncTargetHeight: number | null,
     followScene: FollowSceneStateForTesting,
     statusFieldText = "",
+    renderOptions: FollowSceneRenderOptions = {},
   ): void {
     const now = Date.now();
     const width = Math.max(20, this.#stream.columns ?? 120);
@@ -165,9 +171,12 @@ export class TtyProgressRenderer {
       width,
       now,
     );
+    const extraLines = (renderOptions.extraLines ?? []).map((line) => truncateLine(line, width));
     const lines = width >= ART_WIDTH
-      ? [...renderFollowFrame(followScene, statusFieldText, now), "", progressLine, ""]
-      : [truncateLine(NEUTRAL_MESSAGE_TITLE, width), progressLine, ""];
+      ? [...renderFollowFrame(followScene, statusFieldText, now, {
+        artworkBalanceText: renderOptions.artworkBalanceText ?? null,
+      }), "", progressLine, "", ...extraLines]
+      : [truncateLine(NEUTRAL_MESSAGE_TITLE, width), progressLine, "", ...extraLines];
     const frame = lines.join("\n");
 
     this.#resetFrameIfExternalWritesDetected();

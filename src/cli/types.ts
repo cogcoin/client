@@ -40,6 +40,7 @@ import type {
 } from "../wallet/mining/index.js";
 import type {
   anchorDomain,
+  transferBitcoin,
   buyDomain,
   claimCogLock,
   clearDomainDelegate,
@@ -78,6 +79,7 @@ export type CommandName =
   | "bitcoin-start"
   | "bitcoin-stop"
   | "bitcoin-status"
+  | "bitcoin-transfer"
   | "indexer-start"
   | "indexer-stop"
   | "indexer-status"
@@ -253,6 +255,7 @@ export interface CliRunnerContext {
   showWalletMnemonic?: typeof showWalletMnemonic;
   registerDomain?: typeof registerDomain;
   anchorDomain?: typeof anchorDomain;
+  transferBitcoin?: typeof transferBitcoin;
   transferDomain?: typeof transferDomain;
   sellDomain?: typeof sellDomain;
   buyDomain?: typeof buyDomain;

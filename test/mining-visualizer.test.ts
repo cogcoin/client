@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createEmptyMiningFollowVisualizerState,
   MiningFollowVisualizer,
   describeMiningVisualizerProgress,
   describeMiningVisualizerStatus,
 } from "../src/wallet/mining/visualizer.js";
+import type { FollowSceneRenderOptions } from "../src/bitcoind/progress/tty-renderer.js";
 import type { MiningRuntimeStatusV1 } from "../src/wallet/mining/types.js";
+import type { MiningFollowVisualizerState } from "../src/wallet/mining/visualizer.js";
 
 class MemoryStream {
   readonly chunks: string[] = [];
@@ -101,6 +104,19 @@ function createSnapshot(
   };
 }
 
+function createUiState(
+  partial: Partial<MiningFollowVisualizerState> = {},
+): MiningFollowVisualizerState {
+  return {
+    ...createEmptyMiningFollowVisualizerState(),
+    ...partial,
+  };
+}
+
+function countMatches(value: string, pattern: RegExp): number {
+  return [...value.matchAll(pattern)].length;
+}
+
 test("mining follow visualizer renders the follow scene on tty streams", () => {
   const stream = new MemoryStream({ isTTY: true, columns: 120 });
   const visualizer = new MiningFollowVisualizer({
@@ -149,4 +165,172 @@ test("mining visualizer descriptions surface zero-reward and note overrides", ()
   });
 
   assert.equal(describeMiningVisualizerProgress(notedSnapshot), "Custom mining note.");
+});
+
+test("mining follow visualizer keeps the sentence board and footer block permanently allocated", () => {
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot(), createUiState({
+    balanceCogtoshi: 123_450_000n,
+    balanceSats: 42n,
+    blockHeight: 101,
+    visibleBoardEntries: [
+      { rank: 1, domainName: "alpha", sentence: "alpha sentence" },
+      { rank: 2, domainName: "beta", sentence: "beta sentence" },
+    ],
+    selfEntry: {
+      rank: "-",
+      domainName: "local",
+      sentence: "local sentence",
+    },
+    latestSentence: "local sentence",
+    latestTxid: "ab".repeat(32),
+  }));
+  visualizer.close();
+
+  assert.deepEqual(capturedOptions, {
+    artworkBalanceText: "COG1.2345|SAT42",
+    extraLines: [
+      "✎ Block #101 Sentences ✎",
+      "",
+      "1. @alpha: alpha sentence",
+      "2. @beta: beta sentence",
+      "3.",
+      "4.",
+      "5.",
+      "----------",
+      "-. @local: local sentence",
+      "",
+      "Latest sentence: local sentence",
+      `View at https://mempool.space/${"ab".repeat(32)}/`,
+    ],
+  });
+});
+
+test("mining follow visualizer keeps blank self and footer lines when no candidate exists yet", () => {
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot(), createUiState({
+    blockHeight: 102,
+  }));
+  visualizer.close();
+
+  assert.deepEqual(capturedOptions?.extraLines, [
+    "✎ Block #102 Sentences ✎",
+    "",
+    "1.",
+    "2.",
+    "3.",
+    "4.",
+    "5.",
+    "----------",
+    "",
+    "",
+    "Latest sentence: ",
+    "View at ",
+  ]);
+});
+
+test("mining follow visualizer keeps a fixed-height frame across empty, unpublished, and published states", () => {
+  const stream = new MemoryStream({ isTTY: true, columns: 120 });
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream,
+  });
+
+  visualizer.update(createSnapshot({
+    currentPhase: "waiting",
+  }), createUiState({
+    blockHeight: 103,
+  }));
+  visualizer.update(createSnapshot({
+    currentPhase: "waiting",
+  }), createUiState({
+    blockHeight: 103,
+    selfEntry: {
+      rank: "-",
+      domainName: "local",
+      sentence: "candidate not published",
+    },
+    latestSentence: "candidate not published",
+  }));
+  visualizer.update(createSnapshot({
+    currentPhase: "waiting",
+  }), createUiState({
+    blockHeight: 103,
+    visibleBoardEntries: [
+      { rank: 1, domainName: "alpha", sentence: "alpha sentence" },
+    ],
+    selfEntry: {
+      rank: 4,
+      domainName: "local",
+      sentence: "candidate published",
+    },
+    latestSentence: "candidate published",
+    latestTxid: "cd".repeat(32),
+  }));
+  visualizer.close();
+
+  const expectedFrameHeight = 28;
+  assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[2K/g), expectedFrameHeight);
+  assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[1A/g), expectedFrameHeight - 1);
+  assert.equal(countMatches(stream.chunks[3] ?? "", /\u001B\[2K/g), expectedFrameHeight);
+  assert.equal(countMatches(stream.chunks[3] ?? "", /\u001B\[1A/g), expectedFrameHeight - 1);
+});
+
+test("mining visualizer status prefers the recent settled win banner", () => {
+  const status = describeMiningVisualizerStatus(
+    createSnapshot({
+      currentPhase: "waiting",
+    }),
+    createUiState({
+      recentWin: {
+        rank: 2,
+        rewardCogtoshi: 123_000_000n,
+        blockHeight: 101,
+      },
+    }),
+  );
+
+  assert.equal(status, "You got #2 and mined 1.23 COG in block #101");
 });

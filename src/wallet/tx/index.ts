@@ -1,4 +1,8 @@
 export {
+  transferBitcoin,
+  type BitcoinTransferResult,
+} from "./bitcoin-transfer.js";
+export {
   extractOpReturnPayloadFromScriptHex,
   registerDomain,
   type RegisterDomainResult,

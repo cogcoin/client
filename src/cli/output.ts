@@ -971,6 +971,14 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode === "wallet_bitcoin_transfer_insufficient_funds") {
+    return {
+      what: "Wallet address does not have enough BTC.",
+      why: "The requested satoshi amount plus the mining fee exceeds the wallet's spendable BTC balance.",
+      next: "Reduce the amount or add more BTC to the wallet address, then retry.",
+    };
+  }
+
   if (errorCode.includes("insufficient")) {
     return {
       what: "Available funds are insufficient.",
@@ -1155,6 +1163,54 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode === "wallet_bitcoin_transfer_invalid_amount") {
+    return {
+      what: "Bitcoin transfer amount is invalid.",
+      why: "This command accepts only a positive whole-number satoshi amount such as `1200`.",
+      next: "Rerun `cogcoin bitcoin transfer <sats> --to <address>` with a positive integer satoshi amount.",
+    };
+  }
+
+  if (errorCode === "wallet_bitcoin_transfer_invalid_address") {
+    return {
+      what: "Bitcoin transfer recipient address is invalid.",
+      why: "This command only accepts a standard mainnet BTC address in `--to`.",
+      next: "Rerun `cogcoin bitcoin transfer <sats> --to <address>` with a valid mainnet BTC address.",
+    };
+  }
+
+  if (errorCode === "wallet_bitcoin_transfer_address_required") {
+    return {
+      what: "Bitcoin transfer recipient must be a standard BTC address.",
+      why: "V1 of this command does not support opaque script targets such as `spk:<hex>`.",
+      next: "Rerun `cogcoin bitcoin transfer <sats> --to <address>` with a standard mainnet BTC address.",
+    };
+  }
+
+  if (errorCode === "wallet_bitcoin_transfer_self_transfer") {
+    return {
+      what: "Bitcoin transfer recipient matches the wallet address.",
+      why: "This command rejects self-transfers to the wallet funding script/address.",
+      next: "Choose a different recipient address and retry.",
+    };
+  }
+
+  if (errorCode === "wallet_bitcoin_transfer_confirmation_rejected") {
+    return {
+      what: "Bitcoin transfer confirmation was rejected.",
+      why: "The interactive confirmation was declined before the BTC payment was broadcast.",
+      next: "Review the recipient address and amount, then rerun the command if you still want to send BTC.",
+    };
+  }
+
+  if (errorCode === "wallet_bitcoin_transfer_requires_tty") {
+    return {
+      what: "Bitcoin transfer confirmation needs an interactive terminal.",
+      why: "Without `--yes`, Cogcoin must ask for an interactive confirmation before publishing a BTC payment.",
+      next: "Rerun the command in an interactive terminal, or add `--yes` if that is appropriate for your workflow.",
+    };
+  }
+
   if (errorCode === "wallet_claim_sender_not_local") {
     return {
       what: "The claim sender is not locally controlled.",
@@ -1214,6 +1270,8 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
       return "cogcoin client lock";
     case "client-change-password":
       return "cogcoin client change-password";
+    case "bitcoin-transfer":
+      return `cogcoin bitcoin transfer ${args[0] ?? "<sats>"}`;
     case "reset":
       return "cogcoin reset";
     case "repair":
@@ -1394,6 +1452,8 @@ export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string |
       return "cogcoin/client-lock/v1";
     case "client-change-password":
       return "cogcoin/client-change-password/v1";
+    case "bitcoin-transfer":
+      return "cogcoin/bitcoin-transfer/v1";
     case "wallet-delete":
       return "cogcoin/wallet-delete/v1";
     case "reset":

@@ -1,5 +1,6 @@
 import type {
   AnchorDomainResult,
+  BitcoinTransferResult,
   CogMutationResult,
   DomainAdminMutationResult,
   DomainMarketMutationResult,
@@ -88,6 +89,23 @@ export function buildOperationData(options: {
     },
     state: options.state ?? null,
   };
+}
+
+export function buildBitcoinTransferData(result: BitcoinTransferResult) {
+  return buildOperationData({
+    kind: "bitcoin-transfer",
+    state: null,
+    operation: {
+      amountSats: result.amountSats.toString(),
+      feeSats: result.feeSats.toString(),
+      senderAddress: result.senderAddress,
+      recipientAddress: result.recipientAddress,
+      recipientScriptPubKeyHex: result.recipientScriptPubKeyHex,
+      changeAddress: result.changeAddress,
+      txid: result.txid,
+      wtxid: result.wtxid,
+    },
+  });
 }
 
 export function buildRegisterMutationData(

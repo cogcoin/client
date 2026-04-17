@@ -5,6 +5,7 @@ import {
 } from "../../wallet/tx/index.js";
 import {
   buildAnchorMutationData,
+  buildBitcoinTransferData,
   buildCogMutationData,
   buildDomainAdminMutationData,
   buildDomainMarketMutationData,
@@ -119,7 +120,7 @@ export async function runWalletMutationCommand(
 
   try {
     const outcome = await waitForCompletionOrStop((async () => {
-      if (!isWalletMutationCommand(parsed.command)) {
+      if (parsed.command !== "bitcoin-transfer" && !isWalletMutationCommand(parsed.command)) {
         writeLine(context.stderr, `wallet mutation command not implemented: ${parsed.command}`);
         return 1;
       }
@@ -129,6 +130,37 @@ export async function runWalletMutationCommand(
       const prompter = createCommandPrompter(parsed, context);
       const interactive = prompter.isInteractive;
       const provider = withInteractiveWalletSecretProvider(context.walletSecretProvider, prompter);
+
+      if (parsed.command === "bitcoin-transfer") {
+        const result = await context.transferBitcoin({
+          amountSatsText: parsed.args[0]!,
+          target: parsed.transferTarget!,
+          dataDir,
+          databasePath: dbPath,
+          provider,
+          prompter,
+          assumeYes: parsed.assumeYes,
+          paths: runtimePaths,
+        });
+        return writeMutationCommandSuccess(parsed, context, {
+          data: buildBitcoinTransferData(result),
+          reusedExisting: false,
+          reusedMessage: "",
+          interactive,
+          explorerTxid: result.txid,
+          nextSteps: workflowMutationNextSteps([]),
+          text: {
+            heading: "Bitcoin transfer submitted.",
+            fields: [
+              { label: "Sender", value: result.senderAddress },
+              { label: "Recipient", value: result.recipientAddress },
+              { label: "Amount", value: `${result.amountSats.toString()} sats` },
+              { label: "Fee", value: `${result.feeSats.toString()} sats` },
+              { label: "Txid", value: result.txid },
+            ],
+          },
+        });
+      }
 
       if (isAnchorMutationCommand(parsed.command)) {
         const result = await context.anchorDomain({

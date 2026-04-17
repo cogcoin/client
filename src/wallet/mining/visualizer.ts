@@ -11,7 +11,7 @@ import {
   type RenderClock,
   type TtyRenderStream,
 } from "../../bitcoind/progress/render-policy.js";
-import { TtyProgressRenderer } from "../../bitcoind/progress/tty-renderer.js";
+import { TtyProgressRenderer, type FollowSceneRenderOptions } from "../../bitcoind/progress/tty-renderer.js";
 import type { MiningRuntimeStatusV1 } from "./types.js";
 
 interface VisualizerRendererLike {
@@ -21,8 +21,151 @@ interface VisualizerRendererLike {
     cogcoinSyncTargetHeight: number | null,
     followScene: ReturnType<typeof createFollowSceneState>,
     statusFieldText?: string,
+    renderOptions?: FollowSceneRenderOptions,
   ): void;
   close(): void;
+}
+
+const MINING_ARTWORK_BALANCE_WIDTH = 23;
+const MINING_SENTENCE_BOARD_SIZE = 5;
+
+export interface MiningSentenceBoardEntry {
+  rank: number;
+  domainName: string;
+  sentence: string;
+}
+
+export interface MiningSelfSentenceEntry {
+  rank: number | "-" | null;
+  domainName: string | null;
+  sentence: string | null;
+}
+
+export interface MiningRecentWinSummary {
+  rank: number;
+  rewardCogtoshi: bigint;
+  blockHeight: number;
+}
+
+export interface MiningFollowVisualizerState {
+  balanceCogtoshi: bigint | null;
+  balanceSats: bigint | null;
+  blockHeight: number | null;
+  visibleBoardEntries: MiningSentenceBoardEntry[];
+  selfEntry: MiningSelfSentenceEntry;
+  latestSentence: string | null;
+  latestTxid: string | null;
+  recentWin: MiningRecentWinSummary | null;
+}
+
+function formatCogAmountWithDecimals(
+  value: bigint,
+  {
+    maxFractionDigits,
+    minFractionDigits,
+  }: {
+    maxFractionDigits: number;
+    minFractionDigits: number;
+  },
+): string {
+  const sign = value < 0n ? "-" : "";
+  const absolute = value < 0n ? -value : value;
+  const whole = absolute / 100_000_000n;
+  const fraction = absolute % 100_000_000n;
+  const paddedFraction = fraction.toString().padStart(8, "0");
+  const clampedMax = Math.max(0, Math.min(8, maxFractionDigits));
+  const clampedMin = Math.max(0, Math.min(clampedMax, minFractionDigits));
+  let fractionText = paddedFraction.slice(0, clampedMax);
+
+  while (fractionText.length > clampedMin && fractionText.endsWith("0")) {
+    fractionText = fractionText.slice(0, -1);
+  }
+
+  if (fractionText.length === 0 && clampedMin > 0) {
+    fractionText = "".padEnd(clampedMin, "0");
+  }
+
+  return fractionText.length > 0
+    ? `${sign}${whole.toString()}.${fractionText}`
+    : `${sign}${whole.toString()}`;
+}
+
+function formatCompactBalanceText(balanceCogtoshi: bigint | null, balanceSats: bigint | null): string | null {
+  if (balanceCogtoshi === null && balanceSats === null) {
+    return null;
+  }
+
+  const satSegment = balanceSats === null ? null : `SAT${balanceSats.toString()}`;
+
+  if (balanceCogtoshi === null) {
+    return satSegment;
+  }
+
+  for (let digits = 4; digits >= 1; digits -= 1) {
+    const cogSegment = `COG${formatCogAmountWithDecimals(balanceCogtoshi, {
+      maxFractionDigits: digits,
+      minFractionDigits: 1,
+    })}`;
+    const combined = satSegment === null ? cogSegment : `${cogSegment}|${satSegment}`;
+
+    if (combined.length <= MINING_ARTWORK_BALANCE_WIDTH) {
+      return combined;
+    }
+  }
+
+  if (satSegment === null) {
+    const clippedCogOnly = `COG${formatCogAmountWithDecimals(balanceCogtoshi, {
+      maxFractionDigits: 1,
+      minFractionDigits: 1,
+    })}`;
+    return clippedCogOnly.slice(Math.max(0, clippedCogOnly.length - MINING_ARTWORK_BALANCE_WIDTH));
+  }
+
+  const compactCog = `COG${formatCogAmountWithDecimals(balanceCogtoshi, {
+    maxFractionDigits: 1,
+    minFractionDigits: 1,
+  })}`;
+  const reserved = Math.min(MINING_ARTWORK_BALANCE_WIDTH, satSegment.length + 1);
+  const availableCogWidth = Math.max(0, MINING_ARTWORK_BALANCE_WIDTH - reserved);
+  const clippedCog = compactCog.slice(Math.max(0, compactCog.length - availableCogWidth));
+  return `${clippedCog}${clippedCog.length > 0 ? "|" : ""}${satSegment}`.slice(-MINING_ARTWORK_BALANCE_WIDTH);
+}
+
+function formatRewardCogAmount(value: bigint): string {
+  return `${formatCogAmountWithDecimals(value, {
+    maxFractionDigits: 8,
+    minFractionDigits: 1,
+  })} COG`;
+}
+
+function formatSentenceRow(rank: number, domainName: string, sentence: string): string {
+  return `${rank}. @${domainName}: ${sentence}`;
+}
+
+function formatSelfSentenceRow(entry: MiningSelfSentenceEntry): string {
+  if (entry.domainName === null || entry.sentence === null) {
+    return "";
+  }
+
+  const rankLabel = entry.rank === null ? "" : `${entry.rank}.`;
+  return `${rankLabel} @${entry.domainName}: ${entry.sentence}`.trimStart();
+}
+
+export function createEmptyMiningFollowVisualizerState(): MiningFollowVisualizerState {
+  return {
+    balanceCogtoshi: null,
+    balanceSats: null,
+    blockHeight: null,
+    visibleBoardEntries: [],
+    selfEntry: {
+      rank: null,
+      domainName: null,
+      sentence: null,
+    },
+    latestSentence: null,
+    latestTxid: null,
+    recentWin: null,
+  };
 }
 
 const VISUALIZER_PROGRESS_SNAPSHOT = {
@@ -35,7 +178,12 @@ const VISUALIZER_PROGRESS_SNAPSHOT = {
 
 export function describeMiningVisualizerStatus(
   snapshot: MiningRuntimeStatusV1,
+  ui: MiningFollowVisualizerState = createEmptyMiningFollowVisualizerState(),
 ): string {
+  if (ui.recentWin !== null) {
+    return `You got #${ui.recentWin.rank} and mined ${formatRewardCogAmount(ui.recentWin.rewardCogtoshi)} in block #${ui.recentWin.blockHeight}`;
+  }
+
   switch (snapshot.currentPhase) {
     case "resuming":
       return "Resuming after suspend";
@@ -132,6 +280,7 @@ export class MiningFollowVisualizer {
   readonly #progress = createBootstrapProgress("follow_tip", VISUALIZER_PROGRESS_SNAPSHOT);
   readonly #scene = createFollowSceneState();
   #latestSnapshot: MiningRuntimeStatusV1 | null = null;
+  #latestUiState: MiningFollowVisualizerState = createEmptyMiningFollowVisualizerState();
 
   constructor(options: {
     progressOutput?: ProgressOutputMode;
@@ -166,12 +315,15 @@ export class MiningFollowVisualizer {
     });
   }
 
-  update(snapshot: MiningRuntimeStatusV1): void {
+  update(snapshot: MiningRuntimeStatusV1, uiState?: MiningFollowVisualizerState): void {
     if (this.#renderer === null) {
       return;
     }
 
     this.#latestSnapshot = snapshot;
+    if (uiState !== undefined) {
+      this.#latestUiState = uiState;
+    }
     this.#renderThrottle.request();
   }
 
@@ -186,6 +338,7 @@ export class MiningFollowVisualizer {
     }
 
     const snapshot = this.#latestSnapshot;
+    const uiState = this.#latestUiState;
     const indexedHeight = snapshot.indexerTipHeight ?? snapshot.coreBestHeight ?? null;
     const nodeHeight = snapshot.coreBestHeight ?? indexedHeight;
 
@@ -208,7 +361,25 @@ export class MiningFollowVisualizer {
       indexedHeight,
       nodeHeight,
       this.#scene,
-      describeMiningVisualizerStatus(snapshot),
+      describeMiningVisualizerStatus(snapshot, uiState),
+      {
+        artworkBalanceText: formatCompactBalanceText(uiState.balanceCogtoshi, uiState.balanceSats),
+        extraLines: [
+          `✎ Block #${uiState.blockHeight ?? "-----"} Sentences ✎`,
+          "",
+          ...Array.from({ length: MINING_SENTENCE_BOARD_SIZE }, (_value, index) => {
+            const entry = uiState.visibleBoardEntries[index];
+            return entry === undefined
+              ? `${index + 1}.`
+              : formatSentenceRow(entry.rank, entry.domainName, entry.sentence);
+          }),
+          "----------",
+          formatSelfSentenceRow(uiState.selfEntry),
+          "",
+          `Latest sentence: ${uiState.latestSentence ?? ""}`,
+          `View at ${uiState.latestTxid === null ? "" : `https://mempool.space/${uiState.latestTxid}/`}`,
+        ],
+      },
     );
   }
 }

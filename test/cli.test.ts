@@ -7,6 +7,7 @@ import { formatCliTextError } from "../src/cli/output.js";
 test("help text reflects the one-address model", () => {
   assert.match(HELP_TEXT, /anchor <domain>\s+Anchor an owned unanchored domain with the wallet address/);
   assert.match(HELP_TEXT, /balance\s+Show local wallet COG balances/);
+  assert.match(HELP_TEXT, /bitcoin transfer <sats> --to <address>\s+Send plain BTC from the wallet address/i);
   assert.match(HELP_TEXT, /--satvb <n>\s+Override the mutation fee rate in sat\/vB/);
   assert.match(HELP_TEXT, /cogcoin register alpha --satvb 12\.5/);
   assert.match(HELP_TEXT, /client unlock\s+Unlock password-protected local wallet secrets/i);
@@ -55,6 +56,16 @@ test("parser accepts client lock, unlock, and change-password", () => {
   assert.equal(parseCliArgs(["client", "change-password"]).command, "client-change-password");
 });
 
+test("parser accepts bitcoin transfer with --yes and --seed", () => {
+  const parsed = parseCliArgs(["bitcoin", "transfer", "1200", "--to", "bc1qrecipient", "--yes", "--seed", "spend"]);
+
+  assert.equal(parsed.command, "bitcoin-transfer");
+  assert.equal(parsed.args[0], "1200");
+  assert.equal(parsed.transferTarget, "bc1qrecipient");
+  assert.equal(parsed.assumeYes, true);
+  assert.equal(parsed.seedName, "spend");
+});
+
 test("parser accepts --satvb for wallet mutation commands", () => {
   const parsed = parseCliArgs(["register", "alpha", "--satvb", "12.5"]);
 
@@ -85,6 +96,17 @@ test("parser rejects --satvb for non-mutation commands", () => {
   assert.throws(
     () => parseCliArgs(["status", "--satvb", "12.5"]),
     /cli_satvb_not_supported_for_command/,
+  );
+  assert.throws(
+    () => parseCliArgs(["bitcoin", "transfer", "1200", "--to", "bc1qrecipient", "--satvb", "12.5"]),
+    /cli_satvb_not_supported_for_command/,
+  );
+});
+
+test("parser rejects preview-json for bitcoin transfer", () => {
+  assert.throws(
+    () => parseCliArgs(["bitcoin", "transfer", "1200", "--to", "bc1qrecipient", "--output", "preview-json"]),
+    /cli_output_not_supported_for_command/,
   );
 });
 
@@ -149,6 +171,20 @@ test("CLI error text explains client password setup and lock guidance", () => {
   assert.match(locked, /client unlock/i);
   assert.match(changeRequiresTty, /interactive terminal/i);
   assert.match(changeRequiresTty, /client change-password/i);
+});
+
+test("CLI error text explains bitcoin transfer validation and confirmation failures", () => {
+  const invalidAmount = (formatCliTextError(new Error("wallet_bitcoin_transfer_invalid_amount")) ?? []).join("\n");
+  const addressRequired = (formatCliTextError(new Error("wallet_bitcoin_transfer_address_required")) ?? []).join("\n");
+  const selfTransfer = (formatCliTextError(new Error("wallet_bitcoin_transfer_self_transfer")) ?? []).join("\n");
+  const insufficient = (formatCliTextError(new Error("wallet_bitcoin_transfer_insufficient_funds")) ?? []).join("\n");
+  const requiresTty = (formatCliTextError(new Error("wallet_bitcoin_transfer_requires_tty")) ?? []).join("\n");
+
+  assert.match(invalidAmount, /positive whole-number satoshi amount/i);
+  assert.match(addressRequired, /standard btc address/i);
+  assert.match(selfTransfer, /self-transfers/i);
+  assert.match(insufficient, /enough btc/i);
+  assert.match(requiresTty, /interactive terminal/i);
 });
 
 test("CLI error text describes Linux local-file secret failures", () => {

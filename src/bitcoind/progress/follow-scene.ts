@@ -23,7 +23,11 @@ import {
   NEUTRAL_MESSAGE_TITLE,
   STATUS_FIELD_ROW,
 } from "./constants.js";
-import { centerLine, overlayCenteredField } from "./formatting.js";
+import { centerLine, overlayCenteredField, replaceSegment, rightAlignLine } from "./formatting.js";
+
+const FOLLOW_BALANCE_ROW = 1;
+const FOLLOW_BALANCE_LEFT = 51;
+const FOLLOW_BALANCE_WIDTH = 23;
 
 export type FollowAnimationKind = "placeholder_enter" | "tip_approach" | "convoy_shift";
 
@@ -52,6 +56,10 @@ interface FollowCarPlacement {
   height: number | null;
   showAge: boolean;
   x: number;
+}
+
+export interface FollowFrameRenderOptions {
+  artworkBalanceText?: string | null;
 }
 
 export function createFollowSceneState(
@@ -524,6 +532,7 @@ export function renderFollowFrame(
   state: FollowSceneStateForTesting,
   statusFieldText: string,
   now: number,
+  options: FollowFrameRenderOptions = {},
 ): string[] {
   let frame = createFollowBaseFrame();
   const placements = resolveFollowCarPlacements(state, now);
@@ -542,6 +551,20 @@ export function renderFollowFrame(
 
   overlayCenteredField(frame, MESSAGE_FIELD_ROW, NEUTRAL_MESSAGE_TITLE);
   overlayCenteredField(frame, STATUS_FIELD_ROW, statusFieldText);
+
+  if (options.artworkBalanceText !== null && options.artworkBalanceText !== undefined && options.artworkBalanceText.length > 0) {
+    const row = frame[FOLLOW_BALANCE_ROW];
+
+    if (row !== undefined) {
+      frame[FOLLOW_BALANCE_ROW] = replaceSegment(
+        row,
+        FOLLOW_BALANCE_LEFT,
+        FOLLOW_BALANCE_WIDTH,
+        rightAlignLine(options.artworkBalanceText, FOLLOW_BALANCE_WIDTH),
+      );
+    }
+  }
+
   return frame;
 }
 
@@ -593,6 +616,7 @@ export function renderFollowFrameForTesting(
   state: FollowSceneStateForTesting,
   statusFieldText = "",
   now = 0,
+  options: FollowFrameRenderOptions = {},
 ): string[] {
-  return renderFollowFrame(state, statusFieldText, now);
+  return renderFollowFrame(state, statusFieldText, now, options);
 }

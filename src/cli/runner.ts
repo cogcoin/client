@@ -173,6 +173,7 @@ export async function runCli(
       || parsed.command === "field-create"
       || parsed.command === "field-set"
       || parsed.command === "field-clear"
+      || parsed.command === "bitcoin-transfer"
       || parsed.command === "send"
       || parsed.command === "claim"
       || parsed.command === "reclaim"

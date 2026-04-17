@@ -133,6 +133,12 @@ export function centerLine(line: string, width: number): string {
   return `${" ".repeat(leftPadding)}${centered}`.padEnd(width, " ");
 }
 
+export function rightAlignLine(line: string, width: number): string {
+  const aligned = truncateLine(line, width);
+  const leftPadding = Math.max(0, width - aligned.length);
+  return `${" ".repeat(leftPadding)}${aligned}`.padEnd(width, " ");
+}
+
 export function positionLine(line: string, width: number, leftPadding: number): string {
   const positioned = truncateLine(line, width);
   const safePadding = Math.max(0, Math.min(leftPadding, Math.max(0, width - positioned.length)));

@@ -16,6 +16,8 @@ Commands:
   bitcoin start           Start the managed Bitcoin daemon
   bitcoin stop            Stop the managed Bitcoin daemon and paired indexer
   bitcoin status          Show managed Bitcoin daemon status without starting it
+  bitcoin transfer <sats> --to <address>
+                         Send plain BTC from the wallet address
   indexer start           Start the managed Cogcoin indexer (and bitcoind if needed)
   indexer stop            Stop the managed Cogcoin indexer only
   indexer status          Show managed Cogcoin indexer status without starting it
@@ -144,6 +146,7 @@ function supportsYesFlag(command: CommandName | null): boolean {
   switch (command) {
     case "sync":
     case "follow":
+    case "bitcoin-transfer":
     case "repair":
     case "wallet-delete":
     case "register":
@@ -184,6 +187,7 @@ function supportsYesFlag(command: CommandName | null): boolean {
 function supportsSeedFlag(command: CommandName | null): boolean {
   switch (command) {
     case "status":
+    case "bitcoin-transfer":
     case "anchor":
     case "domain-anchor":
     case "register":
@@ -681,6 +685,12 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
           continue;
         }
 
+        if (subcommand === "transfer") {
+          command = "bitcoin-transfer";
+          index += 1;
+          continue;
+        }
+
         throw new Error(`cli_unknown_command_bitcoin${subcommand === null ? "" : `_${subcommand}`}`);
       }
 
@@ -1110,7 +1120,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_missing_domain_argument");
   }
 
-  if ((command === "send" || command === "cog-send" || command === "cog-lock") && args.length !== 1) {
+  if ((command === "send" || command === "cog-send" || command === "cog-lock" || command === "bitcoin-transfer") && args.length !== 1) {
     throw new Error("cli_missing_amount_argument");
   }
 
@@ -1217,12 +1227,19 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   }
 
   if (transferTarget !== null && command !== "transfer" && command !== "domain-transfer") {
-    if (command !== "send" && command !== "cog-send") {
+    if (command !== "send" && command !== "cog-send" && command !== "bitcoin-transfer") {
       throw new Error("cli_to_not_supported_for_command");
     }
   }
 
-  if ((command === "transfer" || command === "domain-transfer" || command === "send" || command === "cog-send") && transferTarget === null) {
+  if (
+    (command === "transfer"
+      || command === "domain-transfer"
+      || command === "send"
+      || command === "cog-send"
+      || command === "bitcoin-transfer")
+    && transferTarget === null
+  ) {
     throw new Error("cli_missing_transfer_target");
   }
 
