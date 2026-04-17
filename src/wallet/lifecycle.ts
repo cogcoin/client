@@ -80,6 +80,7 @@ import {
   type WalletSecretProvider,
 } from "./state/provider.js";
 import {
+  LEGACY_WALLET_STATE_PASSPHRASE_ERROR,
   extractWalletRootIdHintFromWalletStateEnvelope,
   loadRawWalletStateEnvelope,
   loadWalletState,
@@ -1259,8 +1260,7 @@ async function ensureWalletNotInitialized(
 
 function isWalletSecretAccessError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return message === "wallet_envelope_missing_secret_provider"
-    || message.startsWith("wallet_secret_missing_")
+  return message.startsWith("wallet_secret_missing_")
     || message.startsWith("wallet_secret_provider_");
 }
 
@@ -1810,6 +1810,10 @@ export async function showWalletMnemonic(options: {
           provider,
         });
       } catch (error) {
+        if (error instanceof Error && error.message === LEGACY_WALLET_STATE_PASSPHRASE_ERROR) {
+          throw error;
+        }
+
         if (isWalletSecretAccessError(error)) {
           throw new Error("wallet_locked");
         }
@@ -2429,7 +2433,11 @@ export async function repairWallet(options: {
       }, {
         provider,
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === LEGACY_WALLET_STATE_PASSPHRASE_ERROR) {
+        throw error;
+      }
+
       throw new Error("local-state-corrupt");
     }
 

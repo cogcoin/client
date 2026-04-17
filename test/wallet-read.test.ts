@@ -8,6 +8,7 @@ import { buildAddressJson, buildIdsJson } from "../src/cli/read-json.js";
 import { normalizeListPage } from "../src/cli/output.js";
 import { inspectWalletLocalState } from "../src/wallet/read/index.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
+import { encryptJsonWithPassphrase } from "../src/wallet/state/crypto.js";
 import {
   createDefaultWalletSecretProviderForTesting,
   createMemoryWalletSecretProviderForTesting,
@@ -79,6 +80,40 @@ test("wallet read status explains unsupported legacy Windows DPAPI secrets", asy
   assert.equal(status.availability, "locked");
   assert.match(status.message ?? "", /legacy Windows `?\.dpapi`?/i);
   assert.match(status.message ?? "", /recover|reimport/i);
+});
+
+test("wallet read status explains unsupported legacy local wallet-state passphrases", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-legacy-passphrase-"));
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory: tempRoot,
+    platform: "linux",
+  });
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "linux",
+    stateRoot: paths.stateRoot,
+  });
+  const envelope = await encryptJsonWithPassphrase(
+    createWalletState({ walletRootId: "wallet-root-legacy" }),
+    "passphrase",
+    {
+      format: "cogcoin-local-wallet-state",
+      walletRootIdHint: "wallet-root-legacy",
+    },
+  );
+
+  await mkdir(paths.walletStateDirectory, { recursive: true });
+  await writeFile(paths.walletStatePath, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
+
+  const status = await inspectWalletLocalState({
+    paths,
+    secretProvider: provider,
+  });
+
+  assert.equal(status.availability, "locked");
+  assert.equal(status.walletRootId, "wallet-root-legacy");
+  assert.match(status.message ?? "", /legacy local wallet-state passphrase/i);
+  assert.match(status.message ?? "", /recover|reimport/i);
+  assert.doesNotMatch(status.message ?? "", /requires the local wallet-state passphrase/i);
 });
 
 test("wallet read status reports missing Linux local-file secrets generically", async () => {

@@ -45,6 +45,15 @@ test("CLI error text explains the legacy Windows DPAPI break", () => {
   assert.match(rendered, /recover|reimport/i);
 });
 
+test("CLI error text explains the legacy local wallet-state passphrase break", () => {
+  const formatted = formatCliTextError(new Error("wallet_state_legacy_passphrase_unsupported")) ?? [];
+  const rendered = formatted.join("\n");
+
+  assert.match(rendered, /legacy local wallet-state passphrases/i);
+  assert.match(rendered, /recover|reimport/i);
+  assert.doesNotMatch(rendered, /wallet-state passphrase is required/i);
+});
+
 test("CLI error text describes Linux local-file secret failures without Secret Service wording", () => {
   const formatted = formatCliTextError(new Error("wallet_secret_provider_linux_runtime_error")) ?? [];
   const rendered = formatted.join("\n");

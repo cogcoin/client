@@ -356,13 +356,12 @@ export function classifyCliError(error: unknown): {
     || message === "wallet_delete_confirmation_required"
     || message === "wallet_prompt_value_required"
     || message === "wallet_archive_passphrase_mismatch"
+    || message === "wallet_state_legacy_passphrase_unsupported"
     || message === "wallet_restore_mnemonic_invalid"
     || message === "wallet_restore_replace_confirmation_required"
     || message === "wallet_seed_name_invalid"
     || message === "wallet_seed_name_reserved"
     || message === "reset_wallet_choice_invalid"
-    || message === "reset_wallet_passphrase_required"
-    || message === "reset_wallet_access_failed"
   ) {
     return { exitCode: 2, errorCode: message, message };
   }
@@ -428,6 +427,7 @@ function isBlockedError(message: string): boolean {
     || message === "indexer_daemon_schema_mismatch"
     || message === "mine_setup_requires_tty"
     || message === "mining_preemption_timeout"
+    || message === "wallet_state_legacy_passphrase_unsupported"
     || message === "wallet_secret_provider_linux_runtime_error"
     || message === "wallet_secret_provider_windows_runtime_error"
     || message === "wallet_secret_provider_windows_legacy_dpapi_unsupported"
@@ -530,22 +530,6 @@ export function createCliErrorPresentation(
       what: "Wallet reset choice is invalid.",
       why: "This reset path accepts only Enter for the default entropy-retaining reset, \"skip\", or \"delete wallet\".",
       next: "Rerun `cogcoin reset` and enter one of the accepted wallet reset choices.",
-    };
-  }
-
-  if (errorCode === "reset_wallet_passphrase_required") {
-    return {
-      what: "Wallet-state passphrase is required.",
-      why: "The current wallet is passphrase-wrapped, so the entropy-retaining reset path needs that passphrase before it can rebuild a fresh local wallet from the retained mnemonic.",
-      next: "Rerun `cogcoin reset` and enter the wallet-state passphrase, or choose \"skip\" or \"delete wallet\" instead.",
-    };
-  }
-
-  if (errorCode === "reset_wallet_access_failed") {
-    return {
-      what: "Wallet state could not be opened for entropy-retaining reset.",
-      why: "The wallet-state passphrase was not accepted, or the passphrase-wrapped wallet state could not be decrypted cleanly.",
-      next: "Rerun `cogcoin reset`, enter the correct wallet-state passphrase, or choose \"skip\" or \"delete wallet\" instead.",
     };
   }
 
@@ -807,6 +791,14 @@ export function createCliErrorPresentation(
       what: "Archive passphrases did not match.",
       why: "The archive passphrase must be entered the same way twice so the wallet does not seal the archive with a typo.",
       next: "Rerun the command and enter the same archive passphrase both times.",
+    };
+  }
+
+  if (errorCode === "wallet_state_legacy_passphrase_unsupported") {
+    return {
+      what: "Legacy local wallet-state passphrases are no longer supported.",
+      why: "This wallet still uses an older passphrase-wrapped local wallet-state format, but this version only supports provider-backed local wallet state and does not auto-migrate the old passphrase-protected envelope.",
+      next: "Recover or reimport the wallet on this version, then retry the command.",
     };
   }
 

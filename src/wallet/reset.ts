@@ -33,7 +33,9 @@ import {
 } from "./state/provider.js";
 import { loadWalletSeedIndex } from "./state/seed-index.js";
 import {
+  LEGACY_WALLET_STATE_PASSPHRASE_ERROR,
   extractWalletRootIdHintFromWalletStateEnvelope,
+  isLegacyPassphraseWrappedWalletStateEnvelope,
   loadRawWalletStateEnvelope,
   loadWalletState,
   saveWalletState,
@@ -124,7 +126,7 @@ export interface WalletResetPreview {
   removedPaths: string[];
 }
 
-type WalletEnvelopeMode = "provider-backed" | "passphrase-wrapped" | "unknown";
+type WalletEnvelopeMode = "provider-backed" | "legacy-passphrase" | "unknown";
 
 interface WalletResetPreflight {
   dataRoot: string;
@@ -170,9 +172,7 @@ interface WalletAccessForReset {
     source: "primary" | "backup";
     state: WalletStateV1;
   };
-  access:
-    | { kind: "provider"; provider: WalletSecretProvider }
-    | { kind: "passphrase"; passphrase: string };
+  access: { kind: "provider"; provider: WalletSecretProvider };
 }
 
 interface ResetWalletRpcClient {
@@ -549,22 +549,10 @@ async function recreateManagedCoreWalletReplicaForReset(options: {
   return nextState;
 }
 
-async function promptHiddenOrVisible(
-  prompter: WalletPrompter,
-  message: string,
-): Promise<string> {
-  if (typeof prompter.promptHidden === "function") {
-    return await prompter.promptHidden(message);
-  }
-
-  return await prompter.prompt(message);
-}
-
 async function loadWalletForEntropyReset(options: {
   wallet: WalletResetPreflight["wallet"];
   paths: WalletRuntimePaths;
   provider: WalletSecretProvider;
-  prompter: WalletPrompter;
 }): Promise<WalletAccessForReset> {
   if (options.wallet.rawEnvelope === null) {
     throw new Error("reset_wallet_entropy_reset_unavailable");
@@ -592,36 +580,11 @@ async function loadWalletForEntropyReset(options: {
     }
   }
 
-  if (options.wallet.mode !== "passphrase-wrapped") {
-    throw new Error("reset_wallet_entropy_reset_unavailable");
+  if (options.wallet.mode === "legacy-passphrase") {
+    throw new Error(LEGACY_WALLET_STATE_PASSPHRASE_ERROR);
   }
 
-  const passphrase = (await promptHiddenOrVisible(
-    options.prompter,
-    "Wallet-state passphrase: ",
-  )).trim();
-
-  if (passphrase === "") {
-    throw new Error("reset_wallet_passphrase_required");
-  }
-
-  try {
-    return {
-      loaded: await loadWalletState(
-        {
-          primaryPath: options.paths.walletStatePath,
-          backupPath: options.paths.walletStateBackupPath,
-        },
-        passphrase,
-      ),
-      access: {
-        kind: "passphrase",
-        passphrase,
-      },
-    };
-  } catch {
-    throw new Error("reset_wallet_access_failed");
-  }
+  throw new Error("reset_wallet_entropy_reset_unavailable");
 }
 
 async function collectTrackedManagedProcesses(
@@ -810,9 +773,11 @@ async function preflightReset(options: {
       present: hasWalletState,
       mode: rawEnvelope == null
         ? (hasWalletState ? "unknown" : "unknown")
-        : rawEnvelope.envelope.secretProvider != null
+        : isLegacyPassphraseWrappedWalletStateEnvelope(rawEnvelope.envelope)
+          ? "legacy-passphrase"
+          : rawEnvelope.envelope.secretProvider != null
           ? "provider-backed"
-          : "passphrase-wrapped",
+          : "unknown",
       envelopeSource: rawEnvelope?.source ?? null,
       secretProviderKeyId,
       importedSeedSecretProviderKeyIds,
@@ -928,7 +893,6 @@ async function resolveResetExecutionDecision(options: {
         wallet: options.preflight.wallet,
         paths: options.paths,
         provider: options.provider,
-        prompter: options.prompter,
       });
     }
   }
@@ -1036,8 +1000,8 @@ export async function previewResetWallet(options: {
       ? {
         defaultAction: "retain-mnemonic",
         acceptedInputs: ["", "skip", "delete wallet"],
-        entropyRetainingResetAvailable: preflight.wallet.mode !== "unknown",
-        requiresPassphrase: preflight.wallet.mode === "passphrase-wrapped",
+        entropyRetainingResetAvailable: preflight.wallet.mode === "provider-backed",
+        requiresPassphrase: false,
         envelopeSource: preflight.wallet.envelopeSource,
       }
       : null,
@@ -1193,36 +1157,22 @@ export async function resetWallet(options: {
       );
       walletOldRootId = decision.loadedWalletForEntropyReset.loaded.state.walletRootId;
       walletNewRootId = nextState.walletRootId;
-      let nextAccess: WalletStateSaveAccess;
-
-      if (decision.loadedWalletForEntropyReset.access.kind === "provider") {
-        const secretReference = createWalletSecretReference(nextState.walletRootId);
-        newProviderKeyId = secretReference.keyId;
-        await provider.storeSecret(secretReference.keyId, randomBytes(32));
-        nextAccess = {
-          provider,
-          secretReference,
-        };
-        await saveWalletState(
-          {
-            primaryPath: paths.walletStatePath,
-            backupPath: paths.walletStateBackupPath,
-          },
-          nextState,
-          nextAccess,
-        );
-        preservedSecretRefs.push(secretReference.keyId);
-      } else {
-        nextAccess = decision.loadedWalletForEntropyReset.access.passphrase;
-        await saveWalletState(
-          {
-            primaryPath: paths.walletStatePath,
-            backupPath: paths.walletStateBackupPath,
-          },
-          nextState,
-          nextAccess,
-        );
-      }
+      const secretReference = createWalletSecretReference(nextState.walletRootId);
+      newProviderKeyId = secretReference.keyId;
+      await provider.storeSecret(secretReference.keyId, randomBytes(32));
+      const nextAccess: WalletStateSaveAccess = {
+        provider,
+        secretReference,
+      };
+      await saveWalletState(
+        {
+          primaryPath: paths.walletStatePath,
+          backupPath: paths.walletStateBackupPath,
+        },
+        nextState,
+        nextAccess,
+      );
+      preservedSecretRefs.push(secretReference.keyId);
 
       nextState = await recreateManagedCoreWalletReplicaForReset({
         state: nextState,

@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { previewResetWallet } from "../src/wallet/reset.js";
+import { previewResetWallet, resetWallet } from "../src/wallet/reset.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
+import { encryptJsonWithPassphrase } from "../src/wallet/state/crypto.js";
 import {
   createDefaultWalletSecretProviderForTesting,
   createWalletSecretReference,
@@ -29,14 +30,49 @@ test("previewResetWallet shows no wallet prompt when no wallet state exists", as
 test("previewResetWallet detects an existing wallet state", async () => {
   const homeDirectory = await mkdtemp(join(tmpdir(), "cogcoin-reset-home-"));
   const paths = resolveWalletRuntimePathsForTesting({ homeDirectory, platform: "linux" });
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "linux",
+    stateRoot: paths.stateRoot,
+  });
+  const secretReference = createWalletSecretReference("wallet-root");
+
+  await provider.storeSecret(secretReference.keyId, Buffer.alloc(32, 17));
   await saveWalletState(
     {
       primaryPath: paths.walletStatePath,
       backupPath: paths.walletStateBackupPath,
     },
     createWalletState(),
-    "passphrase",
+    {
+      provider,
+      secretReference,
+    },
   );
+
+  const preview = await previewResetWallet({
+    dataDir: paths.bitcoinDataDir,
+    paths,
+    provider,
+  });
+
+  assert.notEqual(preview.walletPrompt, null);
+  assert.equal(preview.walletPrompt?.defaultAction, "retain-mnemonic");
+});
+
+test("previewResetWallet marks legacy passphrase wallets as non-recoverable by entropy reset", async () => {
+  const homeDirectory = await mkdtemp(join(tmpdir(), "cogcoin-reset-home-"));
+  const paths = resolveWalletRuntimePathsForTesting({ homeDirectory, platform: "linux" });
+  const envelope = await encryptJsonWithPassphrase(
+    createWalletState({ walletRootId: "wallet-root-legacy" }),
+    "passphrase",
+    {
+      format: "cogcoin-local-wallet-state",
+      walletRootIdHint: "wallet-root-legacy",
+    },
+  );
+
+  await mkdir(paths.walletStateDirectory, { recursive: true });
+  await writeFile(paths.walletStatePath, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
 
   const preview = await previewResetWallet({
     dataDir: paths.bitcoinDataDir,
@@ -45,6 +81,38 @@ test("previewResetWallet detects an existing wallet state", async () => {
 
   assert.notEqual(preview.walletPrompt, null);
   assert.equal(preview.walletPrompt?.defaultAction, "retain-mnemonic");
+  assert.equal(preview.walletPrompt?.entropyRetainingResetAvailable, false);
+  assert.equal(preview.walletPrompt?.requiresPassphrase, false);
+});
+
+test("resetWallet rejects entropy-retaining reset for legacy passphrase wallets", async () => {
+  const homeDirectory = await mkdtemp(join(tmpdir(), "cogcoin-reset-home-"));
+  const paths = resolveWalletRuntimePathsForTesting({ homeDirectory, platform: "linux" });
+  const envelope = await encryptJsonWithPassphrase(
+    createWalletState({ walletRootId: "wallet-root-legacy" }),
+    "passphrase",
+    {
+      format: "cogcoin-local-wallet-state",
+      walletRootIdHint: "wallet-root-legacy",
+    },
+  );
+  const responses = ["permanently reset", ""];
+
+  await mkdir(paths.walletStateDirectory, { recursive: true });
+  await writeFile(paths.walletStatePath, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
+
+  await assert.rejects(
+    () => resetWallet({
+      dataDir: paths.bitcoinDataDir,
+      paths,
+      prompter: {
+        isInteractive: true,
+        writeLine: () => undefined,
+        prompt: async () => responses.shift() ?? "",
+      },
+    }),
+    /wallet_state_legacy_passphrase_unsupported/,
+  );
 });
 
 test("previewResetWallet on Linux local-file wallets does not claim OS secret cleanup", async () => {

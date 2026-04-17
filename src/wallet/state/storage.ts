@@ -4,9 +4,7 @@ import { writeJsonFileAtomic } from "../fs/atomic.js";
 import type { EncryptedEnvelopeV1, WalletStateV1 } from "../types.js";
 import { normalizeWalletStateRecord } from "../coin-control.js";
 import {
-  decryptJsonWithPassphrase,
   decryptJsonWithSecretProvider,
-  encryptJsonWithPassphrase,
   encryptJsonWithSecretProvider,
 } from "./crypto.js";
 import type { WalletSecretProvider, WalletSecretReference } from "./provider.js";
@@ -26,20 +24,16 @@ export interface RawWalletStateEnvelope {
   envelope: EncryptedEnvelopeV1;
 }
 
-export type WalletStateSaveAccess =
-  | Uint8Array
-  | string
-  | {
-    provider: WalletSecretProvider;
-    secretReference: WalletSecretReference;
-  };
+export const LEGACY_WALLET_STATE_PASSPHRASE_ERROR = "wallet_state_legacy_passphrase_unsupported";
 
-export type WalletStateLoadAccess =
-  | Uint8Array
-  | string
-  | {
-    provider: WalletSecretProvider;
-  };
+export type WalletStateSaveAccess = {
+  provider: WalletSecretProvider;
+  secretReference: WalletSecretReference;
+};
+
+export type WalletStateLoadAccess = {
+  provider: WalletSecretProvider;
+};
 
 async function readEnvelope(path: string): Promise<EncryptedEnvelopeV1> {
   const raw = await readFile(path, "utf8");
@@ -132,6 +126,28 @@ export function extractWalletRootIdHintFromWalletStateEnvelope(
   return keyId.slice(prefix.length);
 }
 
+export function isLegacyPassphraseWrappedWalletStateEnvelope(
+  envelope: EncryptedEnvelopeV1 | null,
+): boolean {
+  return envelope?.format === "cogcoin-local-wallet-state"
+    && envelope.secretProvider == null
+    && envelope.wrappedBy === "passphrase"
+    && envelope.argon2id != null;
+}
+
+async function loadWalletStateEnvelope(
+  envelope: EncryptedEnvelopeV1,
+  access: WalletStateLoadAccess,
+): Promise<WalletStateV1> {
+  if (isLegacyPassphraseWrappedWalletStateEnvelope(envelope)) {
+    throw new Error(LEGACY_WALLET_STATE_PASSPHRASE_ERROR);
+  }
+
+  return normalizeWalletStateRecord(
+    await decryptJsonWithSecretProvider<WalletStateV1>(envelope, access.provider),
+  );
+}
+
 export async function saveWalletState(
   paths: WalletStateStoragePaths,
   state: WalletStateV1,
@@ -149,20 +165,15 @@ export async function saveWalletState(
     }
   }
 
-  const envelope = typeof access === "string" || access instanceof Uint8Array
-    ? await encryptJsonWithPassphrase(serializeWalletState(state), access, {
+  const envelope = await encryptJsonWithSecretProvider(
+    serializeWalletState(state),
+    access.provider,
+    access.secretReference,
+    {
       format: "cogcoin-local-wallet-state",
       walletRootIdHint: state.walletRootId,
-    })
-    : await encryptJsonWithSecretProvider(
-      serializeWalletState(state),
-      access.provider,
-      access.secretReference,
-      {
-        format: "cogcoin-local-wallet-state",
-        walletRootIdHint: state.walletRootId,
-      },
-    );
+    },
+  );
 
   await writeJsonFileAtomic(paths.primaryPath, envelope, { mode: 0o600 });
 
@@ -178,17 +189,13 @@ export async function loadWalletState(
   try {
     return {
       source: "primary",
-      state: normalizeWalletStateRecord(typeof access === "string" || access instanceof Uint8Array
-        ? await decryptJsonWithPassphrase<WalletStateV1>(await readEnvelope(paths.primaryPath), access)
-        : await decryptJsonWithSecretProvider<WalletStateV1>(await readEnvelope(paths.primaryPath), access.provider)),
+      state: await loadWalletStateEnvelope(await readEnvelope(paths.primaryPath), access),
     };
   } catch (primaryError) {
     try {
       return {
         source: "backup",
-        state: normalizeWalletStateRecord(typeof access === "string" || access instanceof Uint8Array
-          ? await decryptJsonWithPassphrase<WalletStateV1>(await readEnvelope(paths.backupPath), access)
-          : await decryptJsonWithSecretProvider<WalletStateV1>(await readEnvelope(paths.backupPath), access.provider)),
+        state: await loadWalletStateEnvelope(await readEnvelope(paths.backupPath), access),
       };
     } catch {
       throw primaryError;
