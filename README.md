@@ -11,10 +11,11 @@ Install the package:
 ```bash
 npm install -g @cogcoin/client
 cogcoin init
-cogcoin register <domainname>
+cogcoin address  # Send 0.0015 BTC to address
+cogcoin register <domainname> # 6+ character domain for 0.001 BTC
 cogcoin anchor <domainname>
 cogcoin mine setup
-cogcoin mine
+cogcoin mine # Use remaining ~0.0005 BTC for mining tx, ~1000 sats per entry (0.00001 BTC)
 ```
 
 ## Preview
@@ -78,7 +79,7 @@ Unanchored Domains
 [░░░░░░░░░░░░░░░░████] Mining is waiting for Bitcoin Core and the indexer to align.
 Required words: OWNER, OLYMPIC, ERODE, DESK, DIFFER
 @cogdemo: By the desk, the owner observed that Olympic lettering could erode over time, though experts differ.
-```bash
+```
 
 ## Links
 
