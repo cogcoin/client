@@ -204,7 +204,7 @@ test("same-tip live publishes are kept but stale-tip publishes are replaceable",
   assert.equal(staleTip, false);
 });
 
-test("settled mining board resolves previous-block winners and falls back when domain metadata is missing", () => {
+test("mining board resolves the latest mined block winners and falls back when domain metadata is missing", () => {
   const snapshotState = {
     consensus: {
       domainsById: new Map([
@@ -252,13 +252,92 @@ test("settled mining board resolves previous-block winners and falls back when d
 
   const settled = resolveSettledBoardForTesting({
     snapshotState,
-    targetBlockHeight: 101,
+    snapshotTipHeight: 100,
+    nodeBestHeight: 100,
   });
 
   assert.equal(settled.settledBlockHeight, 100);
   assert.deepEqual(settled.settledBoardEntries, [
     { rank: 1, domainName: "cogdemo", sentence: "Under the trees, a monkey helped." },
     { rank: 2, domainName: "domain-8", sentence: "Youth carried the basket home." },
+  ]);
+});
+
+test("mining board header tracks the newest mined block and blanks rows until the snapshot catches up", () => {
+  const snapshotState = {
+    consensus: {
+      domainsById: new Map(),
+    },
+    history: {
+      blockWinnersByHeight: new Map([
+        [100, [{
+          height: 100,
+          rank: 1,
+          domainId: 7,
+          creditedScriptPubKeyHex: "0014" + "11".repeat(20),
+          rewardCogtoshi: 123_000_000n,
+          canonicalBlend: 1000n,
+          sentenceHex: "",
+          sentenceText: "Settled prior block sentence.",
+          txIndex: 0,
+          txidHex: "aa".repeat(32),
+        }]],
+      ]),
+      foundingMessageByDomain: new Map(),
+    },
+  } as any;
+
+  const settled = resolveSettledBoardForTesting({
+    snapshotState,
+    snapshotTipHeight: 100,
+    nodeBestHeight: 101,
+  });
+
+  assert.equal(settled.settledBlockHeight, 101);
+  assert.deepEqual(settled.settledBoardEntries, []);
+});
+
+test("mining board falls back to the snapshot tip height when the node best height is unavailable", () => {
+  const snapshotState = {
+    consensus: {
+      domainsById: new Map([
+        [7, {
+          domainId: 7,
+          name: "cogdemo",
+          anchored: true,
+          anchorHeight: 99,
+          endpoint: null,
+        }],
+      ]),
+    },
+    history: {
+      blockWinnersByHeight: new Map([
+        [100, [{
+          height: 100,
+          rank: 1,
+          domainId: 7,
+          creditedScriptPubKeyHex: "0014" + "11".repeat(20),
+          rewardCogtoshi: 123_000_000n,
+          canonicalBlend: 1000n,
+          sentenceHex: "",
+          sentenceText: "Snapshot tip sentence.",
+          txIndex: 0,
+          txidHex: "aa".repeat(32),
+        }]],
+      ]),
+      foundingMessageByDomain: new Map(),
+    },
+  } as any;
+
+  const settled = resolveSettledBoardForTesting({
+    snapshotState,
+    snapshotTipHeight: 100,
+    nodeBestHeight: null,
+  });
+
+  assert.equal(settled.settledBlockHeight, 100);
+  assert.deepEqual(settled.settledBoardEntries, [
+    { rank: 1, domainName: "cogdemo", sentence: "Snapshot tip sentence." },
   ]);
 });
 

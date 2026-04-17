@@ -350,7 +350,7 @@ test("mining follow visualizer omits age labels when block times are unavailable
   assert.doesNotMatch(renderedFrames[0] ?? "", /\b\d+[smhd]\b/);
 });
 
-test("mining follow visualizer keeps the sentence board and footer block permanently allocated", () => {
+test("mining follow visualizer renders the current mined block board when settled winners are available", () => {
   let capturedOptions: FollowSceneRenderOptions | undefined;
 
   const visualizer = new MiningFollowVisualizer({
@@ -409,7 +409,7 @@ test("mining follow visualizer keeps the sentence board and footer block permane
   });
 });
 
-test("mining follow visualizer keeps blank self and footer lines when no candidate exists yet", () => {
+test("mining follow visualizer leaves the current mined block rows blank until settled winners are available", () => {
   let capturedOptions: FollowSceneRenderOptions | undefined;
 
   const visualizer = new MiningFollowVisualizer({

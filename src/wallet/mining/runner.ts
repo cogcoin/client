@@ -613,28 +613,35 @@ export function resetMiningUiForTipForTesting(loopState: MiningLoopState, target
   resetMiningUiForTip(loopState, targetBlockHeight);
 }
 
-function getSettledBoardHeight(targetBlockHeight: number | null): number | null {
-  if (targetBlockHeight === null) {
-    return null;
-  }
-
-  return Math.max(targetBlockHeight - 1, 0);
-}
-
 function fallbackSettledWinnerDomainName(domainId: number): string {
   return `domain-${domainId}`;
 }
 
-function resolveSettledBoard(options: {
+function resolveCurrentMinedBlockBoard(options: {
   snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"] | null | undefined;
-  targetBlockHeight: number | null;
+  snapshotTipHeight: number | null;
+  nodeBestHeight: number | null;
 }): {
   settledBlockHeight: number | null;
   settledBoardEntries: MiningSentenceBoardEntry[];
 } {
-  const settledBlockHeight = getSettledBoardHeight(options.targetBlockHeight);
+  const settledBlockHeight = options.nodeBestHeight ?? options.snapshotTipHeight ?? null;
 
-  if (options.snapshotState === null || options.snapshotState === undefined || settledBlockHeight === null) {
+  if (settledBlockHeight === null) {
+    return {
+      settledBlockHeight,
+      settledBoardEntries: [],
+    };
+  }
+
+  if (options.snapshotState === null || options.snapshotState === undefined) {
+    return {
+      settledBlockHeight,
+      settledBoardEntries: [],
+    };
+  }
+
+  if (options.nodeBestHeight !== null && (options.snapshotTipHeight ?? -1) < options.nodeBestHeight) {
     return {
       settledBlockHeight,
       settledBoardEntries: [],
@@ -659,22 +666,25 @@ function resolveSettledBoard(options: {
 
 export function resolveSettledBoardForTesting(options: {
   snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"] | null | undefined;
-  targetBlockHeight: number | null;
+  snapshotTipHeight: number | null;
+  nodeBestHeight: number | null;
 }): {
   settledBlockHeight: number | null;
   settledBoardEntries: MiningSentenceBoardEntry[];
 } {
-  return resolveSettledBoard(options);
+  return resolveCurrentMinedBlockBoard(options);
 }
 
 function syncMiningUiSettledBoard(
   loopState: MiningLoopState,
   snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"] | null | undefined,
-  targetBlockHeight: number | null,
+  snapshotTipHeight: number | null,
+  nodeBestHeight: number | null,
 ): void {
-  const settledBoard = resolveSettledBoard({
+  const settledBoard = resolveCurrentMinedBlockBoard({
     snapshotState,
-    targetBlockHeight,
+    snapshotTipHeight,
+    nodeBestHeight,
   });
   loopState.ui.settledBlockHeight = settledBoard.settledBlockHeight;
   loopState.ui.settledBoardEntries = settledBoard.settledBoardEntries;
@@ -3021,7 +3031,8 @@ async function performMiningCycle(options: {
     syncMiningUiSettledBoard(
       options.loopState,
       effectiveReadContext.snapshot?.state ?? null,
-      targetBlockHeight,
+      effectiveReadContext.snapshot?.tip?.height ?? effectiveReadContext.indexer.snapshotTip?.height ?? null,
+      effectiveReadContext.nodeStatus?.nodeBestHeight ?? null,
     );
 
     const displaySats = await resolveFundingDisplaySats(effectiveReadContext.localState.state, rpc).catch(() => null);
