@@ -26,7 +26,7 @@ interface VisualizerRendererLike {
   close(): void;
 }
 
-const MINING_ARTWORK_BALANCE_WIDTH = 23;
+const MINING_ARTWORK_COG_WIDTH = 22;
 const MINING_SENTENCE_BOARD_SIZE = 5;
 
 export interface MiningSentenceBoardEntry {
@@ -35,8 +35,7 @@ export interface MiningSentenceBoardEntry {
   sentence: string;
 }
 
-export interface MiningSelfSentenceEntry {
-  rank: number | "-" | null;
+export interface MiningProvisionalSentenceEntry {
   domainName: string | null;
   sentence: string | null;
 }
@@ -50,9 +49,10 @@ export interface MiningRecentWinSummary {
 export interface MiningFollowVisualizerState {
   balanceCogtoshi: bigint | null;
   balanceSats: bigint | null;
-  blockHeight: number | null;
-  visibleBoardEntries: MiningSentenceBoardEntry[];
-  selfEntry: MiningSelfSentenceEntry;
+  settledBlockHeight: number | null;
+  settledBoardEntries: MiningSentenceBoardEntry[];
+  provisionalRequiredWords: readonly string[];
+  provisionalEntry: MiningProvisionalSentenceEntry;
   latestSentence: string | null;
   latestTxid: string | null;
   recentWin: MiningRecentWinSummary | null;
@@ -90,45 +90,30 @@ function formatCogAmountWithDecimals(
     : `${sign}${whole.toString()}`;
 }
 
-function formatCompactBalanceText(balanceCogtoshi: bigint | null, balanceSats: bigint | null): string | null {
-  if (balanceCogtoshi === null && balanceSats === null) {
+function formatCompactCogBalanceText(balanceCogtoshi: bigint | null): string | null {
+  if (balanceCogtoshi === null) {
     return null;
   }
 
-  const satSegment = balanceSats === null ? null : `SAT${balanceSats.toString()}`;
-
-  if (balanceCogtoshi === null) {
-    return satSegment;
-  }
-
   for (let digits = 4; digits >= 1; digits -= 1) {
-    const cogSegment = `COG${formatCogAmountWithDecimals(balanceCogtoshi, {
+    const cogSegment = `${formatCogAmountWithDecimals(balanceCogtoshi, {
       maxFractionDigits: digits,
       minFractionDigits: 1,
-    })}`;
-    const combined = satSegment === null ? cogSegment : `${cogSegment}|${satSegment}`;
+    })} COG`;
 
-    if (combined.length <= MINING_ARTWORK_BALANCE_WIDTH) {
-      return combined;
+    if (cogSegment.length <= MINING_ARTWORK_COG_WIDTH) {
+      return cogSegment;
     }
   }
 
-  if (satSegment === null) {
-    const clippedCogOnly = `COG${formatCogAmountWithDecimals(balanceCogtoshi, {
-      maxFractionDigits: 1,
-      minFractionDigits: 1,
-    })}`;
-    return clippedCogOnly.slice(Math.max(0, clippedCogOnly.length - MINING_ARTWORK_BALANCE_WIDTH));
-  }
-
-  const compactCog = `COG${formatCogAmountWithDecimals(balanceCogtoshi, {
+  return `${formatCogAmountWithDecimals(balanceCogtoshi, {
     maxFractionDigits: 1,
     minFractionDigits: 1,
-  })}`;
-  const reserved = Math.min(MINING_ARTWORK_BALANCE_WIDTH, satSegment.length + 1);
-  const availableCogWidth = Math.max(0, MINING_ARTWORK_BALANCE_WIDTH - reserved);
-  const clippedCog = compactCog.slice(Math.max(0, compactCog.length - availableCogWidth));
-  return `${clippedCog}${clippedCog.length > 0 ? "|" : ""}${satSegment}`.slice(-MINING_ARTWORK_BALANCE_WIDTH);
+  })} COG`;
+}
+
+function formatCompactSatBalanceText(balanceSats: bigint | null): string | null {
+  return balanceSats === null ? null : `${balanceSats.toString()} SAT`;
 }
 
 function formatRewardCogAmount(value: bigint): string {
@@ -142,23 +127,30 @@ function formatSentenceRow(rank: number, domainName: string, sentence: string): 
   return `${rank}. @${domainName}: ${sentence}`;
 }
 
-function formatSelfSentenceRow(entry: MiningSelfSentenceEntry): string {
+function formatRequiredWordsLine(words: readonly string[]): string {
+  if (words.length === 0) {
+    return "";
+  }
+
+  return `Required words: ${words.map((word) => word.toUpperCase()).join(", ")}`;
+}
+
+function formatProvisionalSentenceRow(entry: MiningProvisionalSentenceEntry): string {
   if (entry.domainName === null || entry.sentence === null) {
     return "";
   }
 
-  const rankLabel = entry.rank === null ? "" : `${entry.rank}.`;
-  return `${rankLabel} @${entry.domainName}: ${entry.sentence}`.trimStart();
+  return `@${entry.domainName}: ${entry.sentence}`;
 }
 
 export function createEmptyMiningFollowVisualizerState(): MiningFollowVisualizerState {
   return {
     balanceCogtoshi: null,
     balanceSats: null,
-    blockHeight: null,
-    visibleBoardEntries: [],
-    selfEntry: {
-      rank: null,
+    settledBlockHeight: null,
+    settledBoardEntries: [],
+    provisionalRequiredWords: [],
+    provisionalEntry: {
       domainName: null,
       sentence: null,
     },
@@ -363,21 +355,20 @@ export class MiningFollowVisualizer {
       this.#scene,
       describeMiningVisualizerStatus(snapshot, uiState),
       {
-        artworkBalanceText: formatCompactBalanceText(uiState.balanceCogtoshi, uiState.balanceSats),
+        artworkCogText: formatCompactCogBalanceText(uiState.balanceCogtoshi),
+        artworkSatText: formatCompactSatBalanceText(uiState.balanceSats),
         extraLines: [
-          `✎ Block #${uiState.blockHeight ?? "-----"} Sentences ✎`,
+          `✎ Block #${uiState.settledBlockHeight ?? "-----"} Sentences ✎`,
           "",
           ...Array.from({ length: MINING_SENTENCE_BOARD_SIZE }, (_value, index) => {
-            const entry = uiState.visibleBoardEntries[index];
+            const entry = uiState.settledBoardEntries[index];
             return entry === undefined
               ? `${index + 1}.`
               : formatSentenceRow(entry.rank, entry.domainName, entry.sentence);
           }),
           "----------",
-          formatSelfSentenceRow(uiState.selfEntry),
-          "",
-          `Latest sentence: ${uiState.latestSentence ?? ""}`,
-          `View at ${uiState.latestTxid === null ? "" : `https://mempool.space/${uiState.latestTxid}/`}`,
+          formatRequiredWordsLine(uiState.provisionalRequiredWords),
+          formatProvisionalSentenceRow(uiState.provisionalEntry),
         ],
       },
     );

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { COMPLETION_TOTAL_MS } from "../src/bitcoind/progress/constants.js";
 import { resolveTtyRenderPolicy, TtyRenderThrottle } from "../src/bitcoind/progress/render-policy.js";
 import { DEFAULT_SNAPSHOT_METADATA, ManagedProgressController } from "../src/bitcoind/testing.js";
 import { MiningFollowVisualizer } from "../src/wallet/mining/visualizer.js";
@@ -358,6 +359,51 @@ test("ManagedProgressController coalesces Linux headless redraws while keeping p
 
   await progress.close();
   assert.equal(renderer.calls.length, 2);
+});
+
+test("ManagedProgressController ends the completion scene at the shorter completion total", async () => {
+  const clock = new FakeClock(0);
+  const stream = createTtyStream();
+  const renderer = createControllerRendererRecorder();
+  const renderIntervalMs = 250;
+  const progress = new ManagedProgressController({
+    quoteStatePath: "unused-in-test",
+    snapshot: DEFAULT_SNAPSHOT_METADATA,
+    progressOutput: "auto",
+    quoteRotator: createQuoteRotatorStub(clock.now()),
+    rendererFactory: renderer.factory,
+    stream,
+    platform: "darwin",
+    env: {},
+    clock,
+  });
+
+  try {
+    await progress.start();
+
+    let settled = false;
+    const completionPromise = progress.playCompletionScene().then(() => {
+      settled = true;
+    });
+
+    await Promise.resolve();
+    assert.equal(settled, false);
+
+    for (let elapsedMs = renderIntervalMs; elapsedMs < COMPLETION_TOTAL_MS; elapsedMs += renderIntervalMs) {
+      clock.advance(renderIntervalMs);
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+
+    assert.equal(settled, false);
+
+    clock.advance(renderIntervalMs);
+    await completionPromise;
+    assert.equal(settled, true);
+    assert.equal(renderer.calls.some((call) => call.kind === "completion"), true);
+  } finally {
+    await progress.close();
+  }
 });
 
 test("TtyRenderThrottle coalesces Linux headless repaint requests to 1 Hz and flushes the latest frame", () => {

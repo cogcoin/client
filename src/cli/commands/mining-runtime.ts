@@ -35,6 +35,27 @@ function createCommandPrompter(
     : context.createPrompter();
 }
 
+async function prestartManagedMiningServices(options: {
+  context: RequiredCliRunnerContext;
+  dataDir: string;
+  databasePath: string;
+  provider: RequiredCliRunnerContext["walletSecretProvider"];
+  runtimePaths: ReturnType<RequiredCliRunnerContext["resolveWalletRuntimePaths"]>;
+}): Promise<void> {
+  let readContext: Awaited<ReturnType<RequiredCliRunnerContext["openWalletReadContext"]>> | null = null;
+
+  try {
+    readContext = await options.context.openWalletReadContext({
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      secretProvider: options.provider,
+      paths: options.runtimePaths,
+    });
+  } finally {
+    await readContext?.close();
+  }
+}
+
 export async function runMiningRuntimeCommand(
   parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
@@ -46,7 +67,15 @@ export async function runMiningRuntimeCommand(
     await context.ensureDirectory(dirname(dbPath));
 
     if (parsed.command === "mine") {
-      const provider = withInteractiveWalletSecretProvider(context.walletSecretProvider, context.createPrompter());
+      const prompter = context.createPrompter();
+      const provider = withInteractiveWalletSecretProvider(context.walletSecretProvider, prompter);
+      await prestartManagedMiningServices({
+        context,
+        dataDir,
+        databasePath: dbPath,
+        provider,
+        runtimePaths,
+      });
       const abortController = new AbortController();
       const onStop = (): void => {
         abortController.abort();
@@ -60,7 +89,7 @@ export async function runMiningRuntimeCommand(
           dataDir,
           databasePath: dbPath,
           provider,
-          prompter: context.createPrompter(),
+          prompter,
           signal: abortController.signal,
           stdout: context.stdout,
           stderr: context.stderr,
@@ -76,15 +105,23 @@ export async function runMiningRuntimeCommand(
     }
 
     if (parsed.command === "mine-start") {
+      const prompter = createCommandPrompter(parsed, context);
       const provider = withInteractiveWalletSecretProvider(
         context.walletSecretProvider,
-        createCommandPrompter(parsed, context),
+        prompter,
       );
+      await prestartManagedMiningServices({
+        context,
+        dataDir,
+        databasePath: dbPath,
+        provider,
+        runtimePaths,
+      });
       const result = await context.startBackgroundMining({
         dataDir,
         databasePath: dbPath,
         provider,
-        prompter: createCommandPrompter(parsed, context),
+        prompter,
         paths: runtimePaths,
       });
 

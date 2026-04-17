@@ -1,5 +1,7 @@
 import { loadArtTemplate, loadFollowCarTemplate } from "./assets.js";
 import {
+  FIELD_LEFT,
+  FIELD_WIDTH,
   FOLLOW_AGE_ROW,
   FOLLOW_APPROACH_MS,
   FOLLOW_CAR_HEIGHT,
@@ -23,11 +25,21 @@ import {
   NEUTRAL_MESSAGE_TITLE,
   STATUS_FIELD_ROW,
 } from "./constants.js";
-import { centerLine, overlayCenteredField, replaceSegment, rightAlignLine } from "./formatting.js";
+import {
+  centerLine,
+  computeCenteredLeftPadding,
+  overlayCenteredField,
+  replaceSegment,
+  rightAlignLine,
+  truncateLine,
+} from "./formatting.js";
 
-const FOLLOW_BALANCE_ROW = 1;
-const FOLLOW_BALANCE_LEFT = 51;
-const FOLLOW_BALANCE_WIDTH = 23;
+const FOLLOW_TITLE_LEFT = computeCenteredLeftPadding(NEUTRAL_MESSAGE_TITLE, FIELD_WIDTH);
+const FOLLOW_TITLE_WIDTH = NEUTRAL_MESSAGE_TITLE.length;
+const FOLLOW_COG_LEFT = 0;
+const FOLLOW_COG_WIDTH = FOLLOW_TITLE_LEFT;
+const FOLLOW_SAT_LEFT = FOLLOW_TITLE_LEFT + FOLLOW_TITLE_WIDTH;
+const FOLLOW_SAT_WIDTH = FIELD_WIDTH - FOLLOW_SAT_LEFT;
 
 export type FollowAnimationKind = "placeholder_enter" | "tip_approach" | "convoy_shift";
 
@@ -59,7 +71,8 @@ interface FollowCarPlacement {
 }
 
 export interface FollowFrameRenderOptions {
-  artworkBalanceText?: string | null;
+  artworkCogText?: string | null;
+  artworkSatText?: string | null;
 }
 
 export function createFollowSceneState(
@@ -148,6 +161,35 @@ export function formatCompactFollowAgeLabel(blockTime: number, now: number): str
 }
 
 export const formatCompactFollowAgeLabelForTesting = formatCompactFollowAgeLabel;
+
+function leftAlignLane(line: string, width: number): string {
+  const aligned = truncateLine(line, width);
+  return aligned.padEnd(width, " ");
+}
+
+function renderFollowHeaderField(options: FollowFrameRenderOptions): string {
+  let field = centerLine(NEUTRAL_MESSAGE_TITLE, FIELD_WIDTH);
+
+  if (options.artworkCogText !== null && options.artworkCogText !== undefined && options.artworkCogText.length > 0) {
+    field = replaceSegment(
+      field,
+      FOLLOW_COG_LEFT,
+      FOLLOW_COG_WIDTH,
+      leftAlignLane(options.artworkCogText, FOLLOW_COG_WIDTH),
+    );
+  }
+
+  if (options.artworkSatText !== null && options.artworkSatText !== undefined && options.artworkSatText.length > 0) {
+    field = replaceSegment(
+      field,
+      FOLLOW_SAT_LEFT,
+      FOLLOW_SAT_WIDTH,
+      rightAlignLine(options.artworkSatText, FOLLOW_SAT_WIDTH),
+    );
+  }
+
+  return field;
+}
 
 function highestTrackedFollowHeight(state: FollowSceneStateForTesting): number {
   return Math.max(
@@ -549,21 +591,16 @@ export function renderFollowFrame(
     }
   }
 
-  overlayCenteredField(frame, MESSAGE_FIELD_ROW, NEUTRAL_MESSAGE_TITLE);
-  overlayCenteredField(frame, STATUS_FIELD_ROW, statusFieldText);
-
-  if (options.artworkBalanceText !== null && options.artworkBalanceText !== undefined && options.artworkBalanceText.length > 0) {
-    const row = frame[FOLLOW_BALANCE_ROW];
-
-    if (row !== undefined) {
-      frame[FOLLOW_BALANCE_ROW] = replaceSegment(
-        row,
-        FOLLOW_BALANCE_LEFT,
-        FOLLOW_BALANCE_WIDTH,
-        rightAlignLine(options.artworkBalanceText, FOLLOW_BALANCE_WIDTH),
-      );
-    }
+  const headerRow = frame[MESSAGE_FIELD_ROW];
+  if (headerRow !== undefined) {
+    frame[MESSAGE_FIELD_ROW] = replaceSegment(
+      headerRow,
+      FIELD_LEFT,
+      FIELD_WIDTH,
+      renderFollowHeaderField(options),
+    );
   }
+  overlayCenteredField(frame, STATUS_FIELD_ROW, statusFieldText);
 
   return frame;
 }

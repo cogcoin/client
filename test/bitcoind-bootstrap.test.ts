@@ -75,6 +75,19 @@ function extractField(frame: string[], row: number): string {
   return frame[row - 1]?.slice(8, 72) ?? "";
 }
 
+function extractFollowBalanceLanes(frame: string[]): {
+  cog: string;
+  title: string;
+  sat: string;
+} {
+  const field = extractField(frame, 2);
+  return {
+    cog: field.slice(0, 22),
+    title: field.slice(22, 41),
+    sat: field.slice(41, 64),
+  };
+}
+
 function createIdentityPermutation(length: number): number[] {
   return Array.from({ length }, (_value, index) => index);
 }
@@ -1684,17 +1697,26 @@ test("intro scene hands off to quotes after 15 seconds", () => {
   assertCenteredField(frame, 13, statusField);
 });
 
-test("completion scene uses the requested copy during entry, pause, and exit", () => {
+test("completion scene freezes on the centered pause frame after entry", () => {
   const entryFrame = renderCompletionFrameForTesting(0);
   const pauseFrame = renderCompletionFrameForTesting(5_000);
-  const exitFrame = renderCompletionFrameForTesting(10_000);
+  const finalFrame = renderCompletionFrameForTesting(10_000);
+  const postTotalFrame = renderCompletionFrameForTesting(15_000);
+  const train = loadTrainArtForTesting();
 
   assertCenteredField(entryFrame, 2, resolveCompletionMessageForTesting(0));
   assertCenteredField(pauseFrame, 2, resolveCompletionMessageForTesting(5_000));
-  assertCenteredField(exitFrame, 2, resolveCompletionMessageForTesting(10_000));
+  assertCenteredField(finalFrame, 2, resolveCompletionMessageForTesting(10_000));
+  assertCenteredField(postTotalFrame, 2, resolveCompletionMessageForTesting(15_000));
+  assertCenteredSprite(pauseFrame, train);
+  assertCenteredSprite(finalFrame, train);
+  assertCenteredSprite(postTotalFrame, train);
   assert.equal(extractField(entryFrame, 13).trim(), "");
   assert.equal(extractField(pauseFrame, 13).trim(), "");
-  assert.equal(extractField(exitFrame, 13).trim(), "");
+  assert.equal(extractField(finalFrame, 13).trim(), "");
+  assert.equal(extractField(postTotalFrame, 13).trim(), "");
+  assert.equal(resolveCompletionMessageForTesting(10_000), "You shape your own future.");
+  assert.equal(resolveCompletionMessageForTesting(15_000), "You shape your own future.");
 });
 
 test("follow scene starts as a plain scroll frame instead of the intro animation", () => {
@@ -1707,6 +1729,82 @@ test("follow scene starts as a plain scroll frame instead of the intro animation
   assert.deepEqual(extractFollowWindow(frame), extractFollowWindow(loadScrollArtForTesting()));
   assert.equal(extractField(frame, 2).trim(), "⛭  C O G C O I N  ⛭");
   assertCenteredField(frame, 13, statusField);
+});
+
+test("follow scene renders split mining balance lanes around the centered title", () => {
+  const frame = renderFollowFrameForTesting(
+    createFollowSceneStateForTesting(),
+    "Waiting for next block to be mined...",
+    0,
+    {
+      artworkCogText: "0.1 COG",
+      artworkSatText: "150000 SAT",
+    },
+  );
+  const lanes = extractFollowBalanceLanes(frame);
+
+  assert.equal(lanes.cog.trim(), "0.1 COG");
+  assert.equal(lanes.title, "⛭  C O G C O I N  ⛭");
+  assert.equal(lanes.sat.trim(), "150000 SAT");
+});
+
+test("follow scene truncates mining balance lanes without overwriting the centered title", () => {
+  const frame = renderFollowFrameForTesting(
+    createFollowSceneStateForTesting(),
+    "Waiting for next block to be mined...",
+    0,
+    {
+      artworkCogText: "123456789012345678901234 COG",
+      artworkSatText: "123456789012345678901234 SAT",
+    },
+  );
+  const lanes = extractFollowBalanceLanes(frame);
+
+  assert.equal(lanes.cog.length, 22);
+  assert.equal(lanes.title, "⛭  C O G C O I N  ⛭");
+  assert.equal(lanes.sat.length, 23);
+  assert.notEqual(lanes.cog.trim(), "123456789012345678901234 COG");
+  assert.notEqual(lanes.sat.trim(), "123456789012345678901234 SAT");
+});
+
+test("follow scene leaves missing mining balance lanes blank while keeping the centered title", () => {
+  const cogOnlyFrame = renderFollowFrameForTesting(
+    createFollowSceneStateForTesting(),
+    "Waiting for next block to be mined...",
+    0,
+    {
+      artworkCogText: "1.2345 COG",
+      artworkSatText: null,
+    },
+  );
+  const satOnlyFrame = renderFollowFrameForTesting(
+    createFollowSceneStateForTesting(),
+    "Waiting for next block to be mined...",
+    0,
+    {
+      artworkCogText: null,
+      artworkSatText: "42 SAT",
+    },
+  );
+  const emptyFrame = renderFollowFrameForTesting(
+    createFollowSceneStateForTesting(),
+    "Waiting for next block to be mined...",
+    0,
+    {
+      artworkCogText: null,
+      artworkSatText: null,
+    },
+  );
+
+  assert.equal(extractFollowBalanceLanes(cogOnlyFrame).cog.trim(), "1.2345 COG");
+  assert.equal(extractFollowBalanceLanes(cogOnlyFrame).sat.trim(), "");
+  assert.equal(extractFollowBalanceLanes(cogOnlyFrame).title, "⛭  C O G C O I N  ⛭");
+
+  assert.equal(extractFollowBalanceLanes(satOnlyFrame).cog.trim(), "");
+  assert.equal(extractFollowBalanceLanes(satOnlyFrame).sat.trim(), "42 SAT");
+  assert.equal(extractFollowBalanceLanes(satOnlyFrame).title, "⛭  C O G C O I N  ⛭");
+
+  assert.equal(extractField(emptyFrame, 2).trim(), "⛭  C O G C O I N  ⛭");
 });
 
 test("follow scene animates the pending placeholder car in from the left", () => {

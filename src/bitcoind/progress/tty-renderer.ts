@@ -1,6 +1,6 @@
 import type { QuoteDisplayPhase } from "../quotes.js";
 import type { BootstrapProgress, WritingQuote } from "../types.js";
-import { ART_WIDTH, INTRO_TOTAL_MS, NEUTRAL_MESSAGE_TITLE } from "./constants.js";
+import { ART_WIDTH, NEUTRAL_MESSAGE_TITLE } from "./constants.js";
 import type { FollowSceneStateForTesting } from "./follow-scene.js";
 import { renderFollowFrame } from "./follow-scene.js";
 import { formatProgressLine, formatQuoteLine, truncateLine } from "./formatting.js";
@@ -21,7 +21,8 @@ interface StreamWriteObserver {
 }
 
 export interface FollowSceneRenderOptions {
-  artworkBalanceText?: string | null;
+  artworkCogText?: string | null;
+  artworkSatText?: string | null;
   extraLines?: string[];
 }
 
@@ -174,7 +175,8 @@ export class TtyProgressRenderer {
     const extraLines = (renderOptions.extraLines ?? []).map((line) => truncateLine(line, width));
     const lines = width >= ART_WIDTH
       ? [...renderFollowFrame(followScene, statusFieldText, now, {
-        artworkBalanceText: renderOptions.artworkBalanceText ?? null,
+        artworkCogText: renderOptions.artworkCogText ?? null,
+        artworkSatText: renderOptions.artworkSatText ?? null,
       }), "", progressLine, "", ...extraLines]
       : [truncateLine(NEUTRAL_MESSAGE_TITLE, width), progressLine, "", ...extraLines];
     const frame = lines.join("\n");

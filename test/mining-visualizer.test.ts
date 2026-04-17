@@ -193,13 +193,13 @@ test("mining follow visualizer keeps the sentence board and footer block permane
   visualizer.update(createSnapshot(), createUiState({
     balanceCogtoshi: 123_450_000n,
     balanceSats: 42n,
-    blockHeight: 101,
-    visibleBoardEntries: [
+    settledBlockHeight: 100,
+    settledBoardEntries: [
       { rank: 1, domainName: "alpha", sentence: "alpha sentence" },
       { rank: 2, domainName: "beta", sentence: "beta sentence" },
     ],
-    selfEntry: {
-      rank: "-",
+    provisionalRequiredWords: ["under", "tree", "monkey", "youth", "basket"],
+    provisionalEntry: {
       domainName: "local",
       sentence: "local sentence",
     },
@@ -209,9 +209,10 @@ test("mining follow visualizer keeps the sentence board and footer block permane
   visualizer.close();
 
   assert.deepEqual(capturedOptions, {
-    artworkBalanceText: "COG1.2345|SAT42",
+    artworkCogText: "1.2345 COG",
+    artworkSatText: "42 SAT",
     extraLines: [
-      "✎ Block #101 Sentences ✎",
+      "✎ Block #100 Sentences ✎",
       "",
       "1. @alpha: alpha sentence",
       "2. @beta: beta sentence",
@@ -219,10 +220,8 @@ test("mining follow visualizer keeps the sentence board and footer block permane
       "4.",
       "5.",
       "----------",
-      "-. @local: local sentence",
-      "",
-      "Latest sentence: local sentence",
-      `View at https://mempool.space/${"ab".repeat(32)}/`,
+      "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
+      "@local: local sentence",
     ],
   });
 });
@@ -251,12 +250,14 @@ test("mining follow visualizer keeps blank self and footer lines when no candida
   });
 
   visualizer.update(createSnapshot(), createUiState({
-    blockHeight: 102,
+    settledBlockHeight: 101,
   }));
   visualizer.close();
 
+  assert.equal(capturedOptions?.artworkCogText, null);
+  assert.equal(capturedOptions?.artworkSatText, null);
   assert.deepEqual(capturedOptions?.extraLines, [
-    "✎ Block #102 Sentences ✎",
+    "✎ Block #101 Sentences ✎",
     "",
     "1.",
     "2.",
@@ -266,8 +267,6 @@ test("mining follow visualizer keeps blank self and footer lines when no candida
     "----------",
     "",
     "",
-    "Latest sentence: ",
-    "View at ",
   ]);
 });
 
@@ -281,14 +280,14 @@ test("mining follow visualizer keeps a fixed-height frame across empty, unpublis
   visualizer.update(createSnapshot({
     currentPhase: "waiting",
   }), createUiState({
-    blockHeight: 103,
+    settledBlockHeight: 102,
   }));
   visualizer.update(createSnapshot({
     currentPhase: "waiting",
   }), createUiState({
-    blockHeight: 103,
-    selfEntry: {
-      rank: "-",
+    settledBlockHeight: 102,
+    provisionalRequiredWords: ["under", "tree", "monkey", "youth", "basket"],
+    provisionalEntry: {
       domainName: "local",
       sentence: "candidate not published",
     },
@@ -297,12 +296,12 @@ test("mining follow visualizer keeps a fixed-height frame across empty, unpublis
   visualizer.update(createSnapshot({
     currentPhase: "waiting",
   }), createUiState({
-    blockHeight: 103,
-    visibleBoardEntries: [
+    settledBlockHeight: 102,
+    settledBoardEntries: [
       { rank: 1, domainName: "alpha", sentence: "alpha sentence" },
     ],
-    selfEntry: {
-      rank: 4,
+    provisionalRequiredWords: ["under", "tree", "monkey", "youth", "basket"],
+    provisionalEntry: {
       domainName: "local",
       sentence: "candidate published",
     },
@@ -311,7 +310,7 @@ test("mining follow visualizer keeps a fixed-height frame across empty, unpublis
   }));
   visualizer.close();
 
-  const expectedFrameHeight = 28;
+  const expectedFrameHeight = 26;
   assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[2K/g), expectedFrameHeight);
   assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[1A/g), expectedFrameHeight - 1);
   assert.equal(countMatches(stream.chunks[3] ?? "", /\u001B\[2K/g), expectedFrameHeight);

@@ -18,6 +18,19 @@ const BALANCE_ART_TEMPLATE = readFileSync(new URL("../src/art/balance.txt", impo
 
 let readySnapshotPromise: Promise<WalletSnapshotView> | null = null;
 
+function createLocalDomain(overrides: Partial<WalletStateV1["domains"][number]> = {}): WalletStateV1["domains"][number] {
+  return {
+    name: "alpha",
+    domainId: 1,
+    currentOwnerScriptPubKeyHex: "0014" + "11".repeat(20),
+    canonicalChainStatus: "registered-unanchored",
+    currentCanonicalAnchorOutpoint: null,
+    foundingMessageText: null,
+    birthTime: null,
+    ...overrides,
+  };
+}
+
 function createPendingMutation(overrides: Partial<PendingMutationRecord> = {}): PendingMutationRecord {
   return {
     mutationId: "mutation-1",
@@ -90,7 +103,6 @@ test("balance ready-state text renders the 80-column balance card", async () => 
   const rendered = formatBalanceReport(context);
   const lines = rendered.split("\n");
 
-  assert.equal(lines.length, BALANCE_ART_TEMPLATE.length + 2);
   assert.ok(rendered.startsWith(`\n${BALANCE_ART_TEMPLATE[0]}\n${BALANCE_ART_TEMPLATE[1]}\n${BALANCE_ART_TEMPLATE[2]}\n`));
   assert.equal(lines[0], "");
   assert.equal(lines[1], BALANCE_ART_TEMPLATE[0]);
@@ -100,6 +112,13 @@ test("balance ready-state text renders the 80-column balance card", async () => 
   assert.equal(lines[8], BALANCE_ART_TEMPLATE[7]);
   assert.equal(lines[10], BALANCE_ART_TEMPLATE[9]);
   assert.equal(lines[11], "");
+  assert.equal(lines[12], "Anchored Domains");
+  assert.equal(lines[13], "--- No anchored domains ---");
+  assert.equal(lines[14], "");
+  assert.equal(lines[15], "Unanchored Domains");
+  assert.equal(lines[16], "--- No unanchored domains ---");
+  assert.equal(lines[17], "");
+  assert.equal(lines[18], "Next step: Buy a 6+ character root domain with `cogcoin register <root>`.");
 
   for (const [index, line] of BALANCE_ART_TEMPLATE.entries()) {
     const renderedLine = lines[index + 1]!;
@@ -150,7 +169,139 @@ test("balance ready-state text clips long inserted values inside the art frame",
   assert.ok(lines[9]!.includes("mempool.space/address/"));
 });
 
-test("balance ready-state text keeps pending lines below the art card", async () => {
+test("balance ready-state text lists anchored and unanchored domains in separate sections", async () => {
+  const context = await createReadyBalanceContext({
+    stateOverrides: {
+      domains: [
+        createLocalDomain({
+          name: "mitdog",
+          canonicalChainStatus: "registered-unanchored",
+        }),
+        createLocalDomain({
+          name: "mitsnake",
+          domainId: 2,
+          canonicalChainStatus: "anchored",
+          currentCanonicalAnchorOutpoint: { txid: "11".repeat(32), vout: 0, valueSats: 2_000 },
+        }),
+        createLocalDomain({
+          name: "mitcat",
+          domainId: 3,
+          canonicalChainStatus: "anchored",
+          currentCanonicalAnchorOutpoint: { txid: "22".repeat(32), vout: 1, valueSats: 2_000 },
+        }),
+      ],
+    },
+  });
+  const lines = formatBalanceReport(context).split("\n");
+
+  assert.deepEqual(
+    lines.slice(12, 17),
+    [
+      "Anchored Domains",
+      "⌂ mitcat, ⌂ mitsnake",
+      "",
+      "Unanchored Domains",
+      "~ mitdog",
+    ],
+  );
+});
+
+test("balance ready-state text wraps anchored and unanchored domain lists to 80 columns", async () => {
+  const context = await createReadyBalanceContext({
+    stateOverrides: {
+      domains: [
+        createLocalDomain({
+          name: "mitanchoredcat",
+          canonicalChainStatus: "anchored",
+          currentCanonicalAnchorOutpoint: { txid: "11".repeat(32), vout: 0, valueSats: 2_000 },
+        }),
+        createLocalDomain({
+          name: "mitanchoreddog",
+          domainId: 2,
+          canonicalChainStatus: "anchored",
+          currentCanonicalAnchorOutpoint: { txid: "22".repeat(32), vout: 1, valueSats: 2_000 },
+        }),
+        createLocalDomain({
+          name: "mitanchoredfrog",
+          domainId: 3,
+          canonicalChainStatus: "anchored",
+          currentCanonicalAnchorOutpoint: { txid: "33".repeat(32), vout: 2, valueSats: 2_000 },
+        }),
+        createLocalDomain({
+          name: "mitanchoredgoat",
+          domainId: 4,
+          canonicalChainStatus: "anchored",
+          currentCanonicalAnchorOutpoint: { txid: "44".repeat(32), vout: 3, valueSats: 2_000 },
+        }),
+        createLocalDomain({
+          name: "mitanchoredlion",
+          domainId: 5,
+          canonicalChainStatus: "anchored",
+          currentCanonicalAnchorOutpoint: { txid: "55".repeat(32), vout: 4, valueSats: 2_000 },
+        }),
+        createLocalDomain({
+          name: "mitunanchoredalpha",
+          domainId: 6,
+          canonicalChainStatus: "registered-unanchored",
+        }),
+        createLocalDomain({
+          name: "mitunanchoredbeta",
+          domainId: 7,
+          canonicalChainStatus: "registered-unanchored",
+        }),
+        createLocalDomain({
+          name: "mitunanchoredgamma",
+          domainId: 8,
+          canonicalChainStatus: "registered-unanchored",
+        }),
+        createLocalDomain({
+          name: "mitunanchoreddelta",
+          domainId: 9,
+          canonicalChainStatus: "registered-unanchored",
+        }),
+        createLocalDomain({
+          name: "mitunanchoredepsilon",
+          domainId: 10,
+          canonicalChainStatus: "registered-unanchored",
+        }),
+        createLocalDomain({
+          name: "mitunanchoredzeta",
+          domainId: 11,
+          canonicalChainStatus: "registered-unanchored",
+        }),
+      ],
+    },
+  });
+  const lines = formatBalanceReport(context).split("\n");
+  const anchoredHeaderIndex = lines.indexOf("Anchored Domains");
+  const unanchoredHeaderIndex = lines.indexOf("Unanchored Domains");
+
+  assert.notEqual(anchoredHeaderIndex, -1);
+  assert.notEqual(unanchoredHeaderIndex, -1);
+
+  const anchoredLines = lines.slice(anchoredHeaderIndex + 1, unanchoredHeaderIndex - 1);
+  assert.ok(anchoredLines.length > 1);
+
+  for (const line of anchoredLines) {
+    assert.ok(line.startsWith("⌂ "));
+    assert.ok(line.length <= 80);
+  }
+
+  const unanchoredLines: string[] = [];
+  for (const line of lines.slice(unanchoredHeaderIndex + 1)) {
+    if (!line.startsWith("~ ")) {
+      break;
+    }
+    unanchoredLines.push(line);
+    assert.ok(line.length <= 80);
+  }
+  assert.ok(unanchoredLines.length > 1);
+
+  assert.ok(anchoredLines[0]!.startsWith("⌂ mitanchoredcat, ⌂ mitanchoreddog"));
+  assert.ok(unanchoredLines[0]!.startsWith("~ mitunanchoredalpha, ~ mitunanchoredbeta"));
+});
+
+test("balance ready-state text keeps pending lines below the domain sections and next steps", async () => {
   const context = await createReadyBalanceContext({
     stateOverrides: {
       pendingMutations: [
@@ -160,10 +311,9 @@ test("balance ready-state text keeps pending lines below the art card", async ()
   });
   const lines = formatBalanceReport(context).split("\n");
 
-  assert.equal(lines.length, BALANCE_ART_TEMPLATE.length + 3);
-  assert.equal(lines[10], BALANCE_ART_TEMPLATE[9]);
-  assert.equal(lines[11], "");
-  assert.equal(lines[12], "Pending: send  broadcasting  0.00000123 COG");
+  assert.equal(lines.at(-1), "Pending: send  broadcasting  0.00000123 COG");
+  assert.ok(lines.includes("Anchored Domains"));
+  assert.ok(lines.includes("Unanchored Domains"));
 });
 
 test("balance ready-state text renders unavailable BTC inside the art card", async () => {
@@ -181,29 +331,86 @@ test("balance ready-state text adds quickstart below the art when BTC is below t
   });
   const lines = formatBalanceReport(context).split("\n");
 
-  assert.equal(lines[11], "");
-  assert.equal(lines[12], `Quickstart: ${getFundingQuickstartGuidance()}`);
+  assert.equal(lines[17], "");
+  assert.equal(lines[18], `Quickstart: ${getFundingQuickstartGuidance()}`);
 });
 
 test("balance ready-state text suppresses quickstart when an anchored or registered-unanchored domain exists", async () => {
   const context = await createReadyBalanceContext({
     fundingSpendableSats: 149_999n,
     stateOverrides: {
-      domains: [{
-        name: "alpha",
-        domainId: 1,
-        currentOwnerScriptPubKeyHex: "0014" + "11".repeat(20),
-        canonicalChainStatus: "registered-unanchored",
-        currentCanonicalAnchorOutpoint: null,
-        foundingMessageText: null,
-        birthTime: null,
-      }],
+      domains: [createLocalDomain()],
     },
   });
 
   assert.equal(
     formatBalanceReport(context).includes(`Quickstart: ${getFundingQuickstartGuidance()}`),
     false,
+  );
+});
+
+test("balance ready-state text suggests anchoring when an unanchored domain exists and no root domain is anchored", async () => {
+  const context = await createReadyBalanceContext({
+    stateOverrides: {
+      domains: [
+        createLocalDomain({
+          name: "mitdog",
+          canonicalChainStatus: "registered-unanchored",
+        }),
+      ],
+    },
+  });
+
+  assert.ok(
+    formatBalanceReport(context).includes("Next step: Run `cogcoin anchor mitdog` to anchor your unanchored domain."),
+  );
+});
+
+test("balance ready-state text suggests buying a root domain when funded but no anchored or unanchored domains exist", async () => {
+  const context = await createReadyBalanceContext({
+    fundingSpendableSats: 100_001n,
+  });
+
+  assert.ok(
+    formatBalanceReport(context).includes("Next step: Buy a 6+ character root domain with `cogcoin register <root>`."),
+  );
+});
+
+test("balance ready-state text suggests mining when an anchored root domain exists and BTC is above the mining threshold", async () => {
+  const context = await createReadyBalanceContext({
+    fundingSpendableSats: 10_001n,
+    stateOverrides: {
+      domains: [
+        createLocalDomain({
+          name: "mitcat",
+          canonicalChainStatus: "anchored",
+          currentCanonicalAnchorOutpoint: { txid: "11".repeat(32), vout: 0, valueSats: 2_000 },
+        }),
+      ],
+    },
+  });
+
+  assert.ok(
+    formatBalanceReport(context).includes("Next step: Run `cogcoin mine` to start mining with your anchored root domain."),
+  );
+});
+
+test("balance ready-state text suggests transferring BTC when an anchored root domain exists and BTC is below the mining threshold", async () => {
+  const context = await createReadyBalanceContext({
+    fundingSpendableSats: 9_999n,
+    stateOverrides: {
+      domains: [
+        createLocalDomain({
+          name: "mitcat",
+          canonicalChainStatus: "anchored",
+          currentCanonicalAnchorOutpoint: { txid: "11".repeat(32), vout: 0, valueSats: 2_000 },
+        }),
+      ],
+    },
+  });
+
+  assert.ok(
+    formatBalanceReport(context).includes("Next step: Transfer BTC to bc1qfunding so your anchored root domain can keep mining."),
   );
 });
 

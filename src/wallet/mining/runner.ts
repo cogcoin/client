@@ -90,8 +90,8 @@ import type { MiningControlPlaneView, MiningEventRecord, MiningRuntimeStatusV1 }
 import {
   createEmptyMiningFollowVisualizerState,
   type MiningFollowVisualizerState,
+  type MiningProvisionalSentenceEntry,
   type MiningSentenceBoardEntry,
-  type MiningSelfSentenceEntry,
   type MiningRecentWinSummary,
   MiningFollowVisualizer,
 } from "./visualizer.js";
@@ -541,39 +541,87 @@ function resetMiningUiForTip(loopState: MiningLoopState, targetBlockHeight: numb
   loopState.ui = {
     ...createEmptyMiningFollowVisualizerState(),
     latestTxid: preservedTxid,
-    blockHeight: targetBlockHeight,
   };
   loopState.waitingNote = null;
 }
 
-function setMiningUiVisibleBoard(
-  loopState: MiningLoopState,
-  blockHeight: number | null,
-  visibleBoardEntries: MiningSentenceBoardEntry[],
-): void {
-  loopState.ui.blockHeight = blockHeight;
-  loopState.ui.visibleBoardEntries = visibleBoardEntries.slice(0, 5);
+function getSettledBoardHeight(targetBlockHeight: number | null): number | null {
+  if (targetBlockHeight === null) {
+    return null;
+  }
+
+  return Math.max(targetBlockHeight - 1, 0);
 }
 
-function setMiningUiSelfEntry(
+function fallbackSettledWinnerDomainName(domainId: number): string {
+  return `domain-${domainId}`;
+}
+
+function resolveSettledBoard(options: {
+  snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"] | null | undefined;
+  targetBlockHeight: number | null;
+}): {
+  settledBlockHeight: number | null;
+  settledBoardEntries: MiningSentenceBoardEntry[];
+} {
+  const settledBlockHeight = getSettledBoardHeight(options.targetBlockHeight);
+
+  if (options.snapshotState === null || options.snapshotState === undefined || settledBlockHeight === null) {
+    return {
+      settledBlockHeight,
+      settledBoardEntries: [],
+    };
+  }
+
+  const settledBoardEntries = (getBlockWinners(options.snapshotState, settledBlockHeight) ?? [])
+    .slice()
+    .sort((left, right) => left.rank - right.rank || left.txIndex - right.txIndex)
+    .slice(0, 5)
+    .map((winner) => ({
+      rank: winner.rank,
+      domainName: lookupDomainById(options.snapshotState!, winner.domainId)?.name ?? fallbackSettledWinnerDomainName(winner.domainId),
+      sentence: winner.sentenceText ?? "[unavailable]",
+    }));
+
+  return {
+    settledBlockHeight,
+    settledBoardEntries,
+  };
+}
+
+export function resolveSettledBoardForTesting(options: {
+  snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"] | null | undefined;
+  targetBlockHeight: number | null;
+}): {
+  settledBlockHeight: number | null;
+  settledBoardEntries: MiningSentenceBoardEntry[];
+} {
+  return resolveSettledBoard(options);
+}
+
+function syncMiningUiSettledBoard(
   loopState: MiningLoopState,
-  entry: MiningSelfSentenceEntry,
+  snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"] | null | undefined,
+  targetBlockHeight: number | null,
 ): void {
-  loopState.ui.selfEntry = entry;
+  const settledBoard = resolveSettledBoard({
+    snapshotState,
+    targetBlockHeight,
+  });
+  loopState.ui.settledBlockHeight = settledBoard.settledBlockHeight;
+  loopState.ui.settledBoardEntries = settledBoard.settledBoardEntries;
 }
 
 function setMiningUiCandidate(
   loopState: MiningLoopState,
   candidate: MiningCandidate,
-  rank: number | "-" | null,
 ): void {
-  loopState.ui.blockHeight = candidate.targetBlockHeight;
   loopState.ui.latestSentence = candidate.sentence;
-  setMiningUiSelfEntry(loopState, {
-    rank,
+  loopState.ui.provisionalRequiredWords = [...candidate.bip39Words];
+  loopState.ui.provisionalEntry = {
     domainName: candidate.domainName,
     sentence: candidate.sentence,
-  });
+  };
 }
 
 async function resolveFundingSpendableSats(state: WalletStateV1, rpc: MiningRpcClient): Promise<bigint> {
@@ -2637,6 +2685,12 @@ async function performMiningCycle(options: {
       }
     }
 
+    syncMiningUiSettledBoard(
+      options.loopState,
+      effectiveReadContext.snapshot?.state ?? null,
+      targetBlockHeight,
+    );
+
     const spendableSats = await resolveFundingSpendableSats(effectiveReadContext.localState.state, rpc).catch(() => null);
     syncMiningVisualizerBalances(options.loopState, effectiveReadContext, spendableSats);
 
@@ -2946,7 +3000,7 @@ async function performMiningCycle(options: {
     }
 
     options.loopState.ui.recentWin = null;
-    setMiningUiCandidate(options.loopState, best, null);
+    setMiningUiCandidate(options.loopState, best);
     await appendEvent(options.paths, createEvent(
       "candidate-selected",
       `Selected ${best.domainName} with score ${best.canonicalBlend.toString()}.`,
@@ -2967,13 +3021,12 @@ async function performMiningCycle(options: {
       currentTxid: effectiveReadContext.localState.state.miningState.currentTxid,
     });
     checkpointMiningSuspendDetector(options.suspendDetector);
-    setMiningUiVisibleBoard(options.loopState, best.targetBlockHeight, gate.visibleBoardEntries);
 
     if (!gate.allowed) {
       if (tipKey !== null) {
         options.loopState.attemptedTipKey = tipKey;
       }
-      setMiningUiCandidate(options.loopState, best, "-");
+      setMiningUiCandidate(options.loopState, best);
       options.loopState.waitingNote = gate.decision === "suppressed-same-domain-mempool"
         ? "Best local sentence found, but a same-domain mempool competitor already matches or beats it."
         : gate.decision === "suppressed-top5-mempool"
@@ -3074,15 +3127,10 @@ async function performMiningCycle(options: {
       if (tipKey !== null) {
         options.loopState.attemptedTipKey = tipKey;
       }
-      setMiningUiVisibleBoard(options.loopState, best.targetBlockHeight, gate.visibleBoardEntries);
       if (published.txid !== null) {
         options.loopState.ui.latestTxid = published.txid;
       }
-      if (published.txid !== null && published.decision !== "kept-live-publish" && gate.candidateRank !== null) {
-        setMiningUiCandidate(options.loopState, best, gate.candidateRank);
-      } else {
-        setMiningUiCandidate(options.loopState, best, "-");
-      }
+      setMiningUiCandidate(options.loopState, best);
       options.loopState.waitingNote = published.decision === "kept-live-publish"
         ? "Existing live mining publish already covers this block attempt. Waiting for the next block."
         : published.txid === null

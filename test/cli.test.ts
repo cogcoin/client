@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { HELP_TEXT, parseCliArgs } from "../src/cli/parse.js";
 import { formatCliTextError } from "../src/cli/output.js";
+import { FileLockBusyError } from "../src/wallet/fs/lock.js";
 
 test("help text reflects the one-address model", () => {
   assert.match(HELP_TEXT, /anchor <domain>\s+Anchor an owned unanchored domain with the wallet address/);
@@ -205,4 +206,20 @@ test("CLI error text explains sat/vB parsing and command support", () => {
   assert.match(invalid, /positive finite decimal number/i);
   assert.match(unsupported, /does not support `--satvb`/i);
   assert.match(unsupported, /register|send/i);
+});
+
+test("CLI lock errors recommend cogcoin repair to reset the local lock state", () => {
+  const walletControl = (formatCliTextError(new Error("wallet_control_lock_busy")) ?? []).join("\n");
+  const miningLock = (formatCliTextError(
+    new FileLockBusyError(
+      "/Users/example/Library/Application Support/Cogcoin/runtime/mining-control.lock",
+      { processId: 1234, acquiredAtUnixMs: Date.now(), purpose: "mining", walletRootId: null },
+    ),
+  ) ?? []).join("\n");
+  const genericLock = (formatCliTextError(new Error("file_lock_busy_/tmp/example.lock")) ?? []).join("\n");
+
+  assert.match(walletControl, /Next: Run `cogcoin repair` to reset the local lock state, then retry\./);
+  assert.match(miningLock, /What happened: Lock file is busy: .*mining-control\.lock \(purpose: mining\)\./);
+  assert.match(miningLock, /Next: Run `cogcoin repair` to reset the local lock state, then retry\./);
+  assert.match(genericLock, /Next: Run `cogcoin repair` to reset the local lock state, then retry\./);
 });

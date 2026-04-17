@@ -8,7 +8,7 @@ import type {
   SnapshotMetadata,
   WritingQuote,
 } from "../types.js";
-import { INTRO_TOTAL_MS } from "./constants.js";
+import { COMPLETION_TOTAL_MS } from "./constants.js";
 import {
   advanceFollowSceneState,
   createFollowSceneState,
@@ -211,7 +211,7 @@ export class ManagedProgressController {
     const startedAt = this.#clock.now();
 
     while (true) {
-      const elapsedMs = Math.min(INTRO_TOTAL_MS, this.#clock.now() - startedAt);
+      const elapsedMs = Math.min(COMPLETION_TOTAL_MS, this.#clock.now() - startedAt);
       this.#renderer.renderTrainScene(
         "completion",
         this.#progress,
@@ -220,7 +220,7 @@ export class ManagedProgressController {
         elapsedMs,
       );
 
-      if (elapsedMs >= INTRO_TOTAL_MS) {
+      if (elapsedMs >= COMPLETION_TOTAL_MS) {
         break;
       }
 

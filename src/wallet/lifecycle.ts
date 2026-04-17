@@ -19,6 +19,7 @@ import { createRpcClient } from "../bitcoind/node.js";
 import type {
   ManagedBitcoindServiceStatus,
   ManagedCoreWalletReplicaStatus,
+  RpcListUnspentEntry,
 } from "../bitcoind/types.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import {
@@ -32,7 +33,7 @@ import {
   resolveNormalizedWalletDescriptorState,
   stripDescriptorChecksum,
 } from "./descriptor-normalization.js";
-import { acquireFileLock, clearOrphanedFileLock } from "./fs/lock.js";
+import { acquireFileLock, clearOrphanedFileLock, readLockMetadata } from "./fs/lock.js";
 import {
   createInternalCoreWalletPassphrase,
   createMnemonicConfirmationChallenge,
@@ -46,7 +47,7 @@ import {
   resolveWalletRuntimePathsForTesting,
   type WalletRuntimePaths,
 } from "./runtime.js";
-import { requestMiningGenerationPreemption, type MiningPreemptionHandle } from "./mining/coordination.js";
+import { readMiningGenerationActivity } from "./mining/coordination.js";
 import { loadClientConfig } from "./mining/config.js";
 import { loadMiningRuntimeStatus, saveMiningRuntimeStatus } from "./mining/runtime-artifacts.js";
 import { normalizeMiningStateRecord } from "./mining/state.js";
@@ -179,6 +180,7 @@ interface WalletLifecycleRpcClient {
   loadWallet(walletName: string, loadOnStartup?: boolean): Promise<{ name: string; warning: string }>;
   unloadWallet?(walletName: string, loadOnStartup?: boolean): Promise<null>;
   listWallets(): Promise<string[]>;
+  listUnspent(walletName: string, minConf?: number): Promise<RpcListUnspentEntry[]>;
   getBlockchainInfo(): Promise<{
     blocks: number;
     headers: number;
@@ -925,6 +927,127 @@ function createStoppedBackgroundRuntimeSnapshot(
   };
 }
 
+function resolveMiningGenerationRequestPath(paths: WalletRuntimePaths): string {
+  return join(paths.miningRoot, "generation-request.json");
+}
+
+function resolveMiningGenerationActivityPath(paths: WalletRuntimePaths): string {
+  return join(paths.miningRoot, "generation-activity.json");
+}
+
+function normalizeRepairMiningPid(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : null;
+}
+
+function createRepairStoppedMiningNote(livePublishInMempool: boolean | null | undefined): string {
+  return livePublishInMempool
+    ? "Background mining stopped for wallet repair. The last mining transaction may still confirm from mempool."
+    : "Background mining stopped for wallet repair.";
+}
+
+function createStoppedMiningRuntimeSnapshotForRepair(options: {
+  state: WalletStateV1;
+  snapshot: MiningRuntimeStatusV1 | null;
+  nowUnixMs: number;
+}): MiningRuntimeStatusV1 {
+  const stoppedMiningState = normalizeMiningStateRecord(applyRepairStoppedMiningState(options.state).miningState);
+  const note = createRepairStoppedMiningNote(stoppedMiningState.livePublishInMempool);
+
+  if (options.snapshot !== null) {
+    return {
+      ...createStoppedBackgroundRuntimeSnapshot(options.snapshot, options.nowUnixMs),
+      miningState: stoppedMiningState.state,
+      currentPublishState: stoppedMiningState.currentPublishState,
+      targetBlockHeight: stoppedMiningState.currentBlockTargetHeight,
+      referencedBlockHashDisplay: stoppedMiningState.currentReferencedBlockHashDisplay,
+      currentDomainId: stoppedMiningState.currentDomainId,
+      currentDomainName: stoppedMiningState.currentDomain,
+      currentSentenceDisplay: stoppedMiningState.currentSentence,
+      currentTxid: stoppedMiningState.currentTxid,
+      currentWtxid: stoppedMiningState.currentWtxid,
+      livePublishInMempool: stoppedMiningState.livePublishInMempool,
+      currentFeeRateSatVb: stoppedMiningState.currentFeeRateSatVb,
+      currentAbsoluteFeeSats: stoppedMiningState.currentAbsoluteFeeSats,
+      currentBlockFeeSpentSats: stoppedMiningState.currentBlockFeeSpentSats,
+      sessionFeeSpentSats: stoppedMiningState.sessionFeeSpentSats,
+      lifetimeFeeSpentSats: stoppedMiningState.lifetimeFeeSpentSats,
+      currentPublishDecision: stoppedMiningState.currentPublishDecision,
+      pauseReason: stoppedMiningState.pauseReason,
+      note,
+    };
+  }
+
+  return {
+    schemaVersion: 1,
+    walletRootId: options.state.walletRootId,
+    workerApiVersion: null,
+    workerBinaryVersion: null,
+    workerBuildId: null,
+    updatedAtUnixMs: options.nowUnixMs,
+    runMode: "stopped",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    backgroundWorkerHeartbeatAtUnixMs: null,
+    backgroundWorkerHealth: null,
+    indexerDaemonState: null,
+    indexerDaemonInstanceId: null,
+    indexerSnapshotSeq: null,
+    indexerSnapshotOpenedAtUnixMs: null,
+    indexerTruthSource: undefined,
+    indexerHeartbeatAtUnixMs: null,
+    coreBestHeight: null,
+    coreBestHash: null,
+    indexerTipHeight: null,
+    indexerTipHash: null,
+    indexerReorgDepth: null,
+    indexerTipAligned: null,
+    corePublishState: null,
+    providerState: null,
+    lastSuspendDetectedAtUnixMs: null,
+    reconnectSettledUntilUnixMs: null,
+    tipSettledUntilUnixMs: null,
+    miningState: stoppedMiningState.state,
+    currentPhase: "idle",
+    currentPublishState: stoppedMiningState.currentPublishState,
+    targetBlockHeight: stoppedMiningState.currentBlockTargetHeight,
+    referencedBlockHashDisplay: stoppedMiningState.currentReferencedBlockHashDisplay,
+    currentDomainId: stoppedMiningState.currentDomainId,
+    currentDomainName: stoppedMiningState.currentDomain,
+    currentSentenceDisplay: stoppedMiningState.currentSentence,
+    currentCanonicalBlend: null,
+    currentTxid: stoppedMiningState.currentTxid,
+    currentWtxid: stoppedMiningState.currentWtxid,
+    livePublishInMempool: stoppedMiningState.livePublishInMempool,
+    currentFeeRateSatVb: stoppedMiningState.currentFeeRateSatVb,
+    currentAbsoluteFeeSats: stoppedMiningState.currentAbsoluteFeeSats,
+    currentBlockFeeSpentSats: stoppedMiningState.currentBlockFeeSpentSats,
+    sessionFeeSpentSats: stoppedMiningState.sessionFeeSpentSats,
+    lifetimeFeeSpentSats: stoppedMiningState.lifetimeFeeSpentSats,
+    sameDomainCompetitorSuppressed: null,
+    higherRankedCompetitorDomainCount: null,
+    dedupedCompetitorDomainCount: null,
+    competitivenessGateIndeterminate: null,
+    mempoolSequenceCacheStatus: null,
+    currentPublishDecision: stoppedMiningState.currentPublishDecision,
+    lastMempoolSequence: null,
+    lastCompetitivenessGateAtUnixMs: null,
+    pauseReason: stoppedMiningState.pauseReason,
+    providerConfigured: false,
+    providerKind: null,
+    bitcoindHealth: "unavailable",
+    bitcoindServiceState: null,
+    bitcoindReplicaStatus: null,
+    nodeHealth: "unavailable",
+    indexerHealth: "unavailable",
+    tipsAligned: null,
+    lastEventAtUnixMs: null,
+    lastError: null,
+    note,
+  };
+}
+
 async function persistRepairState(options: {
   state: WalletStateV1;
   provider: WalletSecretProvider;
@@ -944,29 +1067,68 @@ async function persistRepairState(options: {
   });
 }
 
-async function stopBackgroundMiningForRepair(options: {
+async function cleanupMiningForRepair(options: {
   paths: WalletRuntimePaths;
-  snapshot: MiningRuntimeStatusV1;
+  state: WalletStateV1;
+  snapshot: MiningRuntimeStatusV1 | null;
   nowUnixMs: number;
-}): Promise<void> {
-  const pid = options.snapshot.backgroundWorkerPid;
+}): Promise<{
+  preRepairRunMode: WalletRepairResult["miningPreRepairRunMode"];
+}> {
+  const controlLockMetadata = await readLockMetadata(options.paths.miningControlLockPath).catch(() => null);
+  const generationActivity = await readMiningGenerationActivity(options.paths).catch(() => null);
+  const controlLockPid = normalizeRepairMiningPid(controlLockMetadata?.processId);
+  const backgroundWorkerPid = normalizeRepairMiningPid(options.snapshot?.backgroundWorkerPid);
+  const generationOwnerPid = normalizeRepairMiningPid(generationActivity?.generationOwnerPid);
+  const discoveredPids = new Set<number>();
+  let backgroundWorkerAlive = false;
+  let foregroundWorkerAlive = false;
 
-  if (pid !== null) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch (error) {
-      if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "ESRCH") {
-        throw error;
-      }
+  const pidSources: Array<{
+    pid: number | null;
+    source: "background" | "foreground";
+  }> = [
+    { pid: backgroundWorkerPid, source: "background" },
+    { pid: controlLockPid, source: "foreground" },
+    { pid: generationOwnerPid, source: "foreground" },
+  ];
+
+  for (const source of pidSources) {
+    if (source.pid === null || source.pid === process.pid || !await isProcessAlive(source.pid)) {
+      continue;
     }
 
-    await waitForProcessExit(pid, 15_000, "background_mining_stop_timeout");
+    discoveredPids.add(source.pid);
+    if (source.source === "background") {
+      backgroundWorkerAlive = true;
+    } else {
+      foregroundWorkerAlive = true;
+    }
   }
 
+  for (const pid of discoveredPids) {
+    await stopRecordedManagedProcess(pid, "mining_process_stop_timeout");
+  }
+
+  await rm(options.paths.miningControlLockPath, { force: true }).catch(() => undefined);
+  await rm(resolveMiningGenerationRequestPath(options.paths), { force: true }).catch(() => undefined);
+  await rm(resolveMiningGenerationActivityPath(options.paths), { force: true }).catch(() => undefined);
   await saveMiningRuntimeStatus(
     options.paths.miningStatusPath,
-    createStoppedBackgroundRuntimeSnapshot(options.snapshot, options.nowUnixMs),
+    createStoppedMiningRuntimeSnapshotForRepair({
+      state: options.state,
+      snapshot: options.snapshot,
+      nowUnixMs: options.nowUnixMs,
+    }),
   );
+
+  return {
+    preRepairRunMode: backgroundWorkerAlive
+      ? "background"
+      : foregroundWorkerAlive
+        ? "foreground"
+        : "stopped",
+  };
 }
 
 async function canResumeBackgroundMiningAfterRepair(options: {
@@ -1690,7 +1852,7 @@ export async function repairWallet(options: {
   rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
   attachIndexerDaemon?: typeof attachOrStartIndexerDaemon;
   probeIndexerDaemon?: typeof probeIndexerDaemon;
-  requestMiningPreemption?: typeof requestMiningGenerationPreemption;
+  requestMiningPreemption?: typeof import("./mining/coordination.js").requestMiningGenerationPreemption;
   startBackgroundMining?: typeof import("./mining/runner.js").startBackgroundMining;
 }): Promise<WalletRepairResult> {
   const provider = options.provider ?? createDefaultWalletSecretProvider();
@@ -1700,7 +1862,6 @@ export async function repairWallet(options: {
   const attachManagedBitcoind = options.attachService ?? attachOrStartManagedBitcoindService;
   const probeManagedIndexerDaemon = options.probeIndexerDaemon ?? probeIndexerDaemon;
   const attachManagedIndexerDaemon = options.attachIndexerDaemon ?? attachOrStartIndexerDaemon;
-  const requestMiningPreemptionForRepair = options.requestMiningPreemption ?? requestMiningGenerationPreemption;
   await clearOrphanedRepairLocks([
     paths.walletControlLockPath,
     paths.miningControlLockPath,
@@ -1711,7 +1872,6 @@ export async function repairWallet(options: {
   });
 
   try {
-    let miningPreemption: MiningPreemptionHandle | null = null;
     let loaded;
 
     try {
@@ -1735,14 +1895,13 @@ export async function repairWallet(options: {
       servicePaths.indexerDaemonLockPath,
     ]);
     const preRepairMiningRuntime = await loadMiningRuntimeStatus(paths.miningStatusPath).catch(() => null);
-    const backgroundWorkerAlive = preRepairMiningRuntime?.runMode === "background"
-      && preRepairMiningRuntime.backgroundWorkerPid !== null
-      && await isProcessAlive(preRepairMiningRuntime.backgroundWorkerPid);
-    const miningPreRepairRunMode: WalletRepairResult["miningPreRepairRunMode"] = backgroundWorkerAlive
-      ? "background"
-      : preRepairMiningRuntime?.runMode === "foreground"
-        ? "foreground"
-        : "stopped";
+    const miningCleanup = await cleanupMiningForRepair({
+      paths,
+      state: repairedState,
+      snapshot: preRepairMiningRuntime,
+      nowUnixMs,
+    });
+    const miningPreRepairRunMode = miningCleanup.preRepairRunMode;
     const miningWasResumable = miningPreRepairRunMode === "background"
       && normalizeMiningStateRecord(repairedState.miningState).state !== "repair-required";
     let initialBitcoindProbe: Awaited<ReturnType<typeof probeManagedBitcoindService>> = {
@@ -1761,97 +1920,77 @@ export async function repairWallet(options: {
     let miningPostRepairRunMode: WalletRepairResult["miningPostRepairRunMode"] = "stopped";
     let miningResumeError: string | null = null;
 
+    if (miningPreRepairRunMode !== "stopped" || preRepairMiningRuntime?.runMode !== "stopped") {
+      repairedState = applyRepairStoppedMiningState(repairedState);
+      repairStateNeedsPersist = true;
+    }
+
+    if (!(options.assumeYes ?? false)) {
+      await ensureIndexerDatabaseHealthy({
+        databasePath: options.databasePath,
+        dataDir: options.dataDir,
+        walletRootId: repairedState.walletRootId,
+        resetIfNeeded: false,
+      });
+    }
+
+    const bitcoindLock = await acquireFileLock(servicePaths.bitcoindLockPath, {
+      purpose: "managed-bitcoind-repair",
+      walletRootId: repairedState.walletRootId,
+      dataDir: options.dataDir,
+    });
+
+    let resetIndexerDatabase = false;
+    let bitcoindHandle = null as Awaited<ReturnType<typeof attachManagedBitcoind>> | null;
+    let bitcoindPostRepairHealth: WalletRepairResult["bitcoindPostRepairHealth"] = "unavailable";
+
     try {
-      miningPreemption = await requestMiningPreemptionForRepair({
-        paths,
-        reason: "wallet-repair",
+      initialBitcoindProbe = await probeManagedBitcoind({
+        dataDir: options.dataDir,
+        chain: "main",
+        startHeight: 0,
+        walletRootId: repairedState.walletRootId,
       });
 
-      if (backgroundWorkerAlive && preRepairMiningRuntime !== null) {
-        const miningLock = await acquireFileLock(paths.miningControlLockPath, {
-          purpose: "wallet-repair-stop-background",
-        });
+      bitcoindCompatibilityIssue = mapBitcoindCompatibilityToRepairIssue(initialBitcoindProbe.compatibility);
+
+      if (
+        initialBitcoindProbe.compatibility === "service-version-mismatch"
+        || initialBitcoindProbe.compatibility === "wallet-root-mismatch"
+        || initialBitcoindProbe.compatibility === "runtime-mismatch"
+      ) {
+        const processId = initialBitcoindProbe.status?.processId ?? null;
+
+        if (processId === null) {
+          throw new Error("managed_bitcoind_process_id_unavailable");
+        }
 
         try {
-          await stopBackgroundMiningForRepair({
-            paths,
-            snapshot: preRepairMiningRuntime,
-            nowUnixMs,
-          });
-        } finally {
-          await miningLock.release();
+          process.kill(processId, "SIGTERM");
+        } catch (error) {
+          if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "ESRCH") {
+            throw error;
+          }
         }
+        await waitForProcessExit(processId, 15_000, "managed_bitcoind_stop_timeout");
+        await clearManagedBitcoindArtifacts(servicePaths);
+        bitcoindServiceAction = "stopped-incompatible-service";
+      } else if (initialBitcoindProbe.compatibility === "unreachable") {
+        const hasStaleArtifacts = await pathExists(servicePaths.bitcoindStatusPath)
+          || await pathExists(servicePaths.bitcoindPidPath)
+          || await pathExists(servicePaths.bitcoindReadyPath)
+          || await pathExists(servicePaths.bitcoindWalletStatusPath);
 
-        repairedState = applyRepairStoppedMiningState(repairedState);
-        repairStateNeedsPersist = true;
-      }
-
-      if (!(options.assumeYes ?? false)) {
-        await ensureIndexerDatabaseHealthy({
-          databasePath: options.databasePath,
-          dataDir: options.dataDir,
-          walletRootId: repairedState.walletRootId,
-          resetIfNeeded: false,
-        });
-      }
-
-      const bitcoindLock = await acquireFileLock(servicePaths.bitcoindLockPath, {
-        purpose: "managed-bitcoind-repair",
-        walletRootId: repairedState.walletRootId,
-        dataDir: options.dataDir,
-      });
-
-      let resetIndexerDatabase = false;
-      let bitcoindHandle = null as Awaited<ReturnType<typeof attachManagedBitcoind>> | null;
-      let bitcoindPostRepairHealth: WalletRepairResult["bitcoindPostRepairHealth"] = "unavailable";
-
-      try {
-        initialBitcoindProbe = await probeManagedBitcoind({
-          dataDir: options.dataDir,
-          chain: "main",
-          startHeight: 0,
-          walletRootId: repairedState.walletRootId,
-        });
-
-        bitcoindCompatibilityIssue = mapBitcoindCompatibilityToRepairIssue(initialBitcoindProbe.compatibility);
-
-        if (
-          initialBitcoindProbe.compatibility === "service-version-mismatch"
-          || initialBitcoindProbe.compatibility === "wallet-root-mismatch"
-          || initialBitcoindProbe.compatibility === "runtime-mismatch"
-        ) {
-          const processId = initialBitcoindProbe.status?.processId ?? null;
-
-          if (processId === null) {
-            throw new Error("managed_bitcoind_process_id_unavailable");
-          }
-
-          try {
-            process.kill(processId, "SIGTERM");
-          } catch (error) {
-            if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "ESRCH") {
-              throw error;
-            }
-          }
-          await waitForProcessExit(processId, 15_000, "managed_bitcoind_stop_timeout");
+        if (hasStaleArtifacts) {
           await clearManagedBitcoindArtifacts(servicePaths);
-          bitcoindServiceAction = "stopped-incompatible-service";
-        } else if (initialBitcoindProbe.compatibility === "unreachable") {
-          const hasStaleArtifacts = await pathExists(servicePaths.bitcoindStatusPath)
-            || await pathExists(servicePaths.bitcoindPidPath)
-            || await pathExists(servicePaths.bitcoindReadyPath)
-            || await pathExists(servicePaths.bitcoindWalletStatusPath);
-
-          if (hasStaleArtifacts) {
-            await clearManagedBitcoindArtifacts(servicePaths);
-            bitcoindServiceAction = "cleared-stale-artifacts";
-          }
-        } else if (initialBitcoindProbe.compatibility === "protocol-error") {
-          throw new Error(initialBitcoindProbe.error ?? "managed_bitcoind_protocol_error");
+          bitcoindServiceAction = "cleared-stale-artifacts";
         }
-      } finally {
-        await bitcoindLock.release();
+      } else if (initialBitcoindProbe.compatibility === "protocol-error") {
+        throw new Error(initialBitcoindProbe.error ?? "managed_bitcoind_protocol_error");
       }
+    } finally {
+      await bitcoindLock.release();
+    }
 
       bitcoindHandle = await attachManagedBitcoind({
         dataDir: options.dataDir,
@@ -1875,7 +2014,7 @@ export async function repairWallet(options: {
         paths,
         nowUnixMs,
         replacePrimary: recoveredFromBackup && !repairStateNeedsPersist,
-        rpc: createRpcClient(bitcoindHandle.rpc),
+        rpc: (options.rpcFactory ?? createRpcClient)(bitcoindHandle.rpc),
       });
       repairedState = reconciledCoinControl.state;
       if (reconciledCoinControl.changed) {
@@ -2096,32 +2235,29 @@ export async function repairWallet(options: {
         }
         await clearLegacyWalletLockArtifacts(paths.walletRuntimeRoot);
 
-        return {
-          walletRootId: repairedState.walletRootId,
-          recoveredFromBackup,
-          recreatedManagedCoreWallet,
-          resetIndexerDatabase,
-          bitcoindServiceAction,
-          bitcoindCompatibilityIssue,
-          managedCoreReplicaAction,
-          bitcoindPostRepairHealth,
-          indexerDaemonAction,
-          indexerCompatibilityIssue,
-          indexerPostRepairHealth,
-          miningPreRepairRunMode,
-          miningResumeAction,
-          miningPostRepairRunMode,
-          miningResumeError,
-          note: resetIndexerDatabase
-            ? "Indexer artifacts were reset and may still be catching up."
-            : null,
-        };
-      } finally {
-        await daemon.close().catch(() => undefined);
-        await bitcoindHandle?.stop?.().catch(() => undefined);
-      }
+      return {
+        walletRootId: repairedState.walletRootId,
+        recoveredFromBackup,
+        recreatedManagedCoreWallet,
+        resetIndexerDatabase,
+        bitcoindServiceAction,
+        bitcoindCompatibilityIssue,
+        managedCoreReplicaAction,
+        bitcoindPostRepairHealth,
+        indexerDaemonAction,
+        indexerCompatibilityIssue,
+        indexerPostRepairHealth,
+        miningPreRepairRunMode,
+        miningResumeAction,
+        miningPostRepairRunMode,
+        miningResumeError,
+        note: resetIndexerDatabase
+          ? "Indexer artifacts were reset and may still be catching up."
+          : null,
+      };
     } finally {
-      await miningPreemption?.release().catch(() => undefined);
+      await daemon.close().catch(() => undefined);
+      await bitcoindHandle?.stop?.().catch(() => undefined);
     }
   } finally {
     await controlLock.release();

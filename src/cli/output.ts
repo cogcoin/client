@@ -473,7 +473,7 @@ export function createCliErrorPresentation(
     return {
       what: "Another Cogcoin command is already controlling this wallet.",
       why: "Commands that sync, follow, or mutate the local index take an exclusive wallet control lock so they do not write the same sqlite store concurrently.",
-      next: "Wait for the other Cogcoin command to finish, or stop it cleanly before retrying.",
+      next: "Run `cogcoin repair` to reset the local lock state, then retry.",
     };
   }
 
@@ -489,7 +489,7 @@ export function createCliErrorPresentation(
           ? "Wallet control lock is busy."
           : `Wallet control lock is busy (purpose: ${lockPurpose}).`,
         why: "Another Cogcoin command currently holds the exclusive wallet control lock for this wallet.",
-        next: "Wait for the other Cogcoin command to finish, or stop it cleanly before retrying.",
+        next: "Run `cogcoin repair` to reset the local lock state, then retry.",
       };
     }
 
@@ -498,7 +498,7 @@ export function createCliErrorPresentation(
         ? `Lock file is busy: ${lockPath}.`
         : `Lock file is busy: ${lockPath} (purpose: ${lockPurpose}).`,
       why: "The command was blocked by the current local wallet or service state.",
-      next: "Review `cogcoin status` and retry after the blocking condition is cleared.",
+      next: "Run `cogcoin repair` to reset the local lock state, then retry.",
     };
   }
 

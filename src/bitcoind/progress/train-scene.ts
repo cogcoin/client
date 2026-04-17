@@ -1,4 +1,8 @@
 import {
+  COMPLETION_ENTRY_MS,
+  COMPLETION_EXIT_MS,
+  COMPLETION_PAUSE_MS,
+  COMPLETION_TOTAL_MS,
   INTRO_ENTRY_MS,
   INTRO_EXIT_MS,
   INTRO_PAUSE_MS,
@@ -19,20 +23,43 @@ import { overlayCenteredField } from "./formatting.js";
 
 export type TrainSceneKind = "intro" | "completion";
 
+function resolveTrainSceneTimings(kind: TrainSceneKind): {
+  entryMs: number;
+  pauseMs: number;
+  exitMs: number;
+  totalMs: number;
+} {
+  return kind === "intro"
+    ? {
+      entryMs: INTRO_ENTRY_MS,
+      pauseMs: INTRO_PAUSE_MS,
+      exitMs: INTRO_EXIT_MS,
+      totalMs: INTRO_TOTAL_MS,
+    }
+    : {
+      entryMs: COMPLETION_ENTRY_MS,
+      pauseMs: COMPLETION_PAUSE_MS,
+      exitMs: COMPLETION_EXIT_MS,
+      totalMs: COMPLETION_TOTAL_MS,
+    };
+}
+
 export function resolveTrainSceneMessage(kind: TrainSceneKind, elapsedMs: number): string {
-  if (elapsedMs < INTRO_ENTRY_MS) {
+  const timings = resolveTrainSceneTimings(kind);
+
+  if (elapsedMs < timings.entryMs) {
     return kind === "intro"
       ? "Here comes the mining train!"
       : "Congratuations, you are synced!";
   }
 
-  if (elapsedMs < INTRO_ENTRY_MS + INTRO_PAUSE_MS) {
+  if (elapsedMs < timings.entryMs + timings.pauseMs || kind === "completion") {
     return kind === "intro"
       ? "Welcome to Cogcoin!"
       : "You shape your own future.";
   }
 
-  if (elapsedMs < INTRO_TOTAL_MS) {
+  if (elapsedMs < timings.totalMs) {
     return kind === "intro"
       ? "How many sentences will you mine?"
       : "Your Cogcoin story begins...";
@@ -49,32 +76,36 @@ export function resolveCompletionMessageForTesting(completionElapsedMs: number):
   return resolveTrainSceneMessage("completion", completionElapsedMs);
 }
 
-function resolveIntroSpriteName(introElapsedMs: number): "train-smoke" | "train" {
-  if (introElapsedMs >= INTRO_ENTRY_MS && introElapsedMs < INTRO_ENTRY_MS + INTRO_PAUSE_MS) {
+function resolveTrainSpriteName(kind: TrainSceneKind, elapsedMs: number): "train-smoke" | "train" {
+  const timings = resolveTrainSceneTimings(kind);
+
+  if (elapsedMs >= timings.entryMs && (kind === "completion" || elapsedMs < timings.entryMs + timings.pauseMs)) {
     return "train";
   }
 
   return "train-smoke";
 }
 
-function resolveIntroSpriteX(introElapsedMs: number): number {
-  if (introElapsedMs <= 0) {
+function resolveTrainSpriteX(kind: TrainSceneKind, elapsedMs: number): number {
+  const timings = resolveTrainSceneTimings(kind);
+
+  if (elapsedMs <= 0) {
     return TRAIN_OFFSCREEN_RIGHT_X;
   }
 
-  if (introElapsedMs < INTRO_ENTRY_MS) {
-    const progress = introElapsedMs / INTRO_ENTRY_MS;
+  if (elapsedMs < timings.entryMs) {
+    const progress = elapsedMs / timings.entryMs;
     return Math.round(
       TRAIN_OFFSCREEN_RIGHT_X + ((TRAIN_CENTER_X - TRAIN_OFFSCREEN_RIGHT_X) * progress),
     );
   }
 
-  if (introElapsedMs < INTRO_ENTRY_MS + INTRO_PAUSE_MS) {
+  if (kind === "completion" || elapsedMs < timings.entryMs + timings.pauseMs) {
     return TRAIN_CENTER_X;
   }
 
-  if (introElapsedMs < INTRO_TOTAL_MS) {
-    const progress = (introElapsedMs - INTRO_ENTRY_MS - INTRO_PAUSE_MS) / INTRO_EXIT_MS;
+  if (elapsedMs < timings.totalMs) {
+    const progress = (elapsedMs - timings.entryMs - timings.pauseMs) / timings.exitMs;
     return Math.round(
       TRAIN_CENTER_X + ((TRAIN_OFFSCREEN_LEFT_X - TRAIN_CENTER_X) * progress),
     );
@@ -122,14 +153,15 @@ export function renderTrainSceneFrame(
   statusFieldText: string,
 ): string[] {
   const frame = [...loadArtTemplate("scroll")];
-  const introFrame = elapsedMs >= INTRO_TOTAL_MS
+  const timings = resolveTrainSceneTimings(kind);
+  const renderedFrame = kind === "intro" && elapsedMs >= timings.totalMs
     ? frame
-    : overlaySpriteOnFrame(frame, loadSprite(resolveIntroSpriteName(elapsedMs)), resolveIntroSpriteX(elapsedMs));
+    : overlaySpriteOnFrame(frame, loadSprite(resolveTrainSpriteName(kind, elapsedMs)), resolveTrainSpriteX(kind, elapsedMs));
   const message = resolveTrainSceneMessage(kind, elapsedMs);
 
-  overlayCenteredField(introFrame, MESSAGE_FIELD_ROW, message.length > 0 ? message : NEUTRAL_MESSAGE_TITLE);
-  overlayCenteredField(introFrame, STATUS_FIELD_ROW, statusFieldText);
-  return introFrame;
+  overlayCenteredField(renderedFrame, MESSAGE_FIELD_ROW, message.length > 0 ? message : NEUTRAL_MESSAGE_TITLE);
+  overlayCenteredField(renderedFrame, STATUS_FIELD_ROW, statusFieldText);
+  return renderedFrame;
 }
 
 export function renderIntroFrame(introElapsedMs: number, statusFieldText: string): string[] {

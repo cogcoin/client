@@ -4,6 +4,7 @@ import {
   findDomainField,
   findWalletDomain,
   formatFieldFormat,
+  isRootDomainName,
   listDomainFields,
   listWalletLocks,
 } from "../wallet/read/index.js";
@@ -16,11 +17,14 @@ import type { PendingMutationRecord } from "../wallet/types.js";
 import { loadBalanceArtText } from "./art.js";
 import { formatMiningSummaryLine } from "./mining-format.js";
 import {
+  formatNextStepLines,
   getBootstrapSyncNextStep,
   getFundingQuickstartGuidance,
 } from "./workflow-hints.js";
 
 const BALANCE_QUICKSTART_THRESHOLD_SATS = 150_000n;
+const BALANCE_BUY_ROOT_THRESHOLD_SATS = 100_000n;
+const BALANCE_MINING_THRESHOLD_SATS = 10_000n;
 
 function formatUnitAmount(value: bigint, unit: string): string {
   const sign = value < 0n ? "-" : "";
@@ -702,8 +706,18 @@ function hasRegisteredOrAnchoredDomain(
   model: NonNullable<WalletReadContext["model"]>,
 ): boolean {
   return model.domains.some((domain) =>
-    domain.chainStatus === "registered-unanchored" || domain.chainStatus === "anchored"
+    domain.localRelationship === "local"
+    && (domain.chainStatus === "registered-unanchored" || domain.chainStatus === "anchored")
   );
+}
+
+function listBalanceDomainsByStatus(
+  model: NonNullable<WalletReadContext["model"]>,
+  status: "anchored" | "registered-unanchored",
+): WalletDomainView[] {
+  return model.domains
+    .filter((domain) => domain.localRelationship === "local" && domain.chainStatus === status)
+    .sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function shouldShowBalanceQuickstart(context: WalletReadContext & {
@@ -713,6 +727,73 @@ function shouldShowBalanceQuickstart(context: WalletReadContext & {
   return context.fundingSpendableSats !== null
     && context.fundingSpendableSats < BALANCE_QUICKSTART_THRESHOLD_SATS
     && !hasRegisteredOrAnchoredDomain(context.model);
+}
+
+function formatBalanceDomainSection(
+  title: string,
+  icon: string,
+  domains: readonly WalletDomainView[],
+  emptyLabel: string,
+): string[] {
+  const domainItems = domains.map((domain) => `${icon} ${domain.name}`);
+
+  const wrappedDomainLines: string[] = [];
+  let currentLine = "";
+
+  for (const item of domainItems) {
+    const candidate = currentLine.length === 0 ? item : `${currentLine}, ${item}`;
+    if (candidate.length <= 80) {
+      currentLine = candidate;
+      continue;
+    }
+
+    if (currentLine.length > 0) {
+      wrappedDomainLines.push(currentLine);
+    }
+    currentLine = item;
+  }
+
+  if (currentLine.length > 0) {
+    wrappedDomainLines.push(currentLine);
+  }
+
+  return [
+    title,
+    ...(domains.length === 0
+      ? [emptyLabel]
+      : wrappedDomainLines),
+  ];
+}
+
+function getBalanceNextSteps(context: WalletReadContext & {
+  model: NonNullable<WalletReadContext["model"]>;
+  snapshot: NonNullable<WalletReadContext["snapshot"]>;
+}): string[] {
+  const anchoredDomains = listBalanceDomainsByStatus(context.model, "anchored");
+  const anchoredRootDomains = anchoredDomains.filter((domain) => isRootDomainName(domain.name));
+  const unanchoredDomains = listBalanceDomainsByStatus(context.model, "registered-unanchored");
+
+  if (anchoredRootDomains.length > 0) {
+    if (context.fundingSpendableSats !== null && context.fundingSpendableSats < BALANCE_MINING_THRESHOLD_SATS) {
+      return [`Transfer BTC to ${context.model.walletAddress ?? "this wallet address"} so your anchored root domain can keep mining.`];
+    }
+
+    if (context.fundingSpendableSats !== null && context.fundingSpendableSats > BALANCE_MINING_THRESHOLD_SATS) {
+      return ["Run `cogcoin mine` to start mining with your anchored root domain."];
+    }
+
+    return [];
+  }
+
+  if (unanchoredDomains.length > 0) {
+    return [`Run \`cogcoin anchor ${unanchoredDomains[0]!.name}\` to anchor your unanchored domain.`];
+  }
+
+  if (context.fundingSpendableSats !== null && context.fundingSpendableSats > BALANCE_BUY_ROOT_THRESHOLD_SATS) {
+    return ["Buy a 6+ character root domain with `cogcoin register <root>`."];
+  }
+
+  return [];
 }
 
 function listPendingBalanceLines(context: WalletReadContext): string[] {
@@ -737,17 +818,44 @@ function formatReadyBalanceReport(context: WalletReadContext & {
   model: NonNullable<WalletReadContext["model"]>;
   snapshot: NonNullable<WalletReadContext["snapshot"]>;
 }): string {
+  const anchoredDomains = listBalanceDomainsByStatus(context.model, "anchored");
+  const unanchoredDomains = listBalanceDomainsByStatus(context.model, "registered-unanchored");
+  const nextStepLines = formatNextStepLines(getBalanceNextSteps(context));
   const lines = [
     "",
     ...renderBalanceArtCard(context),
     "",
+    ...formatBalanceDomainSection(
+      "Anchored Domains",
+      "⌂",
+      anchoredDomains,
+      "--- No anchored domains ---",
+    ),
+    "",
+    ...formatBalanceDomainSection(
+      "Unanchored Domains",
+      "~",
+      unanchoredDomains,
+      "--- No unanchored domains ---",
+    ),
   ];
 
   if (shouldShowBalanceQuickstart(context)) {
+    lines.push("");
     lines.push(`Quickstart: ${getFundingQuickstartGuidance()}`);
   }
 
-  lines.push(...listPendingBalanceLines(context));
+  if (nextStepLines.length > 0) {
+    lines.push("");
+    lines.push(...nextStepLines);
+  }
+
+  const pendingLines = listPendingBalanceLines(context);
+  if (pendingLines.length > 0) {
+    lines.push("");
+    lines.push(...pendingLines);
+  }
+
   return lines.join("\n");
 }
 

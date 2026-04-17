@@ -71,6 +71,10 @@ function getResetNextSteps(result: WalletResetResult): string[] {
     : ["Run `cogcoin sync` to bootstrap assumeutxo and the managed Bitcoin/indexer state."];
 }
 
+function getRepairNextSteps(): string[] {
+  return ["Run `cogcoin status` to review the repaired local state."];
+}
+
 function formatResetBitcoinDataDirStatus(result: WalletResetResult): string {
   if (result.bitcoinDataDir.status === "outside-reset-scope") {
     return "preserved (outside reset scope)";
@@ -79,19 +83,19 @@ function formatResetBitcoinDataDirStatus(result: WalletResetResult): string {
   return result.bitcoinDataDir.status;
 }
 
-interface ResetTextEntry {
+interface SectionTextEntry {
   text: string;
   ok: boolean;
 }
 
-function resetTextEntry(label: string, value: string, ok: boolean): ResetTextEntry {
+function sectionTextEntry(label: string, value: string, ok: boolean): SectionTextEntry {
   return {
     text: `${label}: ${value}`,
     ok,
   };
 }
 
-function formatResetSection(header: string, entries: readonly ResetTextEntry[]): string {
+function formatAdminSection(header: string, entries: readonly SectionTextEntry[]): string {
   return [header, ...entries.map((entry) => `${entry.ok ? "✓" : "✗"} ${entry.text}`)].join("\n");
 }
 
@@ -100,38 +104,38 @@ function formatResetResultText(result: WalletResetResult): string {
   const nextStep = getResetNextSteps(result)[0] ?? null;
   const secretCleanupOk = result.secretCleanupStatus !== "unknown" && result.secretCleanupStatus !== "failed";
   const managedCleanupOk = result.stoppedProcesses.survivors === 0;
-  const outcomeEntries: ResetTextEntry[] = [
-    resetTextEntry("Wallet action", result.walletAction, true),
-    resetTextEntry("Snapshot", result.bootstrapSnapshot.status, true),
-    resetTextEntry("Bitcoin datadir", formatResetBitcoinDataDirStatus(result), true),
-    resetTextEntry("Secret cleanup", result.secretCleanupStatus, secretCleanupOk),
+  const outcomeEntries: SectionTextEntry[] = [
+    sectionTextEntry("Wallet action", result.walletAction, true),
+    sectionTextEntry("Snapshot", result.bootstrapSnapshot.status, true),
+    sectionTextEntry("Bitcoin datadir", formatResetBitcoinDataDirStatus(result), true),
+    sectionTextEntry("Secret cleanup", result.secretCleanupStatus, secretCleanupOk),
   ];
 
   if (result.walletAction !== "retain-mnemonic" && result.walletOldRootId !== null) {
-    outcomeEntries.push(resetTextEntry("Previous wallet root", result.walletOldRootId, true));
+    outcomeEntries.push(sectionTextEntry("Previous wallet root", result.walletOldRootId, true));
   }
 
   if (result.walletAction !== "retain-mnemonic" && result.walletNewRootId !== null) {
-    outcomeEntries.push(resetTextEntry("New wallet root", result.walletNewRootId, true));
+    outcomeEntries.push(sectionTextEntry("New wallet root", result.walletNewRootId, true));
   }
 
   const sections = [
-    formatResetSection("Paths", [
-      resetTextEntry("Data root", result.dataRoot, true),
+    formatAdminSection("Paths", [
+      sectionTextEntry("Data root", result.dataRoot, true),
     ]),
-    formatResetSection("Reset Outcome", outcomeEntries),
-    formatResetSection("Managed Cleanup", [
-      resetTextEntry(
+    formatAdminSection("Reset Outcome", outcomeEntries),
+    formatAdminSection("Managed Cleanup", [
+      sectionTextEntry(
         "Managed bitcoind processes stopped",
         String(result.stoppedProcesses.managedBitcoind),
         managedCleanupOk,
       ),
-      resetTextEntry(
+      sectionTextEntry(
         "Indexer daemons stopped",
         String(result.stoppedProcesses.indexerDaemon),
         managedCleanupOk,
       ),
-      resetTextEntry(
+      sectionTextEntry(
         "Background miners stopped",
         String(result.stoppedProcesses.backgroundMining),
         managedCleanupOk,
@@ -140,14 +144,108 @@ function formatResetResultText(result: WalletResetResult): string {
   ];
 
   if (warnings.length > 0) {
-    sections.push(formatResetSection(
+    sections.push(formatAdminSection(
       "Warnings",
-      warnings.map((warning) => resetTextEntry("Warning", warning, false)),
+      warnings.map((warning) => sectionTextEntry("Warning", warning, false)),
     ));
   }
 
   const parts = [
     "\n⛭ Cogcoin Reset ⛭",
+    ...sections,
+  ];
+
+  if (nextStep !== null) {
+    parts.push(`Next step: ${nextStep}`);
+  }
+
+  return parts.join("\n\n");
+}
+
+function isRepairMiningResumeActionOk(action: WalletRepairResult["miningResumeAction"]): boolean {
+  return action === "none"
+    || action === "skipped-not-resumable"
+    || action === "resumed-background";
+}
+
+function buildRepairWarningEntries(result: WalletRepairResult): SectionTextEntry[] {
+  const entries: SectionTextEntry[] = [];
+
+  if (result.miningResumeError !== null) {
+    entries.push(sectionTextEntry("Mining resume error", result.miningResumeError, false));
+  }
+
+  for (const warning of getRepairWarnings(result)) {
+    if (result.miningResumeError !== null && warning.includes(result.miningResumeError)) {
+      continue;
+    }
+
+    entries.push(sectionTextEntry("Warning", warning, false));
+  }
+
+  return entries;
+}
+
+function formatRepairResultText(result: WalletRepairResult): string {
+  const nextStep = getRepairNextSteps()[0] ?? null;
+  const warningEntries = buildRepairWarningEntries(result);
+  const sections = [
+    formatAdminSection("Wallet", [
+      sectionTextEntry("Wallet root", result.walletRootId, true),
+      sectionTextEntry("Recovered from backup", result.recoveredFromBackup ? "yes" : "no", true),
+      sectionTextEntry("Managed Core wallet recreated", result.recreatedManagedCoreWallet ? "yes" : "no", true),
+    ]),
+    formatAdminSection("Managed Bitcoind", [
+      sectionTextEntry("Managed bitcoind action", result.bitcoindServiceAction, true),
+      sectionTextEntry(
+        "Managed bitcoind compatibility issue",
+        result.bitcoindCompatibilityIssue,
+        result.bitcoindCompatibilityIssue === "none",
+      ),
+      sectionTextEntry("Managed Core replica action", result.managedCoreReplicaAction, true),
+      sectionTextEntry(
+        "Managed bitcoind post-repair health",
+        result.bitcoindPostRepairHealth,
+        result.bitcoindPostRepairHealth === "ready",
+      ),
+    ]),
+    formatAdminSection("Indexer", [
+      sectionTextEntry("Indexer database reset", result.resetIndexerDatabase ? "yes" : "no", true),
+      sectionTextEntry("Indexer daemon action", result.indexerDaemonAction, true),
+      sectionTextEntry(
+        "Indexer compatibility issue",
+        result.indexerCompatibilityIssue,
+        result.indexerCompatibilityIssue === "none",
+      ),
+      sectionTextEntry(
+        "Indexer post-repair health",
+        result.indexerPostRepairHealth,
+        result.indexerPostRepairHealth === "synced",
+      ),
+    ]),
+    formatAdminSection("Mining", [
+      sectionTextEntry("Mining mode before repair", result.miningPreRepairRunMode, true),
+      sectionTextEntry(
+        "Mining resume action",
+        result.miningResumeAction,
+        isRepairMiningResumeActionOk(result.miningResumeAction),
+      ),
+      sectionTextEntry("Mining mode after repair", result.miningPostRepairRunMode, true),
+    ]),
+  ];
+
+  if (result.note !== null) {
+    sections.push(formatAdminSection("Notes", [
+      sectionTextEntry("Note", result.note, true),
+    ]));
+  }
+
+  if (warningEntries.length > 0) {
+    sections.push(formatAdminSection("Warnings", warningEntries));
+  }
+
+  const parts = [
+    "\n⛭ Cogcoin Repair ⛭",
     ...sections,
   ];
 
@@ -372,7 +470,7 @@ export async function runWalletAdminCommand(
             "completed",
             buildRepairPreviewData(result),
             {
-              nextSteps: ["Run `cogcoin status` to review the repaired local state."],
+              nextSteps: getRepairNextSteps(),
               warnings: getRepairWarnings(result),
             },
           ));
@@ -385,36 +483,13 @@ export async function runWalletAdminCommand(
             "completed",
             buildRepairMutationData(result),
             {
-              nextSteps: ["Run `cogcoin status` to review the repaired local state."],
+              nextSteps: getRepairNextSteps(),
               warnings: getRepairWarnings(result),
             },
           ));
           return 0;
         }
-        writeLine(context.stdout, `Wallet repair completed.`);
-        writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
-        writeLine(context.stdout, `Recovered from backup: ${result.recoveredFromBackup ? "yes" : "no"}`);
-        writeLine(context.stdout, `Managed Core wallet recreated: ${result.recreatedManagedCoreWallet ? "yes" : "no"}`);
-        writeLine(context.stdout, `Managed bitcoind action: ${result.bitcoindServiceAction}`);
-        writeLine(context.stdout, `Managed bitcoind compatibility issue: ${result.bitcoindCompatibilityIssue}`);
-        writeLine(context.stdout, `Managed Core replica action: ${result.managedCoreReplicaAction}`);
-        writeLine(context.stdout, `Managed bitcoind post-repair health: ${result.bitcoindPostRepairHealth}`);
-        writeLine(context.stdout, `Indexer database reset: ${result.resetIndexerDatabase ? "yes" : "no"}`);
-        writeLine(context.stdout, `Indexer daemon action: ${result.indexerDaemonAction}`);
-        writeLine(context.stdout, `Indexer compatibility issue: ${result.indexerCompatibilityIssue}`);
-        writeLine(context.stdout, `Indexer post-repair health: ${result.indexerPostRepairHealth}`);
-        writeLine(context.stdout, `Mining mode before repair: ${result.miningPreRepairRunMode}`);
-        writeLine(context.stdout, `Mining resume action: ${result.miningResumeAction}`);
-        writeLine(context.stdout, `Mining mode after repair: ${result.miningPostRepairRunMode}`);
-        if (result.miningResumeError !== null) {
-          writeLine(context.stdout, `Mining resume error: ${result.miningResumeError}`);
-        }
-        if (result.note !== null) {
-          writeLine(context.stdout, `Note: ${result.note}`);
-        }
-        for (const warning of getRepairWarnings(result)) {
-          writeLine(context.stdout, `Warning: ${warning}`);
-        }
+        writeLine(context.stdout, formatRepairResultText(result));
         return 0;
       }
 
