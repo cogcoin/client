@@ -580,10 +580,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     }
 
     if (command === null) {
-      if (token === "unlock") {
-        throw new Error("cli_wallet_unlock_removed");
-      }
-
       if (token === "wallet") {
         const subcommand = argv[index + 1] ?? null;
 
@@ -627,14 +623,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
           command = "wallet-show-mnemonic";
           index += 1;
           continue;
-        }
-
-        if (subcommand === "unlock") {
-          throw new Error("cli_wallet_unlock_removed");
-        }
-
-        if (subcommand === "lock") {
-          throw new Error("cli_wallet_lock_removed");
         }
 
         if (subcommand === "export") {

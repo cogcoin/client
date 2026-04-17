@@ -32,15 +32,15 @@ test("parser rejects removed selector-based commands", () => {
   );
   assert.throws(
     () => parseCliArgs(["unlock"]),
-    /cli_wallet_unlock_removed/,
+    /cli_unknown_command_unlock/,
   );
   assert.throws(
     () => parseCliArgs(["wallet", "unlock"]),
-    /cli_wallet_unlock_removed/,
+    /cli_unknown_command_wallet_unlock/,
   );
   assert.throws(
     () => parseCliArgs(["wallet", "lock"]),
-    /cli_wallet_lock_removed/,
+    /cli_unknown_command_wallet_lock/,
   );
 });
 
@@ -85,21 +85,14 @@ test("CLI error text explains removed wallet archive import", () => {
   assert.match(rendered, /restore/i);
 });
 
-test("CLI error text explains removed wallet unlock commands", () => {
-  const formatted = formatCliTextError(new Error("cli_wallet_unlock_removed")) ?? [];
+test("CLI error text explains unsupported legacy wallet state", () => {
+  const formatted = formatCliTextError(new Error("wallet_state_legacy_envelope_unsupported")) ?? [];
   const rendered = formatted.join("\n");
 
-  assert.match(rendered, /wallet unlock|unlock/i);
-  assert.match(rendered, /no longer available|removed/i);
-  assert.match(rendered, /loads on demand|local secret provider/i);
-});
-
-test("CLI error text explains removed wallet lock commands", () => {
-  const formatted = formatCliTextError(new Error("cli_wallet_lock_removed")) ?? [];
-  const rendered = formatted.join("\n");
-
-  assert.match(rendered, /wallet lock/i);
-  assert.match(rendered, /no longer available|removed/i);
+  assert.match(rendered, /legacy wallet state/i);
+  assert.match(rendered, /older Cogcoin format/i);
+  assert.match(rendered, /restore|recover/i);
+  assert.doesNotMatch(rendered, /passphrase/i);
 });
 
 test("CLI error text describes Linux local-file secret failures without Secret Service wording", () => {

@@ -58,14 +58,14 @@ test("previewResetWallet detects an existing wallet state", async () => {
   assert.equal(preview.walletPrompt?.defaultAction, "retain-mnemonic");
 });
 
-test("previewResetWallet marks legacy passphrase wallets as non-recoverable by entropy reset", async () => {
+test("previewResetWallet marks unsupported legacy wallet-state envelopes as non-recoverable by entropy reset", async () => {
   const homeDirectory = await mkdtemp(join(tmpdir(), "cogcoin-reset-home-"));
   const paths = resolveWalletRuntimePathsForTesting({ homeDirectory, platform: "linux" });
   const envelope = {
     format: "cogcoin-local-wallet-state",
     version: 1,
     cipher: "aes-256-gcm" as const,
-    wrappedBy: "passphrase",
+    wrappedBy: "legacy-envelope",
     walletRootIdHint: "wallet-root-legacy",
     secretProvider: null,
     nonce: "AAAAAAAAAAAAAAAA",
@@ -81,20 +81,22 @@ test("previewResetWallet marks legacy passphrase wallets as non-recoverable by e
     paths,
   });
 
-  assert.notEqual(preview.walletPrompt, null);
-  assert.equal(preview.walletPrompt?.defaultAction, "retain-mnemonic");
-  assert.equal(preview.walletPrompt?.entropyRetainingResetAvailable, false);
-  assert.equal(preview.walletPrompt?.requiresPassphrase, false);
+  assert.deepEqual(preview.walletPrompt, {
+    defaultAction: "retain-mnemonic",
+    acceptedInputs: ["", "skip", "delete wallet"],
+    entropyRetainingResetAvailable: false,
+    envelopeSource: "primary",
+  });
 });
 
-test("resetWallet rejects entropy-retaining reset for legacy passphrase wallets", async () => {
+test("resetWallet rejects entropy-retaining reset for unsupported legacy wallet-state envelopes", async () => {
   const homeDirectory = await mkdtemp(join(tmpdir(), "cogcoin-reset-home-"));
   const paths = resolveWalletRuntimePathsForTesting({ homeDirectory, platform: "linux" });
   const envelope = {
     format: "cogcoin-local-wallet-state",
     version: 1,
     cipher: "aes-256-gcm" as const,
-    wrappedBy: "passphrase",
+    wrappedBy: "legacy-envelope",
     walletRootIdHint: "wallet-root-legacy",
     secretProvider: null,
     nonce: "AAAAAAAAAAAAAAAA",
@@ -149,6 +151,10 @@ test("previewResetWallet on Linux local-file wallets does not claim OS secret cl
   });
 
   assert.equal(preview.willDeleteOsSecrets, false);
-  assert.notEqual(preview.walletPrompt, null);
-  assert.equal(preview.walletPrompt?.requiresPassphrase, false);
+  assert.deepEqual(preview.walletPrompt, {
+    defaultAction: "retain-mnemonic",
+    acceptedInputs: ["", "skip", "delete wallet"],
+    entropyRetainingResetAvailable: true,
+    envelopeSource: "primary",
+  });
 });

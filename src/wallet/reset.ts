@@ -102,7 +102,6 @@ export interface WalletResetPreview {
     defaultAction: "retain-mnemonic";
     acceptedInputs: ["", "skip", "delete wallet"];
     entropyRetainingResetAvailable: boolean;
-    requiresPassphrase: boolean;
     envelopeSource: "primary" | "backup" | null;
   };
   bootstrapSnapshot: {
@@ -124,7 +123,7 @@ export interface WalletResetPreview {
   removedPaths: string[];
 }
 
-type WalletEnvelopeMode = "provider-backed" | "unknown";
+type WalletEnvelopeMode = "provider-backed" | "unsupported-legacy" | "unknown";
 
 interface WalletResetPreflight {
   dataRoot: string;
@@ -769,7 +768,7 @@ async function preflightReset(options: {
         ? (hasWalletState ? "unknown" : "unknown")
         : rawEnvelope.envelope.secretProvider != null
           ? "provider-backed"
-          : "unknown",
+          : "unsupported-legacy",
       envelopeSource: rawEnvelope?.source ?? null,
       secretProviderKeyId,
       importedSeedSecretProviderKeyIds,
@@ -992,7 +991,6 @@ export async function previewResetWallet(options: {
         defaultAction: "retain-mnemonic",
         acceptedInputs: ["", "skip", "delete wallet"],
         entropyRetainingResetAvailable: preflight.wallet.mode === "provider-backed",
-        requiresPassphrase: false,
         envelopeSource: preflight.wallet.envelopeSource,
       }
       : null,

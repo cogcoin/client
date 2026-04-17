@@ -81,8 +81,8 @@ test("wallet read status explains unsupported legacy Windows DPAPI secrets", asy
   assert.match(status.message ?? "", /recover|reimport/i);
 });
 
-test("wallet read status treats legacy local wallet-state passphrase envelopes as corrupt", async () => {
-  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-legacy-passphrase-"));
+test("wallet read status treats unsupported legacy wallet-state envelopes as corrupt", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-legacy-envelope-"));
   const paths = resolveWalletRuntimePathsForTesting({
     homeDirectory: tempRoot,
     platform: "linux",
@@ -95,7 +95,7 @@ test("wallet read status treats legacy local wallet-state passphrase envelopes a
     format: "cogcoin-local-wallet-state",
     version: 1,
     cipher: "aes-256-gcm" as const,
-    wrappedBy: "passphrase",
+    wrappedBy: "legacy-envelope",
     walletRootIdHint: "wallet-root-legacy",
     secretProvider: null,
     nonce: "AAAAAAAAAAAAAAAA",
@@ -113,7 +113,8 @@ test("wallet read status treats legacy local wallet-state passphrase envelopes a
 
   assert.equal(status.availability, "local-state-corrupt");
   assert.equal(status.walletRootId, "wallet-root-legacy");
-  assert.match(status.message ?? "", /wallet_envelope_missing_secret_provider/);
+  assert.match(status.message ?? "", /older Cogcoin wallet format/i);
+  assert.doesNotMatch(status.message ?? "", /passphrase/i);
 });
 
 test("wallet read status reports missing Linux local-file secrets generically", async () => {

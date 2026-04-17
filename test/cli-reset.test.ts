@@ -64,7 +64,6 @@ test("reset preview-json dispatches through previewResetWallet", async () => {
           defaultAction: "retain-mnemonic" as const,
           acceptedInputs: ["", "skip", "delete wallet"] as const,
           entropyRetainingResetAvailable: true,
-          requiresPassphrase: false,
           envelopeSource: "primary" as const,
         },
         bootstrapSnapshot: {
@@ -99,6 +98,7 @@ test("reset preview-json dispatches through previewResetWallet", async () => {
       operation: {
         kind: string;
         confirmationPhrase: string;
+        walletPrompt: Record<string, unknown> | null;
         bitcoinDataDir: {
           status: string;
         };
@@ -108,6 +108,12 @@ test("reset preview-json dispatches through previewResetWallet", async () => {
   assert.equal(envelope.schema, "cogcoin-preview/reset/v1");
   assert.equal(envelope.command, "cogcoin reset");
   assert.equal(envelope.outcome, "planned");
+  assert.deepEqual(envelope.data.operation.walletPrompt, {
+    defaultAction: "retain-mnemonic",
+    acceptedInputs: ["", "skip", "delete wallet"],
+    entropyRetainingResetAvailable: true,
+    envelopeSource: "primary",
+  });
   assert.equal(envelope.data.resultType, "operation");
   assert.equal(envelope.data.operation.kind, "reset");
   assert.equal(envelope.data.operation.confirmationPhrase, "permanently reset");

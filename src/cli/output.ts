@@ -419,6 +419,7 @@ function isBlockedError(message: string): boolean {
     || message === "wallet_secret_provider_linux_runtime_error"
     || message === "wallet_secret_provider_windows_runtime_error"
     || message === "wallet_secret_provider_windows_legacy_dpapi_unsupported"
+    || message === "wallet_state_legacy_envelope_unsupported"
   ) {
     return true;
   }
@@ -721,22 +722,6 @@ export function createCliErrorPresentation(
     };
   }
 
-  if (errorCode === "cli_wallet_unlock_removed") {
-    return {
-      what: "`unlock` is no longer available.",
-      why: "Manual wallet lock and unlock commands were removed. Provider-backed wallet state now loads on demand whenever the local secret provider is available.",
-      next: "Retry the original wallet command directly, or inspect `cogcoin status` if local secret-provider access is failing.",
-    };
-  }
-
-  if (errorCode === "cli_wallet_lock_removed") {
-    return {
-      what: "`wallet lock` is no longer available.",
-      why: "Manual Cogcoin wallet locking was removed. The client no longer keeps a separate local lock state on top of the provider-backed wallet secret.",
-      next: "Retry without `wallet lock`, or use `cogcoin status` to inspect local wallet and service health.",
-    };
-  }
-
   if (errorCode === "cli_field_create_initial_value_not_supported") {
     return {
       what: "`field create` no longer accepts an initial value.",
@@ -811,6 +796,14 @@ export function createCliErrorPresentation(
       what: "Legacy Windows `.dpapi` wallet secrets are no longer supported.",
       why: "This wallet still points at an older Windows secret-store entry, but this version now uses local `.secret` files only and does not auto-migrate the old secret material.",
       next: "Recover or reimport the wallet on this version, then retry the command.",
+    };
+  }
+
+  if (errorCode === "wallet_state_legacy_envelope_unsupported") {
+    return {
+      what: "Legacy wallet state is no longer supported.",
+      why: "This wallet state was created by an older Cogcoin format that this version no longer loads directly.",
+      next: "Restore or otherwise recover the wallet into the current format, then retry the command.",
     };
   }
 

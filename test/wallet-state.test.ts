@@ -55,7 +55,7 @@ test("wallet state envelope exposes the wallet root id hint", async () => {
   assert.equal(extractWalletRootIdHintFromWalletStateEnvelope(raw?.envelope ?? null), "wallet-root-2");
 });
 
-test("wallet state storage rejects envelopes without a secret provider", async () => {
+test("wallet state storage rejects unsupported legacy envelopes without a secret provider", async () => {
   const dir = await mkdtemp(join(tmpdir(), "cogcoin-state-"));
   const paths = {
     primaryPath: join(dir, "wallet-state.enc"),
@@ -66,7 +66,7 @@ test("wallet state storage rejects envelopes without a secret provider", async (
     format: "cogcoin-local-wallet-state",
     version: 1,
     cipher: "aes-256-gcm" as const,
-    wrappedBy: "passphrase",
+    wrappedBy: "legacy-envelope",
     walletRootIdHint: "wallet-root-legacy",
     secretProvider: null,
     nonce: "AAAAAAAAAAAAAAAA",
@@ -75,9 +75,12 @@ test("wallet state storage rejects envelopes without a secret provider", async (
   };
 
   await writeFile(paths.primaryPath, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
+  const raw = await loadRawWalletStateEnvelope(paths);
+
+  assert.equal(extractWalletRootIdHintFromWalletStateEnvelope(raw?.envelope ?? null), "wallet-root-legacy");
 
   await assert.rejects(
     () => loadWalletState(paths, { provider }),
-    /wallet_envelope_missing_secret_provider/,
+    /wallet_state_legacy_envelope_unsupported/,
   );
 });

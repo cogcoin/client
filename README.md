@@ -32,8 +32,6 @@ npx cogcoin sync
 
 Verify the installed genesis artifacts before using the client in a production implementation.
 The installed package provides the `cogcoin` command for local wallet setup, sync, reads, writes, and mining workflows.
-Provider-backed local wallets unlock on demand by default; `cogcoin wallet lock` suppresses that behavior until `cogcoin unlock` is run again.
-Passphrase-wrapped wallet-state flows still require explicit passphrase-based access.
 
 ## Dependency Surface
 
@@ -74,7 +72,7 @@ Managed node subpath:
 
 The installed `cogcoin` command covers the first-party local wallet and node workflow:
 
-- wallet lifecycle commands such as `init`, `restore`, `unlock`, `lock`, `repair`, `export`, and `import`
+- wallet lifecycle commands such as `init`, `restore`, `wallet delete`, `wallet show-mnemonic`, and `repair`
 - sync and service commands such as `status`, `sync`, `follow`, `bitcoin start`, `bitcoin stop`, `bitcoin status`, `indexer start`, `indexer stop`, and `indexer status`
 - domain and field commands such as `register`, `anchor`, `show`, `domains`, `fields`, `buy`, `sell`, and `transfer`
 - COG and reputation commands such as `send`, `cog lock`, `claim`, `reclaim`, `rep give`, and `rep revoke`
@@ -85,10 +83,9 @@ Interactive text invocations periodically check the npm registry for newer `@cog
 Set `COGCOIN_DISABLE_UPDATE_CHECK=1` to disable the CLI update notice entirely.
 Ordinary `sync`, `follow`, and wallet-aware read/status flows detach from the managed Bitcoin and indexer services on exit instead of stopping them.
 Use the explicit `bitcoin ...` and `indexer ...` commands when you want direct service inspection or start/stop control.
-For provider-backed local wallets, normal reads, mutations, export, and mining setup flows auto-materialize a local unlock session when the wallet is not explicitly locked.
+For provider-backed local wallets, normal reads, mutations, and mining setup flows load local wallet state on demand whenever the local secret provider is available.
 `cogcoin restore` and `cogcoin wallet restore` rebuild a fresh local wallet from a 24-word English BIP39 mnemonic and recreate the managed Core wallet replica.
 Run `cogcoin sync` afterward to bootstrap the managed Bitcoin/indexer state.
-`cogcoin wallet import <path>` remains the richer encrypted-archive restore path that preserves more local continuity metadata than mnemonic-only restore.
 
 ## SQLite Store
 

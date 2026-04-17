@@ -128,6 +128,10 @@ async function loadWalletStateEnvelope(
   envelope: EncryptedEnvelopeV1,
   access: WalletStateLoadAccess,
 ): Promise<WalletStateV1> {
+  if (envelope.secretProvider == null) {
+    throw new Error("wallet_state_legacy_envelope_unsupported");
+  }
+
   return normalizeWalletStateRecord(
     await decryptJsonWithSecretProvider<WalletStateV1>(envelope, access.provider),
   );
