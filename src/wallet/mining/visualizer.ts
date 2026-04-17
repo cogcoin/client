@@ -1,6 +1,7 @@
 import type { BootstrapProgress, ProgressOutputMode } from "../../bitcoind/types.js";
 import { createBootstrapProgress } from "../../bitcoind/progress/formatting.js";
 import {
+  advanceFollowSceneState,
   createFollowSceneState,
   syncFollowSceneState,
 } from "../../bitcoind/progress/follow-scene.js";
@@ -271,6 +272,7 @@ export class MiningFollowVisualizer {
   readonly #renderThrottle: TtyRenderThrottle;
   readonly #progress = createBootstrapProgress("follow_tip", VISUALIZER_PROGRESS_SNAPSHOT);
   readonly #scene = createFollowSceneState();
+  #ticker: ReturnType<typeof setInterval> | null = null;
   #latestSnapshot: MiningRuntimeStatusV1 | null = null;
   #latestUiState: MiningFollowVisualizerState = createEmptyMiningFollowVisualizerState();
 
@@ -305,6 +307,12 @@ export class MiningFollowVisualizer {
       },
       throttled: renderPolicy.linuxHeadlessThrottle,
     });
+
+    if (this.#renderer !== null) {
+      this.#ticker = this.#clock.setInterval(() => {
+        this.#advanceAndRender();
+      }, renderPolicy.repaintIntervalMs);
+    }
   }
 
   update(snapshot: MiningRuntimeStatusV1, uiState?: MiningFollowVisualizerState): void {
@@ -316,12 +324,32 @@ export class MiningFollowVisualizer {
     if (uiState !== undefined) {
       this.#latestUiState = uiState;
     }
+    const indexedHeight = snapshot.indexerTipHeight ?? snapshot.coreBestHeight ?? null;
+    const nodeHeight = snapshot.coreBestHeight ?? indexedHeight;
+    syncFollowSceneState(this.#scene, {
+      indexedHeight,
+      nodeHeight,
+      liveActivated: true,
+    });
     this.#renderThrottle.request();
   }
 
   close(): void {
+    if (this.#ticker !== null) {
+      this.#clock.clearInterval(this.#ticker);
+      this.#ticker = null;
+    }
     this.#renderThrottle.flush();
     this.#renderer?.close();
+  }
+
+  #advanceAndRender(): void {
+    if (this.#renderer === null || this.#latestSnapshot === null) {
+      return;
+    }
+
+    advanceFollowSceneState(this.#scene, this.#clock.now());
+    this.#renderThrottle.request();
   }
 
   #renderLatestSnapshot(): void {
@@ -341,12 +369,6 @@ export class MiningFollowVisualizer {
     this.#progress.targetHeight = nodeHeight;
     this.#progress.etaSeconds = null;
     this.#progress.lastError = snapshot.lastError;
-
-    syncFollowSceneState(this.#scene, {
-      indexedHeight,
-      nodeHeight,
-      liveActivated: true,
-    });
 
     this.#renderer.renderFollowScene(
       this.#progress,

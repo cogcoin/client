@@ -11,6 +11,98 @@ import type { FollowSceneRenderOptions } from "../src/bitcoind/progress/tty-rend
 import type { MiningRuntimeStatusV1 } from "../src/wallet/mining/types.js";
 import type { MiningFollowVisualizerState } from "../src/wallet/mining/visualizer.js";
 
+interface FakeTimer {
+  callback: () => void;
+  dueAtMs: number;
+  intervalMs: number | null;
+}
+
+class FakeClock {
+  #nextId = 1;
+  #timers = new Map<number, FakeTimer>();
+  nowMs: number;
+
+  constructor(nowMs = Date.now()) {
+    this.nowMs = nowMs;
+  }
+
+  now = (): number => this.nowMs;
+
+  setTimeout: typeof setTimeout = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    const id = this.#nextId++;
+    this.#timers.set(id, {
+      callback: () => callback(...args),
+      dueAtMs: this.nowMs + Math.max(0, delay ?? 0),
+      intervalMs: null,
+    });
+    return id as unknown as ReturnType<typeof setTimeout>;
+  }) as unknown as typeof setTimeout;
+
+  clearTimeout: typeof clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
+    this.#timers.delete(handle as unknown as number);
+  }) as typeof clearTimeout;
+
+  setInterval: typeof setInterval = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    const id = this.#nextId++;
+    this.#timers.set(id, {
+      callback: () => callback(...args),
+      dueAtMs: this.nowMs + Math.max(0, delay ?? 0),
+      intervalMs: Math.max(0, delay ?? 0),
+    });
+    return id as unknown as ReturnType<typeof setInterval>;
+  }) as unknown as typeof setInterval;
+
+  clearInterval: typeof clearInterval = ((handle: ReturnType<typeof setInterval>) => {
+    this.#timers.delete(handle as unknown as number);
+  }) as typeof clearInterval;
+
+  advance(ms: number): void {
+    const targetMs = this.nowMs + ms;
+
+    while (true) {
+      const next = this.#nextDueTimer(targetMs);
+
+      if (next === null) {
+        break;
+      }
+
+      this.nowMs = next.timer.dueAtMs;
+
+      if (next.timer.intervalMs === null) {
+        this.#timers.delete(next.id);
+      } else {
+        next.timer.dueAtMs += next.timer.intervalMs;
+      }
+
+      next.timer.callback();
+    }
+
+    this.nowMs = targetMs;
+  }
+
+  #nextDueTimer(targetMs: number): { id: number; timer: FakeTimer } | null {
+    let nextId: number | null = null;
+    let nextTimer: FakeTimer | null = null;
+
+    for (const [id, timer] of this.#timers) {
+      if (timer.dueAtMs > targetMs) {
+        continue;
+      }
+
+      if (nextTimer === null || timer.dueAtMs < nextTimer.dueAtMs) {
+        nextId = id;
+        nextTimer = timer;
+      }
+    }
+
+    if (nextId === null || nextTimer === null) {
+      return null;
+    }
+
+    return { id: nextId, timer: nextTimer };
+  }
+}
+
 class MemoryStream {
   readonly chunks: string[] = [];
   isTTY?: boolean;
@@ -332,4 +424,94 @@ test("mining visualizer status prefers the recent settled win banner", () => {
   );
 
   assert.equal(status, "You got #2 and mined 1.23 COG in block #101");
+});
+
+test("mining follow visualizer advances the follow scene without a second update", () => {
+  const clock = new FakeClock(0);
+  const renders: Array<{
+    displayedCenterHeight: number | null;
+    queuedHeights: number[];
+    animationKind: string | null;
+  }> = [];
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    clock,
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        followScene,
+      ) {
+        renders.push({
+          displayedCenterHeight: followScene.displayedCenterHeight,
+          queuedHeights: [...followScene.queuedHeights],
+          animationKind: followScene.animation?.kind ?? null,
+        });
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot({
+    coreBestHeight: 102,
+    indexerTipHeight: 100,
+    currentPhase: "waiting",
+  }));
+
+  assert.equal(renders.length, 1);
+  assert.equal(renders[0]?.displayedCenterHeight, 100);
+  assert.deepEqual(renders[0]?.queuedHeights, [101, 102]);
+  assert.equal(renders[0]?.animationKind, null);
+
+  clock.advance(250);
+
+  assert.equal(renders.length, 2);
+  assert.equal(renders[1]?.displayedCenterHeight, 100);
+  assert.deepEqual(renders[1]?.queuedHeights, [101, 102]);
+  assert.equal(renders[1]?.animationKind, "tip_approach");
+
+  clock.advance(3_000);
+
+  assert.ok(renders.length >= 3);
+  assert.ok(renders.some((entry) => entry.displayedCenterHeight === 101));
+  visualizer.close();
+});
+
+test("mining follow visualizer stops ticking after close", () => {
+  const clock = new FakeClock(0);
+  let renderCount = 0;
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    clock,
+    rendererFactory: () => ({
+      renderFollowScene() {
+        renderCount += 1;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot({
+    coreBestHeight: 102,
+    indexerTipHeight: 100,
+    currentPhase: "waiting",
+  }));
+  assert.equal(renderCount, 1);
+
+  clock.advance(250);
+  assert.equal(renderCount, 2);
+
+  visualizer.close();
+  clock.advance(1_000);
+
+  assert.equal(renderCount, 2);
 });
