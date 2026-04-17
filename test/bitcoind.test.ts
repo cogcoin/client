@@ -1236,8 +1236,8 @@ test("sync CLI auto-detaches and resumes background indexer follow once fully ca
 
     assert.equal(code, 0);
     assert.equal(stdout.toString(), "");
-    assert.match(stderr.toString(), /Managed sync fully caught up to the live tip\./);
-    assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
+    assert.doesNotMatch(stderr.toString(), /Managed sync fully caught up to the live tip\./);
+    assert.doesNotMatch(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
     assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
 
     const daemon = await attachOrStartIndexerDaemon({
@@ -1326,7 +1326,8 @@ test("sync CLI runs the completion scene while background-follow detach is alrea
     assert.equal(code, 0);
     assert.equal(stdout.toString(), "");
     assert.deepEqual(events, ["sync", "detach-start", "scene-start", "scene-end", "detach-end", "close"]);
-    assert.match(stderr.toString(), /Managed sync fully caught up to the live tip\./);
+    assert.doesNotMatch(stderr.toString(), /Managed sync fully caught up to the live tip\./);
+    assert.doesNotMatch(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
     assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
   } finally {
     await cleanupManagedFixture(fixture);

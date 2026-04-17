@@ -443,7 +443,7 @@ export async function syncToTip(
           lastError: null,
           message: dependencies.isFollowing()
             ? "Following the live Bitcoin tip."
-            : "Managed sync fully caught up to the live tip.",
+            : "Sync complete.",
         });
 
         await dependencies.bootstrap.cleanupObsoleteSnapshotFilesIfNeeded().catch(() => false);

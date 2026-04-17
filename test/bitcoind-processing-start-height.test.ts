@@ -5,6 +5,7 @@ import { loadBundledGenesisParameters } from "@cogcoin/indexer";
 
 import {
   assertCogcoinProcessingStartHeight,
+  normalizeCogcoinProcessingStartHeight,
   resolveCogcoinProcessingStartHeight,
 } from "../src/bitcoind/processing-start-height.js";
 
@@ -37,4 +38,40 @@ test("processing start height resolves from bundled genesis and rejects pre-gene
       genesisParameters: genesis,
     });
   });
+
+  assert.equal(
+    normalizeCogcoinProcessingStartHeight({
+      chain: "main",
+      startHeight: undefined,
+      genesisParameters: genesis,
+    }),
+    processingStartHeight,
+  );
+
+  assert.equal(
+    normalizeCogcoinProcessingStartHeight({
+      chain: "main",
+      startHeight: 0,
+      genesisParameters: genesis,
+    }),
+    processingStartHeight,
+  );
+
+  assert.equal(
+    normalizeCogcoinProcessingStartHeight({
+      chain: "main",
+      startHeight: processingStartHeight + 10,
+      genesisParameters: genesis,
+    }),
+    processingStartHeight + 10,
+  );
+
+  assert.equal(
+    normalizeCogcoinProcessingStartHeight({
+      chain: "regtest",
+      startHeight: 0,
+      genesisParameters: genesis,
+    }),
+    0,
+  );
 });

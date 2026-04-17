@@ -22,6 +22,7 @@ import {
   type ManagedIndexerDaemonObservedStatus,
   type ManagedIndexerDaemonStatus,
   type ManagedIndexerTruthSource,
+  type RpcListUnspentEntry,
 } from "../../bitcoind/types.js";
 import {
   verifyManagedCoreWalletReplica,
@@ -63,6 +64,17 @@ import type { WalletRuntimePaths } from "../runtime.js";
 
 const DEFAULT_SERVICE_START_TIMEOUT_MS = 10_000;
 const STALE_HEARTBEAT_THRESHOLD_MS = 15_000;
+
+function btcAmountToSats(value: number): bigint {
+  return BigInt(Math.round(value * 100_000_000));
+}
+
+function isSpendableFundingUtxo(entry: RpcListUnspentEntry, fundingScriptPubKeyHex: string): boolean {
+  return entry.scriptPubKey === fundingScriptPubKeyHex
+    && entry.confirmations >= 1
+    && entry.spendable !== false
+    && entry.safe !== false;
+}
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -536,6 +548,7 @@ async function attachNodeStatus(options: {
   startupTimeoutMs: number;
 }): Promise<{
   handle: ManagedBitcoindNodeHandle | null;
+  rpc: ReturnType<typeof createRpcClient> | null;
   status: WalletNodeStatus | null;
   observedStatus: ManagedBitcoindObservedStatus | null;
   error: string | null;
@@ -552,6 +565,7 @@ async function attachNodeStatus(options: {
     if (probe.compatibility !== "compatible" && probe.compatibility !== "unreachable") {
       return {
         handle: null,
+        rpc: null,
         status: null,
         observedStatus: probe.status,
         error: probe.error,
@@ -587,6 +601,7 @@ async function attachNodeStatus(options: {
 
     return {
       handle,
+      rpc,
       status,
       observedStatus: serviceStatus ?? null,
       error: null,
@@ -594,10 +609,32 @@ async function attachNodeStatus(options: {
   } catch (error) {
     return {
       handle: null,
+      rpc: null,
       status: null,
       observedStatus: null,
       error: error instanceof Error ? error.message : String(error),
     };
+  }
+}
+
+async function readFundingSpendableSats(options: {
+  state: WalletLocalStateStatus["state"];
+  rpc: ReturnType<typeof createRpcClient> | null;
+}): Promise<bigint | null> {
+  if (options.state === null || options.rpc === null) {
+    return null;
+  }
+
+  const state = options.state;
+
+  try {
+    const utxos = await options.rpc.listUnspent(state.managedCoreWallet.walletName, 1);
+    return utxos.reduce((sum, entry) =>
+      isSpendableFundingUtxo(entry, state.funding.scriptPubKeyHex)
+        ? sum + btcAmountToSats(entry.amount)
+        : sum, 0n);
+  } catch {
+    return null;
   }
 }
 
@@ -708,6 +745,10 @@ export async function openWalletReadContext(options: {
     now,
     startupError: daemonError,
   });
+  const fundingSpendableSats = await readFundingSpendableSats({
+    state: localState.state,
+    rpc: node.rpc,
+  });
   const mining = await inspectMiningControlPlane({
     provider: options.secretProvider,
     localState,
@@ -732,6 +773,7 @@ export async function openWalletReadContext(options: {
     model: localState.state === null
       ? null
       : createWalletReadModel(localState.state, snapshot),
+    fundingSpendableSats,
     mining,
     async close(): Promise<void> {
       await daemonClient?.close().catch(() => undefined);

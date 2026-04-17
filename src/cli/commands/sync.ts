@@ -196,9 +196,6 @@ export async function runSyncCommand(
       const result = syncOutcome.value;
 
       if (result.endingHeight !== null && result.endingHeight === result.bestHeight) {
-        writeLine(context.stderr, "Managed sync fully caught up to the live tip.");
-        writeLine(context.stderr, "Detaching from managed Cogcoin client and resuming background indexer follow...");
-
         stopWatcher.cleanup();
 
         const detachPromise = typeof client.detachToBackgroundFollow === "function"

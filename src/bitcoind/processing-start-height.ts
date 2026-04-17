@@ -6,6 +6,19 @@ export function resolveCogcoinProcessingStartHeight(
   return genesisParameters.genesisBlock;
 }
 
+export function normalizeCogcoinProcessingStartHeight(options: {
+  chain: "main" | "regtest";
+  startHeight: number | null | undefined;
+  genesisParameters: GenesisParameters;
+}): number {
+  if (options.chain !== "main") {
+    return options.startHeight ?? 0;
+  }
+
+  const processingStartHeight = resolveCogcoinProcessingStartHeight(options.genesisParameters);
+  return Math.max(options.startHeight ?? processingStartHeight, processingStartHeight);
+}
+
 export function assertCogcoinProcessingStartHeight(options: {
   chain: "main" | "regtest";
   startHeight: number;

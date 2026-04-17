@@ -32,6 +32,7 @@ import {
   createOwnedLockCleanupSignalWatcher,
   waitForCompletionOrStop,
 } from "../signals.js";
+import { runSyncCommand } from "./sync.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import type { WalletRepairResult, WalletResetResult } from "../../wallet/lifecycle.js";
 import { CLIENT_PASSWORD_SETUP_AUTO_UNLOCK_SECONDS } from "../../wallet/state/client-password.js";
@@ -168,6 +169,7 @@ export async function runWalletAdminCommand(
     runtimePaths.bitcoindLockPath,
     runtimePaths.indexerDaemonLockPath,
   ]);
+  let shouldAutoSyncAfterInit = false;
 
   try {
     const outcome = await waitForCompletionOrStop((async () => {
@@ -206,16 +208,28 @@ export async function runWalletAdminCommand(
             ? "Wallet already initialized."
             : "Wallet initialized.",
         );
-        writeLine(context.stdout, `Client password: ${result.passwordAction}`);
-        if (result.passwordAction !== "already-configured") {
-          writeSetupUnlockGuidance(context.stdout);
+
+        if (result.walletAction === "already-initialized") {
+          writeLine(context.stdout, "");
+          writeLine(context.stdout, "Wallet");
+          writeLine(context.stdout, `✓ Client password: ${result.passwordAction}`);
+          writeLine(context.stdout, `✓ Wallet root: ${result.walletRootId}`);
+          writeLine(context.stdout, `✓ Funding address: ${result.fundingAddress}`);
+          if (result.passwordAction !== "already-configured") {
+            writeSetupUnlockGuidance(context.stdout);
+          }
+        } else {
+          writeLine(context.stdout, `Client password: ${result.passwordAction}`);
+          if (result.passwordAction !== "already-configured") {
+            writeSetupUnlockGuidance(context.stdout);
+          }
+          writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
+          writeLine(context.stdout, `Funding address: ${result.fundingAddress}`);
         }
-        writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
-        writeLine(context.stdout, `Funding address: ${result.fundingAddress}`);
+
+        writeLine(context.stdout, "");
         writeLine(context.stdout, `Quickstart: ${getFundingQuickstartGuidance()}`);
-        for (const line of formatNextStepLines(nextSteps)) {
-          writeLine(context.stdout, line);
-        }
+        shouldAutoSyncAfterInit = true;
         return 0;
       }
 
@@ -410,6 +424,11 @@ export async function runWalletAdminCommand(
 
     if (outcome.kind === "stopped") {
       return outcome.code;
+    }
+
+    if (shouldAutoSyncAfterInit && outcome.value === 0) {
+      stopWatcher.cleanup();
+      return await runSyncCommand(parsed, context);
     }
 
     return outcome.value;

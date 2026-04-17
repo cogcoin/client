@@ -127,6 +127,7 @@ export interface WalletReadContext {
   indexer: WalletIndexerStatus;
   snapshot: WalletSnapshotView | null;
   model: WalletReadModel | null;
+  fundingSpendableSats: bigint | null;
   mining?: MiningControlPlaneView;
   close(): Promise<void>;
 }

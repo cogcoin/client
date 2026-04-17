@@ -55,6 +55,54 @@ function createTestRuntimePaths(homeDirectory: string) {
   });
 }
 
+function createWalletStateEnvelopeStub(walletRootId: string) {
+  return {
+    source: "primary" as const,
+    envelope: {
+      format: "cogcoin-local-wallet-state",
+      version: 1 as const,
+      wrappedBy: "secret-provider",
+      cipher: "aes-256-gcm" as const,
+      walletRootIdHint: walletRootId,
+      nonce: "nonce",
+      tag: "tag",
+      ciphertext: "ciphertext",
+    },
+  };
+}
+
+function createInitAutoSyncOverrides(options: {
+  walletRootId: string;
+  onSyncStart?: () => void;
+}) {
+  return {
+    ensureDirectory: async () => undefined,
+    openSqliteStore: async () => ({
+      close: async () => undefined,
+    }) as never,
+    loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub(options.walletRootId),
+    openManagedBitcoindClient: async () => ({
+      async syncToTip() {
+        options.onSyncStart?.();
+        return {
+          appliedBlocks: 0,
+          rewoundBlocks: 0,
+          endingHeight: null,
+          bestHeight: 0,
+        };
+      },
+      async startFollowingTip() {},
+      async getNodeStatus() {
+        return {
+          indexedTip: null,
+          nodeBestHeight: null,
+        };
+      },
+      async close() {},
+    }),
+  };
+}
+
 const WELCOME_ART = readFileSync(new URL("../src/art/welcome.txt", import.meta.url), "utf8");
 
 test("init text output starts with the welcome art before the existing init content", async () => {
@@ -62,6 +110,7 @@ test("init text output starts with the welcome art before the existing init cont
   const stderr = createStringWriter();
   const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-cli-init-welcome-output-")));
   const paths = resolvePaths();
+  let syncCalls = 0;
   const context = createDefaultContext({
     stdout: stdout.stream,
     stderr: stderr.stream,
@@ -86,6 +135,12 @@ test("init text output starts with the welcome art before the existing init cont
       fundingAddress: "bc1qinitwelcome",
       state: createWalletState(),
     }),
+    ...createInitAutoSyncOverrides({
+      walletRootId: "wallet-init-root",
+      onSyncStart: () => {
+        syncCalls += 1;
+      },
+    }),
   });
 
   const exitCode = await runWalletAdminCommand(parseCliArgs(["wallet", "init"]), context);
@@ -93,10 +148,17 @@ test("init text output starts with the welcome art before the existing init cont
 
   assert.equal(exitCode, 0);
   assert.equal(stderr.read(), "");
+  assert.equal(syncCalls, 1);
   assert.ok(rendered.startsWith(`\n${WELCOME_ART}\n\nWallet initialized.\n`));
   assert.match(rendered, /Client password: created/);
   assert.match(rendered, /Wallet root: wallet-init-root/);
   assert.match(rendered, /Funding address: bc1qinitwelcome/);
+  assert.match(rendered, /Funding address: bc1qinitwelcome\n\nQuickstart: /);
+  assert.match(
+    rendered,
+    /Quickstart: .*?\nApplied blocks: 0\nRewound blocks: 0\nIndexed ending height: none\nNode best height: 0\n?$/s,
+  );
+  assert.doesNotMatch(rendered, /Next step:/);
 });
 
 test("init text output describes the 24-hour client unlock window after setup migration", async () => {
@@ -128,6 +190,9 @@ test("init text output describes the 24-hour client unlock window after setup mi
       fundingAddress: "bc1qinitoutput",
       state: createWalletState(),
     }),
+    ...createInitAutoSyncOverrides({
+      walletRootId: "wallet-test-root",
+    }),
   });
 
   const exitCode = await runWalletAdminCommand(parseCliArgs(["init"]), context);
@@ -137,10 +202,63 @@ test("init text output describes the 24-hour client unlock window after setup mi
   assert.equal(stderr.read(), "");
   assert.ok(rendered.startsWith(`\n${WELCOME_ART}\n\nWallet already initialized.\n`));
   assert.match(rendered, /Wallet already initialized\./);
-  assert.match(rendered, /Client password: migrated/);
+  assert.match(rendered, /\nWallet\n✓ Client password: migrated\n✓ Wallet root: wallet-test-root\n✓ Funding address: bc1qinitoutput\n/);
   assert.match(rendered, /Client unlock: active for 86400 seconds\./);
   assert.match(rendered, /cogcoin client unlock/);
   assert.match(rendered, /cogcoin client lock/);
+  assert.match(rendered, /cogcoin client lock` to lock immediately\.\n\nQuickstart: /);
+  assert.doesNotMatch(rendered, /Next step:/);
+});
+
+test("init text output shows a checkmarked wallet section when already configured", async () => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-cli-init-already-configured-output-")));
+  const paths = resolvePaths();
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    signalSource: QUIET_SIGNAL_SOURCE,
+    forceExit(code) {
+      throw new Error(`unexpected forceExit: ${code}`);
+    },
+    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
+    createPrompter: () => ({
+      isInteractive: true,
+      writeLine() {},
+      async prompt() {
+        return "";
+      },
+    }),
+    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveDefaultBitcoindDataDir: () => paths.bitcoinDataDir,
+    initializeWallet: async () => ({
+      passwordAction: "already-configured",
+      walletAction: "already-initialized",
+      walletRootId: "wallet-0123456789abcdef0123456789abcdef",
+      fundingAddress: "bc1qsamplewallet0000000000000000000000000",
+      state: createWalletState(),
+    }),
+    ...createInitAutoSyncOverrides({
+      walletRootId: "wallet-0123456789abcdef0123456789abcdef",
+    }),
+  });
+
+  const exitCode = await runWalletAdminCommand(parseCliArgs(["init"]), context);
+  const rendered = stdout.read();
+
+  assert.equal(exitCode, 0);
+  assert.equal(stderr.read(), "");
+  assert.ok(rendered.startsWith(`\n${WELCOME_ART}\n\nWallet already initialized.\n`));
+  assert.match(
+    rendered,
+    /\nWallet\n✓ Client password: already-configured\n✓ Wallet root: wallet-0123456789abcdef0123456789abcdef\n✓ Funding address: bc1qsamplewallet0000000000000000000000000\n/,
+  );
+  assert.doesNotMatch(rendered, /Client unlock: active for 86400 seconds\./);
+  assert.doesNotMatch(rendered, /cogcoin client unlock/);
+  assert.doesNotMatch(rendered, /cogcoin client lock/);
+  assert.match(rendered, /bc1qsamplewallet0000000000000000000000000\n\nQuickstart: /);
+  assert.doesNotMatch(rendered, /Next step:/);
 });
 
 test("restore text output describes the 24-hour client unlock window after password setup", async () => {

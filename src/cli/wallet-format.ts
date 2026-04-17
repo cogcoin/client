@@ -13,15 +13,24 @@ import type {
   WalletReadContext,
 } from "../wallet/read/index.js";
 import type { PendingMutationRecord } from "../wallet/types.js";
+import { loadBalanceArtText } from "./art.js";
 import { formatMiningSummaryLine } from "./mining-format.js";
 import { getBootstrapSyncNextStep } from "./workflow-hints.js";
 
-function formatCogAmount(value: bigint): string {
+function formatUnitAmount(value: bigint, unit: string): string {
   const sign = value < 0n ? "-" : "";
   const absolute = value < 0n ? -value : value;
   const whole = absolute / 100_000_000n;
   const fraction = absolute % 100_000_000n;
-  return `${sign}${whole.toString()}.${fraction.toString().padStart(8, "0")} COG`;
+  return `${sign}${whole.toString()}.${fraction.toString().padStart(8, "0")} ${unit}`;
+}
+
+function formatCogAmount(value: bigint): string {
+  return formatUnitAmount(value, "COG");
+}
+
+function formatBitcoinAmount(value: bigint | null): string {
+  return value === null ? "unavailable BTC" : formatUnitAmount(value, "BTC");
 }
 
 function formatServiceHealth(health: string): string {
@@ -627,6 +636,81 @@ export function formatFundingAddressReport(context: WalletReadContext): string {
   return lines.join("\n");
 }
 
+function renderBalanceArtLine(templateLine: string, label: string, value: string): string {
+  const labelIndex = templateLine.indexOf(label);
+
+  if (labelIndex === -1) {
+    throw new Error(`balance_art_label_missing_${label}`);
+  }
+
+  const fieldStart = labelIndex + label.length;
+  const borderIndex = Math.max(templateLine.lastIndexOf("│"), templateLine.lastIndexOf("|"));
+
+  if (borderIndex <= fieldStart) {
+    throw new Error(`balance_art_field_invalid_${label}`);
+  }
+
+  const fieldWidth = borderIndex - fieldStart;
+  const fieldValue = value.slice(0, fieldWidth).padEnd(fieldWidth, " ");
+  const rendered = `${templateLine.slice(0, fieldStart)}${fieldValue}${templateLine.slice(borderIndex)}`;
+
+  if (rendered.length !== templateLine.length) {
+    throw new Error(`balance_art_render_width_invalid_${label}`);
+  }
+
+  return rendered;
+}
+
+function renderBalanceArtCard(context: WalletReadContext & {
+  model: NonNullable<WalletReadContext["model"]>;
+  snapshot: NonNullable<WalletReadContext["snapshot"]>;
+}): string[] {
+  const templateLines = loadBalanceArtText().split("\n");
+  const fundingAddress = context.model.walletAddress ?? "unavailable";
+  const spendableCog = getBalance(
+    context.snapshot.state,
+    new Uint8Array(Buffer.from(context.model.walletScriptPubKeyHex, "hex")),
+  );
+
+  return templateLines.map((line) => {
+    if (line.includes("Funding address:")) {
+      return renderBalanceArtLine(line, "Funding address:", ` ${fundingAddress}`);
+    }
+
+    if (line.includes("Bitcoin Balance:")) {
+      return renderBalanceArtLine(line, "Bitcoin Balance:", ` ${formatBitcoinAmount(context.fundingSpendableSats ?? null)}`);
+    }
+
+    if (line.includes("Cogcoin Balance:")) {
+      return renderBalanceArtLine(line, "Cogcoin Balance:", ` ${formatCogAmount(spendableCog)}`);
+    }
+
+    if (line.includes("mempool.space/address/")) {
+      return renderBalanceArtLine(line, "mempool.space/address/", fundingAddress);
+    }
+
+    return line;
+  });
+}
+
+function listPendingBalanceLines(context: WalletReadContext): string[] {
+  const lines: string[] = [];
+
+  for (const mutation of (context.localState.state?.pendingMutations ?? [])
+    .filter((entry) =>
+      (entry.kind === "send" || entry.kind === "lock" || entry.kind === "claim")
+      && entry.status !== "confirmed"
+      && entry.status !== "canceled"
+    )) {
+    const label = mutation.kind === "claim" && mutation.preimageHex === "0000000000000000000000000000000000000000000000000000000000000000"
+      ? "reclaim"
+      : mutation.kind;
+    lines.push(`Pending: ${label}  ${mutation.status}${mutation.amountCogtoshi === null || mutation.amountCogtoshi === undefined ? "" : `  ${formatCogAmount(mutation.amountCogtoshi)}`}`);
+  }
+
+  return lines;
+}
+
 export function formatIdentityListReport(
   context: WalletReadContext,
   options: {
@@ -671,27 +755,13 @@ export function formatBalanceReport(context: WalletReadContext): string {
     return lines.join("\n");
   }
 
-  const spendableTotal = getBalance(
-    context.snapshot.state,
-    new Uint8Array(Buffer.from(context.model.walletScriptPubKeyHex, "hex")),
-  );
-
-  lines.push(`Spendable total: ${formatCogAmount(spendableTotal)}`);
-  lines.push(`${context.model.walletAddress ?? `spk:${context.model.walletScriptPubKeyHex}`}  ${formatCogAmount(spendableTotal)}`);
-
-  for (const mutation of (context.localState.state?.pendingMutations ?? [])
-    .filter((entry) =>
-      (entry.kind === "send" || entry.kind === "lock" || entry.kind === "claim")
-      && entry.status !== "confirmed"
-      && entry.status !== "canceled"
-    )) {
-    const label = mutation.kind === "claim" && mutation.preimageHex === "0000000000000000000000000000000000000000000000000000000000000000"
-      ? "reclaim"
-      : mutation.kind;
-    lines.push(`Pending: ${label}  ${mutation.status}${mutation.amountCogtoshi === null || mutation.amountCogtoshi === undefined ? "" : `  ${formatCogAmount(mutation.amountCogtoshi)}`}`);
-  }
-
-  return lines.join("\n");
+  return [
+    ...renderBalanceArtCard(context as WalletReadContext & {
+      model: NonNullable<WalletReadContext["model"]>;
+      snapshot: NonNullable<WalletReadContext["snapshot"]>;
+    }),
+    ...listPendingBalanceLines(context),
+  ].join("\n");
 }
 
 export function formatLocksReport(

@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import { access, constants, mkdir, readFile, rm } from "node:fs/promises";
 
-import { serializeIndexerState } from "@cogcoin/indexer";
+import { loadBundledGenesisParameters, serializeIndexerState } from "@cogcoin/indexer";
 
 import { openManagedBitcoindClientInternal } from "./client.js";
 import { openClient } from "../client.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import { writeRuntimeStatusFile } from "../wallet/fs/status-file.js";
 import { createRpcClient } from "./node.js";
+import { normalizeCogcoinProcessingStartHeight } from "./processing-start-height.js";
 import { resolveManagedServicePaths, UNINITIALIZED_WALLET_ROOT_ID } from "./service-paths.js";
 import type { ClientTip } from "../types.js";
 import {
@@ -206,6 +207,7 @@ async function main(): Promise<void> {
   const paths = resolveManagedServicePaths(dataDir, walletRootId);
   const daemonInstanceId = randomUUID();
   const binaryVersion = await readPackageVersionFromDisk();
+  const genesisParameters = await loadBundledGenesisParameters();
   const startedAtUnixMs = Date.now();
   const snapshots = new Map<string, LoadedSnapshot>();
   let state: ManagedIndexerDaemonState = "starting";
@@ -369,13 +371,19 @@ async function main(): Promise<void> {
     backgroundResumePromise = (async () => {
       const bitcoindStatus = await readManagedBitcoindStatus(paths);
       const store = await openSqliteStore({ filename: databasePath });
+      const chain = bitcoindStatus?.chain ?? "main";
+      const startHeight = normalizeCogcoinProcessingStartHeight({
+        chain,
+        startHeight: bitcoindStatus?.startHeight,
+        genesisParameters,
+      });
 
       try {
         const client = await openManagedBitcoindClientInternal({
           store,
           dataDir,
-          chain: bitcoindStatus?.chain ?? "main",
-          startHeight: bitcoindStatus?.startHeight ?? 0,
+          chain,
+          startHeight,
           walletRootId,
           progressOutput: "none",
         });

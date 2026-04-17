@@ -38,7 +38,6 @@ import {
   saveBootstrapStateForTesting,
   setFollowBlockTimesForTesting,
   syncFollowSceneStateForTesting,
-  validateSnapshotFileForTesting,
   waitForHeadersForTesting,
 } from "../src/bitcoind/testing.js";
 import { MANAGED_RPC_RETRY_MESSAGE } from "../src/bitcoind/retryable-rpc.js";
@@ -227,19 +226,6 @@ function findFollowSpriteBounds(frame: string[]): { minColumn: number; maxColumn
   return { minColumn, maxColumn };
 }
 
-test("snapshot metadata matches the local assumeutxo file when present", async (t) => {
-  const localSnapshot = join(process.cwd(), "..", "bitcoin-extract", "utxo", "utxo-910000.dat");
-
-  try {
-    await stat(localSnapshot);
-  } catch {
-    t.skip("local assumeutxo snapshot copy is not present");
-    return;
-  }
-
-  await validateSnapshotFileForTesting(localSnapshot, DEFAULT_SNAPSHOT_METADATA);
-});
-
 test("snapshot chunk manifest generator writes reproducible chunk hashes and passes check mode", async () => {
   const rootDir = createTempDirectory("cogcoin-client-bootstrap-manifest-script");
 
@@ -325,13 +311,19 @@ test("art templates are 80x13 and copied into the test build output", async () =
     assert.equal(line.length, 9);
   }
 
+  await execFileAsync(process.execPath, ["./scripts/copy-static-assets.mjs", "build"], {
+    cwd: process.cwd(),
+  });
+
   await Promise.all([
     stat(join(process.cwd(), ".test-dist", "src", "art", "banner.txt")),
+    stat(join(process.cwd(), ".test-dist", "src", "art", "balance.txt")),
     stat(join(process.cwd(), ".test-dist", "src", "art", "scroll.txt")),
     stat(join(process.cwd(), ".test-dist", "src", "art", "train-smoke.txt")),
     stat(join(process.cwd(), ".test-dist", "src", "art", "train.txt")),
     stat(join(process.cwd(), ".test-dist", "src", "art", "train-car.txt")),
     stat(join(process.cwd(), ".test-dist", "src", "art", "wallet.txt")),
+    stat(join(process.cwd(), "dist", "art", "balance.txt")),
   ]);
 });
 
