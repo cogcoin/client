@@ -96,7 +96,7 @@ The published package depends on:
 
 - `@cogcoin/bitcoin@30.2.0`
 - `@cogcoin/genesis@1.0.0`
-- `@cogcoin/indexer@1.0.0`
+- `@cogcoin/indexer@1.0.1`
 - `@cogcoin/scoring@1.0.0`
 - `@scure/base@^2.0.0`
 - `@scure/bip32@^2.0.1`

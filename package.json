@@ -1,6 +1,6 @@
 {
   "name": "@cogcoin/client",
-  "version": "0.5.16",
+  "version": "1.0.0",
   "description": "Store-backed Cogcoin client with wallet flows, SQLite persistence, and managed Bitcoin Core integration.",
   "license": "MIT",
   "type": "module",
@@ -64,7 +64,7 @@
   "dependencies": {
     "@cogcoin/bitcoin": "30.2.0",
     "@cogcoin/genesis": "1.0.0",
-    "@cogcoin/indexer": "1.0.0",
+    "@cogcoin/indexer": "1.0.1",
     "@cogcoin/scoring": "1.0.0",
     "@noble/hashes": "2.0.1",
     "@scure/base": "^2.0.0",
