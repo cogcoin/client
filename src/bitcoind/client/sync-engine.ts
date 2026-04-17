@@ -348,6 +348,7 @@ export async function syncToTip(
 
     throwIfAborted(dependencies.abortSignal);
     await runRpc(() => dependencies.node.validate());
+    await dependencies.bootstrap.cleanupObsoleteSnapshotFilesIfNeeded().catch(() => false);
     const indexedTipBeforeBootstrap = await dependencies.client.getTip();
     await runRpc(() => dependencies.bootstrap.ensureReady(indexedTipBeforeBootstrap, dependencies.node.expectedChain, {
       signal: dependencies.abortSignal,
@@ -421,6 +422,7 @@ export async function syncToTip(
         && endBestHeight >= dependencies.targetHeightCap;
 
       if (reachedTargetHeightCap && caughtUpCogcoin) {
+        await dependencies.bootstrap.cleanupObsoleteSnapshotFilesIfNeeded().catch(() => false);
         return aggregate;
       }
 
@@ -444,6 +446,7 @@ export async function syncToTip(
             : "Managed sync fully caught up to the live tip.",
         });
 
+        await dependencies.bootstrap.cleanupObsoleteSnapshotFilesIfNeeded().catch(() => false);
         return aggregate;
       }
 

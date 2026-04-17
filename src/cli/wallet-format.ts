@@ -102,6 +102,17 @@ function formatPendingMutationDomainLabel(mutation: PendingMutationRecord): stri
 }
 
 export function getRepairRecommendation(context: WalletReadContext): string | null {
+  if (
+    context.localState.clientPasswordReadiness === "setup-required"
+    || context.localState.clientPasswordReadiness === "migration-required"
+  ) {
+    return "Run `cogcoin init` to configure the client password and migrate local wallet secrets.";
+  }
+
+  if (context.localState.unlockRequired) {
+    return null;
+  }
+
   if (context.localState.availability === "uninitialized") {
     return "Run `cogcoin init` to create a new local wallet root.";
   }
@@ -135,6 +146,14 @@ export function getRepairRecommendation(context: WalletReadContext): string | nu
     || (context.localState.state?.pendingMutations ?? []).some((mutation) => mutation.status === "repair-required")
   ) {
     return "Run `cogcoin repair` before relying on local wallet state.";
+  }
+
+  return null;
+}
+
+export function getClientUnlockRecommendation(context: WalletReadContext): string | null {
+  if (context.localState.unlockRequired) {
+    return "Run `cogcoin client unlock` to temporarily unlock wallet-local secrets.";
   }
 
   return null;
@@ -380,8 +399,10 @@ function appendWalletAvailability(lines: string[], context: WalletReadContext): 
   if (repairRecommendation !== null) {
     lines.push(`Recommended next step: ${repairRecommendation}`);
   } else {
-    const bootstrapSync = getBootstrapSyncNextStep(context);
-    if (bootstrapSync !== null) {
+    const clientUnlockRecommendation = getClientUnlockRecommendation(context);
+    if (clientUnlockRecommendation !== null) {
+      lines.push(`Recommended next step: ${clientUnlockRecommendation}`);
+    } else if (getBootstrapSyncNextStep(context) !== null) {
       lines.push(
         "Recommended next step: Run `cogcoin sync` to bootstrap assumeutxo and the managed Bitcoin/indexer state.",
       );
@@ -541,6 +562,11 @@ function getOverviewNextStep(context: WalletReadContext): string | null {
   const repairRecommendation = getRepairRecommendation(context);
   if (repairRecommendation !== null) {
     return repairRecommendation;
+  }
+
+  const clientUnlockRecommendation = getClientUnlockRecommendation(context);
+  if (clientUnlockRecommendation !== null) {
+    return clientUnlockRecommendation;
   }
 
   if (getBootstrapSyncNextStep(context) !== null) {

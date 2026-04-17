@@ -11,6 +11,7 @@ import {
   createWalletSecretReference,
 } from "../src/wallet/state/provider.js";
 import { saveWalletState } from "../src/wallet/state/storage.js";
+import { configureTestClientPassword } from "./client-password-test-helpers.js";
 import { createWalletState } from "./current-model-helpers.js";
 
 test("previewResetWallet shows no wallet prompt when no wallet state exists", async () => {
@@ -35,6 +36,7 @@ test("previewResetWallet detects an existing wallet state", async () => {
   });
   const secretReference = createWalletSecretReference("wallet-root");
 
+  await configureTestClientPassword(provider);
   await provider.storeSecret(secretReference.keyId, Buffer.alloc(32, 17));
   await saveWalletState(
     {
@@ -131,6 +133,7 @@ test("previewResetWallet on Linux local-file wallets does not claim OS secret cl
   });
   const secretReference = createWalletSecretReference("wallet-root");
 
+  await configureTestClientPassword(provider);
   await provider.storeSecret(secretReference.keyId, Buffer.alloc(32, 43));
   await saveWalletState(
     {

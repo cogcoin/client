@@ -67,9 +67,11 @@ import {
 } from "./state/seed-index.js";
 import {
   createDefaultWalletSecretProvider,
+  ensureClientPasswordConfigured,
   createWalletPendingInitSecretReference,
   createWalletRootId,
   createWalletSecretReference,
+  withInteractiveWalletSecretProvider,
   type WalletSecretProvider,
 } from "./state/provider.js";
 import {
@@ -96,6 +98,8 @@ export interface WalletPrompter {
 }
 
 export interface WalletInitializationResult {
+  passwordAction: "created" | "migrated" | "already-configured";
+  walletAction: "initialized" | "already-initialized";
   walletRootId: string;
   fundingAddress: string;
   state: WalletStateV1;
@@ -1278,6 +1282,7 @@ export async function initializeWallet(options: {
   }
 
   const provider = options.provider ?? createDefaultWalletSecretProvider();
+  const interactiveProvider = withInteractiveWalletSecretProvider(provider, options.prompter);
   const nowUnixMs = options.nowUnixMs ?? Date.now();
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
 
@@ -1291,10 +1296,31 @@ export async function initializeWallet(options: {
   });
 
   try {
-    await ensureWalletNotInitialized(paths, provider);
+    const passwordAction = await ensureClientPasswordConfigured(provider, options.prompter);
+    const hasWalletState = await pathExists(paths.walletStatePath) || await pathExists(paths.walletStateBackupPath);
+
+    if (hasWalletState) {
+      await clearPendingInitialization(paths, interactiveProvider);
+      const loaded = await loadWalletStateForAccess({
+        provider: interactiveProvider,
+        nowUnixMs,
+        paths,
+        dataDir: options.dataDir,
+        attachService: options.attachService,
+        rpcFactory: options.rpcFactory,
+      });
+
+      return {
+        passwordAction,
+        walletAction: "already-initialized",
+        walletRootId: loaded.state.walletRootId,
+        fundingAddress: loaded.state.funding.address,
+        state: loaded.state,
+      };
+    }
 
     const material = await loadOrCreatePendingInitializationMaterial({
-      provider,
+      provider: interactiveProvider,
       paths,
       nowUnixMs,
     });
@@ -1320,7 +1346,7 @@ export async function initializeWallet(options: {
     const internalCoreWalletPassphrase = createInternalCoreWalletPassphrase();
     const secretReference = createWalletSecretReference(walletRootId);
     const secret = randomBytes(32);
-    await provider.storeSecret(secretReference.keyId, secret);
+    await interactiveProvider.storeSecret(secretReference.keyId, secret);
 
     const initialState = createInitialWalletState({
       walletRootId,
@@ -1339,14 +1365,14 @@ export async function initializeWallet(options: {
         },
         initialState,
         {
-          provider,
+          provider: interactiveProvider,
           secretReference,
         },
       );
 
       return importDescriptorIntoManagedCoreWallet(
         initialState,
-        provider,
+        interactiveProvider,
         paths,
         options.dataDir,
         nowUnixMs,
@@ -1355,7 +1381,7 @@ export async function initializeWallet(options: {
       );
     });
     await clearLegacyWalletLockArtifacts(paths.walletRuntimeRoot);
-    await clearPendingInitialization(paths, provider);
+    await clearPendingInitialization(paths, interactiveProvider);
     await ensureMainWalletSeedIndexRecord({
       paths: resolveMainWalletPaths(paths),
       walletRootId,
@@ -1363,6 +1389,8 @@ export async function initializeWallet(options: {
     });
 
     return {
+      passwordAction,
+      walletAction: "initialized",
       walletRootId,
       fundingAddress: verifiedState.funding.address,
       state: verifiedState,
@@ -1383,6 +1411,7 @@ export async function showWalletMnemonic(options: {
   }
 
   const provider = options.provider ?? createDefaultWalletSecretProvider();
+  const interactiveProvider = withInteractiveWalletSecretProvider(provider, options.prompter);
   const nowUnixMs = options.nowUnixMs ?? Date.now();
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
   const controlLock = await acquireFileLock(paths.walletControlLockPath, {
@@ -1401,7 +1430,7 @@ export async function showWalletMnemonic(options: {
     }
 
     const loaded = await loadWalletStateForAccess({
-      provider,
+      provider: interactiveProvider,
       nowUnixMs,
       paths,
     }).catch((error) => {
@@ -1455,6 +1484,7 @@ export async function restoreWalletFromMnemonic(options: {
   }
 
   const provider = options.provider ?? createDefaultWalletSecretProvider();
+  const interactiveProvider = withInteractiveWalletSecretProvider(provider, options.prompter);
   const nowUnixMs = options.nowUnixMs ?? Date.now();
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
   const seedName = assertValidImportedWalletSeedName(paths.selectedSeedName);
@@ -1475,7 +1505,8 @@ export async function restoreWalletFromMnemonic(options: {
       throw new Error("wallet_seed_name_exists");
     }
 
-    await ensureWalletNotInitialized(paths, provider);
+    await ensureClientPasswordConfigured(provider, options.prompter);
+    await ensureWalletNotInitialized(paths, interactiveProvider);
     let promptPhaseStarted = false;
     let mnemonicPhrase: string;
 
@@ -1488,13 +1519,13 @@ export async function restoreWalletFromMnemonic(options: {
       }
     }
 
-    await clearPendingInitialization(paths, provider);
+    await clearPendingInitialization(paths, interactiveProvider);
     const material = deriveWalletMaterialFromMnemonic(mnemonicPhrase);
     const walletRootId = createWalletRootId();
     const internalCoreWalletPassphrase = createInternalCoreWalletPassphrase();
     const secretReference = createWalletSecretReference(walletRootId);
     const secret = randomBytes(32);
-    await provider.storeSecret(secretReference.keyId, secret);
+    await interactiveProvider.storeSecret(secretReference.keyId, secret);
 
     const initialState = createInitialWalletState({
       walletRootId,
@@ -1511,14 +1542,14 @@ export async function restoreWalletFromMnemonic(options: {
       },
       initialState,
       {
-        provider,
+        provider: interactiveProvider,
         secretReference,
       },
     );
 
     const restoredState = await recreateManagedCoreWalletReplica(
       initialState,
-      provider,
+      interactiveProvider,
       paths,
       options.dataDir,
       nowUnixMs,
@@ -1528,7 +1559,7 @@ export async function restoreWalletFromMnemonic(options: {
       },
     );
     await clearLegacyWalletLockArtifacts(paths.walletRuntimeRoot);
-    await clearPendingInitialization(paths, provider);
+    await clearPendingInitialization(paths, interactiveProvider);
     await addImportedWalletSeedRecord({
       paths: mainPaths,
       seedName,

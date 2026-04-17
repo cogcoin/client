@@ -7,6 +7,7 @@ import { DEFAULT_SNAPSHOT_METADATA } from "./constants.js";
 import { downloadSnapshotFileForTesting } from "./download.js";
 import { waitForHeaders } from "./headers.js";
 import { resolveBootstrapPaths } from "./paths.js";
+import { resetSnapshotFiles } from "./snapshot-file.js";
 import { loadBootstrapStateRecord, saveBootstrapState } from "./state.js";
 import { findLoadedSnapshotChainState, isSnapshotAlreadyLoaded } from "./chainstate.js";
 import {
@@ -34,6 +35,12 @@ async function loadSnapshotIntoNode(
 }
 
 type ResumeDisplayMode = "sync" | "follow";
+type SnapshotLifecycleState = "bootstrap-pending" | "snapshot-active" | "snapshot-obsolete";
+
+interface SnapshotLifecycleProbe {
+  state: BootstrapPersistentState;
+  lifecycle: SnapshotLifecycleState;
+}
 
 export class AssumeUtxoBootstrapController {
   readonly #rpc: BitcoinRpcClient;
@@ -99,8 +106,9 @@ export class AssumeUtxoBootstrapController {
     }
 
     const { state, snapshotIdentity } = await this.#loadStateRecord();
+    const lifecycle = await this.#probeSnapshotLifecycle(state);
 
-    if (state.loadTxOutSetComplete && await isSnapshotAlreadyLoaded(this.#rpc, this.#snapshot, state)) {
+    if (lifecycle.lifecycle === "snapshot-active") {
       if (state.lastError !== null) {
         state.lastError = null;
         await saveBootstrapState(this.#paths, state);
@@ -112,6 +120,28 @@ export class AssumeUtxoBootstrapController {
         baseHeight: state.baseHeight,
         tipHashHex: state.tipHashHex,
         message: "Using the previously loaded assumeutxo chainstate.",
+        lastError: null,
+      });
+      return;
+    }
+
+    if (lifecycle.lifecycle === "snapshot-obsolete") {
+      await this.#deleteSnapshotArtifactsBestEffort();
+
+      if (state.lastError !== null || state.phase !== "bitcoin_sync") {
+        state.phase = "bitcoin_sync";
+        state.lastError = null;
+        await saveBootstrapState(this.#paths, state);
+      }
+
+      const info = await this.#rpc.getBlockchainInfo();
+      await this.#progress.setPhase("bitcoin_sync", {
+        blocks: info.blocks,
+        headers: info.headers,
+        targetHeight: info.headers,
+        baseHeight: state.baseHeight,
+        tipHashHex: state.tipHashHex,
+        message: "Bitcoin Core is syncing blocks after assumeutxo bootstrap.",
         lastError: null,
       });
       return;
@@ -207,6 +237,22 @@ export class AssumeUtxoBootstrapController {
     return { ...(await this.#loadState()) };
   }
 
+  async cleanupObsoleteSnapshotFilesIfNeeded(): Promise<boolean> {
+    try {
+      const { state } = await this.#loadStateRecord();
+      const lifecycle = await this.#probeSnapshotLifecycle(state);
+
+      if (lifecycle.lifecycle !== "snapshot-obsolete") {
+        return false;
+      }
+
+      await this.#deleteSnapshotArtifactsBestEffort();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async #loadState(): Promise<BootstrapPersistentState> {
     return (await this.#loadStateRecord()).state;
   }
@@ -214,5 +260,25 @@ export class AssumeUtxoBootstrapController {
   async #loadStateRecord(): Promise<LoadedBootstrapState> {
     this.#stateRecordPromise ??= loadBootstrapStateRecord(this.#paths, this.#snapshot);
     return this.#stateRecordPromise;
+  }
+
+  async #probeSnapshotLifecycle(state: BootstrapPersistentState): Promise<SnapshotLifecycleProbe> {
+    if (!state.loadTxOutSetComplete) {
+      return {
+        state,
+        lifecycle: "bootstrap-pending",
+      };
+    }
+
+    return {
+      state,
+      lifecycle: await isSnapshotAlreadyLoaded(this.#rpc, this.#snapshot, state)
+        ? "snapshot-active"
+        : "snapshot-obsolete",
+    };
+  }
+
+  async #deleteSnapshotArtifactsBestEffort(): Promise<void> {
+    await resetSnapshotFiles(this.#paths).catch(() => undefined);
   }
 }

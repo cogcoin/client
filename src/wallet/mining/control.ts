@@ -544,6 +544,8 @@ export async function setupBuiltInMining(options: {
           provider,
           localState: {
             availability: "ready",
+            clientPasswordReadiness: "ready",
+            unlockRequired: false,
             walletRootId: loaded.state.walletRootId,
             state: loaded.state,
             source: loaded.source,

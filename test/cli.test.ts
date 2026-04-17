@@ -7,6 +7,8 @@ import { formatCliTextError } from "../src/cli/output.js";
 test("help text reflects the one-address model", () => {
   assert.match(HELP_TEXT, /anchor <domain>\s+Anchor an owned unanchored domain with the wallet address/);
   assert.match(HELP_TEXT, /balance\s+Show local wallet COG balances/);
+  assert.match(HELP_TEXT, /client unlock\s+Unlock password-protected local wallet secrets/i);
+  assert.match(HELP_TEXT, /client lock\s+Flush the cached client password unlock session/i);
   assert.doesNotMatch(HELP_TEXT, /--from/);
   assert.doesNotMatch(HELP_TEXT, /per-identity/);
   assert.doesNotMatch(HELP_TEXT, /wallet export <path>/);
@@ -42,6 +44,11 @@ test("parser rejects removed selector-based commands", () => {
     () => parseCliArgs(["wallet", "lock"]),
     /cli_unknown_command_wallet_lock/,
   );
+});
+
+test("parser accepts client lock and client unlock", () => {
+  assert.equal(parseCliArgs(["client", "unlock"]).command, "client-unlock");
+  assert.equal(parseCliArgs(["client", "lock"]).command, "client-lock");
 });
 
 test("CLI error text uses wallet-address wording", () => {
@@ -92,6 +99,16 @@ test("CLI error text explains unsupported legacy wallet state", () => {
   assert.match(rendered, /older Cogcoin format/i);
   assert.match(rendered, /restore|recover/i);
   assert.doesNotMatch(rendered, /passphrase/i);
+});
+
+test("CLI error text explains client password setup and lock guidance", () => {
+  const setup = (formatCliTextError(new Error("wallet_client_password_setup_required")) ?? []).join("\n");
+  const locked = (formatCliTextError(new Error("wallet_client_password_locked")) ?? []).join("\n");
+
+  assert.match(setup, /client password setup/i);
+  assert.match(setup, /cogcoin init/i);
+  assert.match(locked, /client password is locked/i);
+  assert.match(locked, /client unlock/i);
 });
 
 test("CLI error text describes Linux local-file secret failures", () => {

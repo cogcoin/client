@@ -183,6 +183,8 @@ export function createWalletReadContext(overrides: Record<string, unknown> = {})
     dataDir: "/tmp",
     localState: {
       availability: "ready",
+      clientPasswordReadiness: "ready",
+      unlockRequired: false,
       state,
       message: null,
     },

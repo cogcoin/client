@@ -1,18 +1,32 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { resolveWalletRuntimePathsForTesting } from "../runtime.js";
-import { writeFileAtomic } from "../fs/atomic.js";
+import {
+  createLegacyKeychainServiceName,
+  deleteClientProtectedSecret,
+  ensureClientPasswordConfigured as ensureClientPasswordConfiguredWithLocalFile,
+  inspectClientPasswordReadiness,
+  loadClientProtectedSecret,
+  lockClientPasswordSession,
+  readClientPasswordSessionStatus,
+  storeClientProtectedSecret,
+  type ClientPasswordPrompt,
+  type ClientPasswordReadiness,
+  type ClientPasswordSessionStatus,
+  type ClientPasswordSetupAction,
+  unlockClientPasswordSession as unlockClientPasswordSessionWithLocalFile,
+} from "./client-password.js";
 
 const execFileAsync = promisify(execFile);
-const KEYCHAIN_SERVICE_NAME = "org.cogcoin.wallet";
+const KEYCHAIN_SERVICE_NAME = createLegacyKeychainServiceName();
 
 export interface DefaultWalletSecretProviderFactoryOptions {
   platform?: NodeJS.Platform;
   stateRoot?: string;
+  runtimeRoot?: string;
 }
 
 export interface WalletSecretReference {
@@ -25,6 +39,12 @@ export interface WalletSecretProvider {
   loadSecret(keyId: string): Promise<Uint8Array>;
   storeSecret(keyId: string, secret: Uint8Array): Promise<void>;
   deleteSecret(keyId: string): Promise<void>;
+  withPrompter?(prompter: ClientPasswordPrompt): WalletSecretProvider;
+  inspectClientPasswordReadiness?(): Promise<ClientPasswordReadiness>;
+  ensureClientPasswordConfigured?(prompter: ClientPasswordPrompt): Promise<ClientPasswordSetupAction>;
+  unlockClientPasswordSession?(prompter: ClientPasswordPrompt): Promise<ClientPasswordSessionStatus>;
+  lockClientPasswordSession?(): Promise<ClientPasswordSessionStatus>;
+  readClientPasswordSessionStatus?(): Promise<ClientPasswordSessionStatus>;
 }
 
 export function createWalletSecretReference(
@@ -53,16 +73,20 @@ function base64ToBytes(secret: string): Uint8Array {
   return new Uint8Array(Buffer.from(secret, "base64"));
 }
 
-function createWalletSecretProviderError(message: string, cause?: unknown): Error {
-  return cause === undefined ? new Error(message) : new Error(message, { cause });
-}
-
-function sanitizeSecretKeyId(keyId: string): string {
-  return keyId.replace(/[^a-zA-Z0-9._-]+/g, "-");
-}
-
 function resolveSecretDirectoryPath(options: DefaultWalletSecretProviderFactoryOptions): string {
   return join(options.stateRoot ?? resolveWalletRuntimePathsForTesting().stateRoot, "secrets");
+}
+
+function resolveRuntimeRootPath(options: DefaultWalletSecretProviderFactoryOptions): string {
+  if (options.runtimeRoot != null) {
+    return options.runtimeRoot;
+  }
+
+  if (options.stateRoot != null) {
+    return join(options.stateRoot, ".client-runtime");
+  }
+
+  return options.runtimeRoot ?? resolveWalletRuntimePathsForTesting().runtimeRoot;
 }
 
 export class MemoryWalletSecretProvider implements WalletSecretProvider {
@@ -85,6 +109,39 @@ export class MemoryWalletSecretProvider implements WalletSecretProvider {
 
   async deleteSecret(keyId: string): Promise<void> {
     this.#values.delete(keyId);
+  }
+
+  withPrompter(_prompter: ClientPasswordPrompt): WalletSecretProvider {
+    return this;
+  }
+
+  async inspectClientPasswordReadiness(): Promise<ClientPasswordReadiness> {
+    return "ready";
+  }
+
+  async ensureClientPasswordConfigured(_prompter: ClientPasswordPrompt): Promise<ClientPasswordSetupAction> {
+    return "already-configured";
+  }
+
+  async unlockClientPasswordSession(_prompter: ClientPasswordPrompt): Promise<ClientPasswordSessionStatus> {
+    return {
+      unlocked: true,
+      unlockUntilUnixMs: null,
+    };
+  }
+
+  async lockClientPasswordSession(): Promise<ClientPasswordSessionStatus> {
+    return {
+      unlocked: false,
+      unlockUntilUnixMs: null,
+    };
+  }
+
+  async readClientPasswordSessionStatus(): Promise<ClientPasswordSessionStatus> {
+    return {
+      unlocked: true,
+      unlockUntilUnixMs: null,
+    };
   }
 }
 
@@ -133,47 +190,141 @@ class MacOsKeychainWalletSecretProvider implements WalletSecretProvider {
 
 class LocalFileWalletSecretProvider implements WalletSecretProvider {
   readonly kind: string;
+  readonly #stateRoot: string;
   readonly #directoryPath: string;
+  readonly #platform: NodeJS.Platform;
+  readonly #runtimeRoot: string;
   readonly #runtimeErrorCode: string;
+  readonly #legacyMacKeychainReader: MacOsKeychainWalletSecretProvider | null;
+  readonly #prompter: ClientPasswordPrompt | null;
 
   constructor(options: {
+    stateRoot: string;
     directoryPath: string;
     kind: string;
+    platform: NodeJS.Platform;
+    runtimeRoot: string;
     runtimeErrorCode: string;
+    legacyMacKeychainReader?: MacOsKeychainWalletSecretProvider | null;
+    prompter?: ClientPasswordPrompt | null;
   }) {
     this.kind = options.kind;
+    this.#stateRoot = options.stateRoot;
     this.#directoryPath = options.directoryPath;
+    this.#platform = options.platform;
+    this.#runtimeRoot = options.runtimeRoot;
     this.#runtimeErrorCode = options.runtimeErrorCode;
-  }
-
-  #resolveSecretPath(keyId: string): string {
-    return join(this.#directoryPath, `${sanitizeSecretKeyId(keyId)}.secret`);
+    this.#legacyMacKeychainReader = options.legacyMacKeychainReader ?? null;
+    this.#prompter = options.prompter ?? null;
   }
 
   async loadSecret(keyId: string): Promise<Uint8Array> {
-    try {
-      const encoded = await readFile(this.#resolveSecretPath(keyId), "utf8");
-      return base64ToBytes(encoded.trim());
-    } catch (error) {
-      if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new Error(`wallet_secret_missing_${keyId}`);
-      }
-
-      throw createWalletSecretProviderError(this.#runtimeErrorCode, error);
-    }
+    return await loadClientProtectedSecret({
+      platform: this.#platform,
+      stateRoot: this.#stateRoot,
+      runtimeRoot: this.#runtimeRoot,
+      directoryPath: this.#directoryPath,
+      runtimeErrorCode: this.#runtimeErrorCode,
+      legacyMacKeychainReader: this.#legacyMacKeychainReader,
+      keyId,
+      prompt: this.#prompter ?? undefined,
+    });
   }
 
   async storeSecret(keyId: string, secret: Uint8Array): Promise<void> {
-    try {
-      await mkdir(this.#directoryPath, { recursive: true, mode: 0o700 });
-      await writeFileAtomic(this.#resolveSecretPath(keyId), `${bytesToBase64(secret)}\n`, { mode: 0o600 });
-    } catch (error) {
-      throw createWalletSecretProviderError(this.#runtimeErrorCode, error);
-    }
+    await storeClientProtectedSecret({
+      platform: this.#platform,
+      stateRoot: this.#stateRoot,
+      runtimeRoot: this.#runtimeRoot,
+      directoryPath: this.#directoryPath,
+      runtimeErrorCode: this.#runtimeErrorCode,
+      legacyMacKeychainReader: this.#legacyMacKeychainReader,
+      keyId,
+      secret,
+      prompt: this.#prompter ?? undefined,
+    });
   }
 
   async deleteSecret(keyId: string): Promise<void> {
-    await rm(this.#resolveSecretPath(keyId), { force: true }).catch(() => undefined);
+    await deleteClientProtectedSecret({
+      platform: this.#platform,
+      stateRoot: this.#stateRoot,
+      runtimeRoot: this.#runtimeRoot,
+      directoryPath: this.#directoryPath,
+      runtimeErrorCode: this.#runtimeErrorCode,
+      keyId,
+    });
+  }
+
+  withPrompter(prompter: ClientPasswordPrompt): WalletSecretProvider {
+    return new LocalFileWalletSecretProvider({
+      stateRoot: this.#stateRoot,
+      directoryPath: this.#directoryPath,
+      kind: this.kind,
+      platform: this.#platform,
+      runtimeRoot: this.#runtimeRoot,
+      runtimeErrorCode: this.#runtimeErrorCode,
+      legacyMacKeychainReader: this.#legacyMacKeychainReader,
+      prompter,
+    });
+  }
+
+  async inspectClientPasswordReadiness(): Promise<ClientPasswordReadiness> {
+    return await inspectClientPasswordReadiness({
+      platform: this.#platform,
+      stateRoot: this.#stateRoot,
+      runtimeRoot: this.#runtimeRoot,
+      directoryPath: this.#directoryPath,
+      runtimeErrorCode: this.#runtimeErrorCode,
+      legacyMacKeychainReader: this.#legacyMacKeychainReader,
+    });
+  }
+
+  async ensureClientPasswordConfigured(prompter: ClientPasswordPrompt): Promise<ClientPasswordSetupAction> {
+    const result = await ensureClientPasswordConfiguredWithLocalFile({
+      platform: this.#platform,
+      stateRoot: this.#stateRoot,
+      runtimeRoot: this.#runtimeRoot,
+      directoryPath: this.#directoryPath,
+      runtimeErrorCode: this.#runtimeErrorCode,
+      legacyMacKeychainReader: this.#legacyMacKeychainReader,
+      prompt: prompter,
+    });
+    return result.action;
+  }
+
+  async unlockClientPasswordSession(prompter: ClientPasswordPrompt): Promise<ClientPasswordSessionStatus> {
+    return await unlockClientPasswordSessionWithLocalFile({
+      platform: this.#platform,
+      stateRoot: this.#stateRoot,
+      runtimeRoot: this.#runtimeRoot,
+      directoryPath: this.#directoryPath,
+      runtimeErrorCode: this.#runtimeErrorCode,
+      legacyMacKeychainReader: this.#legacyMacKeychainReader,
+      prompt: prompter,
+    });
+  }
+
+  async lockClientPasswordSession(): Promise<ClientPasswordSessionStatus> {
+    return await lockClientPasswordSession({
+      platform: this.#platform,
+      stateRoot: this.#stateRoot,
+      runtimeRoot: this.#runtimeRoot,
+      directoryPath: this.#directoryPath,
+      runtimeErrorCode: this.#runtimeErrorCode,
+      legacyMacKeychainReader: this.#legacyMacKeychainReader,
+    });
+  }
+
+  async readClientPasswordSessionStatus(): Promise<ClientPasswordSessionStatus> {
+    return await readClientPasswordSessionStatus({
+      platform: this.#platform,
+      stateRoot: this.#stateRoot,
+      runtimeRoot: this.#runtimeRoot,
+      directoryPath: this.#directoryPath,
+      runtimeErrorCode: this.#runtimeErrorCode,
+      legacyMacKeychainReader: this.#legacyMacKeychainReader,
+    });
   }
 }
 
@@ -181,23 +332,37 @@ function createWalletSecretProviderForPlatform(
   platform: NodeJS.Platform,
   options: DefaultWalletSecretProviderFactoryOptions = {},
 ): WalletSecretProvider {
-  if (platform === "darwin") {
-    return new MacOsKeychainWalletSecretProvider();
-  }
-
   if (platform === "win32") {
     return new LocalFileWalletSecretProvider({
+      stateRoot: options.stateRoot ?? resolveWalletRuntimePathsForTesting().stateRoot,
       directoryPath: resolveSecretDirectoryPath(options),
       kind: "windows-local-file",
+      platform,
+      runtimeRoot: resolveRuntimeRootPath(options),
       runtimeErrorCode: "wallet_secret_provider_windows_runtime_error",
     });
   }
 
   if (platform === "linux") {
     return new LocalFileWalletSecretProvider({
+      stateRoot: options.stateRoot ?? resolveWalletRuntimePathsForTesting().stateRoot,
       directoryPath: resolveSecretDirectoryPath(options),
       kind: "linux-local-file",
+      platform,
+      runtimeRoot: resolveRuntimeRootPath(options),
       runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
+    });
+  }
+
+  if (platform === "darwin") {
+    return new LocalFileWalletSecretProvider({
+      stateRoot: options.stateRoot ?? resolveWalletRuntimePathsForTesting().stateRoot,
+      directoryPath: resolveSecretDirectoryPath(options),
+      kind: "macos-local-file",
+      platform,
+      runtimeRoot: resolveRuntimeRootPath(options),
+      runtimeErrorCode: "wallet_secret_provider_macos_runtime_error",
+      legacyMacKeychainReader: new MacOsKeychainWalletSecretProvider(),
     });
   }
 
@@ -235,11 +400,86 @@ export function createLazyDefaultWalletSecretProvider(): WalletSecretProvider {
     async deleteSecret(keyId: string): Promise<void> {
       await getResolved().deleteSecret(keyId);
     },
+    withPrompter(prompter: ClientPasswordPrompt): WalletSecretProvider {
+      return getResolved().withPrompter?.(prompter) ?? getResolved();
+    },
+    async inspectClientPasswordReadiness(): Promise<ClientPasswordReadiness> {
+      return await getResolved().inspectClientPasswordReadiness?.() ?? "ready";
+    },
+    async ensureClientPasswordConfigured(prompter: ClientPasswordPrompt): Promise<ClientPasswordSetupAction> {
+      return await getResolved().ensureClientPasswordConfigured?.(prompter) ?? "already-configured";
+    },
+    async unlockClientPasswordSession(prompter: ClientPasswordPrompt): Promise<ClientPasswordSessionStatus> {
+      return await getResolved().unlockClientPasswordSession?.(prompter) ?? {
+        unlocked: true,
+        unlockUntilUnixMs: null,
+      };
+    },
+    async lockClientPasswordSession(): Promise<ClientPasswordSessionStatus> {
+      return await getResolved().lockClientPasswordSession?.() ?? {
+        unlocked: false,
+        unlockUntilUnixMs: null,
+      };
+    },
+    async readClientPasswordSessionStatus(): Promise<ClientPasswordSessionStatus> {
+      return await getResolved().readClientPasswordSessionStatus?.() ?? {
+        unlocked: true,
+        unlockUntilUnixMs: null,
+      };
+    },
   };
 }
 
 export function createMemoryWalletSecretProviderForTesting(): WalletSecretProvider {
   return new MemoryWalletSecretProvider();
+}
+
+export function withInteractiveWalletSecretProvider(
+  provider: WalletSecretProvider,
+  prompter: ClientPasswordPrompt,
+): WalletSecretProvider {
+  return provider.withPrompter?.(prompter) ?? provider;
+}
+
+export async function ensureClientPasswordConfigured(
+  provider: WalletSecretProvider,
+  prompter: ClientPasswordPrompt,
+): Promise<ClientPasswordSetupAction> {
+  return await provider.ensureClientPasswordConfigured?.(prompter) ?? "already-configured";
+}
+
+export async function inspectClientPasswordSetupReadiness(
+  provider: WalletSecretProvider,
+): Promise<ClientPasswordReadiness> {
+  return await provider.inspectClientPasswordReadiness?.() ?? "ready";
+}
+
+export async function unlockClientPassword(
+  provider: WalletSecretProvider,
+  prompter: ClientPasswordPrompt,
+): Promise<ClientPasswordSessionStatus> {
+  return await provider.unlockClientPasswordSession?.(prompter) ?? {
+    unlocked: true,
+    unlockUntilUnixMs: null,
+  };
+}
+
+export async function lockClientPassword(
+  provider: WalletSecretProvider,
+): Promise<ClientPasswordSessionStatus> {
+  return await provider.lockClientPasswordSession?.() ?? {
+    unlocked: false,
+    unlockUntilUnixMs: null,
+  };
+}
+
+export async function readClientPasswordStatus(
+  provider: WalletSecretProvider,
+): Promise<ClientPasswordSessionStatus> {
+  return await provider.readClientPasswordSessionStatus?.() ?? {
+    unlocked: true,
+    unlockUntilUnixMs: null,
+  };
 }
 
 export function createWalletRootId(): string {

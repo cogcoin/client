@@ -22,7 +22,11 @@ import {
   getIdsNextSteps,
   getLocksNextSteps,
 } from "./workflow-hints.js";
-import { getMutationRecommendation, getRepairRecommendation } from "./wallet-format.js";
+import {
+  getClientUnlockRecommendation,
+  getMutationRecommendation,
+  getRepairRecommendation,
+} from "./wallet-format.js";
 
 export interface ReadJsonResult<T> {
   data: T;
@@ -73,7 +77,15 @@ function createBaseMessages(context: WalletReadContext): {
     nextSteps.push(repairRecommendation);
   }
 
-  if (repairRecommendation === null) {
+  const clientUnlockRecommendation = repairRecommendation === null
+    ? getClientUnlockRecommendation(context)
+    : null;
+
+  if (clientUnlockRecommendation !== null) {
+    nextSteps.push(clientUnlockRecommendation);
+  }
+
+  if (repairRecommendation === null && clientUnlockRecommendation === null) {
     const bootstrapSync = getBootstrapSyncNextStep(context);
     if (bootstrapSync !== null) {
       nextSteps.push(bootstrapSync);

@@ -9,6 +9,8 @@ export const HELP_TEXT = `Usage: cogcoin <command> [options]
 Commands:
   status                  Show wallet-aware local service and chain status
   status --output json    Emit the stable v1 machine-readable status envelope
+  client unlock           Unlock password-protected local wallet secrets for a limited time
+  client lock             Flush the cached client password unlock session
   bitcoin start           Start the managed Bitcoin daemon
   bitcoin stop            Stop the managed Bitcoin daemon and paired indexer
   bitcoin status          Show managed Bitcoin daemon status without starting it
@@ -658,6 +660,24 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
         }
 
         throw new Error(`cli_unknown_command_bitcoin${subcommand === null ? "" : `_${subcommand}`}`);
+      }
+
+      if (token === "client") {
+        const subcommand = argv[index + 1] ?? null;
+
+        if (subcommand === "unlock") {
+          command = "client-unlock";
+          index += 1;
+          continue;
+        }
+
+        if (subcommand === "lock") {
+          command = "client-lock";
+          index += 1;
+          continue;
+        }
+
+        throw new Error(`cli_unknown_command_client${subcommand === null ? "" : `_${subcommand}`}`);
       }
 
       if (token === "indexer") {

@@ -18,6 +18,7 @@ import {
   getMineSetupNextSteps,
 } from "../workflow-hints.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
+import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
 function createCommandPrompter(
   parsed: ParsedCliArgs,
@@ -33,11 +34,11 @@ export async function runMiningAdminCommand(
   context: RequiredCliRunnerContext,
 ): Promise<number> {
   try {
-    const provider = context.walletSecretProvider;
     const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
 
     if (parsed.command === "mine-setup") {
       const prompter = createCommandPrompter(parsed, context);
+      const provider = withInteractiveWalletSecretProvider(context.walletSecretProvider, prompter);
       const view = await context.setupBuiltInMining({
         provider,
         prompter,

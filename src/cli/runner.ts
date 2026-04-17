@@ -11,6 +11,7 @@ import {
 } from "./output.js";
 import { HELP_TEXT, parseCliArgs } from "./parse.js";
 import { runFollowCommand } from "./commands/follow.js";
+import { runClientAdminCommand } from "./commands/client-admin.js";
 import { runMiningAdminCommand } from "./commands/mining-admin.js";
 import { runMiningReadCommand } from "./commands/mining-read.js";
 import { runMiningRuntimeCommand } from "./commands/mining-runtime.js";
@@ -101,6 +102,10 @@ export async function runCli(
 
     if (parsed.command === "status") {
       return runStatusCommand(parsed, context);
+    }
+
+    if (parsed.command === "client-lock" || parsed.command === "client-unlock") {
+      return runClientAdminCommand(parsed, context);
     }
 
     if (

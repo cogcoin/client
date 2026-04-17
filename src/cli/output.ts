@@ -416,7 +416,11 @@ function isBlockedError(message: string): boolean {
     || message === "indexer_daemon_schema_mismatch"
     || message === "mine_setup_requires_tty"
     || message === "mining_preemption_timeout"
+    || message === "wallet_client_password_setup_required"
+    || message === "wallet_client_password_migration_required"
+    || message === "wallet_client_password_locked"
     || message === "wallet_secret_provider_linux_runtime_error"
+    || message === "wallet_secret_provider_macos_runtime_error"
     || message === "wallet_secret_provider_windows_runtime_error"
     || message === "wallet_state_legacy_envelope_unsupported"
   ) {
@@ -566,7 +570,31 @@ export function createCliErrorPresentation(
     return {
       what: "Wallet is already initialized.",
       why: "This machine already has a local wallet root, so initialization cannot safely create a second one in the same runtime location.",
-      next: "Run `cogcoin status` to inspect the existing wallet, or export/import it instead of reinitializing.",
+      next: "Run `cogcoin status` to inspect the existing wallet.",
+    };
+  }
+
+  if (errorCode === "wallet_client_password_setup_required") {
+    return {
+      what: "Client password setup is still required.",
+      why: "This machine has not finished configuring password-protected local wallet secrets yet.",
+      next: "Run `cogcoin init` to create the client password and finish local secret setup.",
+    };
+  }
+
+  if (errorCode === "wallet_client_password_migration_required") {
+    return {
+      what: "Client password migration is still required.",
+      why: "This machine still has wallet secrets in the older platform-specific local format, so Cogcoin will not use them until they are migrated into password-protected local files.",
+      next: "Run `cogcoin init` to create the client password and migrate local wallet secrets.",
+    };
+  }
+
+  if (errorCode === "wallet_client_password_locked") {
+    return {
+      what: "Client password is locked.",
+      why: "This command needs the password-protected local wallet secret, but no active unlock session is available.",
+      next: "Run `cogcoin client unlock`, or rerun the command in an interactive terminal so Cogcoin can prompt for the client password.",
     };
   }
 
@@ -772,6 +800,14 @@ export function createCliErrorPresentation(
       what: "Linux local wallet-secret access failed.",
       why: "Cogcoin could not read or write the local wallet secret file for this Linux account.",
       next: "Check that the Cogcoin state directory is readable and writable for this Linux user, then retry.",
+    };
+  }
+
+  if (errorCode === "wallet_secret_provider_macos_runtime_error") {
+    return {
+      what: "macOS local wallet-secret access failed.",
+      why: "Cogcoin could not read or write the password-protected local wallet secret file for this macOS account.",
+      next: "Check that the Cogcoin state directory is readable and writable for this macOS user, then retry.",
     };
   }
 
@@ -1140,6 +1176,10 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
       return "cogcoin wallet delete";
     case "wallet-show-mnemonic":
       return "cogcoin wallet show-mnemonic";
+    case "client-unlock":
+      return "cogcoin client unlock";
+    case "client-lock":
+      return "cogcoin client lock";
     case "reset":
       return "cogcoin reset";
     case "repair":
@@ -1314,6 +1354,10 @@ export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string |
     case "restore":
     case "wallet-restore":
       return "cogcoin/restore/v1";
+    case "client-unlock":
+      return "cogcoin/client-unlock/v1";
+    case "client-lock":
+      return "cogcoin/client-lock/v1";
     case "wallet-delete":
       return "cogcoin/wallet-delete/v1";
     case "reset":

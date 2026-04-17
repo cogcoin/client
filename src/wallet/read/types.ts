@@ -10,6 +10,7 @@ import type {
 import type { ClientTip } from "../../types.js";
 import type { MiningControlPlaneView } from "../mining/index.js";
 import type { DomainRecord as LocalDomainRecord, WalletStateV1 } from "../types.js";
+import type { ClientPasswordReadiness } from "../state/client-password.js";
 
 export type WalletStateAvailability =
   | "uninitialized"
@@ -30,6 +31,8 @@ export type WalletServiceHealth =
 
 export interface WalletLocalStateStatus {
   availability: WalletStateAvailability;
+  clientPasswordReadiness: ClientPasswordReadiness;
+  unlockRequired: boolean;
   walletRootId: string | null;
   state: WalletStateV1 | null;
   source: "primary" | "backup" | null;

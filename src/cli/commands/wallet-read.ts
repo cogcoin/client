@@ -43,6 +43,7 @@ import {
   getLocksNextSteps,
 } from "../workflow-hints.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
+import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
 function createUnknownPage(parsed: ParsedCliArgs, defaultLimit: number): JsonPage {
   return {
@@ -105,10 +106,13 @@ export async function runWalletReadCommand(
   const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
   await context.ensureDirectory(dirname(dbPath));
 
+  const provider = parsed.outputMode === "text"
+    ? withInteractiveWalletSecretProvider(context.walletSecretProvider, context.createPrompter())
+    : context.walletSecretProvider;
   const readContext = await context.openWalletReadContext({
     dataDir,
     databasePath: dbPath,
-    secretProvider: context.walletSecretProvider,
+    secretProvider: provider,
     paths: runtimePaths,
   });
 

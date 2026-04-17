@@ -12,8 +12,9 @@ import {
 } from "../src/wallet/state/provider.js";
 import { saveWalletState } from "../src/wallet/state/storage.js";
 import { createWalletState } from "./current-model-helpers.js";
+import { configureTestClientPassword } from "./client-password-test-helpers.js";
 
-test("provider-backed Linux local-file wallets load without an explicit unlock step", async () => {
+test("provider-backed Linux local-file wallets load after client password setup", async () => {
   const homeDirectory = await mkdtemp(join(tmpdir(), "cogcoin-wallet-lifecycle-linux-"));
   const paths = resolveWalletRuntimePathsForTesting({ homeDirectory, platform: "linux" });
   const provider = createDefaultWalletSecretProviderForTesting({
@@ -22,6 +23,7 @@ test("provider-backed Linux local-file wallets load without an explicit unlock s
   });
   const secretReference = createWalletSecretReference("wallet-root");
 
+  await configureTestClientPassword(provider);
   await provider.storeSecret(secretReference.keyId, Buffer.alloc(32, 47));
   await saveWalletState(
     {

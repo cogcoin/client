@@ -32,6 +32,7 @@ import {
 } from "../signals.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import type { WalletRepairResult, WalletResetResult } from "../../wallet/lifecycle.js";
+import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
 function createCommandPrompter(
   parsed: ParsedCliArgs,
@@ -166,9 +167,10 @@ export async function runWalletAdminCommand(
       if (parsed.command === "init" || parsed.command === "wallet-init") {
         const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         const prompter = createCommandPrompter(parsed, context);
+        const interactiveProvider = withInteractiveWalletSecretProvider(provider, prompter);
         const result = await context.initializeWallet({
           dataDir,
-          provider,
+          provider: interactiveProvider,
           prompter,
           paths: runtimePaths,
         });
@@ -186,7 +188,13 @@ export async function runWalletAdminCommand(
           ));
           return 0;
         }
-        writeLine(context.stdout, `Wallet initialized.`);
+        writeLine(
+          context.stdout,
+          result.walletAction === "already-initialized"
+            ? "Wallet already initialized."
+            : "Wallet initialized.",
+        );
+        writeLine(context.stdout, `Client password: ${result.passwordAction}`);
         writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
         writeLine(context.stdout, `Funding address: ${result.fundingAddress}`);
         writeLine(context.stdout, `Quickstart: ${getFundingQuickstartGuidance()}`);
@@ -199,9 +207,10 @@ export async function runWalletAdminCommand(
       if (parsed.command === "restore" || parsed.command === "wallet-restore") {
         const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         const prompter = createCommandPrompter(parsed, context);
+        const interactiveProvider = withInteractiveWalletSecretProvider(provider, prompter);
         const result = await context.restoreWalletFromMnemonic({
           dataDir,
-          provider,
+          provider: interactiveProvider,
           prompter,
           paths: runtimePaths,
         });
@@ -237,9 +246,10 @@ export async function runWalletAdminCommand(
       if (parsed.command === "wallet-delete") {
         const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         const prompter = createCommandPrompter(parsed, context);
+        const interactiveProvider = withInteractiveWalletSecretProvider(provider, prompter);
         const result = await context.deleteImportedWalletSeed({
           dataDir,
-          provider,
+          provider: interactiveProvider,
           prompter,
           assumeYes: parsed.assumeYes,
           paths: runtimePaths,
@@ -261,7 +271,7 @@ export async function runWalletAdminCommand(
       if (parsed.command === "wallet-show-mnemonic") {
         const prompter = createCommandPrompter(parsed, context);
         await context.showWalletMnemonic({
-          provider,
+          provider: withInteractiveWalletSecretProvider(provider, prompter),
           prompter,
           paths: runtimePaths,
         });
@@ -289,7 +299,7 @@ export async function runWalletAdminCommand(
         const prompter = createCommandPrompter(parsed, context);
         const result = await context.resetWallet({
           dataDir,
-          provider,
+          provider: withInteractiveWalletSecretProvider(provider, prompter),
           prompter,
         });
 
@@ -313,10 +323,13 @@ export async function runWalletAdminCommand(
 
       if (parsed.command === "repair") {
         const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+        const repairProvider = parsed.outputMode === "preview-json"
+          ? provider
+          : withInteractiveWalletSecretProvider(provider, createCommandPrompter(parsed, context));
         const result = await context.repairWallet({
           dataDir,
           databasePath: dbPath,
-          provider,
+          provider: repairProvider,
           assumeYes: parsed.assumeYes,
           paths: runtimePaths,
         });

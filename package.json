@@ -66,6 +66,7 @@
     "@cogcoin/genesis": "1.0.0",
     "@cogcoin/indexer": "1.0.0",
     "@cogcoin/scoring": "1.0.0",
+    "@noble/hashes": "2.0.1",
     "@scure/base": "^2.0.0",
     "@scure/bip32": "^2.0.1",
     "@scure/bip39": "^2.0.1",

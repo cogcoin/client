@@ -12,6 +12,7 @@ import {
 } from "../output.js";
 import { buildMineLogJson, buildMineStatusJson } from "../read-json.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
+import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
 async function readRotationIndices(paths: {
   miningEventsPath: string;
@@ -124,16 +125,19 @@ export async function runMiningReadCommand(
       return 0;
     }
 
+      const provider = parsed.outputMode === "text"
+        ? withInteractiveWalletSecretProvider(context.walletSecretProvider, context.createPrompter())
+        : context.walletSecretProvider;
       const readContext = await context.openWalletReadContext({
         dataDir,
         databasePath: dbPath,
-        secretProvider: context.walletSecretProvider,
+        secretProvider: provider,
         paths: runtimePaths,
       });
 
     try {
-      const mining = readContext.mining ?? await context.inspectMiningControlPlane({
-          provider: context.walletSecretProvider,
+        const mining = readContext.mining ?? await context.inspectMiningControlPlane({
+          provider,
           localState: readContext.localState,
           bitcoind: readContext.bitcoind,
           nodeStatus: readContext.nodeStatus,

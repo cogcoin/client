@@ -364,6 +364,18 @@ export function assertWalletMutationContextReady(
     throw new Error("wallet_uninitialized");
   }
 
+  if (context.localState.clientPasswordReadiness === "setup-required") {
+    throw new Error("wallet_client_password_setup_required");
+  }
+
+  if (context.localState.clientPasswordReadiness === "migration-required") {
+    throw new Error("wallet_client_password_migration_required");
+  }
+
+  if (context.localState.unlockRequired) {
+    throw new Error("wallet_client_password_locked");
+  }
+
   if (context.localState.availability === "local-state-corrupt") {
     throw new Error("local-state-corrupt");
   }

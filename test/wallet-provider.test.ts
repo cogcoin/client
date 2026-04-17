@@ -8,6 +8,7 @@ import {
   createDefaultWalletSecretProviderForTesting,
   createWalletSecretReference,
 } from "../src/wallet/state/provider.js";
+import { configureTestClientPassword } from "./client-password-test-helpers.js";
 
 async function createTempStateRoot(prefix: string): Promise<string> {
   return await mkdtemp(join(tmpdir(), prefix));
@@ -29,9 +30,12 @@ test("Linux default secret provider stores, loads, and deletes local secret file
 
   assert.equal(provider.kind, "linux-local-file");
 
+  await configureTestClientPassword(provider);
   await provider.storeSecret(keyId, secret);
 
-  assert.equal(await readFile(secretPath, "utf8"), `${secret.toString("base64")}\n`);
+  const storedLinux = JSON.parse(await readFile(secretPath, "utf8")) as { format: string; wrappedBy: string };
+  assert.equal(storedLinux.format, "cogcoin-local-wallet-secret");
+  assert.equal(storedLinux.wrappedBy, "client-password");
   assert.deepEqual(await provider.loadSecret(keyId), new Uint8Array(secret));
 
   await provider.deleteSecret(keyId);
@@ -45,6 +49,7 @@ test("Linux default secret provider reports missing secrets without probing exte
     stateRoot,
   });
   const keyId = createWalletSecretReference("wallet-root-test").keyId;
+  await configureTestClientPassword(provider);
   await assert.rejects(() => provider.loadSecret(keyId), /wallet_secret_missing_wallet-state:wallet-root-test/);
 });
 
@@ -74,9 +79,12 @@ test("Windows default secret provider stores, loads, and deletes local secret fi
   const secret = Buffer.alloc(32, 23);
   const secretPath = join(stateRoot, "secrets", `${sanitizeSecretKeyIdForTest(keyId)}.secret`);
 
+  await configureTestClientPassword(provider);
   await provider.storeSecret(keyId, secret);
 
-  assert.equal(await readFile(secretPath, "utf8"), `${secret.toString("base64")}\n`);
+  const storedWindows = JSON.parse(await readFile(secretPath, "utf8")) as { format: string; wrappedBy: string };
+  assert.equal(storedWindows.format, "cogcoin-local-wallet-secret");
+  assert.equal(storedWindows.wrappedBy, "client-password");
   assert.deepEqual(await provider.loadSecret(keyId), new Uint8Array(secret));
 
   await provider.deleteSecret(keyId);
@@ -90,6 +98,7 @@ test("Windows default secret provider reports missing secrets generically", asyn
     stateRoot,
   });
   const keyId = createWalletSecretReference("wallet-root-test").keyId;
+  await configureTestClientPassword(provider);
 
   await assert.rejects(
     () => provider.loadSecret(keyId),

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -78,6 +78,15 @@ function extractField(frame: string[], row: number): string {
 
 function createIdentityPermutation(length: number): number[] {
   return Array.from({ length }, (_value, index) => index);
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function resolveChunkSize(manifest: SnapshotChunkManifest, chunkIndex: number): number {
@@ -1395,6 +1404,210 @@ test("bootstrap resume still enters follow_tip when follow mode resumes an index
 
     assert.deepEqual(phases, ["follow_tip"]);
     assert.deepEqual(messages, ["Resuming from the persisted Cogcoin indexed tip."]);
+  } finally {
+    await removeTempDirectory(rootDir);
+  }
+});
+
+test("bootstrap startup cleans obsolete snapshot artifacts and skips loadtxoutset", async () => {
+  const rootDir = createTempDirectory("cogcoin-client-bootstrap-cleanup-obsolete");
+
+  try {
+    const payload = Buffer.from("bootstrap-cleanup-obsolete");
+    const metadata: SnapshotMetadata = {
+      url: "https://snapshots.cogcoin.org/bootstrap-cleanup-obsolete.dat",
+      filename: "bootstrap-cleanup-obsolete.dat",
+      height: 24,
+      sha256: createHash("sha256").update(payload).digest("hex"),
+      sizeBytes: payload.length,
+    };
+    const paths = resolveBootstrapPathsForTesting(rootDir, metadata);
+    const state = createBootstrapStateForTesting(metadata);
+    state.loadTxOutSetComplete = true;
+    state.baseHeight = metadata.height;
+    state.tipHashHex = "ab".repeat(32);
+    state.phase = "load_snapshot";
+    state.lastError = "stale error";
+    await mkdir(paths.directory, { recursive: true });
+    await writeFile(paths.snapshotPath, payload);
+    await writeFile(paths.partialSnapshotPath, `${payload.toString("hex")}\n`);
+    await saveBootstrapStateForTesting(paths, state);
+
+    const phases: BootstrapPhase[] = [];
+    let loadCalls = 0;
+    const controller = new AssumeUtxoBootstrapController({
+      rpc: {
+        async getChainStates() {
+          return { chainstates: [] };
+        },
+        async getBlockchainInfo() {
+          return {
+            chain: "main",
+            blocks: 30,
+            headers: 35,
+            bestblockhash: "cd".repeat(32),
+            pruned: false,
+          };
+        },
+        async loadTxOutSet() {
+          loadCalls += 1;
+          return {
+            base_height: metadata.height,
+            coins_loaded: 0,
+            tip_hash: "ab".repeat(32),
+          };
+        },
+      } as unknown as ConstructorParameters<typeof AssumeUtxoBootstrapController>[0]["rpc"],
+      dataDir: rootDir,
+      progress: {
+        async setPhase(phase: BootstrapPhase) {
+          phases.push(phase);
+        },
+      } as unknown as ConstructorParameters<typeof AssumeUtxoBootstrapController>[0]["progress"],
+      snapshot: metadata,
+      fetchImpl: async () => {
+        throw new Error("snapshot download should not run");
+      },
+    });
+
+    await controller.ensureReady(null, "main");
+    const persisted = await loadBootstrapStateForTesting(paths, metadata);
+
+    assert.equal(loadCalls, 0);
+    assert.deepEqual(phases, ["bitcoin_sync"]);
+    assert.equal(await pathExists(paths.snapshotPath), false);
+    assert.equal(await pathExists(paths.partialSnapshotPath), false);
+    assert.equal(persisted.loadTxOutSetComplete, true);
+    assert.equal(persisted.phase, "bitcoin_sync");
+    assert.equal(persisted.lastError, null);
+    assert.equal(await pathExists(paths.statePath), true);
+  } finally {
+    await removeTempDirectory(rootDir);
+  }
+});
+
+test("bootstrap startup keeps the snapshot file while the snapshot chainstate remains active", async () => {
+  const rootDir = createTempDirectory("cogcoin-client-bootstrap-cleanup-active");
+
+  try {
+    const payload = Buffer.from("bootstrap-cleanup-active");
+    const metadata: SnapshotMetadata = {
+      url: "https://snapshots.cogcoin.org/bootstrap-cleanup-active.dat",
+      filename: "bootstrap-cleanup-active.dat",
+      height: 28,
+      sha256: createHash("sha256").update(payload).digest("hex"),
+      sizeBytes: payload.length,
+    };
+    const paths = resolveBootstrapPathsForTesting(rootDir, metadata);
+    const state = createBootstrapStateForTesting(metadata);
+    state.loadTxOutSetComplete = true;
+    state.validated = true;
+    state.downloadedBytes = payload.length;
+    state.baseHeight = metadata.height;
+    state.tipHashHex = "ef".repeat(32);
+    await mkdir(paths.directory, { recursive: true });
+    await writeFile(paths.snapshotPath, payload);
+    await writeFile(paths.partialSnapshotPath, `${payload.toString("hex")}\n`);
+    await saveBootstrapStateForTesting(paths, state);
+
+    let loadCalls = 0;
+    const controller = new AssumeUtxoBootstrapController({
+      rpc: {
+        async getChainStates() {
+          return {
+            chainstates: [{
+              blocks: metadata.height,
+              validated: false,
+              snapshot_blockhash: "ef".repeat(32),
+            }],
+          };
+        },
+        async loadTxOutSet() {
+          loadCalls += 1;
+          return {
+            base_height: metadata.height,
+            coins_loaded: 0,
+            tip_hash: "ef".repeat(32),
+          };
+        },
+      } as unknown as ConstructorParameters<typeof AssumeUtxoBootstrapController>[0]["rpc"],
+      dataDir: rootDir,
+      progress: {
+        async setPhase() {},
+      } as unknown as ConstructorParameters<typeof AssumeUtxoBootstrapController>[0]["progress"],
+      snapshot: metadata,
+    });
+
+    await controller.ensureReady(null, "main");
+
+    assert.equal(loadCalls, 0);
+    assert.equal(await pathExists(paths.snapshotPath), true);
+    assert.equal(await pathExists(paths.partialSnapshotPath), true);
+  } finally {
+    await removeTempDirectory(rootDir);
+  }
+});
+
+test("bootstrap startup skip-path avoids both download and loadtxoutset once the snapshot is obsolete", async () => {
+  const rootDir = createTempDirectory("cogcoin-client-bootstrap-skip-obsolete");
+
+  try {
+    const payload = Buffer.from("bootstrap-skip-obsolete");
+    const metadata: SnapshotMetadata = {
+      url: "https://snapshots.cogcoin.org/bootstrap-skip-obsolete.dat",
+      filename: "bootstrap-skip-obsolete.dat",
+      height: 32,
+      sha256: createHash("sha256").update(payload).digest("hex"),
+      sizeBytes: payload.length,
+    };
+    const paths = resolveBootstrapPathsForTesting(rootDir, metadata);
+    const state = createBootstrapStateForTesting(metadata);
+    state.loadTxOutSetComplete = true;
+    state.baseHeight = metadata.height;
+    await mkdir(paths.directory, { recursive: true });
+    await writeFile(paths.snapshotPath, payload);
+    await saveBootstrapStateForTesting(paths, state);
+
+    let fetchCalls = 0;
+    let loadCalls = 0;
+    const controller = new AssumeUtxoBootstrapController({
+      rpc: {
+        async getChainStates() {
+          return { chainstates: [] };
+        },
+        async getBlockchainInfo() {
+          return {
+            chain: "main",
+            blocks: 40,
+            headers: 42,
+            bestblockhash: "12".repeat(32),
+            pruned: false,
+          };
+        },
+        async loadTxOutSet() {
+          loadCalls += 1;
+          return {
+            base_height: metadata.height,
+            coins_loaded: 0,
+            tip_hash: "00".repeat(32),
+          };
+        },
+      } as unknown as ConstructorParameters<typeof AssumeUtxoBootstrapController>[0]["rpc"],
+      dataDir: rootDir,
+      progress: {
+        async setPhase() {},
+      } as unknown as ConstructorParameters<typeof AssumeUtxoBootstrapController>[0]["progress"],
+      snapshot: metadata,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        throw new Error("fetch should not run");
+      },
+    });
+
+    await controller.ensureReady(null, "main");
+
+    assert.equal(fetchCalls, 0);
+    assert.equal(loadCalls, 0);
   } finally {
     await removeTempDirectory(rootDir);
   }

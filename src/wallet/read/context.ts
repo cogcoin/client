@@ -33,14 +33,22 @@ import { normalizeMiningStateRecord } from "../mining/state.js";
 import { resolveWalletRootIdFromLocalArtifacts } from "../root-resolution.js";
 import { resolveWalletRuntimePathsForTesting } from "../runtime.js";
 import {
+  extractWalletRootIdHintFromWalletStateEnvelope,
+  loadRawWalletStateEnvelope,
   loadWalletState,
   type LoadedWalletState,
 } from "../state/storage.js";
 import {
   createDefaultWalletSecretProvider,
   createWalletSecretReference,
+  inspectClientPasswordSetupReadiness,
   type WalletSecretProvider,
 } from "../state/provider.js";
+import {
+  describeClientPasswordLockedMessage,
+  describeClientPasswordMigrationMessage,
+  describeClientPasswordSetupMessage,
+} from "../state/client-password.js";
 import { createWalletReadModel } from "./project.js";
 import type {
   WalletBitcoindStatus,
@@ -69,6 +77,7 @@ function isWalletAccessError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.startsWith("wallet_secret_missing_")
     || message.startsWith("wallet_secret_provider_")
+    || message.startsWith("wallet_client_password_")
     || message === "wallet_state_legacy_envelope_unsupported";
 }
 
@@ -79,6 +88,18 @@ function describeWalletAccessMessage(options: {
 
   if (message === "wallet_state_legacy_envelope_unsupported") {
     return "Wallet state exists but was created by an older Cogcoin wallet format that this version no longer loads directly.";
+  }
+
+  if (message === "wallet_client_password_setup_required") {
+    return describeClientPasswordSetupMessage();
+  }
+
+  if (message === "wallet_client_password_migration_required") {
+    return describeClientPasswordMigrationMessage();
+  }
+
+  if (message === "wallet_client_password_locked") {
+    return describeClientPasswordLockedMessage();
   }
 
   if (message.startsWith("wallet_secret_provider_")) {
@@ -157,16 +178,59 @@ async function inspectWalletLocalState(options: {
     pathExists(paths.walletStatePath),
     pathExists(paths.walletStateBackupPath),
   ]);
+  const clientPasswordReadiness = await inspectClientPasswordSetupReadiness(provider).catch(() => "ready" as const);
 
   if (!hasPrimaryStateFile && !hasBackupStateFile) {
     return {
       availability: "uninitialized",
+      clientPasswordReadiness,
+      unlockRequired: false,
       walletRootId: null,
       state: null,
       source: null,
       hasPrimaryStateFile,
       hasBackupStateFile,
       message: "Wallet state has not been initialized yet.",
+    };
+  }
+
+  if (clientPasswordReadiness !== "ready") {
+    const rawEnvelope = await loadRawWalletStateEnvelope({
+      primaryPath: paths.walletStatePath,
+      backupPath: paths.walletStateBackupPath,
+    }).catch(() => null);
+
+    if (rawEnvelope?.envelope.secretProvider == null) {
+      return {
+        availability: "local-state-corrupt",
+        clientPasswordReadiness: "ready",
+        unlockRequired: false,
+        walletRootId: extractWalletRootIdHintFromWalletStateEnvelope(rawEnvelope?.envelope ?? null),
+        state: null,
+        source: null,
+        hasPrimaryStateFile,
+        hasBackupStateFile,
+        message: "Wallet state exists but was created by an older Cogcoin wallet format that this version no longer loads directly.",
+      };
+    }
+
+    const resolvedRoot = await resolveWalletRootIdFromLocalArtifacts({
+      paths,
+      provider,
+    }).catch(() => null);
+
+    return {
+      availability: "local-state-corrupt",
+      clientPasswordReadiness,
+      unlockRequired: false,
+      walletRootId: resolvedRoot?.walletRootId ?? null,
+      state: null,
+      source: null,
+      hasPrimaryStateFile,
+      hasBackupStateFile,
+      message: clientPasswordReadiness === "migration-required"
+        ? describeClientPasswordMigrationMessage()
+        : describeClientPasswordSetupMessage(),
     };
   }
 
@@ -187,6 +251,8 @@ async function inspectWalletLocalState(options: {
 
     return {
       availability: "ready",
+      clientPasswordReadiness,
+      unlockRequired: false,
       walletRootId: normalized.state.walletRootId,
       state: normalizeWalletStateRecord({
         ...normalized.state,
@@ -202,9 +268,12 @@ async function inspectWalletLocalState(options: {
       paths,
       provider,
     }).catch(() => null);
+    const message = error instanceof Error ? error.message : String(error);
 
     return {
       availability: "local-state-corrupt",
+      clientPasswordReadiness,
+      unlockRequired: message === "wallet_client_password_locked",
       walletRootId: resolvedRoot?.walletRootId ?? null,
       state: null,
       source: null,

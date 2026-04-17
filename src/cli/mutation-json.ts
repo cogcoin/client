@@ -318,6 +318,8 @@ export function buildReputationMutationData(result: ReputationMutationResult) {
 export function buildInitMutationData(result: WalletInitializationResult) {
   const after = {
     seedName: "main",
+    passwordAction: result.passwordAction,
+    walletAction: result.walletAction,
     walletRootId: result.walletRootId,
     fundingAddress: result.fundingAddress,
   };

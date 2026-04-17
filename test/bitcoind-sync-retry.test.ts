@@ -153,6 +153,7 @@ function createSyncDependencies(options: {
       resumeDisplayMode?: "sync" | "follow";
     },
   ) => Promise<void>;
+  cleanupObsoleteSnapshotFilesIfNeeded?: () => Promise<boolean>;
   getBlockchainInfo: () => Promise<RpcBlockchainInfo>;
   getBlockHash?: (height: number) => Promise<string>;
   getBlock?: (hash: string) => Promise<RpcBlock>;
@@ -276,6 +277,9 @@ function createSyncDependencies(options: {
       },
       progress,
       bootstrap: {
+        async cleanupObsoleteSnapshotFilesIfNeeded() {
+          return await (options.cleanupObsoleteSnapshotFilesIfNeeded?.() ?? Promise.resolve(false));
+        },
         async ensureReady(
           indexedTip: ClientTip | null,
           expectedChain: "main" | "regtest",
@@ -302,6 +306,81 @@ function createSyncDependencies(options: {
     },
   };
 }
+
+test("syncToTip probes snapshot cleanup at startup and before a successful return", async () => {
+  const events: string[] = [];
+  let cleanupCalls = 0;
+  const { dependencies, appliedHeights } = createSyncDependencies({
+    startHeight: 100,
+    ensureReady: async () => {
+      events.push("ensureReady");
+    },
+    cleanupObsoleteSnapshotFilesIfNeeded: async () => {
+      cleanupCalls += 1;
+      events.push(`cleanup:${cleanupCalls}`);
+      return cleanupCalls === 2;
+    },
+    async getBlockchainInfo() {
+      return createBlockchainInfo(100, 100);
+    },
+    async getBlock(hash: string) {
+      return createRpcBlock(100, hash, "63".repeat(32));
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.equal(result.endingHeight, 100);
+  assert.deepEqual(appliedHeights, [100]);
+  assert.deepEqual(events, ["cleanup:1", "ensureReady", "cleanup:2"]);
+});
+
+test("syncToTip removes the obsolete snapshot on a later natural rerun when the probe flips", async () => {
+  const cleanupResults = [false, false, true, false];
+  const events: string[] = [];
+  const { dependencies } = createSyncDependencies({
+    startHeight: 100,
+    cleanupObsoleteSnapshotFilesIfNeeded: async () => {
+      const next = cleanupResults.shift() ?? false;
+      events.push(`cleanup:${next ? "removed" : "kept"}`);
+      return next;
+    },
+    async getBlockchainInfo() {
+      return createBlockchainInfo(99, 99);
+    },
+  });
+
+  const first = await syncToTip(dependencies as never);
+  const second = await syncToTip(dependencies as never);
+
+  assert.equal(first.bestHeight, 99);
+  assert.equal(second.bestHeight, 99);
+  assert.deepEqual(events, [
+    "cleanup:kept",
+    "cleanup:kept",
+    "cleanup:removed",
+    "cleanup:kept",
+  ]);
+});
+
+test("syncToTip ignores snapshot cleanup probe failures", async () => {
+  let cleanupCalls = 0;
+  const { dependencies } = createSyncDependencies({
+    startHeight: 1,
+    cleanupObsoleteSnapshotFilesIfNeeded: async () => {
+      cleanupCalls += 1;
+      throw new Error("cleanup failed");
+    },
+    async getBlockchainInfo() {
+      return createBlockchainInfo(0);
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.equal(result.bestHeight, 0);
+  assert.equal(cleanupCalls, 2);
+});
 
 test("syncToTip retries a transient managed RPC timeout during bitcoin sync polling", async () => {
   let blockchainInfoCalls = 0;

@@ -24,6 +24,7 @@ import {
   getMineStopNextSteps,
 } from "../workflow-hints.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
+import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
 function createCommandPrompter(
   parsed: ParsedCliArgs,
@@ -41,11 +42,11 @@ export async function runMiningRuntimeCommand(
   try {
     const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
     const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-    const provider = context.walletSecretProvider;
     const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
     await context.ensureDirectory(dirname(dbPath));
 
     if (parsed.command === "mine") {
+      const provider = withInteractiveWalletSecretProvider(context.walletSecretProvider, context.createPrompter());
       const abortController = new AbortController();
       const onStop = (): void => {
         abortController.abort();
@@ -75,6 +76,10 @@ export async function runMiningRuntimeCommand(
     }
 
     if (parsed.command === "mine-start") {
+      const provider = withInteractiveWalletSecretProvider(
+        context.walletSecretProvider,
+        createCommandPrompter(parsed, context),
+      );
       const result = await context.startBackgroundMining({
         dataDir,
         databasePath: dbPath,
@@ -119,6 +124,9 @@ export async function runMiningRuntimeCommand(
     }
 
     if (parsed.command === "mine-stop") {
+      const provider = parsed.outputMode === "text"
+        ? withInteractiveWalletSecretProvider(context.walletSecretProvider, context.createPrompter())
+        : context.walletSecretProvider;
       const snapshot = await context.stopBackgroundMining({
         dataDir,
         databasePath: dbPath,

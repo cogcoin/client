@@ -71,6 +71,8 @@ export type CommandName =
   | "repair"
   | "sync"
   | "status"
+  | "client-lock"
+  | "client-unlock"
   | "follow"
   | "bitcoin-start"
   | "bitcoin-stop"
