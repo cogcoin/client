@@ -202,6 +202,7 @@ export interface ManagedClientLike {
     bestHeight: number;
   }>;
   playSyncCompletionScene?(): Promise<void>;
+  detachToBackgroundFollow?(): Promise<void>;
   startFollowingTip(): Promise<void>;
   getNodeStatus(): Promise<{
     indexedTip: {

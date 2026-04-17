@@ -177,6 +177,7 @@ export function resolveStatusFieldText(
     case "getblock_archive_import":
       return `Importing getblock range${animateStatusEllipsis(now)}`;
     case "paused":
+      return `Waiting to start managed sync${animateStatusEllipsis(now)}`;
     case "snapshot_download":
       return `Downloading snapshot to ${snapshotHeight}${animateStatusEllipsis(now)}`;
     case "wait_headers_for_snapshot":

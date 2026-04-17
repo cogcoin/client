@@ -138,6 +138,8 @@ export async function runSyncCommand(
   let controlLock: Awaited<ReturnType<typeof acquireFileLock>> | null = null;
   let store: Awaited<ReturnType<typeof context.openSqliteStore>> | null = null;
   let storeOwned = true;
+  let client: Awaited<ReturnType<typeof context.openManagedBitcoindClient>> | null = null;
+  let clientClosed = false;
 
   try {
     const walletRoot = await resolveWalletRootIdFromLocalArtifacts({
@@ -162,7 +164,7 @@ export async function runSyncCommand(
     await context.ensureDirectory(dirname(dbPath));
     store = await context.openSqliteStore({ filename: dbPath });
 
-    const client = await context.openManagedBitcoindClient({
+    client = await context.openManagedBitcoindClient({
       store,
       databasePath: dbPath,
       dataDir,
@@ -193,6 +195,32 @@ export async function runSyncCommand(
 
       const result = syncOutcome.value;
 
+      if (result.endingHeight !== null && result.endingHeight === result.bestHeight) {
+        writeLine(context.stderr, "Managed sync fully caught up to the live tip.");
+        writeLine(context.stderr, "Detaching from managed Cogcoin client and resuming background indexer follow...");
+
+        stopWatcher.cleanup();
+
+        const detachPromise = typeof client.detachToBackgroundFollow === "function"
+          ? client.detachToBackgroundFollow()
+          : Promise.resolve();
+
+        if (typeof client.playSyncCompletionScene === "function") {
+          await client.playSyncCompletionScene().catch(() => undefined);
+        }
+
+        try {
+          await detachPromise;
+          await client.close();
+          clientClosed = true;
+          writeLine(context.stderr, "Detached cleanly; background indexer follow resumed.");
+          return 0;
+        } catch {
+          writeLine(context.stderr, "Detach failed before background indexer follow was confirmed.");
+          return 1;
+        }
+      }
+
       if (typeof client.playSyncCompletionScene === "function") {
         const completionOutcome = await waitForCompletionOrStop(
           client.playSyncCompletionScene().catch(() => undefined),
@@ -211,7 +239,9 @@ export async function runSyncCommand(
       return 0;
     } finally {
       stopWatcher.cleanup();
-      await client.close();
+      if (!clientClosed) {
+        await client.close();
+      }
     }
   } catch (error) {
     const classified = classifyCliError(error);

@@ -1174,6 +1174,165 @@ test("sync CLI resumes background indexer follow after a single SIGTERM detach",
   }
 });
 
+test("sync CLI auto-detaches and resumes background indexer follow once fully caught up", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-cli-sync-auto-detach");
+  const runtimePaths = createTempWalletPaths(join(fixture.rootDir, "wallet-home"));
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream();
+  let liveClient: Awaited<ReturnType<typeof openManagedBitcoindClientInternal>> | null = null;
+
+  try {
+    const node = await attachOrStartManagedBitcoindService({
+      dataDir: fixture.dataDir,
+      chain: "regtest",
+      startHeight: 0,
+    });
+    const descriptor = await getMiningDescriptor(fixture.dataDir, node.rpc.port);
+    await generateBlocks(fixture.dataDir, node.rpc.port, 250, descriptor);
+
+    const code = await runCli(["sync"], {
+      stdout,
+      stderr,
+      resolveDefaultClientDatabasePath: () => fixture.databasePath,
+      resolveDefaultBitcoindDataDir: () => fixture.dataDir,
+      resolveWalletRuntimePaths: () => runtimePaths,
+      loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub("wallet-root-sync-auto-detach"),
+      openManagedBitcoindClient: async ({ store, progressOutput, walletRootId }) => {
+        liveClient = await openManagedBitcoindClientInternal({
+          store,
+          dataDir: fixture.dataDir,
+          databasePath: fixture.databasePath,
+          chain: "regtest",
+          startHeight: 0,
+          snapshotInterval: 2,
+          pollIntervalMs: 250,
+          syncDebounceMs: 50,
+          progressOutput,
+          walletRootId,
+        });
+
+        return {
+          async syncToTip() {
+            return liveClient!.syncToTip();
+          },
+          async detachToBackgroundFollow() {
+            await liveClient?.detachToBackgroundFollow();
+          },
+          async startFollowingTip() {
+            await liveClient?.startFollowingTip();
+          },
+          async getNodeStatus() {
+            return liveClient!.getNodeStatus();
+          },
+          async close() {
+            const client = liveClient;
+            liveClient = null;
+            await client?.close();
+          },
+        };
+      },
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.toString(), "");
+    assert.match(stderr.toString(), /Managed sync fully caught up to the live tip\./);
+    assert.match(stderr.toString(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
+    assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+
+    const daemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+    });
+
+    try {
+      await generateBlocks(fixture.dataDir, node.rpc.port, 1, descriptor);
+
+      await waitForCondition(async () => {
+        const status = await daemon.getStatus();
+        return status.appliedTipHeight === 251 && status.coreBestHeight === 251 && status.state === "synced";
+      }, 20_000, 100);
+
+      const status = await daemon.getStatus();
+      assert.equal(status.appliedTipHeight, 251);
+      assert.equal(status.coreBestHeight, 251);
+      assert.equal(status.state, "synced");
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    const danglingClient = liveClient as { close(): Promise<void> } | null;
+    if (danglingClient !== null) {
+      await danglingClient.close().catch(() => undefined);
+    }
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("sync CLI runs the completion scene while background-follow detach is already in flight", async () => {
+  const fixture = createFixture("cogcoin-cli-sync-scene-overlap");
+  const runtimePaths = createTempWalletPaths(join(fixture.rootDir, "wallet-home"));
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream();
+  const events: string[] = [];
+
+  try {
+    const code = await runCli(["sync"], {
+      stdout,
+      stderr,
+      resolveDefaultClientDatabasePath: () => fixture.databasePath,
+      resolveDefaultBitcoindDataDir: () => fixture.dataDir,
+      resolveWalletRuntimePaths: () => runtimePaths,
+      loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub("wallet-root-sync-scene-overlap"),
+      ensureDirectory: async () => undefined,
+      openSqliteStore: async () => ({
+        close: async () => undefined,
+      }) as never,
+      openManagedBitcoindClient: async () => ({
+        async syncToTip() {
+          events.push("sync");
+          return {
+            appliedBlocks: 0,
+            rewoundBlocks: 0,
+            endingHeight: 25,
+            bestHeight: 25,
+          };
+        },
+        async detachToBackgroundFollow() {
+          events.push("detach-start");
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
+          events.push("detach-end");
+        },
+        async playSyncCompletionScene() {
+          events.push("scene-start");
+          await Promise.resolve();
+          events.push("scene-end");
+        },
+        async startFollowingTip() {},
+        async getNodeStatus() {
+          return {
+            indexedTip: null,
+            nodeBestHeight: null,
+          };
+        },
+        async close() {
+          events.push("close");
+        },
+      }),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.toString(), "");
+    assert.deepEqual(events, ["sync", "detach-start", "scene-start", "scene-end", "detach-end", "close"]);
+    assert.match(stderr.toString(), /Managed sync fully caught up to the live tip\./);
+    assert.match(stderr.toString(), /Detached cleanly; background indexer follow resumed/);
+  } finally {
+    await cleanupManagedFixture(fixture);
+  }
+});
+
 test("wallet read context close detaches without stopping managed services", async (t) => {
   await ensureBitcoinBinaries(t);
   const fixture = createFixture("cogcoin-client-read-context-detach");

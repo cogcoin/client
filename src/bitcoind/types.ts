@@ -222,6 +222,7 @@ export interface ManagedBitcoindClient extends Client {
   syncToTip(): Promise<SyncResult>;
   startFollowingTip(): Promise<void>;
   getNodeStatus(): Promise<ManagedBitcoindStatus>;
+  detachToBackgroundFollow(): Promise<void>;
   close(): Promise<void>;
 }
 

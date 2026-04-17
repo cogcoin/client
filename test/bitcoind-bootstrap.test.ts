@@ -2223,6 +2223,26 @@ test("TTY renderer reprints a fresh follow frame after external writes instead o
 });
 
 test("status field text maps bootstrap phases to the requested copy", () => {
+  const paused = resolveStatusFieldTextForTesting(
+    createBootstrapProgressForTesting("paused", DEFAULT_SNAPSHOT_METADATA),
+    DEFAULT_SNAPSHOT_METADATA.height,
+    0,
+  );
+  const pausedMid = resolveStatusFieldTextForTesting(
+    createBootstrapProgressForTesting("paused", DEFAULT_SNAPSHOT_METADATA),
+    DEFAULT_SNAPSHOT_METADATA.height,
+    500,
+  );
+  const pausedFull = resolveStatusFieldTextForTesting(
+    createBootstrapProgressForTesting("paused", DEFAULT_SNAPSHOT_METADATA),
+    DEFAULT_SNAPSHOT_METADATA.height,
+    1_000,
+  );
+  const pausedOverflow = resolveStatusFieldTextForTesting(
+    createBootstrapProgressForTesting("paused", DEFAULT_SNAPSHOT_METADATA),
+    DEFAULT_SNAPSHOT_METADATA.height,
+    1_500,
+  );
   const download = resolveStatusFieldTextForTesting(
     createBootstrapProgressForTesting("snapshot_download", DEFAULT_SNAPSHOT_METADATA),
     DEFAULT_SNAPSHOT_METADATA.height,
@@ -2273,6 +2293,10 @@ test("status field text maps bootstrap phases to the requested copy", () => {
     1_500,
   );
 
+  assert.equal(paused, "Waiting to start managed sync   ");
+  assert.equal(pausedMid, "Waiting to start managed sync.  ");
+  assert.equal(pausedFull, "Waiting to start managed sync.. ");
+  assert.equal(pausedOverflow, "Waiting to start managed sync...");
   assert.equal(download, "Downloading snapshot to 910000   ");
   assert.equal(downloadMid, "Downloading snapshot to 910000.  ");
   assert.equal(downloadFull, "Downloading snapshot to 910000.. ");

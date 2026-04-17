@@ -76,6 +76,7 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
   #syncPromise: Promise<SyncResult> = Promise.resolve(createInitialSyncResult());
   #debounceTimer: ReturnType<typeof setTimeout> | null = null;
   #syncAbortControllers = new Set<AbortController>();
+  #backgroundFollowResumed = false;
 
   constructor(
     client: SyncRecoveryClient,
@@ -267,11 +268,19 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     await this.#client.close();
     await this.#resumeIndexerBackgroundFollow();
     await this.#indexerDaemon?.close();
+    this.#indexerDaemon = null;
   }
 
   async playSyncCompletionScene(): Promise<void> {
     this.#assertOpen();
     await this.#progress.playCompletionScene();
+  }
+
+  async detachToBackgroundFollow(): Promise<void> {
+    this.#assertOpen();
+    await this.#resumeIndexerBackgroundFollow();
+    await this.#indexerDaemon?.close();
+    this.#indexerDaemon = null;
   }
 
   async #setGetblockStatusMessage(
@@ -550,13 +559,19 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
   }
 
   async #resumeIndexerBackgroundFollow(): Promise<void> {
+    if (this.#backgroundFollowResumed) {
+      return;
+    }
+
     if (this.#indexerDaemon === null && this.#reattachIndexerDaemon === null) {
+      this.#backgroundFollowResumed = true;
       return;
     }
 
     if (this.#indexerDaemon !== null) {
       try {
         await this.#indexerDaemon.resumeBackgroundFollow();
+        this.#backgroundFollowResumed = true;
         return;
       } catch (error) {
         if (this.#reattachIndexerDaemon === null) {
@@ -574,5 +589,6 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     const replacementDaemon = await reattachIndexerDaemon();
     this.#indexerDaemon = replacementDaemon;
     await replacementDaemon?.resumeBackgroundFollow();
+    this.#backgroundFollowResumed = true;
   }
 }
