@@ -779,6 +779,9 @@ function getBalanceNextSteps(context: WalletReadContext & {
     }
 
     if (context.fundingSpendableSats !== null && context.fundingSpendableSats > BALANCE_MINING_THRESHOLD_SATS) {
+      if (context.mining?.provider.status === "missing") {
+        return ["Run `cogcoin mine setup` to configure your mining provider."];
+      }
       return ["Run `cogcoin mine` to start mining with your anchored root domain."];
     }
 

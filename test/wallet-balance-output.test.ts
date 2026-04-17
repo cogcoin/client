@@ -9,7 +9,11 @@ import { getFundingQuickstartGuidance } from "../src/cli/workflow-hints.js";
 import { createWalletReadModel } from "../src/wallet/read/project.js";
 import type { WalletSnapshotView } from "../src/wallet/read/index.js";
 import type { PendingMutationRecord, WalletStateV1 } from "../src/wallet/types.js";
-import { createWalletReadContext, createWalletState } from "./current-model-helpers.js";
+import {
+  createMiningControlPlaneView,
+  createWalletReadContext,
+  createWalletState,
+} from "./current-model-helpers.js";
 
 const BALANCE_ART_TEMPLATE = readFileSync(new URL("../src/art/balance.txt", import.meta.url), "utf8")
   .replaceAll("\r\n", "\n")
@@ -85,6 +89,7 @@ async function createReadyBalanceContext(options: {
     fundingSpendableSats: "fundingSpendableSats" in options
       ? (options.fundingSpendableSats ?? null)
       : 123_456_789n,
+    mining: createMiningControlPlaneView(),
   });
 }
 
@@ -383,6 +388,34 @@ test("balance ready-state text suggests mining when an anchored root domain exis
 
   assert.ok(
     formatBalanceReport(context).includes("Next step: Run `cogcoin mine` to start mining with your anchored root domain."),
+  );
+});
+
+test("balance ready-state text suggests mine setup when an anchored root domain exists, BTC is sufficient, and the mining provider is missing", async () => {
+  const context = await createReadyBalanceContext({
+    fundingSpendableSats: 10_001n,
+    stateOverrides: {
+      domains: [
+        createLocalDomain({
+          name: "mitcat",
+          canonicalChainStatus: "anchored",
+        }),
+      ],
+    },
+  });
+  context.mining = createMiningControlPlaneView({
+    provider: {
+      configured: false,
+      provider: null,
+      status: "missing",
+      message: "Built-in mining provider is not configured yet.",
+      modelOverride: null,
+      extraPromptConfigured: false,
+    },
+  });
+
+  assert.ok(
+    formatBalanceReport(context).includes("Next step: Run `cogcoin mine setup` to configure your mining provider."),
   );
 });
 
