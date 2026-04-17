@@ -1,7 +1,7 @@
 import { serializeBlockRecord } from "@cogcoin/indexer";
 import type { BitcoinBlock, BlockRecord } from "@cogcoin/indexer/types";
 
-import { bytesToHex } from "../bytes.js";
+import { internalBytesToDisplayHashHex, internalHashHexToDisplayHashHex } from "../bitcoind/hash-order.js";
 import type {
   ClientCheckpoint,
   ClientTip,
@@ -11,8 +11,8 @@ import type {
 export function createTip(block: BitcoinBlock, stateHashHex: string | null): ClientTip {
   return {
     height: block.height,
-    blockHashHex: bytesToHex(block.hash),
-    previousHashHex: block.previousHash === null ? null : bytesToHex(block.previousHash),
+    blockHashHex: internalBytesToDisplayHashHex(block.hash),
+    previousHashHex: block.previousHash === null ? null : internalBytesToDisplayHashHex(block.previousHash),
     stateHashHex,
   };
 }
@@ -20,8 +20,9 @@ export function createTip(block: BitcoinBlock, stateHashHex: string | null): Cli
 export function createStoredBlockRecord(blockRecord: BlockRecord, createdAt: number): StoredBlockRecord {
   return {
     height: blockRecord.height,
-    blockHashHex: blockRecord.hashHex,
-    previousHashHex: blockRecord.previousHashHex,
+    blockHashHex: internalHashHexToDisplayHashHex(blockRecord.hashHex),
+    previousHashHex:
+      blockRecord.previousHashHex === null ? null : internalHashHexToDisplayHashHex(blockRecord.previousHashHex),
     stateHashHex: blockRecord.stateHashHex,
     recordBytes: serializeBlockRecord(blockRecord),
     createdAt,

@@ -12,6 +12,7 @@ import type {
   IndexerState,
 } from "@cogcoin/indexer/types";
 
+import { internalHashHexToDisplayHashHex } from "../bitcoind/hash-order.js";
 import { createCheckpoint, createStoredBlockRecord, createTip } from "./persistence.js";
 import type {
   ApplyBlockResult,
@@ -125,7 +126,9 @@ export class DefaultClient implements Client {
 
         nextTip = {
           height: currentHeight,
-          blockHashHex: nextState.history.currentHashHex ?? currentRecord?.blockHashHex ?? "",
+          blockHashHex:
+            currentRecord?.blockHashHex
+            ?? (nextState.history.currentHashHex === null ? "" : internalHashHexToDisplayHashHex(nextState.history.currentHashHex)),
           previousHashHex: currentRecord?.previousHashHex ?? null,
           stateHashHex: nextState.history.stateHashByHeight.get(currentHeight) ?? null,
         };

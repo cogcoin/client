@@ -13,6 +13,10 @@ export function cloneBytes(bytes: Uint8Array): Uint8Array {
   return new Uint8Array(bytes);
 }
 
+export function reverseBytes(bytes: Uint8Array): Uint8Array {
+  return Uint8Array.from([...bytes].reverse());
+}
+
 export function encodeText(value: string): Uint8Array {
   return textEncoder.encode(value);
 }

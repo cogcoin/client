@@ -4,6 +4,7 @@ import test from "node:test";
 import { loadBundledGenesisParameters } from "@cogcoin/indexer";
 
 import type { BitcoinBlock, ClientCheckpoint, ClientTip, StoredBlockRecord } from "../src/types.js";
+import { internalBytesToDisplayHashHex } from "../src/bitcoind/hash-order.js";
 import { syncToTip } from "../src/bitcoind/client/sync-engine.js";
 import { createBlockRateTracker } from "../src/bitcoind/client/internal-types.js";
 import { createBootstrapProgressForTesting, DEFAULT_SNAPSHOT_METADATA } from "../src/bitcoind/testing.js";
@@ -185,8 +186,8 @@ function createSyncDependencies(options: {
         async applyBlock(block: BitcoinBlock) {
           tip = {
             height: block.height,
-            blockHashHex: Buffer.from(block.hash).toString("hex"),
-            previousHashHex: block.previousHash === null ? null : Buffer.from(block.previousHash).toString("hex"),
+            blockHashHex: internalBytesToDisplayHashHex(block.hash),
+            previousHashHex: block.previousHash === null ? null : internalBytesToDisplayHashHex(block.previousHash),
             stateHashHex: null,
           };
           appliedHeights.push(block.height);

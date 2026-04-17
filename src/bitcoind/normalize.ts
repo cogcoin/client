@@ -2,6 +2,7 @@ import type { BitcoinBlock, BitcoinInput, BitcoinOutput, BitcoinTransaction } fr
 
 import { hexToBytes } from "../bytes.js";
 import type { RpcBlock, RpcTransaction, RpcVin, RpcVout } from "./types.js";
+import { displayHashHexToInternalBytes } from "./hash-order.js";
 
 function btcValueToSats(value: number | string): bigint {
   const source = typeof value === "number"
@@ -54,8 +55,8 @@ function normalizeTransaction(transaction: RpcTransaction): BitcoinTransaction {
 export function normalizeRpcBlock(block: RpcBlock): BitcoinBlock {
   return {
     height: block.height,
-    hash: hexToBytes(block.hash),
-    previousHash: block.previousblockhash ? hexToBytes(block.previousblockhash) : null,
+    hash: displayHashHexToInternalBytes(block.hash),
+    previousHash: block.previousblockhash ? displayHashHexToInternalBytes(block.previousblockhash) : null,
     transactions: block.tx.map(normalizeTransaction),
   };
 }

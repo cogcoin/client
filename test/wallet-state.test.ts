@@ -16,7 +16,7 @@ import {
 } from "../src/wallet/state/provider.js";
 import { createWalletState } from "./current-model-helpers.js";
 
-test("wallet state storage round-trips schema 4 state", async () => {
+test("wallet state storage round-trips schema 5 state", async () => {
   const dir = await mkdtemp(join(tmpdir(), "cogcoin-state-"));
   const paths = {
     primaryPath: join(dir, "wallet-state.enc"),
@@ -32,7 +32,7 @@ test("wallet state storage round-trips schema 4 state", async () => {
   });
   const loaded = await loadWalletState(paths, { provider });
 
-  assert.equal(loaded.state.schemaVersion, 4);
+  assert.equal(loaded.state.schemaVersion, 5);
   assert.equal(loaded.state.managedCoreWallet.walletAddress, "bc1qfunding");
 });
 

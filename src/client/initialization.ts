@@ -10,7 +10,27 @@ import type {
 import type {
   ClientStoreAdapter,
   ClientTip,
+  WriteAppliedBlockEntry,
 } from "../types.js";
+import { internalHashHexToDisplayHashHex } from "../bitcoind/hash-order.js";
+
+function createResetEntry(): WriteAppliedBlockEntry {
+  return {
+    tip: null,
+    stateBytes: null,
+    blockRecord: null,
+    checkpoint: null,
+    deleteAboveHeight: -1,
+  };
+}
+
+function snapshotUsesLegacyHashOrder(state: IndexerState, snapshotHashHex: string): boolean {
+  const currentHashHex = state.history.currentHashHex;
+
+  return currentHashHex !== null
+    && currentHashHex === snapshotHashHex
+    && internalHashHexToDisplayHashHex(currentHashHex) !== snapshotHashHex;
+}
 
 export async function initializeState(
   store: ClientStoreAdapter,
@@ -31,6 +51,15 @@ export async function initializeState(
   }
 
   const state = deserializeIndexerState(snapshot.stateBytes);
+
+  if (snapshotUsesLegacyHashOrder(state, snapshot.blockHashHex)) {
+    await store.writeAppliedBlock(createResetEntry());
+
+    return {
+      state: createInitialState(genesisParameters),
+      tip: null,
+    };
+  }
 
   if (tip === null) {
     return {

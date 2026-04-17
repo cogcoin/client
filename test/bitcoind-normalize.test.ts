@@ -11,6 +11,7 @@ import {
   validateNodeConfigForTesting,
 } from "../src/bitcoind/testing.js";
 import { bytesToHex } from "../src/bytes.js";
+import { displayHashHexToInternalHex } from "../src/bitcoind/hash-order.js";
 import type { ClientStoreAdapter } from "../src/types.js";
 import type { RpcBlock } from "../src/bitcoind/types.js";
 
@@ -104,10 +105,10 @@ test("default managed bitcoind datadir matches Cogcoin app-data conventions", ()
   );
 });
 
-test("normalizeRpcBlock preserves hashes, prevout scripts, and satoshi values", () => {
+test("normalizeRpcBlock converts block hashes to internal order while preserving tx data", () => {
   const rpcBlock: RpcBlock = {
-    hash: "11".repeat(32),
-    previousblockhash: "22".repeat(32),
+    hash: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    previousblockhash: "f0e0d0c0b0a09080706050403020100f0e0d0c0b0a0908070605040302010000",
     height: 42,
     tx: [
       {
@@ -138,8 +139,11 @@ test("normalizeRpcBlock preserves hashes, prevout scripts, and satoshi values", 
   const normalized = normalizeRpcBlock(rpcBlock);
 
   assert.equal(normalized.height, 42);
-  assert.equal(bytesToHex(normalized.hash), rpcBlock.hash);
-  assert.equal(bytesToHex(normalized.previousHash ?? new Uint8Array()), rpcBlock.previousblockhash);
+  assert.equal(bytesToHex(normalized.hash), displayHashHexToInternalHex(rpcBlock.hash));
+  assert.equal(
+    bytesToHex(normalized.previousHash ?? new Uint8Array()),
+    displayHashHexToInternalHex(rpcBlock.previousblockhash ?? ""),
+  );
   assert.equal(bytesToHex(normalized.transactions[0]?.txid ?? new Uint8Array()), rpcBlock.tx[0]?.txid);
   assert.equal(
     bytesToHex(normalized.transactions[0]?.inputs[0]?.prevoutScriptPubKey ?? new Uint8Array()),

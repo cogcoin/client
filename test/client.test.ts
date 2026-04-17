@@ -5,12 +5,28 @@ import {
   applyBlockWithScoring,
   createInitialState,
   loadBundledGenesisParameters,
+  serializeBlockRecord,
   serializeIndexerState,
 } from "@cogcoin/indexer";
+import { displayHashHexToInternalBytes, internalBytesToDisplayHashHex } from "../src/bitcoind/hash-order.js";
+import { bytesToHex } from "../src/bytes.js";
 import { DefaultClient } from "../src/client/default-client.js";
 import { openClient } from "../src/index.js";
 import { openSqliteStore } from "../src/sqlite/index.js";
 import { createTempDatabasePath, loadHistoryVector, materializeBlock } from "./helpers.js";
+
+function createInternalOrderBlock(
+  height: number,
+  displayHashHex: string,
+  previousDisplayHashHex: string | null,
+) {
+  return {
+    height,
+    hash: displayHashHexToInternalBytes(displayHashHex),
+    previousHash: previousDisplayHashHex === null ? null : displayHashHexToInternalBytes(previousDisplayHashHex),
+    transactions: [],
+  };
+}
 
 test("client applies vector-shaped blocks, survives restart, and rewinds cleanly", async () => {
   const databasePath = createTempDatabasePath("cogcoin-client");
@@ -222,6 +238,114 @@ test("client resetToInitialState clears persisted snapshots and rewind data", as
   assert.equal(await store.loadLatestSnapshot(), null);
   assert.equal(await store.loadLatestCheckpointAtOrBelow(blocks.at(-1)?.height ?? 0), null);
   assert.equal(await store.loadBlockRecord(blocks[0]!.height), null);
+  assert.equal(
+    Buffer.from(serializeIndexerState(await client.getState())).toString("hex"),
+    Buffer.from(serializeIndexerState(createInitialState(genesis))).toString("hex"),
+  );
+
+  await client.close();
+});
+
+test("client stores display-order tip and rewind metadata while preserving internal-order kernel state", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-client-hash-order");
+  const genesis = await loadBundledGenesisParameters();
+  const parentDisplayHashHex = "00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f";
+  const firstDisplayHashHex = "0f1e2d3c4b5a69788796a5b4c3d2e1f000112233445566778899aabbccddeeff";
+  const secondDisplayHashHex = "fedcba98765432100123456789abcdef112233445566778899aabbccddeeff00";
+  const firstBlock = createInternalOrderBlock(genesis.genesisBlock - 1, firstDisplayHashHex, parentDisplayHashHex);
+  const secondBlock = createInternalOrderBlock(genesis.genesisBlock, secondDisplayHashHex, firstDisplayHashHex);
+
+  const store = await openSqliteStore({ filename: databasePath });
+  const client = await openClient({
+    store,
+    genesisParameters: genesis,
+    snapshotInterval: 1000,
+  });
+
+  await client.applyBlock(firstBlock);
+  await client.applyBlock(secondBlock);
+
+  const tip = await client.getTip();
+  const state = await client.getState();
+  const storedRecord = await store.loadBlockRecord(secondBlock.height);
+
+  assert.equal(tip?.blockHashHex, secondDisplayHashHex);
+  assert.equal(tip?.previousHashHex, firstDisplayHashHex);
+  assert.equal(state.history.currentHashHex, bytesToHex(secondBlock.hash));
+  assert.ok(storedRecord !== null);
+  assert.equal(storedRecord.blockHashHex, secondDisplayHashHex);
+  assert.equal(storedRecord.previousHashHex, firstDisplayHashHex);
+
+  await client.close();
+
+  const reopenedStore = await openSqliteStore({ filename: databasePath });
+  const reopenedClient = await openClient({
+    store: reopenedStore,
+    genesisParameters: genesis,
+    snapshotInterval: 1000,
+  });
+
+  const reopenedTip = await reopenedClient.getTip();
+  assert.equal(reopenedTip?.blockHashHex, secondDisplayHashHex);
+  assert.equal(reopenedTip?.previousHashHex, firstDisplayHashHex);
+
+  const rewoundTip = await reopenedClient.rewindToHeight(firstBlock.height);
+  assert.equal(rewoundTip?.blockHashHex, firstDisplayHashHex);
+  assert.equal(rewoundTip?.previousHashHex, parentDisplayHashHex);
+  assert.equal(internalBytesToDisplayHashHex(firstBlock.hash), rewoundTip?.blockHashHex);
+
+  await reopenedClient.close();
+});
+
+test("openClient resets legacy indexed state that stored internal-order hashes as client tip metadata", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-client-legacy-reset");
+  const genesis = await loadBundledGenesisParameters();
+  const legacyDisplayHashHex = "102132435465768798a9bacbdcedfe0f00112233445566778899aabbccddeeff";
+  const legacyPreviousDisplayHashHex = "ffeeddccbbaa998877665544332211000f1e2d3c4b5a69788796a5b4c3d2e1f0";
+  const legacyBlock = createInternalOrderBlock(
+    genesis.genesisBlock - 1,
+    legacyDisplayHashHex,
+    legacyPreviousDisplayHashHex,
+  );
+  const applied = await applyBlockWithScoring(createInitialState(genesis), legacyBlock, genesis);
+  const stateBytes = serializeIndexerState(applied.state);
+  const store = await openSqliteStore({ filename: databasePath });
+  const createdAt = Date.now();
+
+  await store.writeAppliedBlock({
+    tip: {
+      height: legacyBlock.height,
+      blockHashHex: bytesToHex(legacyBlock.hash),
+      previousHashHex: legacyBlock.previousHash === null ? null : bytesToHex(legacyBlock.previousHash),
+      stateHashHex: applied.stateHashHex,
+    },
+    stateBytes,
+    blockRecord: {
+      height: applied.blockRecord.height,
+      blockHashHex: applied.blockRecord.hashHex,
+      previousHashHex: applied.blockRecord.previousHashHex,
+      stateHashHex: applied.blockRecord.stateHashHex,
+      recordBytes: serializeBlockRecord(applied.blockRecord),
+      createdAt,
+    },
+    checkpoint: {
+      height: legacyBlock.height,
+      blockHashHex: bytesToHex(legacyBlock.hash),
+      stateBytes,
+      createdAt,
+    },
+  });
+
+  const client = await openClient({
+    store,
+    genesisParameters: genesis,
+    snapshotInterval: 1000,
+  });
+
+  assert.equal(await client.getTip(), null);
+  assert.equal(await store.loadLatestSnapshot(), null);
+  assert.equal(await store.loadLatestCheckpointAtOrBelow(legacyBlock.height), null);
+  assert.equal(await store.loadBlockRecord(legacyBlock.height), null);
   assert.equal(
     Buffer.from(serializeIndexerState(await client.getState())).toString("hex"),
     Buffer.from(serializeIndexerState(createInitialState(genesis))).toString("hex"),
