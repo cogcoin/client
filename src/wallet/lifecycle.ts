@@ -21,7 +21,6 @@ import type {
   ManagedCoreWalletReplicaStatus,
 } from "../bitcoind/types.js";
 import { openSqliteStore } from "../sqlite/index.js";
-import { readPortableWalletArchive, writePortableWalletArchive } from "./archive.js";
 import {
   normalizeWalletStateRecord,
   persistWalletCoinControlStateIfNeeded,
@@ -54,16 +53,10 @@ import { normalizeMiningStateRecord } from "./mining/state.js";
 import type { MiningRuntimeStatusV1 } from "./mining/types.js";
 import { renderWalletMnemonicRevealArt } from "./mnemonic-art.js";
 import {
-  clearWalletExplicitLock,
-  loadWalletExplicitLock,
-  saveWalletExplicitLock,
-} from "./state/explicit-lock.js";
-import {
   clearWalletPendingInitializationState,
   loadWalletPendingInitializationStateOrNull,
   saveWalletPendingInitializationState,
 } from "./state/pending-init.js";
-import { clearUnlockSession, loadUnlockSession, saveUnlockSession } from "./state/session.js";
 import {
   addImportedWalletSeedRecord,
   assertValidImportedWalletSeedName,
@@ -80,21 +73,19 @@ import {
   type WalletSecretProvider,
 } from "./state/provider.js";
 import {
-  LEGACY_WALLET_STATE_PASSPHRASE_ERROR,
+  clearLegacyWalletLockArtifacts,
+  withUnlockedManagedCoreWallet,
+} from "./managed-core-wallet.js";
+import {
   extractWalletRootIdHintFromWalletStateEnvelope,
   loadRawWalletStateEnvelope,
   loadWalletState,
   saveWalletState,
 } from "./state/storage.js";
 import type {
-  PortableWalletArchivePayloadV1,
-  UnlockSessionStateV1,
-  WalletExplicitLockStateV1,
   WalletPendingInitializationStateV1,
   WalletStateV1,
 } from "./types.js";
-
-export const DEFAULT_UNLOCK_DURATION_MS = 15 * 60 * 1000;
 
 export interface WalletPrompter {
   readonly isInteractive: boolean;
@@ -107,32 +98,6 @@ export interface WalletPrompter {
 export interface WalletInitializationResult {
   walletRootId: string;
   fundingAddress: string;
-  unlockUntilUnixMs: number;
-  state: WalletStateV1;
-}
-
-export interface WalletUnlockResult {
-  unlockUntilUnixMs: number;
-  state: WalletStateV1;
-  source: "primary" | "backup";
-}
-
-export interface LoadedUnlockedWalletState {
-  session: UnlockSessionStateV1;
-  state: WalletStateV1;
-  source: "primary" | "backup";
-}
-
-export interface WalletExportResult {
-  archivePath: string;
-  walletRootId: string;
-}
-
-export interface WalletImportResult {
-  archivePath: string;
-  walletRootId: string;
-  fundingAddress: string;
-  unlockUntilUnixMs: number;
   state: WalletStateV1;
 }
 
@@ -140,7 +105,6 @@ export interface WalletRestoreResult {
   seedName?: string | null;
   walletRootId: string;
   fundingAddress: string;
-  unlockUntilUnixMs: number;
   state: WalletStateV1;
   warnings?: string[];
 }
@@ -393,37 +357,8 @@ function createInitialWalletState(options: {
   };
 }
 
-function createUnlockSession(
-  state: WalletStateV1,
-  unlockUntilUnixMs: number,
-  secretKeyId: string,
-  nowUnixMs: number,
-): UnlockSessionStateV1 {
-  return {
-    schemaVersion: 1,
-    walletRootId: state.walletRootId,
-    sessionId: randomBytes(16).toString("hex"),
-    createdAtUnixMs: nowUnixMs,
-    unlockUntilUnixMs,
-    sourceStateRevision: state.stateRevision,
-    wrappedSessionKeyMaterial: secretKeyId,
-  };
-}
-
-function createWalletExplicitLock(
-  walletRootId: string,
-  nowUnixMs: number,
-): WalletExplicitLockStateV1 {
-  return {
-    schemaVersion: 1,
-    walletRootId,
-    lockedAtUnixMs: nowUnixMs,
-  };
-}
-
-async function normalizeUnlockedWalletStateIfNeeded(options: {
+async function normalizeLoadedWalletStateIfNeeded(options: {
   provider: WalletSecretProvider;
-  session: UnlockSessionStateV1;
   state: WalletStateV1;
   source: "primary" | "backup";
   nowUnixMs: number;
@@ -431,9 +366,8 @@ async function normalizeUnlockedWalletStateIfNeeded(options: {
   dataDir?: string;
   attachService?: typeof attachOrStartManagedBitcoindService;
   rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
-}): Promise<LoadedUnlockedWalletState> {
+}): Promise<{ state: WalletStateV1; source: "primary" | "backup" }> {
   let state = options.state;
-  let session = options.session;
   let source = options.source;
 
   if (options.dataDir !== undefined) {
@@ -451,14 +385,12 @@ async function normalizeUnlockedWalletStateIfNeeded(options: {
           provider: options.provider,
           secretReference: createWalletSecretReference(state.walletRootId),
         },
-        session,
         paths: options.paths,
         nowUnixMs: options.nowUnixMs,
         replacePrimary: options.source === "backup",
         rpc: (options.rpcFactory ?? createRpcClient)(node.rpc),
       });
       state = normalized.state;
-      session = normalized.session ?? session;
       source = normalized.changed ? "primary" : options.source;
       const coinControl = await persistWalletCoinControlStateIfNeeded({
         state,
@@ -466,14 +398,12 @@ async function normalizeUnlockedWalletStateIfNeeded(options: {
           provider: options.provider,
           secretReference: createWalletSecretReference(state.walletRootId),
         },
-        session,
         paths: options.paths,
         nowUnixMs: options.nowUnixMs,
         replacePrimary: source === "backup",
         rpc: createRpcClient(node.rpc),
       });
       state = coinControl.state;
-      session = coinControl.session ?? session;
       source = coinControl.changed ? "primary" : source;
     } finally {
       await node.stop?.().catch(() => undefined);
@@ -481,112 +411,12 @@ async function normalizeUnlockedWalletStateIfNeeded(options: {
   }
 
   return {
-    session,
     state: normalizeWalletStateRecord({
       ...state,
       miningState: normalizeMiningStateRecord(state.miningState),
     }),
     source,
   };
-}
-
-function createPortableWalletArchivePayload(
-  state: WalletStateV1,
-  exportedAtUnixMs: number,
-): PortableWalletArchivePayloadV1 {
-  return {
-    schemaVersion: 4,
-    exportedAtUnixMs,
-    walletRootId: state.walletRootId,
-    network: state.network,
-    anchorValueSats: state.anchorValueSats,
-    localScriptPubKeyHexes: state.localScriptPubKeyHexes,
-    mnemonic: {
-      phrase: state.mnemonic.phrase,
-      language: state.mnemonic.language,
-    },
-    expected: {
-      masterFingerprintHex: state.keys.masterFingerprintHex,
-      accountPath: state.keys.accountPath,
-      accountXpub: state.keys.accountXpub,
-      publicExternalDescriptor: stripDescriptorChecksum(state.descriptor.publicExternal),
-      descriptorChecksum: state.descriptor.checksum,
-      rangeEnd: state.descriptor.rangeEnd,
-      safetyMargin: state.descriptor.safetyMargin,
-      walletAddress: state.funding.address,
-      walletScriptPubKeyHex: state.funding.scriptPubKeyHex,
-      walletBirthTime: state.walletBirthTime,
-    },
-    domains: state.domains,
-    miningState: normalizeMiningStateRecord(state.miningState),
-  };
-}
-
-function createWalletStateFromPortableArchive(options: {
-  payload: PortableWalletArchivePayloadV1;
-  nowUnixMs: number;
-  internalCoreWalletPassphrase: string;
-}): WalletStateV1 {
-  const material = deriveWalletMaterialFromMnemonic(options.payload.mnemonic.phrase);
-
-  if (
-    material.keys.masterFingerprintHex !== options.payload.expected.masterFingerprintHex
-    || material.keys.accountPath !== options.payload.expected.accountPath
-    || material.keys.accountXpub !== options.payload.expected.accountXpub
-    || stripDescriptorChecksum(material.descriptor.publicExternal) !== stripDescriptorChecksum(options.payload.expected.publicExternalDescriptor)
-    || material.funding.address !== options.payload.expected.walletAddress
-    || material.funding.scriptPubKeyHex !== options.payload.expected.walletScriptPubKeyHex
-  ) {
-    throw new Error("wallet_import_material_mismatch");
-  }
-
-  const baseState = createInitialWalletState({
-    walletRootId: options.payload.walletRootId,
-    nowUnixMs: options.nowUnixMs,
-    material,
-    internalCoreWalletPassphrase: options.internalCoreWalletPassphrase,
-  });
-
-  return {
-    ...baseState,
-    walletRootId: options.payload.walletRootId,
-    network: options.payload.network,
-    anchorValueSats: options.payload.anchorValueSats,
-    localScriptPubKeyHexes: options.payload.localScriptPubKeyHexes ?? [material.funding.scriptPubKeyHex],
-    walletBirthTime: options.payload.expected.walletBirthTime,
-    descriptor: {
-      ...baseState.descriptor,
-      checksum: options.payload.expected.descriptorChecksum,
-      rangeEnd: options.payload.expected.rangeEnd,
-      safetyMargin: options.payload.expected.safetyMargin,
-    },
-    domains: options.payload.domains,
-    miningState: normalizeMiningStateRecord(options.payload.miningState),
-    pendingMutations: [],
-  };
-}
-
-function isExportBlockedByLocalState(state: WalletStateV1): string | null {
-  if (
-    state.miningState.state === "repair-required"
-    || state.miningState.currentPublishState === "broadcasting"
-    || state.miningState.currentPublishState === "broadcast-unknown"
-    || state.miningState.currentPublishState === "in-mempool"
-  ) {
-    return "wallet_export_requires_quiescent_local_state";
-  }
-
-  if ((state.pendingMutations ?? []).some((mutation) =>
-    mutation.status === "draft"
-    || mutation.status === "broadcasting"
-    || mutation.status === "broadcast-unknown"
-    || mutation.status === "live"
-    || mutation.status === "repair-required"
-  )) {
-    return "wallet_export_requires_quiescent_local_state";
-  }
-
-  return null;
 }
 
 async function promptRequiredValue(
@@ -611,20 +441,6 @@ async function promptHiddenValue(
     : await prompter.prompt(message);
 
   return value.trim();
-}
-
-async function promptForArchivePassphrase(
-  prompter: WalletPrompter,
-  promptPrefix: string,
-): Promise<string> {
-  const first = await promptRequiredValue(prompter, `${promptPrefix} passphrase: `);
-  const second = await promptRequiredValue(prompter, `Confirm ${promptPrefix.toLowerCase()} passphrase: `);
-
-  if (first !== second) {
-    throw new Error("wallet_archive_passphrase_mismatch");
-  }
-
-  return first;
 }
 
 async function promptForRestoreMnemonic(
@@ -676,21 +492,6 @@ async function confirmRestoreReplacement(
   }
 }
 
-async function confirmOverwriteIfNeeded(
-  prompter: WalletPrompter,
-  path: string,
-): Promise<void> {
-  if (!await pathExists(path)) {
-    return;
-  }
-
-  const answer = (await prompter.prompt(`Archive ${path} already exists. Overwrite it? Type yes to continue: `)).trim().toLowerCase();
-
-  if (answer !== "yes") {
-    throw new Error("wallet_export_overwrite_declined");
-  }
-}
-
 async function confirmYesNo(
   prompter: WalletPrompter,
   message: string,
@@ -699,31 +500,6 @@ async function confirmYesNo(
 
   if (answer !== "yes") {
     throw new Error("wallet_delete_confirmation_required");
-  }
-}
-
-async function readManagedSnapshotTip(options: {
-  dataDir: string;
-  databasePath: string;
-  walletRootId: string;
-}): Promise<{
-  nodeBestHeight: number | null;
-  snapshotHeight: number | null;
-}> {
-  const daemon = await attachOrStartIndexerDaemon({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
-    walletRootId: options.walletRootId,
-  });
-
-  try {
-    const lease = await readSnapshotWithRetry(daemon, options.walletRootId);
-    return {
-      nodeBestHeight: lease.status.coreBestHeight,
-      snapshotHeight: lease.payload.tip?.height ?? null,
-    };
-  } finally {
-    await daemon.close().catch(() => undefined);
   }
 }
 
@@ -1192,15 +968,11 @@ async function canResumeBackgroundMiningAfterRepair(options: {
   provider: WalletSecretProvider;
   paths: WalletRuntimePaths;
   repairedState: WalletStateV1;
-  nowUnixMs: number;
   bitcoindPostRepairHealth: WalletRepairResult["bitcoindPostRepairHealth"];
   indexerPostRepairHealth: WalletRepairResult["indexerPostRepairHealth"];
-  unlockUntilUnixMs: number | null;
 }): Promise<boolean> {
   if (
-    options.unlockUntilUnixMs === null
-    || options.unlockUntilUnixMs <= options.nowUnixMs
-    || options.bitcoindPostRepairHealth !== "ready"
+    options.bitcoindPostRepairHealth !== "ready"
     || options.indexerPostRepairHealth !== "synced"
     || normalizeMiningStateRecord(options.repairedState.miningState).state === "repair-required"
   ) {
@@ -1216,36 +988,6 @@ async function canResumeBackgroundMiningAfterRepair(options: {
   } catch {
     return false;
   }
-}
-
-export function parseUnlockDurationToMs(raw: string | null | undefined): number {
-  if (raw == null || raw.trim() === "") {
-    return DEFAULT_UNLOCK_DURATION_MS;
-  }
-
-  const match = /^([1-9][0-9]*)([smhd])$/i.exec(raw.trim());
-
-  if (match == null) {
-    throw new Error("wallet_unlock_duration_invalid");
-  }
-
-  const value = Number.parseInt(match[1]!, 10);
-  const unit = match[2]!.toLowerCase();
-  const multiplier = unit === "s"
-    ? 1_000
-    : unit === "m"
-      ? 60_000
-      : unit === "h"
-        ? 3_600_000
-        : 86_400_000;
-
-  const duration = value * multiplier;
-
-  if (!Number.isFinite(duration) || duration <= 0) {
-    throw new Error("wallet_unlock_duration_invalid");
-  }
-
-  return duration;
 }
 
 async function ensureWalletNotInitialized(
@@ -1321,22 +1063,24 @@ async function importDescriptorIntoManagedCoreWallet(
   const normalizedDescriptors = await resolveNormalizedWalletDescriptorState(state, rpc);
   const walletName = sanitizeWalletName(state.walletRootId);
 
-  await rpc.walletPassphrase(walletName, state.managedCoreWallet.internalPassphrase, 10);
-  try {
-    const importResults = await rpc.importDescriptors(walletName, [{
-      desc: normalizedDescriptors.privateExternal,
-      timestamp: state.walletBirthTime,
-      active: false,
-      internal: false,
-      range: [0, state.descriptor.rangeEnd],
-    }]);
+  await withUnlockedManagedCoreWallet({
+    rpc,
+    walletName,
+    internalPassphrase: state.managedCoreWallet.internalPassphrase,
+    run: async () => {
+      const importResults = await rpc.importDescriptors(walletName, [{
+        desc: normalizedDescriptors.privateExternal,
+        timestamp: state.walletBirthTime,
+        active: false,
+        internal: false,
+        range: [0, state.descriptor.rangeEnd],
+      }]);
 
-    if (!importResults.every((result) => result.success)) {
-      throw new Error(`wallet_descriptor_import_failed_${JSON.stringify(importResults)}`);
-    }
-  } finally {
-    await rpc.walletLock(walletName).catch(() => undefined);
-  }
+      if (!importResults.every((result) => result.success)) {
+        throw new Error(`wallet_descriptor_import_failed_${JSON.stringify(importResults)}`);
+      }
+    },
+  });
 
   const derivedFunding = await rpc.deriveAddresses(normalizedDescriptors.publicExternal, [0, 0]);
 
@@ -1491,159 +1235,33 @@ export async function verifyManagedCoreWalletReplica(
   }
 }
 
-export async function loadUnlockedWalletState(options: {
+async function loadWalletStateForAccess(options: {
   provider?: WalletSecretProvider;
   nowUnixMs?: number;
   paths?: WalletRuntimePaths;
   dataDir?: string;
   attachService?: typeof attachOrStartManagedBitcoindService;
   rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
-} = {}): Promise<LoadedUnlockedWalletState | null> {
+} = {}): Promise<{ state: WalletStateV1; source: "primary" | "backup" }> {
   const provider = options.provider ?? createDefaultWalletSecretProvider();
   const nowUnixMs = options.nowUnixMs ?? Date.now();
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-
-  try {
-    let session = await loadUnlockSession(paths.walletUnlockSessionPath, {
-      provider,
-    });
-
-    if (session.unlockUntilUnixMs <= nowUnixMs) {
-      await clearUnlockSession(paths.walletUnlockSessionPath);
-      return null;
-    }
-
-    const loaded = await loadWalletState({
-      primaryPath: paths.walletStatePath,
-      backupPath: paths.walletStateBackupPath,
-    }, {
-      provider,
-    });
-
-    if (
-      loaded.state.walletRootId !== session.walletRootId
-      || loaded.state.stateRevision !== session.sourceStateRevision
-    ) {
-      await clearUnlockSession(paths.walletUnlockSessionPath);
-      return null;
-    }
-
-    return await normalizeUnlockedWalletStateIfNeeded({
-      provider,
-      session,
-      state: loaded.state,
-      source: loaded.source,
-      nowUnixMs,
-      paths,
-      dataDir: options.dataDir,
-      attachService: options.attachService,
-      rpcFactory: options.rpcFactory,
-    });
-  } catch {
-    return null;
-  }
-}
-
-export async function loadOrAutoUnlockWalletState(options: {
-  provider?: WalletSecretProvider;
-  nowUnixMs?: number;
-  unlockDurationMs?: number;
-  paths?: WalletRuntimePaths;
-  dataDir?: string;
-  controlLockHeld?: boolean;
-  attachService?: typeof attachOrStartManagedBitcoindService;
-  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
-} = {}): Promise<LoadedUnlockedWalletState | null> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const unlockDurationMs = options.unlockDurationMs ?? DEFAULT_UNLOCK_DURATION_MS;
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-
-  const loadExisting = () => loadUnlockedWalletState({
+  const loaded = await loadWalletState({
+    primaryPath: paths.walletStatePath,
+    backupPath: paths.walletStateBackupPath,
+  }, {
     provider,
+  });
+  return normalizeLoadedWalletStateIfNeeded({
+    provider,
+    state: loaded.state,
+    source: loaded.source,
     nowUnixMs,
     paths,
     dataDir: options.dataDir,
     attachService: options.attachService,
     rpcFactory: options.rpcFactory,
   });
-
-  const existing = await loadExisting();
-
-  if (existing !== null) {
-    return existing;
-  }
-
-  const loadAndMaybeAutoUnlock = async (): Promise<LoadedUnlockedWalletState | null> => {
-    const reloaded = await loadExisting();
-
-    if (reloaded !== null) {
-      return reloaded;
-    }
-
-    let loaded;
-
-    try {
-      loaded = await loadWalletState({
-        primaryPath: paths.walletStatePath,
-        backupPath: paths.walletStateBackupPath,
-      }, {
-        provider,
-      });
-    } catch {
-      return null;
-    }
-
-    const explicitLock = await loadWalletExplicitLock(paths.walletExplicitLockPath);
-
-    if (explicitLock !== null) {
-      if (explicitLock.walletRootId === loaded.state.walletRootId) {
-        await clearUnlockSession(paths.walletUnlockSessionPath);
-        return null;
-      }
-
-      await clearWalletExplicitLock(paths.walletExplicitLockPath);
-    }
-
-    const secretReference = createWalletSecretReference(loaded.state.walletRootId);
-    const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
-    const session = createUnlockSession(loaded.state, unlockUntilUnixMs, secretReference.keyId, nowUnixMs);
-    await saveUnlockSession(
-      paths.walletUnlockSessionPath,
-      session,
-      {
-        provider,
-        secretReference,
-      },
-    );
-
-    return await normalizeUnlockedWalletStateIfNeeded({
-      provider,
-      session,
-      state: loaded.state,
-      source: loaded.source,
-      nowUnixMs,
-      paths,
-      dataDir: options.dataDir,
-      attachService: options.attachService,
-      rpcFactory: options.rpcFactory,
-    });
-  };
-
-  if (options.controlLockHeld) {
-    return await loadAndMaybeAutoUnlock();
-  }
-
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: "wallet-auto-unlock",
-    walletRootId: null,
-  });
-
-  try {
-    return await loadAndMaybeAutoUnlock();
-  } finally {
-    await controlLock.release();
-  }
 }
 
 export async function initializeWallet(options: {
@@ -1651,7 +1269,6 @@ export async function initializeWallet(options: {
   provider?: WalletSecretProvider;
   prompter: WalletPrompter;
   nowUnixMs?: number;
-  unlockDurationMs?: number;
   paths?: WalletRuntimePaths;
   attachService?: typeof attachOrStartManagedBitcoindService;
   rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
@@ -1662,7 +1279,6 @@ export async function initializeWallet(options: {
 
   const provider = options.provider ?? createDefaultWalletSecretProvider();
   const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const unlockDurationMs = options.unlockDurationMs ?? DEFAULT_UNLOCK_DURATION_MS;
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
 
   if (paths.selectedSeedName !== "main") {
@@ -1738,16 +1354,7 @@ export async function initializeWallet(options: {
         options.rpcFactory,
       );
     });
-    const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
-    await clearWalletExplicitLock(paths.walletExplicitLockPath);
-    await saveUnlockSession(
-      paths.walletUnlockSessionPath,
-      createUnlockSession(verifiedState, unlockUntilUnixMs, secretReference.keyId, nowUnixMs),
-      {
-        provider,
-        secretReference,
-      },
-    );
+    await clearLegacyWalletLockArtifacts(paths.walletRuntimeRoot);
     await clearPendingInitialization(paths, provider);
     await ensureMainWalletSeedIndexRecord({
       paths: resolveMainWalletPaths(paths),
@@ -1758,7 +1365,6 @@ export async function initializeWallet(options: {
     return {
       walletRootId,
       fundingAddress: verifiedState.funding.address,
-      unlockUntilUnixMs,
       state: verifiedState,
     };
   } finally {
@@ -1794,35 +1400,17 @@ export async function showWalletMnemonic(options: {
       throw new Error("wallet_uninitialized");
     }
 
-    const unlocked = await loadOrAutoUnlockWalletState({
+    const loaded = await loadWalletStateForAccess({
       provider,
       nowUnixMs,
       paths,
-      controlLockHeld: true,
-    });
-
-    if (unlocked === null) {
-      try {
-        await loadWalletState({
-          primaryPath: paths.walletStatePath,
-          backupPath: paths.walletStateBackupPath,
-        }, {
-          provider,
-        });
-      } catch (error) {
-        if (error instanceof Error && error.message === LEGACY_WALLET_STATE_PASSPHRASE_ERROR) {
-          throw error;
-        }
-
-        if (isWalletSecretAccessError(error)) {
-          throw new Error("wallet_locked");
-        }
-
-        throw new Error("local-state-corrupt");
+    }).catch((error) => {
+      if (isWalletSecretAccessError(error)) {
+        throw new Error("wallet_secret_provider_unavailable");
       }
 
-      throw new Error("wallet_locked");
-    }
+      throw new Error("local-state-corrupt");
+    });
 
     await confirmTypedAcknowledgement(
       options.prompter,
@@ -1832,7 +1420,7 @@ export async function showWalletMnemonic(options: {
     );
 
     let mnemonicRevealed = false;
-    writeMnemonicReveal(options.prompter, unlocked.state.mnemonic.phrase, [
+    writeMnemonicReveal(options.prompter, loaded.state.mnemonic.phrase, [
       "Cogcoin Wallet Recovery Phrase",
       "This 24-word recovery phrase controls the wallet.",
       "",
@@ -1853,331 +1441,11 @@ export async function showWalletMnemonic(options: {
   }
 }
 
-export async function unlockWallet(options: {
-  provider?: WalletSecretProvider;
-  nowUnixMs?: number;
-  unlockDurationMs?: number;
-  paths?: WalletRuntimePaths;
-} = {}): Promise<WalletUnlockResult> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const unlockDurationMs = options.unlockDurationMs ?? DEFAULT_UNLOCK_DURATION_MS;
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: "wallet-unlock",
-    walletRootId: null,
-  });
-
-  try {
-    const loaded = await loadWalletState({
-      primaryPath: paths.walletStatePath,
-      backupPath: paths.walletStateBackupPath,
-    }, {
-      provider,
-    });
-    const secretReference = createWalletSecretReference(loaded.state.walletRootId);
-    const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
-    await clearWalletExplicitLock(paths.walletExplicitLockPath);
-    await saveUnlockSession(
-      paths.walletUnlockSessionPath,
-      createUnlockSession(loaded.state, unlockUntilUnixMs, secretReference.keyId, nowUnixMs),
-      {
-        provider,
-        secretReference,
-      },
-    );
-
-    return {
-      unlockUntilUnixMs,
-      state: loaded.state,
-      source: loaded.source,
-    };
-  } finally {
-    await controlLock.release();
-  }
-}
-
-export async function lockWallet(options: {
-  dataDir: string;
-  provider?: WalletSecretProvider;
-  nowUnixMs?: number;
-  paths?: WalletRuntimePaths;
-  attachService?: typeof attachOrStartManagedBitcoindService;
-  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
-}): Promise<{ walletRootId: string | null; coreLocked: boolean }> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: "wallet-lock",
-    walletRootId: null,
-  });
-
-  try {
-    let walletRootId: string | null = null;
-    let coreLocked = false;
-
-    try {
-      const loaded = await loadWalletState({
-        primaryPath: paths.walletStatePath,
-        backupPath: paths.walletStateBackupPath,
-      }, {
-        provider,
-      });
-      walletRootId = loaded.state.walletRootId;
-
-      try {
-        const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-          dataDir: options.dataDir,
-          chain: "main",
-          startHeight: 0,
-          walletRootId,
-        });
-        const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-        await rpc.walletLock(loaded.state.managedCoreWallet.walletName).catch(() => undefined);
-        coreLocked = true;
-      } catch {
-        coreLocked = false;
-      }
-    } catch {
-      walletRootId = null;
-    }
-
-    await clearUnlockSession(paths.walletUnlockSessionPath);
-
-    if (walletRootId !== null) {
-      await saveWalletExplicitLock(
-        paths.walletExplicitLockPath,
-        createWalletExplicitLock(walletRootId, nowUnixMs),
-      );
-    }
-
-    return {
-      walletRootId,
-      coreLocked,
-    };
-  } finally {
-    await controlLock.release();
-  }
-}
-
-export async function exportWallet(options: {
-  archivePath: string;
-  dataDir: string;
-  databasePath: string;
-  provider?: WalletSecretProvider;
-  prompter: WalletPrompter;
-  nowUnixMs?: number;
-  paths?: WalletRuntimePaths;
-  attachService?: typeof attachOrStartManagedBitcoindService;
-  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
-  readSnapshotTip?: typeof readManagedSnapshotTip;
-}): Promise<WalletExportResult> {
-  if (!options.prompter.isInteractive) {
-    throw new Error("wallet_export_requires_tty");
-  }
-
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: "wallet-export",
-    walletRootId: null,
-  });
-
-  try {
-    const unlocked = await loadOrAutoUnlockWalletState({
-      provider,
-      nowUnixMs,
-      paths,
-      controlLockHeld: true,
-    });
-
-    if (unlocked === null) {
-      throw new Error("wallet_locked");
-    }
-
-    const blockedReason = isExportBlockedByLocalState(unlocked.state);
-    if (blockedReason !== null) {
-      throw new Error(blockedReason);
-    }
-
-    const replica = await verifyManagedCoreWalletReplica(unlocked.state, options.dataDir, {
-      attachService: options.attachService,
-      rpcFactory: options.rpcFactory,
-    });
-    if (replica.proofStatus !== "ready") {
-      throw new Error("wallet_export_core_replica_not_ready");
-    }
-
-    const tips = await (options.readSnapshotTip ?? readManagedSnapshotTip)({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      walletRootId: unlocked.state.walletRootId,
-    });
-
-    if (tips.snapshotHeight === null || tips.nodeBestHeight === null || tips.snapshotHeight !== tips.nodeBestHeight) {
-      throw new Error("wallet_export_tip_mismatch");
-    }
-
-    await confirmOverwriteIfNeeded(options.prompter, options.archivePath);
-    const passphrase = await promptForArchivePassphrase(options.prompter, "Archive");
-
-    await writePortableWalletArchive(
-      options.archivePath,
-      createPortableWalletArchivePayload(unlocked.state, nowUnixMs),
-      passphrase,
-    );
-
-    return {
-      archivePath: options.archivePath,
-      walletRootId: unlocked.state.walletRootId,
-    };
-  } finally {
-    await controlLock.release();
-  }
-}
-
-export async function importWallet(options: {
-  archivePath: string;
-  dataDir: string;
-  databasePath: string;
-  provider?: WalletSecretProvider;
-  prompter: WalletPrompter;
-  nowUnixMs?: number;
-  unlockDurationMs?: number;
-  paths?: WalletRuntimePaths;
-  attachService?: typeof attachOrStartManagedBitcoindService;
-  attachIndexerDaemon?: typeof attachOrStartIndexerDaemon;
-  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
-}): Promise<WalletImportResult> {
-  if (!options.prompter.isInteractive) {
-    throw new Error("wallet_import_requires_tty");
-  }
-
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const unlockDurationMs = options.unlockDurationMs ?? DEFAULT_UNLOCK_DURATION_MS;
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-
-  if (paths.selectedSeedName !== "main") {
-    throw new Error("wallet_import_seed_not_supported");
-  }
-
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: "wallet-import",
-    walletRootId: null,
-  });
-
-  try {
-    const archivePassphrase = await promptRequiredValue(options.prompter, "Archive passphrase: ");
-    const payload = await readPortableWalletArchive(options.archivePath, archivePassphrase);
-    const replacementStateExists = await pathExists(paths.walletStatePath) || await pathExists(paths.walletStateBackupPath);
-    const importedWalletDir = join(options.dataDir, "wallets", sanitizeWalletName(payload.walletRootId));
-    const replacementCoreWalletExists = await pathExists(importedWalletDir);
-    await clearPendingInitialization(paths, provider);
-
-    if (replacementStateExists || replacementCoreWalletExists) {
-      await confirmTypedAcknowledgement(
-        options.prompter,
-        "IMPORT",
-        "Type IMPORT to replace the existing local wallet state and managed Core wallet replica: ",
-      );
-    }
-
-    let previousWalletRootId: string | null = null;
-    try {
-      const loaded = await loadWalletState({
-        primaryPath: paths.walletStatePath,
-        backupPath: paths.walletStateBackupPath,
-      }, {
-        provider,
-      });
-      previousWalletRootId = loaded.state.walletRootId;
-    } catch {
-      previousWalletRootId = null;
-    }
-
-    const secretReference = createWalletSecretReference(payload.walletRootId);
-    const replacementSecret = randomBytes(32);
-    await provider.storeSecret(secretReference.keyId, replacementSecret);
-
-    const initialState = createWalletStateFromPortableArchive({
-      payload,
-      nowUnixMs,
-      internalCoreWalletPassphrase: createInternalCoreWalletPassphrase(),
-    });
-
-    await clearUnlockSession(paths.walletUnlockSessionPath);
-    await clearWalletExplicitLock(paths.walletExplicitLockPath);
-    await saveWalletState(
-      {
-        primaryPath: paths.walletStatePath,
-        backupPath: paths.walletStateBackupPath,
-      },
-      initialState,
-      {
-        provider,
-        secretReference,
-      },
-    );
-
-    const importedState = await recreateManagedCoreWalletReplica(
-      initialState,
-      provider,
-      paths,
-      options.dataDir,
-      nowUnixMs,
-      {
-        attachService: options.attachService,
-        rpcFactory: options.rpcFactory,
-      },
-    );
-    const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
-    await clearWalletExplicitLock(paths.walletExplicitLockPath);
-    await saveUnlockSession(
-      paths.walletUnlockSessionPath,
-      createUnlockSession(importedState, unlockUntilUnixMs, secretReference.keyId, nowUnixMs),
-      {
-        provider,
-        secretReference,
-      },
-    );
-    await clearPendingInitialization(paths, provider);
-
-    if (previousWalletRootId !== null && previousWalletRootId !== payload.walletRootId) {
-      await provider.deleteSecret(createWalletSecretReference(previousWalletRootId).keyId).catch(() => undefined);
-    }
-
-    await (options.attachIndexerDaemon ?? attachOrStartIndexerDaemon)({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      walletRootId: importedState.walletRootId,
-    }).then((daemon) => daemon.close());
-    await ensureMainWalletSeedIndexRecord({
-      paths: resolveMainWalletPaths(paths),
-      walletRootId: importedState.walletRootId,
-      nowUnixMs,
-    });
-
-    return {
-      archivePath: options.archivePath,
-      walletRootId: importedState.walletRootId,
-      fundingAddress: importedState.funding.address,
-      unlockUntilUnixMs,
-      state: importedState,
-    };
-  } finally {
-    await controlLock.release();
-  }
-}
-
 export async function restoreWalletFromMnemonic(options: {
   dataDir: string;
   provider?: WalletSecretProvider;
   prompter: WalletPrompter;
   nowUnixMs?: number;
-  unlockDurationMs?: number;
   paths?: WalletRuntimePaths;
   attachService?: typeof attachOrStartManagedBitcoindService;
   rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
@@ -2188,7 +1456,6 @@ export async function restoreWalletFromMnemonic(options: {
 
   const provider = options.provider ?? createDefaultWalletSecretProvider();
   const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const unlockDurationMs = options.unlockDurationMs ?? DEFAULT_UNLOCK_DURATION_MS;
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
   const seedName = assertValidImportedWalletSeedName(paths.selectedSeedName);
   const controlLock = await acquireFileLock(paths.walletControlLockPath, {
@@ -2236,8 +1503,7 @@ export async function restoreWalletFromMnemonic(options: {
       internalCoreWalletPassphrase,
     });
 
-    await clearUnlockSession(paths.walletUnlockSessionPath);
-    await clearWalletExplicitLock(paths.walletExplicitLockPath);
+    await clearLegacyWalletLockArtifacts(paths.walletRuntimeRoot);
     await saveWalletState(
       {
         primaryPath: paths.walletStatePath,
@@ -2261,16 +1527,7 @@ export async function restoreWalletFromMnemonic(options: {
         rpcFactory: options.rpcFactory,
       },
     );
-    const unlockUntilUnixMs = nowUnixMs + unlockDurationMs;
-    await clearWalletExplicitLock(paths.walletExplicitLockPath);
-    await saveUnlockSession(
-      paths.walletUnlockSessionPath,
-      createUnlockSession(restoredState, unlockUntilUnixMs, secretReference.keyId, nowUnixMs),
-      {
-        provider,
-        secretReference,
-      },
-    );
+    await clearLegacyWalletLockArtifacts(paths.walletRuntimeRoot);
     await clearPendingInitialization(paths, provider);
     await addImportedWalletSeedRecord({
       paths: mainPaths,
@@ -2283,7 +1540,6 @@ export async function restoreWalletFromMnemonic(options: {
       seedName,
       walletRootId,
       fundingAddress: restoredState.funding.address,
-      unlockUntilUnixMs,
       state: restoredState,
       warnings: [],
     };
@@ -2364,8 +1620,7 @@ export async function deleteImportedWalletSeed(options: {
       }
     }
 
-    await clearUnlockSession(paths.walletUnlockSessionPath).catch(() => undefined);
-    await clearWalletExplicitLock(paths.walletExplicitLockPath).catch(() => undefined);
+    await clearLegacyWalletLockArtifacts(paths.walletRuntimeRoot).catch(() => undefined);
     await clearPendingInitialization(paths, provider).catch(() => undefined);
     await provider.deleteSecret(createWalletSecretReference(seedRecord.walletRootId).keyId).catch(() => undefined);
     await rm(paths.walletStateRoot, { recursive: true, force: true }).catch(() => undefined);
@@ -2434,10 +1689,6 @@ export async function repairWallet(options: {
         provider,
       });
     } catch (error) {
-      if (error instanceof Error && error.message === LEGACY_WALLET_STATE_PASSPHRASE_ERROR) {
-        throw error;
-      }
-
       throw new Error("local-state-corrupt");
     }
 
@@ -2454,22 +1705,13 @@ export async function repairWallet(options: {
     const backgroundWorkerAlive = preRepairMiningRuntime?.runMode === "background"
       && preRepairMiningRuntime.backgroundWorkerPid !== null
       && await isProcessAlive(preRepairMiningRuntime.backgroundWorkerPid);
-    const preRepairUnlockedState = await loadUnlockedWalletState({
-      provider,
-      nowUnixMs,
-      paths,
-    });
     const miningPreRepairRunMode: WalletRepairResult["miningPreRepairRunMode"] = backgroundWorkerAlive
       ? "background"
       : preRepairMiningRuntime?.runMode === "foreground"
         ? "foreground"
         : "stopped";
     const miningWasResumable = miningPreRepairRunMode === "background"
-      && preRepairUnlockedState !== null
       && normalizeMiningStateRecord(repairedState.miningState).state !== "repair-required";
-    const savedUnlockUntilUnixMs = miningWasResumable
-      ? preRepairUnlockedState?.session.unlockUntilUnixMs ?? null
-      : null;
     let initialBitcoindProbe: Awaited<ReturnType<typeof probeManagedBitcoindService>> = {
       compatibility: "unreachable",
       status: null,
@@ -2783,33 +2025,18 @@ export async function repairWallet(options: {
           indexerDaemonAction = "restarted-compatible-daemon";
         }
 
-        let keepUnlockSession = false;
         if (miningWasResumable) {
           const postRepairResumeReady = await canResumeBackgroundMiningAfterRepair({
             provider,
             paths,
             repairedState,
-            nowUnixMs,
             bitcoindPostRepairHealth,
             indexerPostRepairHealth,
-            unlockUntilUnixMs: savedUnlockUntilUnixMs,
           });
 
           if (!postRepairResumeReady) {
             miningResumeAction = "skipped-post-repair-blocked";
-          } else if (savedUnlockUntilUnixMs === null || savedUnlockUntilUnixMs <= nowUnixMs) {
-            miningResumeAction = "skipped-post-repair-blocked";
           } else {
-            await saveUnlockSession(
-              paths.walletUnlockSessionPath,
-              createUnlockSession(repairedState, savedUnlockUntilUnixMs, secretReference.keyId, nowUnixMs),
-              {
-                provider,
-                secretReference,
-              },
-            );
-            keepUnlockSession = true;
-
             try {
               const startBackgroundMining = options.startBackgroundMining
                 ?? (await import("./mining/runner.js")).startBackgroundMining;
@@ -2834,10 +2061,7 @@ export async function repairWallet(options: {
             }
           }
         }
-
-        if (!keepUnlockSession) {
-          await clearUnlockSession(paths.walletUnlockSessionPath);
-        }
+        await clearLegacyWalletLockArtifacts(paths.walletRuntimeRoot);
 
         return {
           walletRootId: repairedState.walletRootId,

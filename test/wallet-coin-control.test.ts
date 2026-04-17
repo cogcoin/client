@@ -1,10 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  normalizePortableWalletArchivePayload,
-  normalizeWalletStateRecord,
-} from "../src/wallet/coin-control.js";
+import { normalizeWalletStateRecord } from "../src/wallet/coin-control.js";
 
 test("wallet state normalization keeps schema 4 and drops old reserve baggage", () => {
   const normalized = normalizeWalletStateRecord({
@@ -95,77 +92,4 @@ test("wallet state normalization keeps schema 4 and drops old reserve baggage", 
   assert.equal(normalized.miningState.livePublishInMempool, true);
   assert.equal("proactiveReserveSats" in normalized, false);
   assert.equal("proactiveReserveOutpoints" in normalized, false);
-});
-
-test("portable archive normalization emits wallet-address metadata only", () => {
-  const normalized = normalizePortableWalletArchivePayload({
-    schemaVersion: 1,
-    exportedAtUnixMs: 1,
-    walletRootId: "wallet-root",
-    network: "mainnet",
-    anchorValueSats: 2_000,
-    mnemonic: {
-      phrase: `${"abandon ".repeat(23)}art`,
-      language: "english",
-    },
-    expected: {
-      masterFingerprintHex: "11".repeat(4),
-      accountPath: "m/84'/0'/0'",
-      accountXpub: "xpub-test",
-      publicExternalDescriptor: "wpkh(xpub-test/0/*)",
-      descriptorChecksum: "abcd1234",
-      rangeEnd: 10,
-      safetyMargin: 5,
-      fundingAddress0: "bc1qlegacy",
-      fundingScriptPubKeyHex0: "0014" + "33".repeat(20),
-      walletBirthTime: 123,
-    },
-    domains: [],
-    miningState: {
-      runMode: "stopped",
-      state: "idle",
-      pauseReason: null,
-      currentPublishState: "none",
-      currentDomain: null,
-      currentDomainId: null,
-      currentDomainIndex: null,
-      currentSenderScriptPubKeyHex: null,
-      currentTxid: null,
-      currentWtxid: null,
-      currentFeeRateSatVb: null,
-      currentAbsoluteFeeSats: null,
-      currentScore: null,
-      currentSentence: null,
-      currentEncodedSentenceBytesHex: null,
-      currentBip39WordIndices: null,
-      currentBlendSeedHex: null,
-      currentBlockTargetHeight: null,
-      currentReferencedBlockHashDisplay: null,
-      currentIntentFingerprintHex: null,
-      livePublishInMempool: null,
-      currentPublishDecision: null,
-      replacementCount: 0,
-      currentBlockFeeSpentSats: "0",
-      sessionFeeSpentSats: "0",
-      lifetimeFeeSpentSats: "0",
-      sharedMiningConflictOutpoint: null,
-    },
-    hookClientState: {
-      mining: {
-        mode: "builtin",
-        validationState: "current",
-        lastValidationAtUnixMs: null,
-        lastValidationError: null,
-        validatedLaunchFingerprint: null,
-        validatedFullFingerprint: null,
-        fullTrustWarningAcknowledgedAtUnixMs: null,
-        consecutiveFailureCount: 0,
-        cooldownUntilUnixMs: null,
-      },
-    },
-  } as any);
-
-  assert.equal(normalized.schemaVersion, 4);
-  assert.equal(normalized.expected.walletAddress, "bc1qlegacy");
-  assert.equal(normalized.expected.walletScriptPubKeyHex, "0014" + "33".repeat(20));
 });

@@ -86,13 +86,11 @@ interface ReputationOperation {
     localState: {
       availability: "ready";
       state: WalletStateV1;
-      unlockUntilUnixMs: number;
     };
     snapshot: NonNullable<WalletReadContext["snapshot"]>;
     model: NonNullable<WalletReadContext["model"]>;
   };
   state: WalletStateV1;
-  unlockUntilUnixMs: number;
   sender: MutationSender;
   senderSelector: string;
   anchorOutpoint: OutpointRecord;
@@ -325,7 +323,6 @@ function resolveReputationOperation(
   return {
     readContext: context,
     state: context.localState.state,
-    unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
     sender: createFundingMutationSender(context.localState.state),
     senderSelector: context.model.walletAddress,
     anchorOutpoint: resolveAnchorOutpointForSender(context.localState.state, sourceDomainName, errorPrefix),
@@ -494,7 +491,6 @@ function createDraftMutation(options: {
 async function saveUpdatedMutationState(options: {
   state: WalletStateV1;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
 }): Promise<WalletStateV1> {
@@ -506,7 +502,6 @@ async function saveUpdatedMutationState(options: {
   await saveWalletStatePreservingUnlock({
     state: nextState,
     provider: options.provider,
-    unlockUntilUnixMs: options.unlockUntilUnixMs,
     nowUnixMs: options.nowUnixMs,
     paths: options.paths,
   });
@@ -537,7 +532,6 @@ async function reconcilePendingReputationMutation(options: {
   state: WalletStateV1;
   mutation: PendingMutationRecord;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
   rpc: ReputationRpcClient;
@@ -578,7 +572,6 @@ async function reconcilePendingReputationMutation(options: {
     nextState = await saveUpdatedMutationState({
       state: nextState,
       provider: options.provider,
-      unlockUntilUnixMs: options.unlockUntilUnixMs,
       nowUnixMs: options.nowUnixMs,
       paths: options.paths,
     });
@@ -598,7 +591,6 @@ async function reconcilePendingReputationMutation(options: {
     nextState = await saveUpdatedMutationState({
       state: nextState,
       provider: options.provider,
-      unlockUntilUnixMs: options.unlockUntilUnixMs,
       nowUnixMs: options.nowUnixMs,
       paths: options.paths,
     });
@@ -618,7 +610,6 @@ async function reconcilePendingReputationMutation(options: {
     nextState = await saveUpdatedMutationState({
       state: nextState,
       provider: options.provider,
-      unlockUntilUnixMs: options.unlockUntilUnixMs,
       nowUnixMs: options.nowUnixMs,
       paths: options.paths,
     });
@@ -759,7 +750,6 @@ async function sendBuiltTransaction(options: {
   mutation: PendingMutationRecord;
   state: WalletStateV1;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
   errorPrefix: string;
@@ -777,7 +767,6 @@ async function sendBuiltTransaction(options: {
   nextState = await saveUpdatedMutationState({
     state: nextState,
     provider: options.provider,
-    unlockUntilUnixMs: options.unlockUntilUnixMs,
     nowUnixMs: options.nowUnixMs,
     paths: options.paths,
   });
@@ -801,7 +790,6 @@ async function sendBuiltTransaction(options: {
         nextState = await saveUpdatedMutationState({
           state: nextState,
           provider: options.provider,
-          unlockUntilUnixMs: options.unlockUntilUnixMs,
           nowUnixMs: options.nowUnixMs,
           paths: options.paths,
         });
@@ -818,7 +806,6 @@ async function sendBuiltTransaction(options: {
       nextState = await saveUpdatedMutationState({
         state: nextState,
         provider: options.provider,
-        unlockUntilUnixMs: options.unlockUntilUnixMs,
         nowUnixMs: options.nowUnixMs,
         paths: options.paths,
       });
@@ -836,7 +823,6 @@ async function sendBuiltTransaction(options: {
   nextState = await saveUpdatedMutationState({
     state: nextState,
     provider: options.provider,
-    unlockUntilUnixMs: options.unlockUntilUnixMs,
     nowUnixMs: options.nowUnixMs,
     paths: options.paths,
   });
@@ -933,7 +919,6 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
           state: operation.state,
           mutation: existingMutation,
           provider,
-          unlockUntilUnixMs: operation.unlockUntilUnixMs,
           nowUnixMs,
           paths,
           rpc,
@@ -987,7 +972,6 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
       nextState = await saveUpdatedMutationState({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1027,7 +1011,6 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
         mutation: nextState.pendingMutations!.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)!,
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
         errorPrefix: options.errorPrefix,

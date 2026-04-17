@@ -1101,12 +1101,6 @@ test("sync CLI resumes background indexer follow after a single SIGTERM detach",
       resolveDefaultBitcoindDataDir: () => fixture.dataDir,
       resolveWalletRuntimePaths: () => runtimePaths,
       loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub("wallet-root-sync-signal"),
-      loadUnlockSession: async () => {
-        throw new Error("should-not-read-unlock-session");
-      },
-      loadWalletExplicitLock: async () => {
-        throw new Error("should-not-read-explicit-lock");
-      },
       openManagedBitcoindClient: async ({ store, progressOutput, walletRootId }) => {
         liveClient = await openManagedBitcoindClientInternal({
           store,

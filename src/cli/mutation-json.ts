@@ -9,13 +9,10 @@ import type {
 } from "../wallet/tx/index.js";
 import type {
   WalletInitializationResult,
-  WalletExportResult,
-  WalletImportResult,
   WalletDeleteResult,
   WalletRepairResult,
   WalletResetResult,
   WalletRestoreResult,
-  WalletUnlockResult,
 } from "../wallet/lifecycle.js";
 import {
   buildCogResolvedJson,
@@ -318,26 +315,11 @@ export function buildReputationMutationData(result: ReputationMutationResult) {
   };
 }
 
-export function buildWalletLockMutationData(result: { walletRootId: string | null }) {
-  const after = {
-    walletRootId: result.walletRootId,
-    locked: true,
-  };
-
-  return buildStateChangeData({
-    kind: "wallet-lock",
-    state: after,
-    after,
-  });
-}
-
 export function buildInitMutationData(result: WalletInitializationResult) {
   const after = {
     seedName: "main",
     walletRootId: result.walletRootId,
     fundingAddress: result.fundingAddress,
-    unlockUntilUnixMs: result.unlockUntilUnixMs,
-    locked: false,
   };
 
   return buildStateChangeData({
@@ -353,60 +335,10 @@ export function buildRestoreMutationData(result: WalletRestoreResult) {
     seedName: result.seedName ?? null,
     walletRootId: result.walletRootId,
     fundingAddress: result.fundingAddress,
-    unlockUntilUnixMs: result.unlockUntilUnixMs,
-    locked: false,
   };
 
   return buildStateChangeData({
     kind: "restore",
-    state: after,
-    after,
-  });
-}
-
-export function buildUnlockMutationData(result: WalletUnlockResult) {
-  const after = {
-    walletRootId: result.state.walletRootId,
-    locked: false,
-    unlockUntilUnixMs: result.unlockUntilUnixMs,
-    fundingAddress: result.state.funding.address,
-    source: result.source,
-  };
-
-  return buildStateChangeData({
-    kind: "unlock",
-    state: after,
-    after,
-  });
-}
-
-export function buildWalletExportMutationData(result: WalletExportResult) {
-  const state = {
-    walletRootId: result.walletRootId,
-    archivePath: result.archivePath,
-  };
-
-  return buildOperationData({
-    kind: "wallet-export",
-    state,
-    operation: {
-      walletRootId: result.walletRootId,
-      archivePath: result.archivePath,
-      exportMode: "trusted-quiescent",
-    },
-  });
-}
-
-export function buildWalletImportMutationData(result: WalletImportResult) {
-  const after = {
-    walletRootId: result.walletRootId,
-    archivePath: result.archivePath,
-    fundingAddress: result.fundingAddress,
-    unlockUntilUnixMs: result.unlockUntilUnixMs,
-  };
-
-  return buildStateChangeData({
-    kind: "wallet-import",
     state: after,
     after,
   });

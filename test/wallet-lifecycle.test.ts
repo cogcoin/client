@@ -4,11 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import {
-  DEFAULT_UNLOCK_DURATION_MS,
-  loadOrAutoUnlockWalletState,
-  parseUnlockDurationToMs,
-} from "../src/wallet/lifecycle.js";
+import { inspectWalletLocalState } from "../src/wallet/read/index.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
   createDefaultWalletSecretProviderForTesting,
@@ -17,18 +13,7 @@ import {
 import { saveWalletState } from "../src/wallet/state/storage.js";
 import { createWalletState } from "./current-model-helpers.js";
 
-test("parseUnlockDurationToMs parses supported explicit unlock durations", () => {
-  assert.equal(parseUnlockDurationToMs("15m"), 15 * 60 * 1000);
-  assert.equal(parseUnlockDurationToMs("2h"), 2 * 60 * 60 * 1000);
-  assert.equal(parseUnlockDurationToMs("1d"), 24 * 60 * 60 * 1000);
-});
-
-test("parseUnlockDurationToMs falls back to the default unlock duration", () => {
-  assert.equal(parseUnlockDurationToMs(null), DEFAULT_UNLOCK_DURATION_MS);
-  assert.equal(parseUnlockDurationToMs(undefined), DEFAULT_UNLOCK_DURATION_MS);
-});
-
-test("loadOrAutoUnlockWalletState auto-unlocks Linux local-file provider wallets", async () => {
+test("provider-backed Linux local-file wallets load without an explicit unlock step", async () => {
   const homeDirectory = await mkdtemp(join(tmpdir(), "cogcoin-wallet-lifecycle-linux-"));
   const paths = resolveWalletRuntimePathsForTesting({ homeDirectory, platform: "linux" });
   const provider = createDefaultWalletSecretProviderForTesting({
@@ -36,7 +21,6 @@ test("loadOrAutoUnlockWalletState auto-unlocks Linux local-file provider wallets
     stateRoot: paths.stateRoot,
   });
   const secretReference = createWalletSecretReference("wallet-root");
-  const nowUnixMs = 1_000_000;
 
   await provider.storeSecret(secretReference.keyId, Buffer.alloc(32, 47));
   await saveWalletState(
@@ -51,15 +35,13 @@ test("loadOrAutoUnlockWalletState auto-unlocks Linux local-file provider wallets
     },
   );
 
-  const unlocked = await loadOrAutoUnlockWalletState({
-    provider,
+  const status = await inspectWalletLocalState({
     paths,
-    nowUnixMs,
+    secretProvider: provider,
   });
 
-  assert.notEqual(unlocked, null);
-  assert.equal(unlocked?.state.walletRootId, "wallet-root");
-  assert.equal(unlocked?.source, "primary");
-  assert.equal(unlocked?.session.walletRootId, "wallet-root");
-  assert.ok((unlocked?.session.unlockUntilUnixMs ?? 0) > nowUnixMs);
+  assert.equal(status.availability, "ready");
+  assert.equal(status.state?.walletRootId, "wallet-root");
+  assert.equal(status.source, "primary");
+  assert.equal(status.message, null);
 });

@@ -172,48 +172,12 @@ export interface WalletStateV1 {
   pendingMutations?: PendingMutationRecord[];
 }
 
-export interface PortableWalletArchivePayloadV1 {
-  schemaVersion: 4;
-  exportedAtUnixMs: number;
-  walletRootId: string;
-  network: WalletNetwork;
-  anchorValueSats: number;
-  localScriptPubKeyHexes?: ScriptPubKeyHex[];
-  mnemonic: {
-    phrase: string;
-    language: WalletMnemonicLanguage;
-  };
-  expected: {
-    masterFingerprintHex: string;
-    accountPath: string;
-    accountXpub: string;
-    publicExternalDescriptor: string;
-    descriptorChecksum: string | null;
-    rangeEnd: number;
-    safetyMargin: number;
-    walletAddress: string;
-    walletScriptPubKeyHex: ScriptPubKeyHex;
-    walletBirthTime: number;
-  };
-  domains: DomainRecord[];
-  miningState: MiningStateRecord;
-}
-
-export interface Argon2EnvelopeParams {
-  name: "argon2id";
-  memoryKib: number;
-  iterations: number;
-  parallelism: number;
-  salt: string;
-}
-
 export interface EncryptedEnvelopeV1 {
   format: string;
   version: 1;
   cipher: "aes-256-gcm";
   wrappedBy: string;
   walletRootIdHint?: string | null;
-  argon2id?: Argon2EnvelopeParams | null;
   secretProvider?: {
     kind: string;
     keyId: string;
@@ -221,22 +185,6 @@ export interface EncryptedEnvelopeV1 {
   nonce: string;
   tag: string;
   ciphertext: string;
-}
-
-export interface UnlockSessionStateV1 {
-  schemaVersion: 1;
-  walletRootId: string;
-  sessionId: string;
-  createdAtUnixMs: number;
-  unlockUntilUnixMs: number;
-  sourceStateRevision: number;
-  wrappedSessionKeyMaterial: string;
-}
-
-export interface WalletExplicitLockStateV1 {
-  schemaVersion: 1;
-  walletRootId: string;
-  lockedAtUnixMs: number;
 }
 
 export interface WalletPendingInitializationStateV1 {

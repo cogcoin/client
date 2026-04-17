@@ -23,8 +23,8 @@ import {
   deriveWalletMaterialFromMnemonic,
 } from "./material.js";
 import { loadMiningRuntimeStatus } from "./mining/runtime-artifacts.js";
+import { clearLegacyWalletLockArtifacts, withUnlockedManagedCoreWallet } from "./managed-core-wallet.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "./runtime.js";
-import { loadWalletExplicitLock } from "./state/explicit-lock.js";
 import {
   createDefaultWalletSecretProvider,
   createWalletRootId,
@@ -33,9 +33,7 @@ import {
 } from "./state/provider.js";
 import { loadWalletSeedIndex } from "./state/seed-index.js";
 import {
-  LEGACY_WALLET_STATE_PASSPHRASE_ERROR,
   extractWalletRootIdHintFromWalletStateEnvelope,
-  isLegacyPassphraseWrappedWalletStateEnvelope,
   loadRawWalletStateEnvelope,
   loadWalletState,
   saveWalletState,
@@ -43,7 +41,7 @@ import {
   type WalletStateSaveAccess,
 } from "./state/storage.js";
 import { confirmTypedAcknowledgement } from "./tx/confirm.js";
-import type { WalletExplicitLockStateV1, WalletStateV1 } from "./types.js";
+import type { WalletStateV1 } from "./types.js";
 import type { WalletPrompter } from "./lifecycle.js";
 
 export type WalletResetAction =
@@ -126,7 +124,7 @@ export interface WalletResetPreview {
   removedPaths: string[];
 }
 
-type WalletEnvelopeMode = "provider-backed" | "legacy-passphrase" | "unknown";
+type WalletEnvelopeMode = "provider-backed" | "unknown";
 
 interface WalletResetPreflight {
   dataRoot: string;
@@ -137,7 +135,6 @@ interface WalletResetPreflight {
     envelopeSource: "primary" | "backup" | null;
     secretProviderKeyId: string | null;
     importedSeedSecretProviderKeyIds: string[];
-    explicitLock: WalletExplicitLockStateV1 | null;
     rawEnvelope: RawWalletStateEnvelope | null;
   };
   snapshot: {
@@ -485,22 +482,24 @@ async function recreateManagedCoreWalletReplicaForReset(options: {
   const normalizedDescriptors = await resolveNormalizedWalletDescriptorState(options.state, rpc);
   const walletName = sanitizeWalletName(options.state.walletRootId);
 
-  await rpc.walletPassphrase(walletName, options.state.managedCoreWallet.internalPassphrase, 10);
-  try {
-    const importResults = await rpc.importDescriptors(walletName, [{
-      desc: normalizedDescriptors.privateExternal,
-      timestamp: options.state.walletBirthTime,
-      active: false,
-      internal: false,
-      range: [0, options.state.descriptor.rangeEnd],
-    }]);
+  await withUnlockedManagedCoreWallet({
+    rpc,
+    walletName,
+    internalPassphrase: options.state.managedCoreWallet.internalPassphrase,
+    run: async () => {
+      const importResults = await rpc.importDescriptors(walletName, [{
+        desc: normalizedDescriptors.privateExternal,
+        timestamp: options.state.walletBirthTime,
+        active: false,
+        internal: false,
+        range: [0, options.state.descriptor.rangeEnd],
+      }]);
 
-    if (!importResults.every((result) => result.success)) {
-      throw new Error(`wallet_descriptor_import_failed_${JSON.stringify(importResults)}`);
-    }
-  } finally {
-    await rpc.walletLock(walletName).catch(() => undefined);
-  }
+      if (!importResults.every((result) => result.success)) {
+        throw new Error(`wallet_descriptor_import_failed_${JSON.stringify(importResults)}`);
+      }
+    },
+  });
 
   const derivedFunding = await rpc.deriveAddresses(normalizedDescriptors.publicExternal, [0, 0]);
 
@@ -578,10 +577,6 @@ async function loadWalletForEntropyReset(options: {
     } catch {
       throw new Error("reset_wallet_entropy_reset_unavailable");
     }
-  }
-
-  if (options.wallet.mode === "legacy-passphrase") {
-    throw new Error(LEGACY_WALLET_STATE_PASSPHRASE_ERROR);
   }
 
   throw new Error("reset_wallet_entropy_reset_unavailable");
@@ -734,7 +729,6 @@ async function preflightReset(options: {
     primaryPath: options.paths.walletStatePath,
     backupPath: options.paths.walletStateBackupPath,
   });
-  const explicitLock = await loadWalletExplicitLock(options.paths.walletExplicitLockPath).catch(() => null);
   const snapshotPaths = resolveBootstrapPathsForTesting(options.dataDir, DEFAULT_SNAPSHOT_METADATA);
   const validateSnapshot = options.validateSnapshotFile
     ?? ((path: string) => validateSnapshotFileForTesting(path, DEFAULT_SNAPSHOT_METADATA));
@@ -773,15 +767,12 @@ async function preflightReset(options: {
       present: hasWalletState,
       mode: rawEnvelope == null
         ? (hasWalletState ? "unknown" : "unknown")
-        : isLegacyPassphraseWrappedWalletStateEnvelope(rawEnvelope.envelope)
-          ? "legacy-passphrase"
-          : rawEnvelope.envelope.secretProvider != null
+        : rawEnvelope.envelope.secretProvider != null
           ? "provider-backed"
           : "unknown",
       envelopeSource: rawEnvelope?.source ?? null,
       secretProviderKeyId,
       importedSeedSecretProviderKeyIds,
-      explicitLock,
       rawEnvelope,
     },
     snapshot: {
@@ -1088,7 +1079,6 @@ export async function resetWallet(options: {
   const failedSecretRefs: string[] = [];
   const preservedSecretRefs: string[] = [];
   let walletOldRootId = extractWalletRootIdHintFromWalletStateEnvelope(preflight.wallet.rawEnvelope?.envelope ?? null)
-    ?? preflight.wallet.explicitLock?.walletRootId
     ?? null;
   let walletNewRootId: string | null = null;
 
@@ -1106,20 +1096,12 @@ export async function resetWallet(options: {
         stagingRoot,
         "wallet/wallet-state.enc.bak",
       );
-      const stagedExplicitLock = await stageArtifact(
-        paths.walletExplicitLockPath,
-        stagingRoot,
-        "wallet/wallet-explicit-lock.json",
-      );
 
       if (stagedPrimary !== null) {
         stagedWalletArtifacts.push(stagedPrimary);
       }
       if (stagedBackup !== null) {
         stagedWalletArtifacts.push(stagedBackup);
-      }
-      if (walletAction === "kept-unchanged" && stagedExplicitLock !== null) {
-        stagedWalletArtifacts.push(stagedExplicitLock);
       }
     }
 

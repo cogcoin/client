@@ -9,6 +9,8 @@ test("help text reflects the one-address model", () => {
   assert.match(HELP_TEXT, /balance\s+Show local wallet COG balances/);
   assert.doesNotMatch(HELP_TEXT, /--from/);
   assert.doesNotMatch(HELP_TEXT, /per-identity/);
+  assert.doesNotMatch(HELP_TEXT, /wallet export <path>/);
+  assert.doesNotMatch(HELP_TEXT, /wallet import <path>/);
 });
 
 test("parser rejects removed selector-based commands", () => {
@@ -19,6 +21,26 @@ test("parser rejects removed selector-based commands", () => {
   assert.throws(
     () => parseCliArgs(["anchor", "clear", "alpha"]),
     /cli_anchor_clear_removed/,
+  );
+  assert.throws(
+    () => parseCliArgs(["wallet", "export", "wallet.cogcoin"]),
+    /cli_wallet_export_removed/,
+  );
+  assert.throws(
+    () => parseCliArgs(["wallet", "import", "wallet.cogcoin"]),
+    /cli_wallet_import_removed/,
+  );
+  assert.throws(
+    () => parseCliArgs(["unlock"]),
+    /cli_wallet_unlock_removed/,
+  );
+  assert.throws(
+    () => parseCliArgs(["wallet", "unlock"]),
+    /cli_wallet_unlock_removed/,
+  );
+  assert.throws(
+    () => parseCliArgs(["wallet", "lock"]),
+    /cli_wallet_lock_removed/,
   );
 });
 
@@ -45,13 +67,39 @@ test("CLI error text explains the legacy Windows DPAPI break", () => {
   assert.match(rendered, /recover|reimport/i);
 });
 
-test("CLI error text explains the legacy local wallet-state passphrase break", () => {
-  const formatted = formatCliTextError(new Error("wallet_state_legacy_passphrase_unsupported")) ?? [];
+test("CLI error text explains removed wallet archive export", () => {
+  const formatted = formatCliTextError(new Error("cli_wallet_export_removed")) ?? [];
   const rendered = formatted.join("\n");
 
-  assert.match(rendered, /legacy local wallet-state passphrases/i);
-  assert.match(rendered, /recover|reimport/i);
-  assert.doesNotMatch(rendered, /wallet-state passphrase is required/i);
+  assert.match(rendered, /wallet export/i);
+  assert.match(rendered, /no longer available|removed/i);
+  assert.match(rendered, /mnemonic|recovery/i);
+});
+
+test("CLI error text explains removed wallet archive import", () => {
+  const formatted = formatCliTextError(new Error("cli_wallet_import_removed")) ?? [];
+  const rendered = formatted.join("\n");
+
+  assert.match(rendered, /wallet import/i);
+  assert.match(rendered, /no longer available|removed/i);
+  assert.match(rendered, /restore/i);
+});
+
+test("CLI error text explains removed wallet unlock commands", () => {
+  const formatted = formatCliTextError(new Error("cli_wallet_unlock_removed")) ?? [];
+  const rendered = formatted.join("\n");
+
+  assert.match(rendered, /wallet unlock|unlock/i);
+  assert.match(rendered, /no longer available|removed/i);
+  assert.match(rendered, /loads on demand|local secret provider/i);
+});
+
+test("CLI error text explains removed wallet lock commands", () => {
+  const formatted = formatCliTextError(new Error("cli_wallet_lock_removed")) ?? [];
+  const rendered = formatted.join("\n");
+
+  assert.match(rendered, /wallet lock/i);
+  assert.match(rendered, /no longer available|removed/i);
 });
 
 test("CLI error text describes Linux local-file secret failures without Secret Service wording", () => {

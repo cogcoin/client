@@ -133,15 +133,10 @@ export async function runCli(
       || parsed.command === "restore"
       || parsed.command === "reset"
       || parsed.command === "repair"
-      || parsed.command === "unlock"
-      || parsed.command === "wallet-export"
-      || parsed.command === "wallet-import"
       || parsed.command === "wallet-init"
       || parsed.command === "wallet-delete"
       || parsed.command === "wallet-restore"
       || parsed.command === "wallet-show-mnemonic"
-      || parsed.command === "wallet-unlock"
-      || parsed.command === "wallet-lock"
     ) {
       return runWalletAdminCommand(parsed, context);
     }

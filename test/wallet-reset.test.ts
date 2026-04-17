@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 
 import { previewResetWallet, resetWallet } from "../src/wallet/reset.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
-import { encryptJsonWithPassphrase } from "../src/wallet/state/crypto.js";
 import {
   createDefaultWalletSecretProviderForTesting,
   createWalletSecretReference,
@@ -62,14 +61,17 @@ test("previewResetWallet detects an existing wallet state", async () => {
 test("previewResetWallet marks legacy passphrase wallets as non-recoverable by entropy reset", async () => {
   const homeDirectory = await mkdtemp(join(tmpdir(), "cogcoin-reset-home-"));
   const paths = resolveWalletRuntimePathsForTesting({ homeDirectory, platform: "linux" });
-  const envelope = await encryptJsonWithPassphrase(
-    createWalletState({ walletRootId: "wallet-root-legacy" }),
-    "passphrase",
-    {
-      format: "cogcoin-local-wallet-state",
-      walletRootIdHint: "wallet-root-legacy",
-    },
-  );
+  const envelope = {
+    format: "cogcoin-local-wallet-state",
+    version: 1,
+    cipher: "aes-256-gcm" as const,
+    wrappedBy: "passphrase",
+    walletRootIdHint: "wallet-root-legacy",
+    secretProvider: null,
+    nonce: "AAAAAAAAAAAAAAAA",
+    tag: "AAAAAAAAAAAAAAAAAAAAAA==",
+    ciphertext: "AA==",
+  };
 
   await mkdir(paths.walletStateDirectory, { recursive: true });
   await writeFile(paths.walletStatePath, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
@@ -88,14 +90,17 @@ test("previewResetWallet marks legacy passphrase wallets as non-recoverable by e
 test("resetWallet rejects entropy-retaining reset for legacy passphrase wallets", async () => {
   const homeDirectory = await mkdtemp(join(tmpdir(), "cogcoin-reset-home-"));
   const paths = resolveWalletRuntimePathsForTesting({ homeDirectory, platform: "linux" });
-  const envelope = await encryptJsonWithPassphrase(
-    createWalletState({ walletRootId: "wallet-root-legacy" }),
-    "passphrase",
-    {
-      format: "cogcoin-local-wallet-state",
-      walletRootIdHint: "wallet-root-legacy",
-    },
-  );
+  const envelope = {
+    format: "cogcoin-local-wallet-state",
+    version: 1,
+    cipher: "aes-256-gcm" as const,
+    wrappedBy: "passphrase",
+    walletRootIdHint: "wallet-root-legacy",
+    secretProvider: null,
+    nonce: "AAAAAAAAAAAAAAAA",
+    tag: "AAAAAAAAAAAAAAAAAAAAAA==",
+    ciphertext: "AA==",
+  };
   const responses = ["permanently reset", ""];
 
   await mkdir(paths.walletStateDirectory, { recursive: true });
@@ -111,7 +116,7 @@ test("resetWallet rejects entropy-retaining reset for legacy passphrase wallets"
         prompt: async () => responses.shift() ?? "",
       },
     }),
-    /wallet_state_legacy_passphrase_unsupported/,
+    /reset_wallet_entropy_reset_unavailable/,
   );
 });
 

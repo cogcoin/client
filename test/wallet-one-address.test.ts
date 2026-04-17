@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { parseCliArgs } from "../src/cli/parse.js";
 import { buildAnchorMutationData, buildFieldMutationData } from "../src/cli/mutation-json.js";
 import { buildAnchorPreviewData, buildFieldPreviewData } from "../src/cli/preview-json.js";
-import { normalizePortableWalletArchivePayload, normalizeWalletStateRecord } from "../src/wallet/coin-control.js";
+import { normalizeWalletStateRecord } from "../src/wallet/coin-control.js";
 import { createWalletReadModel } from "../src/wallet/read/project.js";
 
 function createMiningState() {
@@ -157,40 +157,6 @@ test("normalizeWalletStateRecord migrates legacy multi-identity state into schem
   assert.equal(normalized.pendingMutations?.length, 1);
   assert.equal(normalized.pendingMutations?.[0]?.status, "confirmed");
   assert.deepEqual(normalized.pendingMutations?.[0]?.temporaryBuilderLockedOutpoints, []);
-});
-
-test("normalizePortableWalletArchivePayload emits schema 4 wallet-address metadata only", () => {
-  const normalized = normalizePortableWalletArchivePayload({
-    schemaVersion: 1,
-    exportedAtUnixMs: 10,
-    walletRootId: "wallet-root",
-    network: "mainnet",
-    anchorValueSats: 2_000,
-    mnemonic: {
-      phrase: "abandon ".repeat(23) + "art",
-      language: "english",
-    },
-    expected: {
-      masterFingerprintHex: "11".repeat(4),
-      accountPath: "m/84'/0'/0'",
-      accountXpub: "xpub-test",
-      publicExternalDescriptor: "wpkh(xpub-test/0/*)",
-      descriptorChecksum: "abcd1234",
-      rangeEnd: 10,
-      safetyMargin: 5,
-      fundingAddress0: "bc1qlegacy",
-      fundingScriptPubKeyHex0: "0014" + "55".repeat(20),
-      walletBirthTime: 123,
-    },
-    localScriptPubKeyHexes: ["0014" + "66".repeat(20)],
-    domains: [],
-    miningState: createMiningState(),
-    hookClientState: createHookState(),
-  } as any);
-
-  assert.equal(normalized.schemaVersion, 4);
-  assert.equal(normalized.expected.walletAddress, "bc1qlegacy");
-  assert.equal(normalized.expected.walletScriptPubKeyHex, "0014" + "55".repeat(20));
 });
 
 test("createWalletReadModel exposes one wallet address and treats historical local scripts as local owners", () => {

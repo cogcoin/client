@@ -27,8 +27,6 @@ export interface WalletRuntimePaths {
   walletStateBackupPath: string;
   walletInitPendingPath: string;
   walletInitPendingBackupPath: string;
-  walletUnlockSessionPath: string;
-  walletExplicitLockPath: string;
   walletControlLockPath: string;
   bitcoindLockPath: string;
   bitcoindStatusPath: string;
@@ -82,8 +80,6 @@ export function deriveWalletRuntimePathsForSeed(
     walletStateBackupPath: join(seedLayout.walletStateRoot, "wallet-state.enc.bak"),
     walletInitPendingPath: join(seedLayout.walletStateRoot, "wallet-init-pending.enc"),
     walletInitPendingBackupPath: join(seedLayout.walletStateRoot, "wallet-init-pending.enc.bak"),
-    walletUnlockSessionPath: join(seedLayout.walletRuntimeRoot, "wallet-unlock-session.enc"),
-    walletExplicitLockPath: join(seedLayout.walletRuntimeRoot, "wallet-explicit-lock.json"),
     miningRoot: join(seedLayout.walletRuntimeRoot, "mining"),
     miningStatusPath: join(seedLayout.walletRuntimeRoot, "mining", "status.json"),
     miningEventsPath: join(seedLayout.walletRuntimeRoot, "mining", "events.jsonl"),
@@ -112,8 +108,6 @@ export function resolveWalletRuntimePathsForTesting(
     walletStateBackupPath: join(paths.stateRoot, "wallet-state.enc.bak"),
     walletInitPendingPath: join(paths.stateRoot, "wallet-init-pending.enc"),
     walletInitPendingBackupPath: join(paths.stateRoot, "wallet-init-pending.enc.bak"),
-    walletUnlockSessionPath: join(paths.runtimeRoot, "wallet-unlock-session.enc"),
-    walletExplicitLockPath: join(paths.runtimeRoot, "wallet-explicit-lock.json"),
     walletControlLockPath: paths.walletControlLockPath,
     bitcoindLockPath: paths.bitcoindLockPath,
     bitcoindStatusPath: paths.bitcoindStatusPath,

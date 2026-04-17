@@ -1,10 +1,9 @@
 import { rm } from "node:fs/promises";
 
 import { deriveWalletMaterialFromMnemonic } from "./material.js";
-import { saveUnlockSession, type UnlockSessionSaveAccess } from "./state/session.js";
 import { saveWalletState, type WalletStateSaveAccess } from "./state/storage.js";
 import type { WalletRuntimePaths } from "./runtime.js";
-import type { UnlockSessionStateV1, WalletStateV1 } from "./types.js";
+import type { WalletStateV1 } from "./types.js";
 
 export interface WalletDescriptorInfoRpc {
   getDescriptorInfo(descriptor: string): Promise<{
@@ -129,14 +128,12 @@ export async function persistWalletStateUpdate(options: {
 export async function persistNormalizedWalletDescriptorStateIfNeeded(options: {
   state: WalletStateV1;
   access: WalletStateSaveAccess;
-  session?: UnlockSessionStateV1 | null;
   paths: WalletRuntimePaths;
   nowUnixMs: number;
   replacePrimary?: boolean;
   rpc: WalletDescriptorInfoRpc;
 }): Promise<{
   changed: boolean;
-  session: UnlockSessionStateV1 | null;
   state: WalletStateV1;
 }> {
   const normalized = await normalizeWalletDescriptorState(options.state, options.rpc);
@@ -144,7 +141,6 @@ export async function persistNormalizedWalletDescriptorStateIfNeeded(options: {
   if (!normalized.changed) {
     return {
       changed: false,
-      session: options.session ?? null,
       state: options.state,
     };
   }
@@ -157,28 +153,8 @@ export async function persistNormalizedWalletDescriptorStateIfNeeded(options: {
     replacePrimary: options.replacePrimary,
   });
 
-  if (options.session === undefined || options.session === null) {
-    return {
-      changed: true,
-      session: options.session ?? null,
-      state: nextState,
-    };
-  }
-
-  const nextSession: UnlockSessionStateV1 = {
-    ...options.session,
-    walletRootId: nextState.walletRootId,
-    sourceStateRevision: nextState.stateRevision,
-  };
-  await saveUnlockSession(
-    options.paths.walletUnlockSessionPath,
-    nextSession,
-    options.access as UnlockSessionSaveAccess,
-  );
-
   return {
     changed: true,
-    session: nextSession,
     state: nextState,
   };
 }

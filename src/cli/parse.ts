@@ -20,7 +20,6 @@ Commands:
   restore                 Restore an imported named seed from a 24-word mnemonic; run sync afterward
   reset                   Factory-reset local Cogcoin state with interactive retention prompts
   repair                  Recover bounded wallet/indexer/runtime state
-  unlock                  Clear an explicit wallet lock and unlock for a limited duration
   wallet address          Alias for address
   wallet ids              Alias for ids
   mine                    Run the miner in the foreground
@@ -52,10 +51,6 @@ Commands:
   wallet restore          Restore an imported named seed from a 24-word mnemonic; run sync afterward
   wallet delete           Delete one imported named seed without affecting main
   wallet show-mnemonic    Reveal the initialized wallet recovery phrase after typed confirmation
-  wallet unlock           Clear an explicit wallet lock and unlock for a limited duration
-  wallet lock             Lock the local wallet and disable on-demand unlock
-  wallet export <path>    Export a portable encrypted wallet archive
-  wallet import <path>    Import a portable encrypted wallet archive
   address                 Show the BTC wallet address for this wallet
   ids                     Show the local wallet address
   balance                 Show local wallet COG balances
@@ -81,7 +76,7 @@ Commands:
 Options:
   --db <path>       Override the SQLite database path
   --data-dir <path> Override the managed bitcoin datadir
-  --for <duration>  Unlock duration like 15m, 2h, or 1d when unlocking explicitly
+  --for <duration>  Relative timeout for cog lock, like 15m, 2h, or 1d
   --message <text>  Founding message text for anchor
   --to <btc-target> Transfer or send target as an address or spk:<hex>
   --to-domain <domain>
@@ -183,7 +178,6 @@ function supportsYesFlag(command: CommandName | null): boolean {
 function supportsSeedFlag(command: CommandName | null): boolean {
   switch (command) {
     case "status":
-    case "unlock":
     case "anchor":
     case "domain-anchor":
     case "register":
@@ -225,13 +219,10 @@ function supportsSeedFlag(command: CommandName | null): boolean {
     case "mine-setup":
     case "mine-status":
     case "mine-log":
-    case "wallet-export":
     case "wallet-delete":
     case "wallet-restore":
     case "restore":
     case "wallet-show-mnemonic":
-    case "wallet-lock":
-    case "wallet-unlock":
     case "wallet-status":
     case "wallet-address":
     case "wallet-ids":
@@ -589,6 +580,10 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     }
 
     if (command === null) {
+      if (token === "unlock") {
+        throw new Error("cli_wallet_unlock_removed");
+      }
+
       if (token === "wallet") {
         const subcommand = argv[index + 1] ?? null;
 
@@ -635,27 +630,19 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
         }
 
         if (subcommand === "unlock") {
-          command = "wallet-unlock";
-          index += 1;
-          continue;
+          throw new Error("cli_wallet_unlock_removed");
         }
 
         if (subcommand === "lock") {
-          command = "wallet-lock";
-          index += 1;
-          continue;
+          throw new Error("cli_wallet_lock_removed");
         }
 
         if (subcommand === "export") {
-          command = "wallet-export";
-          index += 1;
-          continue;
+          throw new Error("cli_wallet_export_removed");
         }
 
         if (subcommand === "import") {
-          command = "wallet-import";
-          index += 1;
-          continue;
+          throw new Error("cli_wallet_import_removed");
         }
 
         throw new Error(`cli_unknown_command_wallet${subcommand === null ? "" : `_${subcommand}`}`);
@@ -975,7 +962,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
         || token === "sync"
         || token === "status"
         || token === "follow"
-        || token === "unlock"
         || token === "anchor"
         || token === "register"
         || token === "transfer"
@@ -1017,12 +1003,9 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
       || command === "init"
       || command === "restore"
       || command === "reset"
-      || command === "unlock"
       || command === "wallet-init"
       || command === "wallet-delete"
       || command === "wallet-restore"
-      || command === "wallet-lock"
-      || command === "wallet-unlock"
       || command === "wallet-status"
       || command === "repair"
       || command === "sync"
@@ -1111,18 +1094,12 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_missing_domain_argument");
   }
 
-  if ((command === "wallet-export" || command === "wallet-import") && args.length !== 1) {
-    throw new Error(command === "wallet-export" ? "cli_missing_export_path" : "cli_missing_import_path");
-  }
-
   if ((command === "field" || command === "field-show" || command === "field-create" || command === "field-set" || command === "field-clear") && args.length !== 2) {
     throw new Error("cli_missing_field_arguments");
   }
 
   if (
     unlockFor !== null
-    && command !== "unlock"
-    && command !== "wallet-unlock"
     && command !== "cog-lock"
   ) {
     throw new Error("cli_unlock_duration_not_supported_for_command");

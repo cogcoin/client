@@ -94,13 +94,11 @@ interface FieldOperation {
     localState: {
       availability: "ready";
       state: WalletStateV1;
-      unlockUntilUnixMs: number;
     };
     snapshot: NonNullable<WalletReadContext["snapshot"]>;
     model: NonNullable<WalletReadContext["model"]>;
   };
   state: WalletStateV1;
-  unlockUntilUnixMs: number;
   sender: MutationSender;
   senderSelector: string;
   anchorOutpoint: OutpointRecord;
@@ -381,7 +379,6 @@ function resolveAnchoredFieldOperation(
   return {
     readContext: context,
     state,
-    unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
     sender: {
       localIndex: 0,
       scriptPubKeyHex: state.funding.scriptPubKeyHex,
@@ -505,7 +502,6 @@ async function buildFieldTransaction(options: {
 async function saveUpdatedState(options: {
   state: WalletStateV1;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
 }): Promise<WalletStateV1> {
@@ -517,7 +513,6 @@ async function saveUpdatedState(options: {
   await saveWalletStatePreservingUnlock({
     state: nextState,
     provider: options.provider,
-    unlockUntilUnixMs: options.unlockUntilUnixMs,
     nowUnixMs: options.nowUnixMs,
     paths: options.paths,
   });
@@ -666,7 +661,6 @@ async function reconcilePendingFieldMutation(options: {
   state: WalletStateV1;
   mutation: PendingMutationRecord;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
   rpc: FieldRpcClient;
@@ -702,7 +696,6 @@ async function reconcilePendingFieldMutation(options: {
     nextState = await saveUpdatedState({
       state: nextState,
       provider: options.provider,
-      unlockUntilUnixMs: options.unlockUntilUnixMs,
       nowUnixMs: options.nowUnixMs,
       paths: options.paths,
     });
@@ -718,7 +711,6 @@ async function reconcilePendingFieldMutation(options: {
     nextState = await saveUpdatedState({
       state: nextState,
       provider: options.provider,
-      unlockUntilUnixMs: options.unlockUntilUnixMs,
       nowUnixMs: options.nowUnixMs,
       paths: options.paths,
     });
@@ -738,7 +730,6 @@ async function reconcilePendingFieldMutation(options: {
     nextState = await saveUpdatedState({
       state: nextState,
       provider: options.provider,
-      unlockUntilUnixMs: options.unlockUntilUnixMs,
       nowUnixMs: options.nowUnixMs,
       paths: options.paths,
     });
@@ -756,7 +747,6 @@ async function reconcilePendingFieldMutation(options: {
     nextState = await saveUpdatedState({
       state: nextState,
       provider: options.provider,
-      unlockUntilUnixMs: options.unlockUntilUnixMs,
       nowUnixMs: options.nowUnixMs,
       paths: options.paths,
     });
@@ -1011,7 +1001,6 @@ async function sendStandaloneMutation(options: {
   mutation: PendingMutationRecord;
   state: WalletStateV1;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
   errorPrefix: string;
@@ -1029,7 +1018,6 @@ async function sendStandaloneMutation(options: {
   nextState = await saveUpdatedState({
     state: nextState,
     provider: options.provider,
-    unlockUntilUnixMs: options.unlockUntilUnixMs,
     nowUnixMs: options.nowUnixMs,
     paths: options.paths,
   });
@@ -1053,7 +1041,6 @@ async function sendStandaloneMutation(options: {
         nextState = await saveUpdatedState({
           state: nextState,
           provider: options.provider,
-          unlockUntilUnixMs: options.unlockUntilUnixMs,
           nowUnixMs: options.nowUnixMs,
           paths: options.paths,
         });
@@ -1070,7 +1057,6 @@ async function sendStandaloneMutation(options: {
       nextState = await saveUpdatedState({
         state: nextState,
         provider: options.provider,
-        unlockUntilUnixMs: options.unlockUntilUnixMs,
         nowUnixMs: options.nowUnixMs,
         paths: options.paths,
       });
@@ -1088,7 +1074,6 @@ async function sendStandaloneMutation(options: {
   nextState = await saveUpdatedState({
     state: nextState,
     provider: options.provider,
-    unlockUntilUnixMs: options.unlockUntilUnixMs,
     nowUnixMs: options.nowUnixMs,
     paths: options.paths,
   });
@@ -1167,7 +1152,6 @@ async function submitStandaloneFieldMutation(options: {
           state: operation.state,
           mutation: existingMutation,
           provider,
-          unlockUntilUnixMs: operation.unlockUntilUnixMs,
           nowUnixMs,
           paths,
           rpc,
@@ -1211,7 +1195,6 @@ async function submitStandaloneFieldMutation(options: {
       nextState = await saveUpdatedState({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1246,7 +1229,6 @@ async function submitStandaloneFieldMutation(options: {
         mutation: nextState.pendingMutations!.find((mutation) => mutation.intentFingerprintHex === planned.mutation.intentFingerprintHex)!,
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
         errorPrefix: options.errorPrefix,

@@ -144,8 +144,6 @@ export async function runSyncCommand(
       paths: runtimePaths,
       provider: context.walletSecretProvider,
       loadRawWalletStateEnvelope: context.loadRawWalletStateEnvelope,
-      loadUnlockSession: context.loadUnlockSession,
-      loadWalletExplicitLock: context.loadWalletExplicitLock,
     });
 
     try {

@@ -34,7 +34,7 @@ import {
   type WalletMutationRpcClient,
 } from "../tx/common.js";
 import { acquireFileLock } from "../fs/lock.js";
-import { loadOrAutoUnlockWalletState, type WalletPrompter } from "../lifecycle.js";
+import type { WalletPrompter } from "../lifecycle.js";
 import {
   isMineableWalletDomain,
   openWalletReadContext,
@@ -932,7 +932,7 @@ async function handleDetectedMiningRuntimeResume(options: {
 
 function getIndexerTruthKey(
   readContext: WalletReadContext & {
-    localState: { availability: "ready"; state: WalletStateV1; unlockUntilUnixMs: number };
+    localState: { availability: "ready"; state: WalletStateV1 };
     snapshot: NonNullable<WalletReadContext["snapshot"]>;
   },
 ): IndexerTruthKey | null {
@@ -1221,7 +1221,7 @@ function resolveEligibleAnchoredRoots(context: WalletReadContext): Array<{
 async function generateCandidatesForDomains(options: {
   rpc: MiningRpcClient;
   readContext: WalletReadContext & {
-    localState: { availability: "ready"; state: WalletStateV1; unlockUntilUnixMs: number };
+    localState: { availability: "ready"; state: WalletStateV1 };
     snapshot: NonNullable<WalletReadContext["snapshot"]>;
     model: NonNullable<WalletReadContext["model"]>;
   };
@@ -1446,7 +1446,7 @@ async function runCompetitivenessGate(options: {
   const walletRootId = options.readContext.localState.walletRootId ?? "uninitialized-wallet-root";
   const indexerTruthKey = getIndexerTruthKey(
     options.readContext as WalletReadContext & {
-      localState: { availability: "ready"; state: WalletStateV1; unlockUntilUnixMs: number };
+      localState: { availability: "ready"; state: WalletStateV1 };
       snapshot: NonNullable<WalletReadContext["snapshot"]>;
     },
   );
@@ -1941,7 +1941,7 @@ async function reconcileLiveMiningState(options: {
 
 async function publishCandidate(options: {
   readContext: WalletReadContext & {
-    localState: { availability: "ready"; state: WalletStateV1; unlockUntilUnixMs: number };
+    localState: { availability: "ready"; state: WalletStateV1 };
     snapshot: NonNullable<WalletReadContext["snapshot"]>;
     model: NonNullable<WalletReadContext["model"]>;
   };
@@ -2054,8 +2054,6 @@ async function publishCandidate(options: {
   await saveWalletStatePreservingUnlock({
     state,
     provider: options.provider,
-    unlockUntilUnixMs: options.readContext.localState.unlockUntilUnixMs,
-    nowUnixMs: Date.now(),
     paths: options.paths,
   });
 
@@ -2070,8 +2068,6 @@ async function publishCandidate(options: {
       await saveWalletStatePreservingUnlock({
         state,
         provider: options.provider,
-        unlockUntilUnixMs: options.readContext.localState.unlockUntilUnixMs,
-        nowUnixMs: Date.now(),
         paths: options.paths,
       });
       await appendEvent(options.paths, createEvent(
@@ -2108,8 +2104,6 @@ async function publishCandidate(options: {
       await saveWalletStatePreservingUnlock({
         state,
         provider: options.provider,
-        unlockUntilUnixMs: options.readContext.localState.unlockUntilUnixMs,
-        nowUnixMs: Date.now(),
         paths: options.paths,
       });
       await appendEvent(options.paths, createEvent(
@@ -2160,8 +2154,6 @@ async function publishCandidate(options: {
   await saveWalletStatePreservingUnlock({
     state,
     provider: options.provider,
-    unlockUntilUnixMs: options.readContext.localState.unlockUntilUnixMs,
-    nowUnixMs: Date.now(),
     paths: options.paths,
   });
   await appendEvent(options.paths, createEvent(
@@ -2204,11 +2196,6 @@ async function ensureBuiltInSetupIfNeeded(options: {
   prompter: WalletPrompter;
   paths: WalletRuntimePaths;
 }): Promise<boolean> {
-  const unlocked = await loadOrAutoUnlockWalletState({
-    provider: options.provider,
-    paths: options.paths,
-  });
-
   const config = await loadClientConfig({
     path: options.paths.clientConfigPath,
     provider: options.provider,
@@ -2269,7 +2256,7 @@ async function performMiningCycle(options: {
       },
     });
 
-    if (readContext.localState.availability !== "ready" || readContext.localState.state === null || readContext.localState.unlockUntilUnixMs === null) {
+    if (readContext.localState.availability !== "ready" || readContext.localState.state === null) {
       await refreshAndSaveStatus({
         paths: options.paths,
         provider: options.provider,
@@ -2277,7 +2264,7 @@ async function performMiningCycle(options: {
         overrides: {
           runMode: options.runMode,
           currentPhase: "waiting",
-          note: "Wallet must stay unlocked for mining to continue.",
+          note: "Wallet state must be locally available for mining to continue.",
         },
         visualizer: options.visualizer,
       });
@@ -2300,15 +2287,13 @@ async function performMiningCycle(options: {
     });
     checkpointMiningSuspendDetector(options.suspendDetector);
     let effectiveReadContext = readContext as WalletReadContext & {
-      localState: { availability: "ready"; state: WalletStateV1; unlockUntilUnixMs: number };
+      localState: { availability: "ready"; state: WalletStateV1 };
     };
 
     if (JSON.stringify(reconciledState.miningState) !== JSON.stringify(readContext.localState.state.miningState)) {
       await saveWalletStatePreservingUnlock({
         state: reconciledState,
         provider: options.provider,
-        unlockUntilUnixMs: readContext.localState.unlockUntilUnixMs,
-        nowUnixMs: Date.now(),
         paths: options.paths,
       });
       effectiveReadContext = {
@@ -2316,7 +2301,6 @@ async function performMiningCycle(options: {
         localState: {
           ...readContext.localState,
           availability: "ready",
-          unlockUntilUnixMs: readContext.localState.unlockUntilUnixMs,
           state: reconciledState,
         },
       };
@@ -2345,8 +2329,6 @@ async function performMiningCycle(options: {
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider: options.provider,
-        unlockUntilUnixMs: effectiveReadContext.localState.unlockUntilUnixMs,
-        nowUnixMs: Date.now(),
         paths: options.paths,
       });
       effectiveReadContext = {
@@ -2354,7 +2336,6 @@ async function performMiningCycle(options: {
         localState: {
           ...effectiveReadContext.localState,
           availability: "ready",
-          unlockUntilUnixMs: effectiveReadContext.localState.unlockUntilUnixMs,
           state: nextState,
         },
       };
@@ -2384,8 +2365,6 @@ async function performMiningCycle(options: {
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider: options.provider,
-        unlockUntilUnixMs: effectiveReadContext.localState.unlockUntilUnixMs,
-        nowUnixMs: Date.now(),
         paths: options.paths,
       });
       await refreshAndSaveStatus({
@@ -2464,8 +2443,6 @@ async function performMiningCycle(options: {
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider: options.provider,
-        unlockUntilUnixMs: effectiveReadContext.localState.unlockUntilUnixMs,
-        nowUnixMs: Date.now(),
         paths: options.paths,
       });
       await refreshAndSaveStatus({
@@ -2516,7 +2493,7 @@ async function performMiningCycle(options: {
 
     const indexerTruthKey = getIndexerTruthKey(
       effectiveReadContext as WalletReadContext & {
-        localState: { availability: "ready"; state: WalletStateV1; unlockUntilUnixMs: number };
+        localState: { availability: "ready"; state: WalletStateV1 };
         snapshot: NonNullable<WalletReadContext["snapshot"]>;
       },
     );
@@ -2575,7 +2552,7 @@ async function performMiningCycle(options: {
       candidates = await generateCandidatesForDomains({
         rpc,
         readContext: effectiveReadContext as WalletReadContext & {
-          localState: { availability: "ready"; state: WalletStateV1; unlockUntilUnixMs: number };
+          localState: { availability: "ready"; state: WalletStateV1 };
           snapshot: NonNullable<WalletReadContext["snapshot"]>;
           model: NonNullable<WalletReadContext["model"]>;
         },
@@ -2832,7 +2809,7 @@ async function performMiningCycle(options: {
       checkpointMiningSuspendDetector(options.suspendDetector);
       const published = await publishCandidate({
         readContext: effectiveReadContext as WalletReadContext & {
-          localState: { availability: "ready"; state: WalletStateV1; unlockUntilUnixMs: number };
+          localState: { availability: "ready"; state: WalletStateV1 };
           snapshot: NonNullable<WalletReadContext["snapshot"]>;
           model: NonNullable<WalletReadContext["model"]>;
         },
@@ -2930,7 +2907,7 @@ async function saveStopSnapshot(options: {
   try {
     let localState = readContext.localState;
 
-    if (localState.availability === "ready" && localState.state !== null && localState.unlockUntilUnixMs !== null) {
+    if (localState.availability === "ready" && localState.state !== null) {
       const service = await attachOrStartManagedBitcoindService({
         dataDir: options.dataDir,
         chain: "main",
@@ -2966,8 +2943,6 @@ async function saveStopSnapshot(options: {
         await saveWalletStatePreservingUnlock({
           state: stopState,
           provider: options.provider,
-          unlockUntilUnixMs: localState.unlockUntilUnixMs,
-          nowUnixMs: Date.now(),
           paths: options.paths,
         });
         localState = {

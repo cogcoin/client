@@ -45,14 +45,6 @@ function formatIndexerTruthSource(source: WalletReadContext["indexer"]["source"]
   }
 }
 
-function formatUnlockExpiry(unlockUntilUnixMs: number | null): string {
-  if (unlockUntilUnixMs === null) {
-    return "locked";
-  }
-
-  return `unlocked until ${new Date(unlockUntilUnixMs).toISOString()}`;
-}
-
 function isReputationMutation(
   mutation: PendingMutationRecord,
 ): mutation is PendingMutationRecord & { kind: "rep-give" | "rep-revoke"; recipientDomainName: string } {
@@ -368,7 +360,6 @@ function appendServiceSummary(lines: string[], context: WalletReadContext): void
 function appendWalletAvailability(lines: string[], context: WalletReadContext): void {
   lines.push(`Wallet state: ${context.localState.availability}`);
   lines.push(`Wallet root: ${context.model?.walletRootId ?? context.localState.walletRootId ?? context.nodeStatus?.walletRootId ?? "none"}`);
-  lines.push(`Wallet unlock: ${formatUnlockExpiry(context.localState.unlockUntilUnixMs)}`);
 
   if (context.localState.message !== null) {
     lines.push(`Wallet note: ${context.localState.message}`);
@@ -437,7 +428,6 @@ function buildOverviewWalletSection(context: WalletReadContext): OverviewEntry[]
   const lines = [
     overviewEntry(`State: ${context.localState.availability}`, context.localState.availability === "ready"),
     overviewEntry(`Root: ${walletRoot}`, walletRoot !== "none"),
-    overviewEntry(`Unlock: ${formatUnlockExpiry(context.localState.unlockUntilUnixMs)}`, context.localState.unlockUntilUnixMs !== null),
   ];
 
   if (context.localState.message !== null) {

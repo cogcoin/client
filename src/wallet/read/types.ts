@@ -13,7 +13,6 @@ import type { DomainRecord as LocalDomainRecord, WalletStateV1 } from "../types.
 
 export type WalletStateAvailability =
   | "uninitialized"
-  | "locked"
   | "ready"
   | "local-state-corrupt";
 
@@ -34,10 +33,8 @@ export interface WalletLocalStateStatus {
   walletRootId: string | null;
   state: WalletStateV1 | null;
   source: "primary" | "backup" | null;
-  unlockUntilUnixMs: number | null;
   hasPrimaryStateFile: boolean;
   hasBackupStateFile: boolean;
-  hasUnlockSessionFile: boolean;
   message: string | null;
 }
 

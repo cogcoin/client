@@ -352,11 +352,8 @@ export function classifyCliError(error: unknown): {
 
   if (
     message === "wallet_typed_confirmation_rejected"
-    || message === "wallet_export_overwrite_declined"
     || message === "wallet_delete_confirmation_required"
     || message === "wallet_prompt_value_required"
-    || message === "wallet_archive_passphrase_mismatch"
-    || message === "wallet_state_legacy_passphrase_unsupported"
     || message === "wallet_restore_mnemonic_invalid"
     || message === "wallet_restore_replace_confirmation_required"
     || message === "wallet_seed_name_invalid"
@@ -368,10 +365,6 @@ export function classifyCliError(error: unknown): {
 
   if (message === "not_found") {
     return { exitCode: 3, errorCode: "not_found", message: "Requested object not found." };
-  }
-
-  if (message === "wallet_import_archive_not_found") {
-    return { exitCode: 3, errorCode: message, message };
   }
 
   if (message === "wallet_seed_not_found") {
@@ -407,13 +400,9 @@ function isBlockedError(message: string): boolean {
   }
 
   if (
-    message === "wallet_locked"
-    || message === "wallet_uninitialized"
+    message === "wallet_uninitialized"
     || message === "local-state-corrupt"
     || message === "wallet_already_initialized"
-    || message === "wallet_export_core_replica_not_ready"
-    || message === "wallet_export_tip_mismatch"
-    || message === "wallet_export_requires_quiescent_local_state"
     || message === "wallet_restore_requires_main_wallet"
     || message === "wallet_seed_name_exists"
     || message === "wallet_seed_not_found"
@@ -427,7 +416,6 @@ function isBlockedError(message: string): boolean {
     || message === "indexer_daemon_schema_mismatch"
     || message === "mine_setup_requires_tty"
     || message === "mining_preemption_timeout"
-    || message === "wallet_state_legacy_passphrase_unsupported"
     || message === "wallet_secret_provider_linux_runtime_error"
     || message === "wallet_secret_provider_windows_runtime_error"
     || message === "wallet_secret_provider_windows_legacy_dpapi_unsupported"
@@ -474,14 +462,6 @@ export function createCliErrorPresentation(
     || errorCode === "wallet_secret_provider_linux_secret_service_unavailable"
   ) {
     return null;
-  }
-
-  if (errorCode === "wallet_locked") {
-    return {
-      what: "Wallet is locked.",
-      why: "This command needs access to the unlocked local wallet state before it can continue. Provider-backed wallets unlock on demand unless they were explicitly locked or the local secret store is unavailable.",
-      next: "Run `cogcoin unlock --for 15m` and retry.",
-    };
   }
 
   if (errorCode.endsWith("_sender_utxo_unavailable")) {
@@ -661,14 +641,6 @@ export function createCliErrorPresentation(
     };
   }
 
-  if (errorCode === "wallet_export_overwrite_declined") {
-    return {
-      what: "Archive overwrite was declined.",
-      why: "The export path already exists, and the command will not replace that archive unless you explicitly approve it.",
-      next: "Rerun the command and type `yes` when prompted if you want to overwrite the archive.",
-    };
-  }
-
   if (/^wallet_init_confirmation_failed_word_\d+$/.test(errorCode)) {
     return {
       what: "Mnemonic confirmation failed.",
@@ -709,7 +681,7 @@ export function createCliErrorPresentation(
     };
   }
 
-  if (errorCode === "cli_seed_not_supported_for_command" || errorCode === "wallet_init_seed_not_supported" || errorCode === "wallet_import_seed_not_supported") {
+  if (errorCode === "cli_seed_not_supported_for_command" || errorCode === "wallet_init_seed_not_supported") {
     return {
       what: "This command does not support `--seed`.",
       why: "Only wallet-aware commands are seed-selectable. Global lifecycle and shared service commands still operate on the shared local client state.",
@@ -730,6 +702,38 @@ export function createCliErrorPresentation(
       what: "`anchor clear` is no longer available.",
       why: "Anchor is now a direct single-transaction wallet mutation, so there is no separate cleanup command for reserved local workflow state.",
       next: "Retry with `cogcoin anchor <domain>` or inspect the domain with `cogcoin show <domain>`.",
+    };
+  }
+
+  if (errorCode === "cli_wallet_export_removed") {
+    return {
+      what: "`wallet export` is no longer available.",
+      why: "Portable encrypted wallet archives were removed from the client, so wallet state is no longer exported through a `.cogcoin` archive file.",
+      next: "Use the wallet mnemonic as the supported recovery path, or retry with another wallet command.",
+    };
+  }
+
+  if (errorCode === "cli_wallet_import_removed") {
+    return {
+      what: "`wallet import` is no longer available.",
+      why: "Portable encrypted wallet archives were removed from the client, so this version no longer imports wallet state from archive files.",
+      next: "Use `cogcoin restore --seed <name>` with the recovery mnemonic instead.",
+    };
+  }
+
+  if (errorCode === "cli_wallet_unlock_removed") {
+    return {
+      what: "`unlock` is no longer available.",
+      why: "Manual wallet lock and unlock commands were removed. Provider-backed wallet state now loads on demand whenever the local secret provider is available.",
+      next: "Retry the original wallet command directly, or inspect `cogcoin status` if local secret-provider access is failing.",
+    };
+  }
+
+  if (errorCode === "cli_wallet_lock_removed") {
+    return {
+      what: "`wallet lock` is no longer available.",
+      why: "Manual Cogcoin wallet locking was removed. The client no longer keeps a separate local lock state on top of the provider-backed wallet secret.",
+      next: "Retry without `wallet lock`, or use `cogcoin status` to inspect local wallet and service health.",
     };
   }
 
@@ -786,22 +790,6 @@ export function createCliErrorPresentation(
     };
   }
 
-  if (errorCode === "wallet_archive_passphrase_mismatch") {
-    return {
-      what: "Archive passphrases did not match.",
-      why: "The archive passphrase must be entered the same way twice so the wallet does not seal the archive with a typo.",
-      next: "Rerun the command and enter the same archive passphrase both times.",
-    };
-  }
-
-  if (errorCode === "wallet_state_legacy_passphrase_unsupported") {
-    return {
-      what: "Legacy local wallet-state passphrases are no longer supported.",
-      why: "This wallet still uses an older passphrase-wrapped local wallet-state format, but this version only supports provider-backed local wallet state and does not auto-migrate the old passphrase-protected envelope.",
-      next: "Recover or reimport the wallet on this version, then retry the command.",
-    };
-  }
-
   if (errorCode === "wallet_secret_provider_linux_runtime_error") {
     return {
       what: "Linux local wallet-secret access failed.",
@@ -831,22 +819,6 @@ export function createCliErrorPresentation(
       what: "Interactive terminal input is required.",
       why: "This command needs terminal input before it can continue safely.",
       next: "Rerun the command in an interactive terminal.",
-    };
-  }
-
-  if (errorCode === "wallet_import_archive_not_found") {
-    return {
-      what: "Wallet archive was not found.",
-      why: "The specified import archive path does not exist or is not readable from this machine.",
-      next: "Check the archive path and retry.",
-    };
-  }
-
-  if (errorCode === "wallet_export_requires_quiescent_local_state") {
-    return {
-      what: "Wallet export is blocked until local state is quiescent.",
-      why: "Portable export waits for mining, proactive families, and pending mutations to settle so the archive reflects trustworthy local state.",
-      next: "Wait for active local work to finish or repair it, then retry the export.",
     };
   }
 
@@ -1191,15 +1163,10 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
       return "cogcoin wallet delete";
     case "wallet-show-mnemonic":
       return "cogcoin wallet show-mnemonic";
-    case "unlock":
-    case "wallet-unlock":
-      return "cogcoin unlock";
     case "reset":
       return "cogcoin reset";
     case "repair":
       return "cogcoin repair";
-    case "wallet-lock":
-      return "cogcoin wallet lock";
     case "anchor":
     case "domain-anchor":
       return `cogcoin anchor ${args[0] ?? "<domain>"}`;
@@ -1372,17 +1339,8 @@ export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string |
       return "cogcoin/restore/v1";
     case "wallet-delete":
       return "cogcoin/wallet-delete/v1";
-    case "unlock":
-    case "wallet-unlock":
-      return "cogcoin/unlock/v1";
     case "reset":
       return "cogcoin/reset/v1";
-    case "wallet-export":
-      return "cogcoin/wallet-export/v1";
-    case "wallet-import":
-      return "cogcoin/wallet-import/v1";
-    case "wallet-lock":
-      return "cogcoin/wallet-lock/v1";
     case "repair":
       return "cogcoin/repair/v1";
     case "anchor":
@@ -1461,7 +1419,6 @@ export function resolvePreviewJsonSchema(parsed: ParsedCliArgs): string | null {
   const stableMiningControlSchema = resolveStableMiningControlJsonSchema(parsed);
 
   switch (parsed.command) {
-    case "wallet-lock":
     case "reset":
     case "repair":
     case "anchor":

@@ -380,7 +380,6 @@ export function buildStatusJson(context: WalletReadContext): ReadJsonResult<{
       wallet: {
         availability: context.localState.availability,
         walletRootId: context.model?.walletRootId ?? context.localState.walletRootId ?? context.nodeStatus?.walletRootId ?? null,
-        unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
         managedCoreReplicaStatus: context.nodeStatus?.walletReplica?.proofStatus ?? null,
       },
       btc: {
@@ -466,24 +465,19 @@ export function buildIdsJson(
 }
 
 export function buildWalletStatusJson(context: WalletReadContext): ReadJsonResult<{
-  lockState: string;
-  unlockUntilUnixMs: number | null;
+  availability: string;
   walletAddress: string | null;
   walletScriptPubKeyHex: string | null;
-  availability: Record<string, JsonAvailabilityEntry>;
+  services: Record<string, JsonAvailabilityEntry>;
 }> {
   const messages = createBaseMessages(context);
-  const lockState = context.localState.availability === "ready" && context.localState.unlockUntilUnixMs !== null
-    ? "unlocked"
-    : context.localState.availability;
   return {
     ...messages,
     data: {
-      lockState,
-      unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
+      availability: context.localState.availability,
       walletAddress: context.model?.walletAddress ?? null,
       walletScriptPubKeyHex: context.model?.walletScriptPubKeyHex ?? null,
-      availability: buildAvailability(context),
+      services: buildAvailability(context),
     },
   };
 }

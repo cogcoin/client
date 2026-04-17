@@ -1,8 +1,6 @@
 import { UNINITIALIZED_WALLET_ROOT_ID } from "../bitcoind/service-paths.js";
 import type { WalletRuntimePaths } from "./runtime.js";
-import { loadWalletExplicitLock } from "./state/explicit-lock.js";
 import type { WalletSecretProvider } from "./state/provider.js";
-import { loadUnlockSession } from "./state/session.js";
 import {
   extractWalletRootIdHintFromWalletStateEnvelope,
   loadRawWalletStateEnvelope,
@@ -11,8 +9,6 @@ import {
 
 export type WalletRootResolutionSource =
   | "wallet-state"
-  | "unlock-session"
-  | "explicit-lock"
   | "default-uninitialized";
 
 export interface WalletRootResolution {
@@ -27,8 +23,6 @@ export async function resolveWalletRootIdFromLocalArtifacts(options: {
     primaryPath: string;
     backupPath: string;
   }) => Promise<RawWalletStateEnvelope | null>;
-  loadUnlockSession?: typeof loadUnlockSession;
-  loadWalletExplicitLock?: typeof loadWalletExplicitLock;
 }): Promise<WalletRootResolution> {
   const rawEnvelope = await (options.loadRawWalletStateEnvelope ?? loadRawWalletStateEnvelope)({
     primaryPath: options.paths.walletStatePath,
@@ -40,31 +34,6 @@ export async function resolveWalletRootIdFromLocalArtifacts(options: {
     return {
       walletRootId: walletStateRootId,
       source: "wallet-state",
-    };
-  }
-
-  const session = await (options.loadUnlockSession ?? loadUnlockSession)(
-    options.paths.walletUnlockSessionPath,
-    {
-      provider: options.provider,
-    },
-  ).catch(() => null);
-
-  if (session !== null) {
-    return {
-      walletRootId: session.walletRootId,
-      source: "unlock-session",
-    };
-  }
-
-  const explicitLock = await (options.loadWalletExplicitLock ?? loadWalletExplicitLock)(
-    options.paths.walletExplicitLockPath,
-  ).catch(() => null);
-
-  if (explicitLock?.walletRootId) {
-    return {
-      walletRootId: explicitLock.walletRootId,
-      source: "explicit-lock",
     };
   }
 

@@ -1,4 +1,4 @@
-import type { PortableWalletArchivePayloadV1, WalletStateV1 } from "../src/wallet/types.js";
+import type { WalletStateV1 } from "../src/wallet/types.js";
 import type { MiningRuntimeStatusV1 } from "../src/wallet/mining/types.js";
 import type { MiningControlPlaneView } from "../src/wallet/mining/types.js";
 import { createWalletReadModel } from "../src/wallet/read/project.js";
@@ -80,38 +80,6 @@ export function createWalletState(overrides: Partial<WalletStateV1> = {}): Walle
     domains: [],
     miningState: createMiningState(),
     pendingMutations: [],
-    ...overrides,
-  };
-}
-
-export function createPortableArchivePayload(
-  overrides: Partial<PortableWalletArchivePayloadV1> = {},
-): PortableWalletArchivePayloadV1 {
-  return {
-    schemaVersion: 4,
-    exportedAtUnixMs: 1,
-    walletRootId: "wallet-root",
-    network: "mainnet",
-    anchorValueSats: 2_000,
-    localScriptPubKeyHexes: [],
-    mnemonic: {
-      phrase: `${"abandon ".repeat(23)}art`,
-      language: "english",
-    },
-    expected: {
-      masterFingerprintHex: "11".repeat(4),
-      accountPath: "m/84'/0'/0'",
-      accountXpub: "xpub-test",
-      publicExternalDescriptor: "wpkh(xpub-test/0/*)",
-      descriptorChecksum: "abcd1234",
-      rangeEnd: 10,
-      safetyMargin: 5,
-      walletAddress: "bc1qfunding",
-      walletScriptPubKeyHex: "0014" + "11".repeat(20),
-      walletBirthTime: 123,
-    },
-    domains: [],
-    miningState: createMiningState(),
     ...overrides,
   };
 }
@@ -216,7 +184,6 @@ export function createWalletReadContext(overrides: Record<string, unknown> = {})
     localState: {
       availability: "ready",
       state,
-      unlockUntilUnixMs: 1_000,
       message: null,
     },
     snapshot: null,

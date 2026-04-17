@@ -1,11 +1,12 @@
 import { acquireFileLock } from "../fs/lock.js";
-import { loadOrAutoUnlockWalletState, type WalletPrompter } from "../lifecycle.js";
+import type { WalletPrompter } from "../lifecycle.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../runtime.js";
 import {
   createDefaultWalletSecretProvider,
   createWalletSecretReference,
   type WalletSecretProvider,
 } from "../state/provider.js";
+import { loadWalletState } from "../state/storage.js";
 import type {
   WalletBitcoindStatus,
   WalletIndexerStatus,
@@ -504,16 +505,13 @@ export async function setupBuiltInMining(options: {
       paths,
       reason: "mine-setup",
     });
-    const unlocked = await loadOrAutoUnlockWalletState({
-      provider,
-      nowUnixMs,
-      paths,
-    });
-
     try {
-      if (unlocked === null) {
-        throw new Error("wallet_locked");
-      }
+      const loaded = await loadWalletState({
+        primaryPath: paths.walletStatePath,
+        backupPath: paths.walletStateBackupPath,
+      }, {
+        provider,
+      });
 
       await appendMiningEvent(
         paths.miningEventsPath,
@@ -530,7 +528,7 @@ export async function setupBuiltInMining(options: {
         await saveBuiltInMiningProviderConfig({
           path: paths.clientConfigPath,
           provider,
-          secretReference: createWalletSecretReference(unlocked.state.walletRootId),
+          secretReference: createWalletSecretReference(loaded.state.walletRootId),
           config,
         });
         await appendMiningEvent(
@@ -546,13 +544,11 @@ export async function setupBuiltInMining(options: {
           provider,
           localState: {
             availability: "ready",
-            walletRootId: unlocked.state.walletRootId,
-            state: unlocked.state,
-            source: unlocked.source,
-            unlockUntilUnixMs: unlocked.session.unlockUntilUnixMs,
+            walletRootId: loaded.state.walletRootId,
+            state: loaded.state,
+            source: loaded.source,
             hasPrimaryStateFile: true,
             hasBackupStateFile: true,
-            hasUnlockSessionFile: true,
             message: null,
           },
           bitcoind: {

@@ -1,11 +1,8 @@
-import { saveUnlockSession } from "./state/session.js";
 import { persistWalletStateUpdate } from "./descriptor-normalization.js";
 import type { WalletRuntimePaths } from "./runtime.js";
 import { normalizeMiningStateRecord } from "./mining/state.js";
 import type {
   OutpointRecord,
-  PortableWalletArchivePayloadV1,
-  UnlockSessionStateV1,
   WalletStateV1,
 } from "./types.js";
 import type { RpcListUnspentEntry } from "../bitcoind/types.js";
@@ -176,59 +173,6 @@ export function normalizeWalletStateRecord(rawState: LegacyWalletStateRecord): W
   };
 }
 
-export function normalizePortableWalletArchivePayload(
-  payload: Partial<PortableWalletArchivePayloadV1> & {
-    schemaVersion?: number;
-    hookClientState?: unknown;
-    localScriptPubKeyHexes?: string[] | null;
-    expected?: Partial<PortableWalletArchivePayloadV1["expected"]> & {
-      fundingAddress0?: string;
-      fundingScriptPubKeyHex0?: string;
-    };
-    identities?: Array<{ scriptPubKeyHex?: string | null }> | null;
-    domains?: LegacyWalletStateRecord["domains"];
-  },
-): PortableWalletArchivePayloadV1 {
-  const walletScriptPubKeyHex = payload.expected?.walletScriptPubKeyHex
-    ?? payload.expected?.fundingScriptPubKeyHex0
-    ?? "";
-  const walletAddress = payload.expected?.walletAddress
-    ?? payload.expected?.fundingAddress0
-    ?? "";
-  const localScriptPubKeyHexes = uniqueStrings([
-    walletScriptPubKeyHex,
-    ...((payload.localScriptPubKeyHexes ?? [])),
-    ...((payload.identities ?? []).map((identity) => identity.scriptPubKeyHex ?? "")),
-  ]);
-
-  return {
-    schemaVersion: 4,
-    exportedAtUnixMs: payload.exportedAtUnixMs ?? 0,
-    walletRootId: payload.walletRootId ?? "",
-    network: payload.network ?? "mainnet",
-    anchorValueSats: payload.anchorValueSats ?? 2_000,
-    localScriptPubKeyHexes,
-    mnemonic: {
-      phrase: payload.mnemonic?.phrase ?? "",
-      language: payload.mnemonic?.language ?? "english",
-    },
-    expected: {
-      masterFingerprintHex: payload.expected?.masterFingerprintHex ?? "",
-      accountPath: payload.expected?.accountPath ?? "",
-      accountXpub: payload.expected?.accountXpub ?? "",
-      publicExternalDescriptor: payload.expected?.publicExternalDescriptor ?? "",
-      descriptorChecksum: payload.expected?.descriptorChecksum ?? null,
-      rangeEnd: payload.expected?.rangeEnd ?? 0,
-      safetyMargin: payload.expected?.safetyMargin ?? 0,
-      walletAddress,
-      walletScriptPubKeyHex,
-      walletBirthTime: payload.expected?.walletBirthTime ?? 0,
-    },
-    domains: normalizeDomains(payload.domains),
-    miningState: normalizeMiningStateRecord(payload.miningState as WalletStateV1["miningState"]),
-  };
-}
-
 export function computeDesignatedProactiveReserveOutpoints(
   _state?: WalletStateV1,
   _spendableUtxos?: readonly RpcListUnspentEntry[],
@@ -260,14 +204,12 @@ export async function reconcilePersistentPolicyLocks(options: {
 export async function persistWalletCoinControlStateIfNeeded(options: {
   state: WalletStateV1;
   access: Parameters<typeof persistWalletStateUpdate>[0]["access"];
-  session?: UnlockSessionStateV1 | null;
   paths: WalletRuntimePaths;
   nowUnixMs: number;
   replacePrimary?: boolean;
   rpc: WalletCoinControlRpc;
 }): Promise<{
   changed: boolean;
-  session: UnlockSessionStateV1 | null;
   state: WalletStateV1;
 }> {
   const reconciled = await reconcilePersistentPolicyLocks({
@@ -279,7 +221,6 @@ export async function persistWalletCoinControlStateIfNeeded(options: {
   if (!reconciled.changed) {
     return {
       changed: false,
-      session: options.session ?? null,
       state: reconciled.state,
     };
   }
@@ -292,24 +233,8 @@ export async function persistWalletCoinControlStateIfNeeded(options: {
     replacePrimary: options.replacePrimary,
   });
 
-  if (options.session == null) {
-    return {
-      changed: true,
-      session: null,
-      state: nextState,
-    };
-  }
-
-  const nextSession: UnlockSessionStateV1 = {
-    ...options.session,
-    walletRootId: nextState.walletRootId,
-    sourceStateRevision: nextState.stateRevision,
-  };
-  await saveUnlockSession(options.paths.walletUnlockSessionPath, nextSession, options.access);
-
   return {
     changed: true,
-    session: nextSession,
     state: nextState,
   };
 }

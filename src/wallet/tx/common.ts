@@ -1,5 +1,3 @@
-import { randomBytes } from "node:crypto";
-
 import type {
   RpcDecodedPsbt,
   RpcFinalizePsbtResult,
@@ -12,12 +10,15 @@ import type {
   RpcWalletTransaction,
   RpcWalletProcessPsbtResult,
 } from "../../bitcoind/types.js";
-import { saveUnlockSession } from "../state/session.js";
 import { saveWalletState } from "../state/storage.js";
 import {
   createWalletSecretReference,
   type WalletSecretProvider,
 } from "../state/provider.js";
+import {
+  MANAGED_CORE_WALLET_UNLOCK_TIMEOUT_SECONDS,
+  withUnlockedManagedCoreWallet,
+} from "../managed-core-wallet.js";
 import { reconcilePersistentPolicyLocks as reconcileWalletCoinControlLocks } from "../coin-control.js";
 import type {
   OutpointRecord,
@@ -30,7 +31,6 @@ import type { WalletRuntimePaths } from "../runtime.js";
 import { requestMiningGenerationPreemption, type MiningPreemptionHandle } from "../mining/coordination.js";
 
 export const DEFAULT_WALLET_MUTATION_FEE_RATE_SAT_VB = 10;
-const MANAGED_CORE_WALLET_SIGNING_UNLOCK_TIMEOUT_SECONDS = 10;
 
 export interface MutationSender {
   localIndex: number;
@@ -104,35 +104,10 @@ function valueToSats(value: number | string): bigint {
     : btcNumberToSats(value);
 }
 
-function createUnlockSessionState(
-  state: WalletStateV1,
-  unlockUntilUnixMs: number,
-  nowUnixMs: number,
-): {
-  schemaVersion: 1;
-  walletRootId: string;
-  sessionId: string;
-  createdAtUnixMs: number;
-  unlockUntilUnixMs: number;
-  sourceStateRevision: number;
-  wrappedSessionKeyMaterial: string;
-} {
-  return {
-    schemaVersion: 1,
-    walletRootId: state.walletRootId,
-    sessionId: randomBytes(16).toString("hex"),
-    createdAtUnixMs: nowUnixMs,
-    unlockUntilUnixMs,
-    sourceStateRevision: state.stateRevision,
-    wrappedSessionKeyMaterial: createWalletSecretReference(state.walletRootId).keyId,
-  };
-}
-
 export async function saveWalletStatePreservingUnlock(options: {
   state: WalletStateV1;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
-  nowUnixMs: number;
+  nowUnixMs?: number;
   paths: WalletRuntimePaths;
 }): Promise<void> {
   const secretReference = createWalletSecretReference(options.state.walletRootId);
@@ -142,14 +117,6 @@ export async function saveWalletStatePreservingUnlock(options: {
       backupPath: options.paths.walletStateBackupPath,
     },
     options.state,
-    {
-      provider: options.provider,
-      secretReference,
-    },
-  );
-  await saveUnlockSession(
-    options.paths.walletUnlockSessionPath,
-    createUnlockSessionState(options.state, options.unlockUntilUnixMs, options.nowUnixMs),
     {
       provider: options.provider,
       secretReference,
@@ -389,7 +356,6 @@ export function assertWalletMutationContextReady(
   localState: {
     availability: "ready";
     state: WalletStateV1;
-    unlockUntilUnixMs: number;
   };
   snapshot: NonNullable<WalletReadContext["snapshot"]>;
   model: NonNullable<WalletReadContext["model"]>;
@@ -402,8 +368,8 @@ export function assertWalletMutationContextReady(
     throw new Error("local-state-corrupt");
   }
 
-  if (context.localState.availability !== "ready" || context.localState.state === null || context.localState.unlockUntilUnixMs === null) {
-    throw new Error("wallet_locked");
+  if (context.localState.availability !== "ready" || context.localState.state === null) {
+    throw new Error("wallet_secret_provider_unavailable");
   }
 
   if (context.bitcoind.health !== "ready") {
@@ -498,38 +464,47 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
       );
     const decoded = await options.rpc.decodePsbt(funded.psbt);
     options.validateFundedDraft(decoded, funded, validationPlan);
-    await options.rpc.walletPassphrase(
-      options.walletName,
-      options.state.managedCoreWallet.internalPassphrase,
-      MANAGED_CORE_WALLET_SIGNING_UNLOCK_TIMEOUT_SECONDS,
-    );
     let signed: RpcWalletProcessPsbtResult;
     let finalized: RpcFinalizePsbtResult;
+    let rawHex: string;
     let decodedRaw: RpcTransaction;
-    try {
-      signed = await options.rpc.walletProcessPsbt(options.walletName, funded.psbt, true, "DEFAULT");
-      finalized = await options.rpc.finalizePsbt(signed.psbt, true);
+    ({ signed, finalized, rawHex, decodedRaw } = await withUnlockedManagedCoreWallet({
+      rpc: options.rpc,
+      walletName: options.walletName,
+      internalPassphrase: options.state.managedCoreWallet.internalPassphrase,
+      timeoutSeconds: MANAGED_CORE_WALLET_UNLOCK_TIMEOUT_SECONDS,
+      run: async () => {
+        const signed = await options.rpc.walletProcessPsbt(options.walletName, funded.psbt, true, "DEFAULT");
+        const finalized = await options.rpc.finalizePsbt(signed.psbt, true);
 
-      if (!finalized.complete || finalized.hex == null) {
-        throw new Error(options.finalizeErrorCode);
-      }
+        if (!finalized.complete || finalized.hex == null) {
+          throw new Error(options.finalizeErrorCode);
+        }
 
-      decodedRaw = await options.rpc.decodeRawTransaction(finalized.hex);
-      const mempoolResult = await options.rpc.testMempoolAccept([finalized.hex]);
-      const accepted = mempoolResult[0];
+        const rawHex = finalized.hex;
 
-      if (accepted == null || !accepted.allowed) {
-        throw new Error(`${options.mempoolRejectPrefix}_${accepted?.["reject-reason"] ?? "unknown"}`);
-      }
-    } finally {
-      await options.rpc.walletLock(options.walletName).catch(() => undefined);
-    }
+        const decodedRaw = await options.rpc.decodeRawTransaction(rawHex);
+        const mempoolResult = await options.rpc.testMempoolAccept([rawHex]);
+        const accepted = mempoolResult[0];
+
+        if (accepted == null || !accepted.allowed) {
+          throw new Error(`${options.mempoolRejectPrefix}_${accepted?.["reject-reason"] ?? "unknown"}`);
+        }
+
+        return {
+          signed,
+          finalized,
+          rawHex,
+          decodedRaw,
+        };
+      },
+    }));
 
     return {
       funded,
       decoded,
       psbt: signed.psbt,
-      rawHex: finalized.hex,
+      rawHex,
       txid: decodedRaw.txid,
       wtxid: decodedRaw.hash ?? null,
       temporaryBuilderLockedOutpoints,

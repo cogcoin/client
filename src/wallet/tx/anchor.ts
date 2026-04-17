@@ -390,7 +390,6 @@ function anchorConfirmedOnSnapshot(options: {
 async function saveState(options: {
   state: WalletStateV1;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
 }): Promise<WalletStateV1> {
@@ -402,7 +401,6 @@ async function saveState(options: {
   await saveWalletStatePreservingUnlock({
     state: nextState,
     provider: options.provider,
-    unlockUntilUnixMs: options.unlockUntilUnixMs,
     nowUnixMs: options.nowUnixMs,
     paths: options.paths,
   });
@@ -413,7 +411,6 @@ async function reconcilePendingAnchorMutation(options: {
   state: WalletStateV1;
   mutation: PendingMutationRecord;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
   rpc: WalletAnchorRpcClient;
@@ -454,7 +451,6 @@ async function reconcilePendingAnchorMutation(options: {
       state: await saveState({
         state: nextState,
         provider: options.provider,
-        unlockUntilUnixMs: options.unlockUntilUnixMs,
         nowUnixMs: options.nowUnixMs,
         paths: options.paths,
       }),
@@ -486,7 +482,6 @@ async function reconcilePendingAnchorMutation(options: {
         state: await saveState({
           state: nextState,
           provider: options.provider,
-          unlockUntilUnixMs: options.unlockUntilUnixMs,
           nowUnixMs: options.nowUnixMs,
           paths: options.paths,
         }),
@@ -511,7 +506,6 @@ async function reconcilePendingAnchorMutation(options: {
       state: await saveState({
         state: nextState,
         provider: options.provider,
-        unlockUntilUnixMs: options.unlockUntilUnixMs,
         nowUnixMs: options.nowUnixMs,
         paths: options.paths,
       }),
@@ -568,7 +562,6 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
         prompter: options.prompter,
       });
       const state = readContext.localState.state;
-      const unlockUntilUnixMs = readContext.localState.unlockUntilUnixMs;
       const chainDomain = lookupDomain(readContext.snapshot.state, normalizedDomainName);
 
       if (chainDomain === null) {
@@ -615,7 +608,6 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
           state,
           mutation: existingMutation,
           provider,
-          unlockUntilUnixMs,
           nowUnixMs,
           paths,
           rpc,
@@ -659,7 +651,6 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
       nextState = await saveState({
         state: nextState,
         provider,
-        unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -699,7 +690,6 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
       nextState = await saveState({
         state: upsertPendingMutation(nextState, broadcastingMutation),
         provider,
-        unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -722,7 +712,6 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
           await saveState({
             state: upsertPendingMutation(nextState, unknownMutation),
             provider,
-            unlockUntilUnixMs,
             nowUnixMs,
             paths,
           });
@@ -737,7 +726,6 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
           await saveState({
             state: upsertPendingMutation(nextState, canceledMutation),
             provider,
-            unlockUntilUnixMs,
             nowUnixMs,
             paths,
           });
@@ -770,7 +758,6 @@ export async function anchorDomain(options: AnchorDomainOptions): Promise<Anchor
       nextState = await saveState({
         state: nextState,
         provider,
-        unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });

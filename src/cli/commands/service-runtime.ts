@@ -114,8 +114,6 @@ async function resolveEffectiveWalletRootId(
     paths: context.resolveWalletRuntimePaths(),
     provider: context.walletSecretProvider,
     loadRawWalletStateEnvelope: context.loadRawWalletStateEnvelope,
-    loadUnlockSession: context.loadUnlockSession,
-    loadWalletExplicitLock: context.loadWalletExplicitLock,
   }).catch(() => ({
     walletRootId: UNINITIALIZED_WALLET_ROOT_ID,
     source: "default-uninitialized",

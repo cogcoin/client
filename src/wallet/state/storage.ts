@@ -24,8 +24,6 @@ export interface RawWalletStateEnvelope {
   envelope: EncryptedEnvelopeV1;
 }
 
-export const LEGACY_WALLET_STATE_PASSPHRASE_ERROR = "wallet_state_legacy_passphrase_unsupported";
-
 export type WalletStateSaveAccess = {
   provider: WalletSecretProvider;
   secretReference: WalletSecretReference;
@@ -126,23 +124,10 @@ export function extractWalletRootIdHintFromWalletStateEnvelope(
   return keyId.slice(prefix.length);
 }
 
-export function isLegacyPassphraseWrappedWalletStateEnvelope(
-  envelope: EncryptedEnvelopeV1 | null,
-): boolean {
-  return envelope?.format === "cogcoin-local-wallet-state"
-    && envelope.secretProvider == null
-    && envelope.wrappedBy === "passphrase"
-    && envelope.argon2id != null;
-}
-
 async function loadWalletStateEnvelope(
   envelope: EncryptedEnvelopeV1,
   access: WalletStateLoadAccess,
 ): Promise<WalletStateV1> {
-  if (isLegacyPassphraseWrappedWalletStateEnvelope(envelope)) {
-    throw new Error(LEGACY_WALLET_STATE_PASSPHRASE_ERROR);
-  }
-
   return normalizeWalletStateRecord(
     await decryptJsonWithSecretProvider<WalletStateV1>(envelope, access.provider),
   );

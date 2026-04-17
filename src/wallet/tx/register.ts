@@ -504,7 +504,6 @@ function resolveRegisterSender(
     localState: {
       availability: "ready";
       state: WalletStateV1;
-      unlockUntilUnixMs: number;
     };
     snapshot: NonNullable<WalletReadContext["snapshot"]>;
     model: NonNullable<WalletReadContext["model"]>;
@@ -803,7 +802,6 @@ async function reconcilePendingRegisterMutation(options: {
   state: WalletStateV1;
   mutation: PendingMutationRecord;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
   rpc: WalletRegisterRpcClient;
@@ -838,7 +836,6 @@ async function reconcilePendingRegisterMutation(options: {
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider: options.provider,
-        unlockUntilUnixMs: options.unlockUntilUnixMs,
         nowUnixMs: options.nowUnixMs,
         paths: options.paths,
       });
@@ -863,7 +860,6 @@ async function reconcilePendingRegisterMutation(options: {
     await saveWalletStatePreservingUnlock({
       state: nextState,
       provider: options.provider,
-      unlockUntilUnixMs: options.unlockUntilUnixMs,
       nowUnixMs: options.nowUnixMs,
       paths: options.paths,
     });
@@ -891,7 +887,6 @@ async function reconcilePendingRegisterMutation(options: {
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider: options.provider,
-        unlockUntilUnixMs: options.unlockUntilUnixMs,
         nowUnixMs: options.nowUnixMs,
         paths: options.paths,
       });
@@ -918,7 +913,6 @@ async function reconcilePendingRegisterMutation(options: {
     await saveWalletStatePreservingUnlock({
       state: nextState,
       provider: options.provider,
-      unlockUntilUnixMs: options.unlockUntilUnixMs,
       nowUnixMs: options.nowUnixMs,
       paths: options.paths,
     });
@@ -967,7 +961,6 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
     try {
       assertWalletMutationContextReady(readContext, "wallet_register");
       const state = readContext.localState.state!;
-      const unlockUntilUnixMs = readContext.localState.unlockUntilUnixMs!;
       const senderResolution = resolveRegisterSender(readContext, normalizedDomainName, options.fromIdentity);
       const intentFingerprintHex = createRegisterIntentFingerprint({
         walletRootId: state.walletRootId,
@@ -999,7 +992,6 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
           state,
           mutation: existingMutation,
           provider,
-          unlockUntilUnixMs,
           nowUnixMs,
           paths,
           rpc,
@@ -1085,7 +1077,6 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1139,7 +1130,6 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1172,7 +1162,6 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
           await saveWalletStatePreservingUnlock({
             state: nextState,
             provider,
-            unlockUntilUnixMs,
             nowUnixMs,
             paths,
           });
@@ -1192,7 +1181,6 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
           await saveWalletStatePreservingUnlock({
             state: nextState,
             provider,
-            unlockUntilUnixMs,
             nowUnixMs,
             paths,
           });
@@ -1229,7 +1217,6 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });

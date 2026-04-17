@@ -5,13 +5,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
-  LEGACY_WALLET_STATE_PASSPHRASE_ERROR,
   extractWalletRootIdHintFromWalletStateEnvelope,
   loadRawWalletStateEnvelope,
   loadWalletState,
   saveWalletState,
 } from "../src/wallet/state/storage.js";
-import { encryptJsonWithPassphrase } from "../src/wallet/state/crypto.js";
 import {
   createMemoryWalletSecretProviderForTesting,
   createWalletSecretReference,
@@ -57,26 +55,29 @@ test("wallet state envelope exposes the wallet root id hint", async () => {
   assert.equal(extractWalletRootIdHintFromWalletStateEnvelope(raw?.envelope ?? null), "wallet-root-2");
 });
 
-test("wallet state storage rejects legacy passphrase-wrapped local envelopes", async () => {
+test("wallet state storage rejects envelopes without a secret provider", async () => {
   const dir = await mkdtemp(join(tmpdir(), "cogcoin-state-"));
   const paths = {
     primaryPath: join(dir, "wallet-state.enc"),
     backupPath: join(dir, "wallet-state.enc.bak"),
   };
   const provider = createMemoryWalletSecretProviderForTesting();
-  const envelope = await encryptJsonWithPassphrase(
-    createWalletState({ walletRootId: "wallet-root-legacy" }),
-    "passphrase",
-    {
-      format: "cogcoin-local-wallet-state",
-      walletRootIdHint: "wallet-root-legacy",
-    },
-  );
+  const envelope = {
+    format: "cogcoin-local-wallet-state",
+    version: 1,
+    cipher: "aes-256-gcm" as const,
+    wrappedBy: "passphrase",
+    walletRootIdHint: "wallet-root-legacy",
+    secretProvider: null,
+    nonce: "AAAAAAAAAAAAAAAA",
+    tag: "AAAAAAAAAAAAAAAAAAAAAA==",
+    ciphertext: "AA==",
+  };
 
   await writeFile(paths.primaryPath, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
 
   await assert.rejects(
     () => loadWalletState(paths, { provider }),
-    new RegExp(LEGACY_WALLET_STATE_PASSPHRASE_ERROR),
+    /wallet_envelope_missing_secret_provider/,
   );
 });

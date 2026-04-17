@@ -17,22 +17,16 @@ import { openSqliteStore } from "../sqlite/index.js";
 import type { ClientStoreAdapter } from "../types.js";
 import type { WalletRuntimePaths } from "../wallet/runtime.js";
 import type {
-  exportWallet,
   WalletPrompter,
-  importWallet,
   initializeWallet,
   deleteImportedWalletSeed,
-  lockWallet,
   previewResetWallet,
   repairWallet,
   resetWallet,
   restoreWalletFromMnemonic,
   showWalletMnemonic,
-  unlockWallet,
 } from "../wallet/lifecycle.js";
 import type { openWalletReadContext } from "../wallet/read/index.js";
-import { loadWalletExplicitLock } from "../wallet/state/explicit-lock.js";
-import { loadUnlockSession } from "../wallet/state/session.js";
 import { loadRawWalletStateEnvelope, loadWalletState } from "../wallet/state/storage.js";
 import type { WalletSecretProvider } from "../wallet/state/provider.js";
 import type {
@@ -84,7 +78,6 @@ export type CommandName =
   | "indexer-start"
   | "indexer-stop"
   | "indexer-status"
-  | "unlock"
   | "anchor"
   | "domain-anchor"
   | "register"
@@ -126,14 +119,10 @@ export type CommandName =
   | "mine-setup"
   | "mine-status"
   | "mine-log"
-  | "wallet-export"
-  | "wallet-import"
   | "wallet-init"
   | "wallet-delete"
   | "wallet-restore"
   | "wallet-show-mnemonic"
-  | "wallet-lock"
-  | "wallet-unlock"
   | "wallet-status"
   | "wallet-address"
   | "wallet-ids"
@@ -253,17 +242,11 @@ export interface CliRunnerContext {
   openWalletReadContext?: typeof openWalletReadContext;
   loadWalletState?: typeof loadWalletState;
   loadRawWalletStateEnvelope?: typeof loadRawWalletStateEnvelope;
-  loadUnlockSession?: typeof loadUnlockSession;
-  loadWalletExplicitLock?: typeof loadWalletExplicitLock;
   initializeWallet?: typeof initializeWallet;
   restoreWalletFromMnemonic?: typeof restoreWalletFromMnemonic;
   previewResetWallet?: typeof previewResetWallet;
-  exportWallet?: typeof exportWallet;
-  importWallet?: typeof importWallet;
   deleteImportedWalletSeed?: typeof deleteImportedWalletSeed;
   showWalletMnemonic?: typeof showWalletMnemonic;
-  unlockWallet?: typeof unlockWallet;
-  lockWallet?: typeof lockWallet;
   registerDomain?: typeof registerDomain;
   anchorDomain?: typeof anchorDomain;
   transferDomain?: typeof transferDomain;

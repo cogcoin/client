@@ -288,7 +288,6 @@ function resolveIdentitySender(
   selector: string | null | undefined,
 ): {
   state: WalletStateV1;
-  unlockUntilUnixMs: number;
   sender: MutationSender;
   anchorOutpoint: OutpointRecord | null;
   resolved: CogResolvedSummary;
@@ -303,7 +302,6 @@ function resolveIdentitySender(
 
   return {
     state: context.localState.state,
-    unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
     sender: createFundingMutationSender(context.localState.state),
     anchorOutpoint: null,
     resolved: {
@@ -320,7 +318,6 @@ function resolveClaimSender(
   reclaim: boolean,
 ): {
   state: WalletStateV1;
-  unlockUntilUnixMs: number;
   sender: MutationSender;
   anchorOutpoint: OutpointRecord | null;
   recipientDomainName: string | null;
@@ -359,7 +356,6 @@ function resolveClaimSender(
 
     return {
       state: context.localState.state,
-      unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
       sender: createFundingMutationSender(context.localState.state),
       anchorOutpoint: null,
       recipientDomainName,
@@ -394,7 +390,6 @@ function resolveClaimSender(
 
   return {
     state: context.localState.state,
-    unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
     sender: createFundingMutationSender(context.localState.state),
     anchorOutpoint: null,
     recipientDomainName,
@@ -637,7 +632,6 @@ async function reconcilePendingCogMutation(options: {
   state: WalletStateV1;
   mutation: PendingMutationRecord;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
   rpc: WalletCogRpcClient;
@@ -684,7 +678,6 @@ async function reconcilePendingCogMutation(options: {
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider: options.provider,
-        unlockUntilUnixMs: options.unlockUntilUnixMs,
         nowUnixMs: options.nowUnixMs,
         paths: options.paths,
       });
@@ -708,7 +701,6 @@ async function reconcilePendingCogMutation(options: {
     await saveWalletStatePreservingUnlock({
       state: nextState,
       provider: options.provider,
-      unlockUntilUnixMs: options.unlockUntilUnixMs,
       nowUnixMs: options.nowUnixMs,
       paths: options.paths,
     });
@@ -808,7 +800,6 @@ async function sendBuiltTransaction(options: {
   mutation: PendingMutationRecord;
   state: WalletStateV1;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
   errorPrefix: string;
@@ -830,7 +821,6 @@ async function sendBuiltTransaction(options: {
   await saveWalletStatePreservingUnlock({
     state: nextState,
     provider: options.provider,
-    unlockUntilUnixMs: options.unlockUntilUnixMs,
     nowUnixMs: options.nowUnixMs,
     paths: options.paths,
   });
@@ -858,7 +848,6 @@ async function sendBuiltTransaction(options: {
         await saveWalletStatePreservingUnlock({
           state: nextState,
           provider: options.provider,
-          unlockUntilUnixMs: options.unlockUntilUnixMs,
           nowUnixMs: options.nowUnixMs,
           paths: options.paths,
         });
@@ -879,7 +868,6 @@ async function sendBuiltTransaction(options: {
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider: options.provider,
-        unlockUntilUnixMs: options.unlockUntilUnixMs,
         nowUnixMs: options.nowUnixMs,
         paths: options.paths,
       });
@@ -901,7 +889,6 @@ async function sendBuiltTransaction(options: {
   await saveWalletStatePreservingUnlock({
     state: nextState,
     provider: options.provider,
-    unlockUntilUnixMs: options.unlockUntilUnixMs,
     nowUnixMs: options.nowUnixMs,
     paths: options.paths,
   });
@@ -960,7 +947,6 @@ export async function sendCog(options: SendCogOptions): Promise<CogMutationResul
           state: operation.state,
           mutation: existingMutation,
           provider,
-          unlockUntilUnixMs: operation.unlockUntilUnixMs,
           nowUnixMs,
           paths,
           rpc,
@@ -1007,7 +993,6 @@ export async function sendCog(options: SendCogOptions): Promise<CogMutationResul
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1035,7 +1020,6 @@ export async function sendCog(options: SendCogOptions): Promise<CogMutationResul
         mutation: nextState.pendingMutations!.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)!,
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
         errorPrefix: "wallet_send",
@@ -1135,7 +1119,6 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
           state: operation.state,
           mutation: existingMutation,
           provider,
-          unlockUntilUnixMs: operation.unlockUntilUnixMs,
           nowUnixMs,
           paths,
           rpc,
@@ -1191,7 +1174,6 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1224,7 +1206,6 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
         mutation: nextState.pendingMutations!.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)!,
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
         errorPrefix: "wallet_lock",
@@ -1299,7 +1280,6 @@ async function runClaimLikeMutation(
           state: operation.state,
           mutation: existingMutation,
           provider,
-          unlockUntilUnixMs: operation.unlockUntilUnixMs,
           nowUnixMs,
           paths,
           rpc,
@@ -1356,7 +1336,6 @@ async function runClaimLikeMutation(
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1384,7 +1363,6 @@ async function runClaimLikeMutation(
         mutation: nextState.pendingMutations!.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)!,
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
         errorPrefix,

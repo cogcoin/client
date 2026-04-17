@@ -262,16 +262,6 @@ export function buildReputationPreviewData(result: ReputationMutationResult) {
   };
 }
 
-export function buildWalletLockPreviewData(result: { walletRootId: string | null }) {
-  return buildStateChangePreviewData({
-    kind: "wallet-lock",
-    state: {
-      walletRootId: result.walletRootId,
-      locked: true,
-    },
-  });
-}
-
 export function buildResetPreviewData(result: WalletResetPreview) {
   return buildOperationPreviewData({
     kind: "reset",

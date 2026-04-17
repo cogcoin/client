@@ -21,22 +21,16 @@ import { openManagedBitcoindClient } from "../bitcoind/index.js";
 import { inspectPassiveClientStatus } from "../passive-status.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import {
-  exportWallet,
-  importWallet,
   initializeWallet,
   deleteImportedWalletSeed,
-  lockWallet,
   previewResetWallet,
   repairWallet,
   resetWallet,
   restoreWalletFromMnemonic,
   showWalletMnemonic,
-  unlockWallet,
 } from "../wallet/lifecycle.js";
 import { resolveWalletRuntimePathsForTesting } from "../wallet/runtime.js";
 import { openWalletReadContext } from "../wallet/read/index.js";
-import { loadWalletExplicitLock } from "../wallet/state/explicit-lock.js";
-import { loadUnlockSession } from "../wallet/state/session.js";
 import { loadRawWalletStateEnvelope, loadWalletState } from "../wallet/state/storage.js";
 import {
   followMiningLog,
@@ -118,12 +112,8 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     initializeWallet: overrides.initializeWallet ?? initializeWallet,
     restoreWalletFromMnemonic: overrides.restoreWalletFromMnemonic ?? restoreWalletFromMnemonic,
     previewResetWallet: overrides.previewResetWallet ?? previewResetWallet,
-    exportWallet: overrides.exportWallet ?? exportWallet,
-    importWallet: overrides.importWallet ?? importWallet,
     deleteImportedWalletSeed: overrides.deleteImportedWalletSeed ?? deleteImportedWalletSeed,
     showWalletMnemonic: overrides.showWalletMnemonic ?? showWalletMnemonic,
-    unlockWallet: overrides.unlockWallet ?? unlockWallet,
-    lockWallet: overrides.lockWallet ?? lockWallet,
     registerDomain: overrides.registerDomain ?? registerDomain,
     anchorDomain: overrides.anchorDomain ?? anchorDomain,
     transferDomain: overrides.transferDomain ?? transferDomain,
@@ -173,8 +163,6 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     readPackageVersion: overrides.readPackageVersion ?? readPackageVersionFromDisk,
     loadWalletState: overrides.loadWalletState ?? loadWalletState,
     loadRawWalletStateEnvelope: overrides.loadRawWalletStateEnvelope ?? loadRawWalletStateEnvelope,
-    loadUnlockSession: overrides.loadUnlockSession ?? loadUnlockSession,
-    loadWalletExplicitLock: overrides.loadWalletExplicitLock ?? loadWalletExplicitLock,
     resolveDefaultBitcoindDataDir: overrides.resolveDefaultBitcoindDataDir ?? resolveDefaultBitcoindDataDirForTesting,
     resolveDefaultClientDatabasePath: overrides.resolveDefaultClientDatabasePath ?? resolveDefaultClientDatabasePathForTesting,
     resolveUpdateCheckStatePath: overrides.resolveUpdateCheckStatePath ?? resolveDefaultUpdateCheckStatePathForTesting,

@@ -1,19 +1,13 @@
-import { parseUnlockDurationToMs } from "../../wallet/lifecycle.js";
 import {
   buildInitMutationData,
   buildResetMutationData,
   buildRestoreMutationData,
   buildWalletDeleteMutationData,
-  buildUnlockMutationData,
   buildRepairMutationData,
-  buildWalletExportMutationData,
-  buildWalletImportMutationData,
-  buildWalletLockMutationData,
 } from "../mutation-json.js";
 import {
   buildResetPreviewData,
   buildRepairPreviewData,
-  buildWalletLockPreviewData,
 } from "../preview-json.js";
 import { writeLine } from "../io.js";
 import { createTerminalPrompter } from "../prompt.js";
@@ -195,7 +189,6 @@ export async function runWalletAdminCommand(
         writeLine(context.stdout, `Wallet initialized.`);
         writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
         writeLine(context.stdout, `Funding address: ${result.fundingAddress}`);
-        writeLine(context.stdout, `Unlocked until: ${new Date(result.unlockUntilUnixMs).toISOString()}`);
         writeLine(context.stdout, `Quickstart: ${getFundingQuickstartGuidance()}`);
         for (const line of formatNextStepLines(nextSteps)) {
           writeLine(context.stdout, line);
@@ -231,7 +224,6 @@ export async function runWalletAdminCommand(
         writeLine(context.stdout, `Wallet seed "${result.seedName}" restored from mnemonic.`);
         writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
         writeLine(context.stdout, `Funding address: ${result.fundingAddress}`);
-        writeLine(context.stdout, `Unlocked until: ${new Date(result.unlockUntilUnixMs).toISOString()}`);
         writeLine(context.stdout, "Note: Managed Bitcoin/indexer bootstrap is deferred until you run `cogcoin sync`.");
         for (const warning of result.warnings ?? []) {
           writeLine(context.stdout, `Warning: ${warning}`);
@@ -278,28 +270,6 @@ export async function runWalletAdminCommand(
 
       const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
 
-      if (parsed.command === "unlock" || parsed.command === "wallet-unlock") {
-        const durationMs = parseUnlockDurationToMs(parsed.unlockFor);
-        const result = await context.unlockWallet({
-          provider,
-          unlockDurationMs: durationMs,
-          paths: runtimePaths,
-        });
-        if (parsed.outputMode === "json") {
-          writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-            resolveStableMutationJsonSchema(parsed)!,
-            describeCanonicalCommand(parsed),
-            "unlocked",
-            buildUnlockMutationData(result),
-          ));
-          return 0;
-        }
-        writeLine(context.stdout, `Wallet unlocked.`);
-        writeLine(context.stdout, `Wallet root: ${result.state.walletRootId}`);
-        writeLine(context.stdout, `Unlocked until: ${new Date(result.unlockUntilUnixMs).toISOString()}`);
-        return 0;
-      }
-
       if (parsed.command === "reset") {
         const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         if (parsed.outputMode === "preview-json") {
@@ -338,89 +308,6 @@ export async function runWalletAdminCommand(
         }
 
         writeLine(context.stdout, formatResetResultText(result));
-        return 0;
-      }
-
-      if (parsed.command === "wallet-export") {
-        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-        const prompter = createCommandPrompter(parsed, context);
-        const result = await context.exportWallet({
-          archivePath: parsed.args[0]!,
-          dataDir,
-          databasePath: dbPath,
-          provider,
-          prompter,
-          paths: runtimePaths,
-        });
-        if (parsed.outputMode === "json") {
-          writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-            resolveStableMutationJsonSchema(parsed)!,
-            describeCanonicalCommand(parsed),
-            "exported",
-            buildWalletExportMutationData(result),
-          ));
-          return 0;
-        }
-        writeLine(context.stdout, `Wallet exported.`);
-        writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
-        writeLine(context.stdout, `Archive path: ${result.archivePath}`);
-        return 0;
-      }
-
-      if (parsed.command === "wallet-import") {
-        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-        const prompter = createCommandPrompter(parsed, context);
-        const result = await context.importWallet({
-          archivePath: parsed.args[0]!,
-          dataDir,
-          databasePath: dbPath,
-          provider,
-          prompter,
-          paths: runtimePaths,
-        });
-        if (parsed.outputMode === "json") {
-          writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-            resolveStableMutationJsonSchema(parsed)!,
-            describeCanonicalCommand(parsed),
-            "imported",
-            buildWalletImportMutationData(result),
-          ));
-          return 0;
-        }
-        writeLine(context.stdout, `Wallet imported.`);
-        writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
-        writeLine(context.stdout, `Funding address: ${result.fundingAddress}`);
-        writeLine(context.stdout, `Unlocked until: ${new Date(result.unlockUntilUnixMs).toISOString()}`);
-        return 0;
-      }
-
-      if (parsed.command === "wallet-lock") {
-        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-        const result = await context.lockWallet({
-          dataDir,
-          provider,
-          paths: runtimePaths,
-        });
-        if (parsed.outputMode === "preview-json") {
-          writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
-            resolvePreviewJsonSchema(parsed)!,
-            describeCanonicalCommand(parsed),
-            "locked",
-            buildWalletLockPreviewData(result),
-          ));
-          return 0;
-        }
-        if (parsed.outputMode === "json") {
-          writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-            resolveStableMutationJsonSchema(parsed)!,
-            "cogcoin wallet lock",
-            "locked",
-            buildWalletLockMutationData(result),
-          ));
-          return 0;
-        }
-        writeLine(context.stdout, `Wallet locked.`);
-        writeLine(context.stdout, `Wallet root: ${result.walletRootId ?? "none"}`);
         return 0;
       }
 

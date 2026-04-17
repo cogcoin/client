@@ -88,7 +88,6 @@ interface BuiltDomainMarketTransaction extends BuiltWalletMutationTransaction {}
 interface DomainOperationContext {
   readContext: WalletReadContext;
   state: WalletStateV1;
-  unlockUntilUnixMs: number;
   sender: MutationSender;
   senderSelector: string;
   anchorOutpoint: OutpointRecord | null;
@@ -105,7 +104,6 @@ async function prepareDomainMarketBuildState(options: {
   walletName: string;
   state: WalletStateV1;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
   preflightCoinControl: boolean;
@@ -137,7 +135,6 @@ async function prepareDomainMarketBuildState(options: {
     await saveWalletStatePreservingUnlock({
       state: nextState,
       provider: options.provider,
-      unlockUntilUnixMs: options.unlockUntilUnixMs,
       nowUnixMs: options.nowUnixMs,
       paths: options.paths,
     });
@@ -448,7 +445,6 @@ function resolveOwnedDomainOperation(
   return {
     readContext: context,
     state: context.localState.state,
-    unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
     sender: createFundingMutationSender(context.localState.state),
     senderSelector: context.model.walletAddress,
     anchorOutpoint: null,
@@ -493,7 +489,6 @@ function resolveBuyOperation(
   return {
     readContext: context,
     state: context.localState.state,
-    unlockUntilUnixMs: context.localState.unlockUntilUnixMs,
     sender: createFundingMutationSender(context.localState.state),
     senderSelector: context.model.walletAddress,
     anchorOutpoint: null,
@@ -764,7 +759,6 @@ async function reconcilePendingMutation(options: {
   state: WalletStateV1;
   mutation: PendingMutationRecord;
   provider: WalletSecretProvider;
-  unlockUntilUnixMs: number;
   nowUnixMs: number;
   paths: WalletRuntimePaths;
   rpc: DomainMarketRpcClient;
@@ -807,7 +801,6 @@ async function reconcilePendingMutation(options: {
         await saveWalletStatePreservingUnlock({
           state: nextState,
           provider: options.provider,
-          unlockUntilUnixMs: options.unlockUntilUnixMs,
           nowUnixMs: options.nowUnixMs,
           paths: options.paths,
         });
@@ -822,7 +815,6 @@ async function reconcilePendingMutation(options: {
         await saveWalletStatePreservingUnlock({
           state: nextState,
           provider: options.provider,
-          unlockUntilUnixMs: options.unlockUntilUnixMs,
           nowUnixMs: options.nowUnixMs,
           paths: options.paths,
         });
@@ -842,7 +834,6 @@ async function reconcilePendingMutation(options: {
           await saveWalletStatePreservingUnlock({
             state: nextState,
             provider: options.provider,
-            unlockUntilUnixMs: options.unlockUntilUnixMs,
             nowUnixMs: options.nowUnixMs,
             paths: options.paths,
           });
@@ -858,7 +849,6 @@ async function reconcilePendingMutation(options: {
           await saveWalletStatePreservingUnlock({
             state: nextState,
             provider: options.provider,
-            unlockUntilUnixMs: options.unlockUntilUnixMs,
             nowUnixMs: options.nowUnixMs,
             paths: options.paths,
           });
@@ -872,7 +862,6 @@ async function reconcilePendingMutation(options: {
         await saveWalletStatePreservingUnlock({
           state: nextState,
           provider: options.provider,
-          unlockUntilUnixMs: options.unlockUntilUnixMs,
           nowUnixMs: options.nowUnixMs,
           paths: options.paths,
         });
@@ -896,7 +885,6 @@ async function reconcilePendingMutation(options: {
         await saveWalletStatePreservingUnlock({
           state: nextState,
           provider: options.provider,
-          unlockUntilUnixMs: options.unlockUntilUnixMs,
           nowUnixMs: options.nowUnixMs,
           paths: options.paths,
         });
@@ -911,7 +899,6 @@ async function reconcilePendingMutation(options: {
         await saveWalletStatePreservingUnlock({
           state: nextState,
           provider: options.provider,
-          unlockUntilUnixMs: options.unlockUntilUnixMs,
           nowUnixMs: options.nowUnixMs,
           paths: options.paths,
         });
@@ -942,7 +929,6 @@ async function reconcilePendingMutation(options: {
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider: options.provider,
-        unlockUntilUnixMs: options.unlockUntilUnixMs,
         nowUnixMs: options.nowUnixMs,
         paths: options.paths,
       });
@@ -964,7 +950,6 @@ async function reconcilePendingMutation(options: {
     await saveWalletStatePreservingUnlock({
       state: nextState,
       provider: options.provider,
-      unlockUntilUnixMs: options.unlockUntilUnixMs,
       nowUnixMs: options.nowUnixMs,
       paths: options.paths,
     });
@@ -1117,7 +1102,6 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
           state: operation.state,
           mutation: existingMutation,
           provider,
-          unlockUntilUnixMs: operation.unlockUntilUnixMs,
           nowUnixMs,
           paths,
           rpc,
@@ -1175,7 +1159,6 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1184,7 +1167,6 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
         walletName,
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
         preflightCoinControl: operation.anchorOutpoint === null
@@ -1225,7 +1207,6 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1253,7 +1234,6 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
             await saveWalletStatePreservingUnlock({
               state: nextState,
               provider,
-              unlockUntilUnixMs: operation.unlockUntilUnixMs,
               nowUnixMs,
               paths,
             });
@@ -1274,7 +1254,6 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
           await saveWalletStatePreservingUnlock({
             state: nextState,
             provider,
-            unlockUntilUnixMs: operation.unlockUntilUnixMs,
             nowUnixMs,
             paths,
           });
@@ -1308,7 +1287,6 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1385,7 +1363,6 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
           state: operation.state,
           mutation: existingMutation,
           provider,
-          unlockUntilUnixMs: operation.unlockUntilUnixMs,
           nowUnixMs,
           paths,
           rpc,
@@ -1443,7 +1420,6 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1452,7 +1428,6 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
         walletName,
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
         preflightCoinControl: operation.anchorOutpoint === null
@@ -1493,7 +1468,6 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1521,7 +1495,6 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
             await saveWalletStatePreservingUnlock({
               state: nextState,
               provider,
-              unlockUntilUnixMs: operation.unlockUntilUnixMs,
               nowUnixMs,
               paths,
             });
@@ -1542,7 +1515,6 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
           await saveWalletStatePreservingUnlock({
             state: nextState,
             provider,
-            unlockUntilUnixMs: operation.unlockUntilUnixMs,
             nowUnixMs,
             paths,
           });
@@ -1570,7 +1542,6 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1665,7 +1636,6 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
           state: operation.state,
           mutation: existingMutation,
           provider,
-          unlockUntilUnixMs: operation.unlockUntilUnixMs,
           nowUnixMs,
           paths,
           rpc,
@@ -1722,7 +1692,6 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1731,7 +1700,6 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
         walletName,
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
         preflightCoinControl: operation.anchorOutpoint === null
@@ -1778,7 +1746,6 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
@@ -1806,7 +1773,6 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
             await saveWalletStatePreservingUnlock({
               state: nextState,
               provider,
-              unlockUntilUnixMs: operation.unlockUntilUnixMs,
               nowUnixMs,
               paths,
             });
@@ -1827,7 +1793,6 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
           await saveWalletStatePreservingUnlock({
             state: nextState,
             provider,
-            unlockUntilUnixMs: operation.unlockUntilUnixMs,
             nowUnixMs,
             paths,
           });
@@ -1861,7 +1826,6 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
       await saveWalletStatePreservingUnlock({
         state: nextState,
         provider,
-        unlockUntilUnixMs: operation.unlockUntilUnixMs,
         nowUnixMs,
         paths,
       });
