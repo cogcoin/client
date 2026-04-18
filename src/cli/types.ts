@@ -30,6 +30,7 @@ import type { openWalletReadContext } from "../wallet/read/index.js";
 import { loadRawWalletStateEnvelope, loadWalletState } from "../wallet/state/storage.js";
 import type { WalletSecretProvider } from "../wallet/state/provider.js";
 import type {
+  ensureBuiltInMiningSetupIfNeeded,
   followMiningLog,
   inspectMiningControlPlane,
   readMiningLog,
@@ -277,6 +278,7 @@ export interface CliRunnerContext {
   giveReputation?: typeof giveReputation;
   revokeReputation?: typeof revokeReputation;
   inspectMiningControlPlane?: typeof inspectMiningControlPlane;
+  ensureBuiltInMiningSetupIfNeeded?: typeof ensureBuiltInMiningSetupIfNeeded;
   runForegroundMining?: typeof runForegroundMining;
   startBackgroundMining?: typeof startBackgroundMining;
   stopBackgroundMining?: typeof stopBackgroundMining;

@@ -14,6 +14,7 @@ export {
   setupBuiltInMining,
 } from "./control.js";
 export {
+  ensureBuiltInMiningSetupIfNeeded,
   runBackgroundMiningWorker,
   runForegroundMining,
   startBackgroundMining,

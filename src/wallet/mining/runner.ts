@@ -381,6 +381,7 @@ export interface RunForegroundMiningOptions extends RunnerDependencies {
   databasePath: string;
   provider?: WalletSecretProvider;
   prompter: WalletPrompter;
+  builtInSetupEnsured?: boolean;
   stdout?: { write(chunk: string): void };
   stderr?: { isTTY?: boolean; columns?: number; write(chunk: string): boolean | void };
   signal?: AbortSignal;
@@ -393,6 +394,7 @@ export interface StartBackgroundMiningOptions extends RunnerDependencies {
   databasePath: string;
   provider?: WalletSecretProvider;
   prompter: WalletPrompter;
+  builtInSetupEnsured?: boolean;
   paths?: WalletRuntimePaths;
 }
 
@@ -2745,7 +2747,7 @@ export async function publishCandidateForTesting(options: {
   return await publishCandidate(options);
 }
 
-async function ensureBuiltInSetupIfNeeded(options: {
+export async function ensureBuiltInMiningSetupIfNeeded(options: {
   provider: WalletSecretProvider;
   prompter: WalletPrompter;
   paths: WalletRuntimePaths;
@@ -3852,11 +3854,13 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
       throw new Error("Background mining is already active. Run `cogcoin mine stop` first.");
     }
 
-    const setupReady = await ensureBuiltInSetupIfNeeded({
-      provider,
-      prompter: options.prompter,
-      paths,
-    });
+    const setupReady = options.builtInSetupEnsured === true
+      ? true
+      : await ensureBuiltInMiningSetupIfNeeded({
+        provider,
+        prompter: options.prompter,
+        paths,
+      });
     if (!setupReady) {
       throw new Error("Built-in mining provider is not configured. Run `cogcoin mine setup`.");
     }
@@ -3929,11 +3933,13 @@ export async function startBackgroundMining(options: StartBackgroundMiningOption
       throw new Error("Foreground mining is already active. Interrupt that process directly.");
     }
 
-    const setupReady = await ensureBuiltInSetupIfNeeded({
-      provider,
-      prompter: options.prompter,
-      paths,
-    });
+    const setupReady = options.builtInSetupEnsured === true
+      ? true
+      : await ensureBuiltInMiningSetupIfNeeded({
+        provider,
+        prompter: options.prompter,
+        paths,
+      });
     if (!setupReady) {
       throw new Error("Built-in mining provider is not configured. Run `cogcoin mine setup`.");
     }

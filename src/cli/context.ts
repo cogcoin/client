@@ -33,6 +33,7 @@ import { resolveWalletRuntimePathsForTesting } from "../wallet/runtime.js";
 import { openWalletReadContext } from "../wallet/read/index.js";
 import { loadRawWalletStateEnvelope, loadWalletState } from "../wallet/state/storage.js";
 import {
+  ensureBuiltInMiningSetupIfNeeded,
   followMiningLog,
   inspectMiningControlPlane,
   readMiningLog,
@@ -138,6 +139,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     giveReputation: overrides.giveReputation ?? giveReputation,
     revokeReputation: overrides.revokeReputation ?? revokeReputation,
     inspectMiningControlPlane: overrides.inspectMiningControlPlane ?? inspectMiningControlPlane,
+    ensureBuiltInMiningSetupIfNeeded: overrides.ensureBuiltInMiningSetupIfNeeded ?? ensureBuiltInMiningSetupIfNeeded,
     runForegroundMining: overrides.runForegroundMining ?? runForegroundMining,
     startBackgroundMining: overrides.startBackgroundMining ?? startBackgroundMining,
     stopBackgroundMining: overrides.stopBackgroundMining ?? stopBackgroundMining,
