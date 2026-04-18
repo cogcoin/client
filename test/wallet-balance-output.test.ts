@@ -409,8 +409,14 @@ test("balance ready-state text suggests mine setup when an anchored root domain 
       provider: null,
       status: "missing",
       message: "Built-in mining provider is not configured yet.",
+      modelId: null,
+      effectiveModel: null,
       modelOverride: null,
+      modelSelectionSource: null,
       extraPromptConfigured: false,
+      usingDefaultModel: false,
+      estimatedDailyCostUsd: null,
+      estimatedDailyCostDisplay: null,
     },
   });
 

@@ -12,6 +12,7 @@ import {
   parseStrictJsonValue,
   stripMarkdownCodeFence,
 } from "./sentence-protocol.js";
+import { resolveBuiltInProviderModel } from "./provider-model.js";
 import type { WalletRuntimePaths } from "../runtime.js";
 import type { WalletSecretProvider } from "../state/provider.js";
 
@@ -26,13 +27,26 @@ export interface MiningSentenceSourceOptions {
 }
 
 class MiningProviderRequestError extends Error {
-  readonly providerState: "unavailable" | "rate-limited" | "auth-error";
+  readonly providerState: "unavailable" | "rate-limited" | "auth-error" | "not-found";
 
-  constructor(providerState: "unavailable" | "rate-limited" | "auth-error", message: string) {
+  constructor(providerState: "unavailable" | "rate-limited" | "auth-error" | "not-found", message: string) {
     super(message);
     this.name = "MiningProviderRequestError";
     this.providerState = providerState;
   }
+}
+
+function createBuiltInProviderNotFoundError(options: {
+  provider: MiningProviderKind;
+  model: string;
+  usingDefaultModel: boolean;
+}): MiningProviderRequestError {
+  const providerName = options.provider === "anthropic" ? "Anthropic" : "OpenAI";
+  const providerLabel = `The built-in ${providerName} mining provider`;
+  const message = options.usingDefaultModel
+    ? `${providerLabel} returned HTTP 404 for default model "${options.model}". ${providerName} may no longer serve that model. Rerun \`cogcoin mine setup\` to choose a valid override.`
+    : `${providerLabel} returned HTTP 404 for model "${options.model}". The configured model override may be invalid. Rerun \`cogcoin mine setup\` to clear or correct it.`;
+  return new MiningProviderRequestError("not-found", message);
 }
 
 function buildSystemPrompt(extraPrompt: string | null): string {
@@ -121,7 +135,10 @@ async function requestBuiltInSentences(options: {
 
   try {
     if (options.provider === "openai") {
-      const model = options.modelOverride ?? "gpt-5.4-mini";
+      const { effectiveModel: model, usingDefaultModel } = resolveBuiltInProviderModel(
+        options.provider,
+        options.modelOverride,
+      );
       const response = await fetchImpl("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: {
@@ -152,6 +169,14 @@ async function requestBuiltInSentences(options: {
         throw new MiningProviderRequestError("rate-limited", "The built-in OpenAI mining provider is rate limited.");
       }
 
+      if (response.status === 404) {
+        throw createBuiltInProviderNotFoundError({
+          provider: options.provider,
+          model,
+          usingDefaultModel,
+        });
+      }
+
       if (!response.ok) {
         throw new MiningProviderRequestError("unavailable", `The built-in OpenAI mining provider returned HTTP ${response.status}.`);
       }
@@ -167,7 +192,10 @@ async function requestBuiltInSentences(options: {
       });
     }
 
-    const model = options.modelOverride ?? "claude-sonnet-4-20250514";
+    const { effectiveModel: model, usingDefaultModel } = resolveBuiltInProviderModel(
+      options.provider,
+      options.modelOverride,
+    );
     const response = await fetchImpl("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -195,6 +223,14 @@ async function requestBuiltInSentences(options: {
 
     if (response.status === 429) {
       throw new MiningProviderRequestError("rate-limited", "The built-in Anthropic mining provider is rate limited.");
+    }
+
+    if (response.status === 404) {
+      throw createBuiltInProviderNotFoundError({
+        provider: options.provider,
+        model,
+        usingDefaultModel,
+      });
     }
 
     if (!response.ok) {

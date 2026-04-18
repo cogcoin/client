@@ -26,6 +26,7 @@ function normalizeLegacyMiningProviderState(
     case "unavailable":
     case "rate-limited":
     case "auth-error":
+    case "not-found":
       return raw;
     case "hook-error":
     case "n/a":

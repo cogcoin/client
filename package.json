@@ -1,6 +1,6 @@
 {
   "name": "@cogcoin/client",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Store-backed Cogcoin client with wallet flows, SQLite persistence, and managed Bitcoin Core integration.",
   "license": "MIT",
   "type": "module",
@@ -59,7 +59,8 @@
     "build": "rm -rf dist && node ./node_modules/typescript/bin/tsc -p tsconfig.json && node ./scripts/copy-static-assets.mjs build",
     "generate:default-snapshot-chunk-manifest": "node scripts/generate-default-snapshot-chunk-manifest.mjs",
     "verify:default-snapshot-chunk-manifest": "node scripts/generate-default-snapshot-chunk-manifest.mjs --check",
-    "test": "rm -rf .test-dist && node ./node_modules/typescript/bin/tsc -p tsconfig.test.json && node ./scripts/copy-static-assets.mjs test && node --test .test-dist/test/*.test.js"
+    "test": "rm -rf .test-dist && node ./node_modules/typescript/bin/tsc -p tsconfig.test.json && node ./scripts/copy-static-assets.mjs test && node --test .test-dist/test/*.test.js",
+    "test:mining": "rm -rf .test-dist && node ./node_modules/typescript/bin/tsc -p tsconfig.test-mining.json && node ./scripts/copy-static-assets.mjs test && node --test .test-dist/test/mining*.test.js"
   },
   "dependencies": {
     "@cogcoin/bitcoin": "30.2.0",

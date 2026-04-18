@@ -10,6 +10,8 @@ export const HELP_TEXT = `Usage: cogcoin <command> [options]
 Commands:
   status                  Show wallet-aware local service and chain status
   status --output json    Emit the stable v1 machine-readable status envelope
+  update                  Show the current and latest client versions and install updates
+  update --output json    Emit the stable v1 machine-readable update result envelope
   client unlock           Unlock password-protected local wallet secrets for a limited time
   client lock             Flush the cached client password unlock session
   client change-password  Rotate the client password that protects local wallet secrets
@@ -144,6 +146,7 @@ Examples:
 
 function supportsYesFlag(command: CommandName | null): boolean {
   switch (command) {
+    case "update":
     case "sync":
     case "follow":
     case "bitcoin-transfer":
@@ -1005,6 +1008,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
         || token === "restore"
         || token === "reset"
         || token === "repair"
+        || token === "update"
         || token === "sync"
         || token === "status"
         || token === "follow"
@@ -1040,6 +1044,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
   if (
     (command === "status"
+      || command === "update"
       || command === "bitcoin-start"
       || command === "bitcoin-stop"
       || command === "bitcoin-status"

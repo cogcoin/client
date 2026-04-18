@@ -17,6 +17,24 @@ function formatIndexerTruthSource(source: MiningControlPlaneView["runtime"]["ind
   }
 }
 
+function formatProviderModel(mining: MiningControlPlaneView): string | null {
+  if (mining.provider.effectiveModel === null || mining.provider.usingDefaultModel === null) {
+    return null;
+  }
+
+  return `${mining.provider.effectiveModel} (${mining.provider.usingDefaultModel ? "default" : "override"})`;
+}
+
+function formatProviderModelSource(mining: MiningControlPlaneView): string | null {
+  return mining.provider.modelSelectionSource;
+}
+
+function resolveProviderNotFoundNextStep(mining: MiningControlPlaneView): string {
+  return mining.provider.usingDefaultModel === false
+    ? "Next: run `cogcoin mine setup` and clear or correct the provider model."
+    : "Next: run `cogcoin mine setup` and choose a valid provider model.";
+}
+
 export function formatMiningSummaryLine(mining: MiningControlPlaneView): string {
   const provider = mining.provider.configured
     ? `${mining.provider.provider} configured`
@@ -47,6 +65,17 @@ export function formatMineStatusReport(mining: MiningControlPlaneView): string {
     lines.push(`Last suspend detected: ${formatMaybeIso(mining.runtime.lastSuspendDetectedAtUnixMs)}`);
   }
   lines.push(`Provider: ${mining.provider.configured ? `${mining.provider.provider} configured` : mining.provider.status}`);
+  const providerModel = formatProviderModel(mining);
+  if (providerModel !== null) {
+    lines.push(`Provider model: ${providerModel}`);
+  }
+  const providerModelSource = formatProviderModelSource(mining);
+  if (providerModelSource !== null) {
+    lines.push(`Provider model source: ${providerModelSource}`);
+  }
+  if (mining.provider.estimatedDailyCostDisplay !== null) {
+    lines.push(`Estimated daily cost: ${mining.provider.estimatedDailyCostDisplay}`);
+  }
   if (mining.provider.message !== null) {
     lines.push(`Provider note: ${mining.provider.message}`);
   }
@@ -107,6 +136,8 @@ export function formatMineStatusReport(mining: MiningControlPlaneView): string {
   }
   if (mining.runtime.miningState === "repair-required") {
     lines.push("Next: run `cogcoin repair` before mining again.");
+  } else if (mining.runtime.providerState === "not-found") {
+    lines.push(resolveProviderNotFoundNextStep(mining));
   } else if (mining.runtime.pauseReason === "zero-reward") {
     lines.push("Next: wait for the next positive-reward target height; mining resumes automatically.");
   } else if (mining.runtime.currentPhase === "resuming") {

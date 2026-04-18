@@ -164,6 +164,33 @@ export function createEmptyMiningFollowVisualizerState(): MiningFollowVisualizer
   };
 }
 
+function cloneMiningRuntimeSnapshot(snapshot: MiningRuntimeStatusV1): MiningRuntimeStatusV1 {
+  return {
+    ...snapshot,
+  };
+}
+
+function cloneMiningFollowVisualizerState(
+  state: MiningFollowVisualizerState,
+): MiningFollowVisualizerState {
+  return {
+    ...state,
+    visibleBlockTimesByHeight: { ...state.visibleBlockTimesByHeight },
+    settledBoardEntries: state.settledBoardEntries.map((entry) => ({
+      ...entry,
+    })),
+    provisionalRequiredWords: [...state.provisionalRequiredWords],
+    provisionalEntry: {
+      ...state.provisionalEntry,
+    },
+    recentWin: state.recentWin === null
+      ? null
+      : {
+        ...state.recentWin,
+      },
+  };
+}
+
 const VISUALIZER_PROGRESS_SNAPSHOT = {
   url: "",
   filename: "mining-follow-visualizer",
@@ -323,13 +350,13 @@ export class MiningFollowVisualizer {
       return;
     }
 
-    this.#latestSnapshot = snapshot;
+    this.#latestSnapshot = cloneMiningRuntimeSnapshot(snapshot);
     if (uiState !== undefined) {
-      this.#latestUiState = uiState;
+      this.#latestUiState = cloneMiningFollowVisualizerState(uiState);
     }
     replaceFollowBlockTimes(this.#scene, this.#latestUiState.visibleBlockTimesByHeight);
-    const indexedHeight = snapshot.indexerTipHeight ?? snapshot.coreBestHeight ?? null;
-    const nodeHeight = snapshot.coreBestHeight ?? indexedHeight;
+    const indexedHeight = this.#latestSnapshot.indexerTipHeight ?? this.#latestSnapshot.coreBestHeight ?? null;
+    const nodeHeight = this.#latestSnapshot.coreBestHeight ?? indexedHeight;
     syncFollowSceneState(this.#scene, {
       indexedHeight,
       nodeHeight,
@@ -384,7 +411,7 @@ export class MiningFollowVisualizer {
         artworkCogText: formatCompactCogBalanceText(uiState.balanceCogtoshi),
         artworkSatText: formatCompactSatBalanceText(uiState.balanceSats),
         extraLines: [
-          `✎ Block #${uiState.settledBlockHeight ?? "-----"} Sentences ✎`,
+          `✎ Indexed Block #${uiState.settledBlockHeight ?? "-----"} Sentences ✎`,
           "",
           ...Array.from({ length: MINING_SENTENCE_BOARD_SIZE }, (_value, index) => {
             const entry = uiState.settledBoardEntries[index];

@@ -18,6 +18,7 @@ import { runMiningRuntimeCommand } from "./commands/mining-runtime.js";
 import { runServiceRuntimeCommand } from "./commands/service-runtime.js";
 import { runStatusCommand } from "./commands/status.js";
 import { runSyncCommand } from "./commands/sync.js";
+import { runUpdateCommand } from "./commands/update.js";
 import { runWalletAdminCommand } from "./commands/wallet-admin.js";
 import { runWalletMutationCommand } from "./commands/wallet-mutation.js";
 import { runWalletReadCommand } from "./commands/wallet-read.js";
@@ -81,6 +82,10 @@ export async function runCli(
   await maybeNotifyAboutCliUpdate(parsed, context);
 
   try {
+    if (parsed.command === "update") {
+      return runUpdateCommand(parsed, context);
+    }
+
     if (commandUsesExistingWalletSeed(parsed)) {
       const mainPaths = context.resolveWalletRuntimePaths("main");
       const seedIndex = await loadWalletSeedIndex({

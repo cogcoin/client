@@ -44,6 +44,10 @@ export async function initializeState(
       throw new Error("client_store_tip_without_snapshot");
     }
 
+    // Repair orphaned rewind rows from previously interrupted writers so the
+    // next replay pass does not collide on a stale future height.
+    await store.deleteBlockRecordsAbove(-1);
+
     return {
       state: createInitialState(genesisParameters),
       tip: null,
@@ -62,6 +66,8 @@ export async function initializeState(
   }
 
   if (tip === null) {
+    await store.deleteBlockRecordsAbove(snapshot.height);
+
     return {
       state,
       tip: {
@@ -76,6 +82,8 @@ export async function initializeState(
   if (tip.height !== snapshot.height || tip.blockHashHex !== snapshot.blockHashHex) {
     throw new Error("client_store_snapshot_tip_mismatch");
   }
+
+  await store.deleteBlockRecordsAbove(tip.height);
 
   return { state, tip };
 }

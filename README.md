@@ -1,6 +1,6 @@
 # `@cogcoin/client`
 
-`@cogcoin/client@1.0.0` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
+`@cogcoin/client@1.0.2` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
 
 Use Node 22 or newer.
 
@@ -130,6 +130,7 @@ Managed node subpath:
 
 The installed `cogcoin` command covers the first-party local wallet and node workflow:
 
+- update commands such as `update` to compare the current CLI version with the latest npm release and install it
 - wallet lifecycle commands such as `init`, `restore`, `wallet delete`, `wallet show-mnemonic`, and `repair`
 - sync and service commands such as `status`, `sync`, `follow`, `bitcoin start`, `bitcoin stop`, `bitcoin status`, `indexer start`, `indexer stop`, and `indexer status`
 - domain and field commands such as `register`, `anchor`, `show`, `domains`, `fields`, `buy`, `sell`, and `transfer`

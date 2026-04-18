@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 
 import {
@@ -68,7 +69,7 @@ import {
   transferDomain,
 } from "../wallet/tx/index.js";
 import { createTerminalPrompter } from "./prompt.js";
-import type { CliRunnerContext, RequiredCliRunnerContext } from "./types.js";
+import type { CliRunnerContext, RequiredCliRunnerContext, WritableLike } from "./types.js";
 
 export async function readPackageVersionFromDisk(): Promise<string> {
   const packageUrls = [
@@ -95,6 +96,46 @@ export async function readPackageVersionFromDisk(): Promise<string> {
   return "0.0.0";
 }
 
+async function runGlobalClientUpdateInstall(options: {
+  stdout: WritableLike;
+  stderr: WritableLike;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const binary = process.platform === "win32" ? "npm.cmd" : "npm";
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(binary, ["install", "-g", "@cogcoin/client"], {
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    child.stdout?.on("data", (chunk) => {
+      options.stdout.write(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+    });
+    child.stderr?.on("data", (chunk) => {
+      options.stderr.write(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+    });
+
+    child.on("error", (error) => {
+      if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        reject(new Error("cli_update_npm_not_found"));
+        return;
+      }
+
+      reject(new Error("cli_update_install_failed"));
+    });
+
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error("cli_update_install_failed"));
+    });
+  });
+}
+
 export function createDefaultContext(overrides: CliRunnerContext = {}): RequiredCliRunnerContext {
   return {
     stdout: overrides.stdout ?? process.stdout,
@@ -107,6 +148,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
       process.exit(code);
     }),
     fetchImpl: overrides.fetchImpl ?? fetch,
+    runGlobalClientUpdateInstall: overrides.runGlobalClientUpdateInstall ?? runGlobalClientUpdateInstall,
     openSqliteStore: overrides.openSqliteStore ?? openSqliteStore,
     openManagedBitcoindClient: overrides.openManagedBitcoindClient ?? openManagedBitcoindClient,
     inspectPassiveClientStatus: overrides.inspectPassiveClientStatus ?? inspectPassiveClientStatus,

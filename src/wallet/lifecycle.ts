@@ -95,6 +95,16 @@ export interface WalletPrompter {
   writeLine(message: string): void;
   prompt(message: string): Promise<string>;
   promptHidden?(message: string): Promise<string>;
+  selectOption?(options: {
+    message: string;
+    options: Array<{
+      label: string;
+      description?: string | null;
+      value: string;
+    }>;
+    initialValue?: string | null;
+    footer?: string | null;
+  }): Promise<string>;
   clearSensitiveDisplay?(scope: "mnemonic-reveal" | "restore-mnemonic-entry"): void | Promise<void>;
 }
 

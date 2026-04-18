@@ -42,6 +42,7 @@ export type {
   ClientConfigV1,
   MiningControlPlaneView,
   MiningEventRecord,
+  MiningModelSelectionSource,
   MiningProviderConfigRecord,
   MiningProviderInspection,
   MiningRuntimeStatusV1,

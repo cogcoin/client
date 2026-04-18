@@ -7,6 +7,7 @@ import {
   type WalletSecretProvider,
 } from "../state/provider.js";
 import { loadWalletState } from "../state/storage.js";
+import { isRootDomainName } from "../read/filter.js";
 import type {
   WalletBitcoindStatus,
   WalletIndexerStatus,
@@ -27,6 +28,7 @@ import { loadClientConfig, saveBuiltInMiningProviderConfig } from "./config.js";
 import type {
   MiningControlPlaneView,
   MiningEventRecord,
+  MiningModelSelectionSource,
   MiningProviderConfigRecord,
   MiningProviderInspection,
   MiningRuntimeStatusV1,
@@ -35,6 +37,13 @@ import {
   MINING_WORKER_API_VERSION,
   MINING_WORKER_HEARTBEAT_STALE_MS,
 } from "./constants.js";
+import {
+  estimateBuiltInModelDailyCost,
+  getBuiltInProviderModelCatalog,
+  getRecommendedBuiltInProviderModel,
+  MINING_MODEL_DAILY_COST_ESTIMATE_ASSUMPTION,
+  resolveBuiltInProviderSelection,
+} from "./provider-model.js";
 
 function createMiningEvent(
   kind: string,
@@ -56,6 +65,7 @@ function createMiningEvent(
 function buildProviderInspection(options: {
   config: MiningProviderConfigRecord | null;
   error: string | null;
+  eligibleRootCount: number | null;
 }): MiningProviderInspection {
   if (options.error !== null) {
     return {
@@ -63,8 +73,14 @@ function buildProviderInspection(options: {
       provider: null,
       status: "error",
       message: options.error,
+      modelId: null,
+      effectiveModel: null,
       modelOverride: null,
+      modelSelectionSource: null,
+      usingDefaultModel: null,
       extraPromptConfigured: false,
+      estimatedDailyCostUsd: null,
+      estimatedDailyCostDisplay: null,
     };
   }
 
@@ -74,19 +90,61 @@ function buildProviderInspection(options: {
       provider: null,
       status: "missing",
       message: "Built-in mining provider is not configured yet.",
+      modelId: null,
+      effectiveModel: null,
       modelOverride: null,
+      modelSelectionSource: null,
+      usingDefaultModel: null,
       extraPromptConfigured: false,
+      estimatedDailyCostUsd: null,
+      estimatedDailyCostDisplay: null,
     };
   }
+
+  const selection = resolveBuiltInProviderSelection(options.config);
+  const estimate = options.eligibleRootCount === null
+    ? null
+    : estimateBuiltInModelDailyCost(
+      options.config.provider,
+      selection.modelId,
+      options.eligibleRootCount,
+    );
 
   return {
     configured: true,
     provider: options.config.provider,
     status: "ready",
     message: null,
+    modelId: selection.modelId,
+    effectiveModel: selection.effectiveModel,
     modelOverride: options.config.modelOverride,
+    modelSelectionSource: selection.modelSelectionSource,
+    usingDefaultModel: selection.usingDefaultModel,
     extraPromptConfigured: options.config.extraPrompt !== null && options.config.extraPrompt.length > 0,
+    estimatedDailyCostUsd: estimate?.estimatedDailyCostUsd ?? null,
+    estimatedDailyCostDisplay: estimate?.estimatedDailyCostDisplay ?? null,
   };
+}
+
+function countEligibleAnchoredRoots(localState: WalletLocalStateStatus): number | null {
+  const state = localState.state;
+
+  if (state === null || state === undefined) {
+    return null;
+  }
+
+  let count = 0;
+  for (const domain of state.domains) {
+    if (
+      isRootDomainName(domain.name)
+      && domain.canonicalChainStatus === "anchored"
+      && domain.currentOwnerScriptPubKeyHex === state.funding.scriptPubKeyHex
+    ) {
+      count += 1;
+    }
+  }
+
+  return count;
 }
 
 async function isProcessAlive(pid: number | null): Promise<boolean> {
@@ -109,10 +167,15 @@ async function isProcessAlive(pid: number | null): Promise<boolean> {
 function mapProviderState(
   provider: MiningProviderInspection,
   localState: WalletLocalStateStatus,
+  existingRuntime: MiningRuntimeStatusV1 | null,
 ): MiningRuntimeStatusV1["providerState"] {
   const miningState = localState.state?.miningState === undefined
     ? null
     : normalizeMiningStateRecord(localState.state.miningState);
+
+  if (existingRuntime?.currentPhase === "waiting-provider" && existingRuntime.providerState !== null) {
+    return existingRuntime.providerState;
+  }
 
   if (miningState?.state === "paused" && miningState.pauseReason?.includes("rate-limit")) {
     return "rate-limited";
@@ -258,7 +321,7 @@ async function buildMiningRuntimeSnapshot(options: {
     localState: options.localState,
     nowUnixMs: options.nowUnixMs,
   });
-  const providerState = mapProviderState(options.provider, options.localState);
+  const providerState = mapProviderState(options.provider, options.localState, options.existingRuntime);
   const indexerDaemonState = mapIndexerDaemonState(options.indexer);
   const corePublishState = mapCorePublishState(options.nodeHealth, options.nodeStatus);
   const existing = options.existingRuntime;
@@ -399,7 +462,10 @@ export async function inspectMiningControlPlane(options: {
     paths,
     provider,
   });
-  const providerInspection = buildProviderInspection(providerConfig);
+  const providerInspection = buildProviderInspection({
+    ...providerConfig,
+    eligibleRootCount: countEligibleAnchoredRoots(options.localState),
+  });
   const existingRuntime = await loadMiningRuntimeStatus(paths.miningStatusPath).catch(() => null);
   const lastEventAtUnixMs = await getLastMiningEventTimestamp(paths.miningEventsPath).catch(() => null);
   const nodeBestHeight = options.nodeStatus?.nodeBestHeight ?? null;
@@ -446,6 +512,21 @@ function normalizeProviderChoice(raw: string): "openai" | "anthropic" | null {
   return value === "openai" || value === "anthropic" ? value : null;
 }
 
+function describeModelSelectionSource(source: MiningModelSelectionSource): string {
+  switch (source) {
+    case "catalog":
+      return "catalog";
+    case "custom":
+      return "custom";
+    case "legacy-default":
+      return "legacy-default";
+    case "legacy-custom":
+      return "legacy-custom";
+    default:
+      throw new Error(`unsupported_model_selection_source:${String(source)}`);
+  }
+}
+
 function writeBuiltInMiningProviderDisclosure(prompter: WalletPrompter): void {
   prompter.writeLine("Built-in mining provider disclosure:");
   prompter.writeLine("The built-in mining provider will send the following to the selected provider:");
@@ -456,13 +537,80 @@ function writeBuiltInMiningProviderDisclosure(prompter: WalletPrompter): void {
   prompter.writeLine("- optional extra prompt when configured");
 }
 
-async function promptForMiningProviderConfig(prompter: WalletPrompter): Promise<MiningProviderConfigRecord> {
+async function promptForMiningProviderModelSelectionFallback(
+  prompter: WalletPrompter,
+  options: NonNullable<WalletPrompter["selectOption"]> extends (options: infer T) => Promise<string> ? T : never,
+): Promise<string> {
+  prompter.writeLine(options.message);
+  for (const [index, option] of options.options.entries()) {
+    const description = option.description == null || option.description.length === 0
+      ? ""
+      : ` - ${option.description}`;
+    prompter.writeLine(`${index + 1}. ${option.label}${description}`);
+  }
+  if (options.footer != null && options.footer.length > 0) {
+    prompter.writeLine(options.footer);
+  }
+
+  while (true) {
+    const answer = (await prompter.prompt(`Choice [1-${options.options.length}]: `)).trim();
+
+    if (/^(q|quit|esc|escape)$/i.test(answer)) {
+      throw new Error("mining_setup_canceled");
+    }
+
+    const choice = Number.parseInt(answer, 10);
+
+    if (Number.isInteger(choice) && choice >= 1 && choice <= options.options.length) {
+      return options.options[choice - 1]!.value;
+    }
+
+    prompter.writeLine(`Enter a number from 1 to ${options.options.length}, or q to cancel.`);
+  }
+}
+
+async function promptForMiningProviderConfig(
+  prompter: WalletPrompter,
+  eligibleRootCount: number,
+): Promise<MiningProviderConfigRecord> {
   writeBuiltInMiningProviderDisclosure(prompter);
   const providerInput = await prompter.prompt("Provider (openai/anthropic): ");
   const provider = normalizeProviderChoice(providerInput);
 
   if (provider === null) {
     throw new Error("mining_setup_invalid_provider");
+  }
+
+  const selectorOptions = {
+    message: "Choose the mining model:",
+    options: [
+      ...getBuiltInProviderModelCatalog(provider).map((entry) => {
+        const estimate = estimateBuiltInModelDailyCost(provider, entry.modelId, eligibleRootCount);
+        return {
+          label: entry.label,
+          description: `${entry.modelId} - ${estimate?.estimatedDailyCostDisplay ?? "n/a"}`,
+          value: entry.modelId,
+        };
+      }),
+      {
+        label: "Custom model ID...",
+        description: null,
+        value: "custom",
+      },
+    ],
+    initialValue: getRecommendedBuiltInProviderModel(provider),
+    footer: MINING_MODEL_DAILY_COST_ESTIMATE_ASSUMPTION,
+  };
+  const selectedModelId = prompter.selectOption == null
+    ? await promptForMiningProviderModelSelectionFallback(prompter, selectorOptions)
+    : await prompter.selectOption(selectorOptions);
+  const modelSelectionSource: MiningModelSelectionSource = selectedModelId === "custom" ? "custom" : "catalog";
+  const modelOverride = selectedModelId === "custom"
+    ? (await prompter.prompt("Custom model ID: ")).trim()
+    : selectedModelId;
+
+  if (modelOverride.length === 0) {
+    throw new Error("mining_setup_missing_model_id");
   }
 
   const apiKey = (await prompter.prompt("API key: ")).trim();
@@ -472,15 +620,22 @@ async function promptForMiningProviderConfig(prompter: WalletPrompter): Promise<
   }
 
   const extraPrompt = (await prompter.prompt("Extra prompt (optional, blank for none): ")).trim();
-  const modelOverride = (await prompter.prompt("Model override (optional, blank for default): ")).trim();
 
   return {
     provider,
     apiKey,
     extraPrompt: extraPrompt.length === 0 ? null : extraPrompt,
-    modelOverride: modelOverride.length === 0 ? null : modelOverride,
+    modelOverride,
+    modelSelectionSource,
     updatedAtUnixMs: Date.now(),
   };
+}
+
+export async function promptForMiningProviderConfigForTesting(
+  prompter: WalletPrompter,
+  eligibleRootCount: number,
+): Promise<MiningProviderConfigRecord> {
+  return await promptForMiningProviderConfig(prompter, eligibleRootCount);
 }
 
 export async function setupBuiltInMining(options: {
@@ -512,6 +667,18 @@ export async function setupBuiltInMining(options: {
       }, {
         provider,
       });
+      const localState: WalletLocalStateStatus = {
+        availability: "ready",
+        clientPasswordReadiness: "ready",
+        unlockRequired: false,
+        walletRootId: loaded.state.walletRootId,
+        state: loaded.state,
+        source: loaded.source,
+        hasPrimaryStateFile: true,
+        hasBackupStateFile: true,
+        message: null,
+      };
+      const eligibleRootCount = countEligibleAnchoredRoots(localState) ?? 0;
 
       await appendMiningEvent(
         paths.miningEventsPath,
@@ -523,7 +690,7 @@ export async function setupBuiltInMining(options: {
       );
 
       try {
-        const config = await promptForMiningProviderConfig(options.prompter);
+        const config = await promptForMiningProviderConfig(options.prompter, eligibleRootCount);
         config.updatedAtUnixMs = nowUnixMs;
         await saveBuiltInMiningProviderConfig({
           path: paths.clientConfigPath,
@@ -535,24 +702,14 @@ export async function setupBuiltInMining(options: {
           paths.miningEventsPath,
           createMiningEvent(
             "mine-setup-completed",
-            `Configured the built-in ${config.provider} mining provider.`,
+            `Configured the built-in ${config.provider} mining provider with model ${config.modelOverride} (${describeModelSelectionSource(config.modelSelectionSource)}).`,
             { timestampUnixMs: nowUnixMs },
           ),
         );
 
         return refreshMiningRuntimeStatus({
           provider,
-          localState: {
-            availability: "ready",
-            clientPasswordReadiness: "ready",
-            unlockRequired: false,
-            walletRootId: loaded.state.walletRootId,
-            state: loaded.state,
-            source: loaded.source,
-            hasPrimaryStateFile: true,
-            hasBackupStateFile: true,
-            message: null,
-          },
+          localState,
           bitcoind: {
             health: "unavailable",
             status: null,
@@ -574,6 +731,20 @@ export async function setupBuiltInMining(options: {
           paths,
         });
       } catch (error) {
+        if (error instanceof Error && error.message === "mining_setup_canceled") {
+          await appendMiningEvent(
+            paths.miningEventsPath,
+            createMiningEvent(
+              "mine-setup-canceled",
+              "Canceled built-in mining provider setup.",
+              {
+                level: "warn",
+                timestampUnixMs: nowUnixMs,
+              },
+            ),
+          );
+          throw error;
+        }
         await appendMiningEvent(
           paths.miningEventsPath,
           createMiningEvent(

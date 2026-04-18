@@ -4,6 +4,7 @@ import { writeJsonFileAtomic } from "../fs/atomic.js";
 import { decryptJsonWithSecretProvider, encryptJsonWithSecretProvider } from "../state/crypto.js";
 import type { WalletSecretProvider, WalletSecretReference } from "../state/provider.js";
 import type { ClientConfigV1, MiningProviderConfigRecord } from "./types.js";
+import { normalizeMiningProviderConfigRecord } from "./provider-model.js";
 
 function createEmptyClientConfig(): ClientConfigV1 {
   return {
@@ -14,16 +15,26 @@ function createEmptyClientConfig(): ClientConfigV1 {
   };
 }
 
+function normalizeClientConfig(config: ClientConfigV1): ClientConfigV1 {
+  return {
+    ...config,
+    mining: {
+      ...config.mining,
+      builtIn: config.mining.builtIn === null ? null : normalizeMiningProviderConfigRecord(config.mining.builtIn),
+    },
+  };
+}
+
 export async function loadClientConfig(options: {
   path: string;
   provider: WalletSecretProvider;
 }): Promise<ClientConfigV1 | null> {
   try {
     const raw = await readFile(options.path, "utf8");
-    return await decryptJsonWithSecretProvider<ClientConfigV1>(
+    return normalizeClientConfig(await decryptJsonWithSecretProvider<ClientConfigV1>(
       JSON.parse(raw) as Parameters<typeof decryptJsonWithSecretProvider<ClientConfigV1>>[0],
       options.provider,
-    );
+    ));
   } catch (error) {
     if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
       return null;
@@ -40,7 +51,7 @@ export async function saveClientConfig(options: {
   config: ClientConfigV1;
 }): Promise<void> {
   const envelope = await encryptJsonWithSecretProvider(
-    options.config,
+    normalizeClientConfig(options.config),
     options.provider,
     options.secretReference,
     {
@@ -61,7 +72,7 @@ export async function saveBuiltInMiningProviderConfig(options: {
     provider: options.provider,
   }).catch(() => null);
   const nextConfig = existing ?? createEmptyClientConfig();
-  nextConfig.mining.builtIn = options.config;
+  nextConfig.mining.builtIn = normalizeMiningProviderConfigRecord(options.config);
   await saveClientConfig({
     path: options.path,
     provider: options.provider,

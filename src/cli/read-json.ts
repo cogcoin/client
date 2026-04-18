@@ -365,6 +365,18 @@ function buildMiningStatusData(mining: MiningControlPlaneView) {
     phase: mining.runtime.currentPhase,
     lastSuspendDetectedAtUnixMs: mining.runtime.lastSuspendDetectedAtUnixMs,
     pauseReason: mining.runtime.pauseReason,
+    provider: {
+      configured: mining.provider.configured,
+      kind: mining.provider.provider,
+      modelId: mining.provider.modelId,
+      effectiveModel: mining.provider.effectiveModel,
+      modelOverride: mining.provider.modelOverride,
+      modelSelectionSource: mining.provider.modelSelectionSource,
+      usingDefaultModel: mining.provider.usingDefaultModel,
+      extraPromptConfigured: mining.provider.extraPromptConfigured,
+      estimatedDailyCostUsd: mining.provider.estimatedDailyCostUsd,
+      estimatedDailyCostDisplay: mining.provider.estimatedDailyCostDisplay,
+    },
     providerState: mining.runtime.providerState,
     tipsAligned: mining.runtime.tipsAligned,
     sameDomainCompetitorSuppressed: mining.runtime.sameDomainCompetitorSuppressed,
@@ -505,6 +517,19 @@ export function buildMineStatusJson(mining: MiningControlPlaneView): ReadJsonRes
   phase: string;
   lastSuspendDetectedAtUnixMs: number | null;
   pauseReason: string | null;
+  providerState: string | null;
+  provider: {
+    configured: boolean;
+    kind: string | null;
+    modelId: string | null;
+    effectiveModel: string | null;
+    modelOverride: string | null;
+    modelSelectionSource: string | null;
+    usingDefaultModel: boolean | null;
+    extraPromptConfigured: boolean;
+    estimatedDailyCostUsd: number | null;
+    estimatedDailyCostDisplay: string | null;
+  };
   fees: Record<string, unknown>;
   worker: Record<string, unknown>;
   availability: Record<string, JsonAvailabilityEntry>;
@@ -515,6 +540,12 @@ export function buildMineStatusJson(mining: MiningControlPlaneView): ReadJsonRes
 
   if (mining.runtime.miningState === "repair-required") {
     nextSteps.push("Run `cogcoin repair` before mining again.");
+  } else if (mining.runtime.providerState === "not-found") {
+    nextSteps.push(
+      mining.provider.usingDefaultModel === false
+        ? "Run `cogcoin mine setup` and clear or correct the provider model."
+        : "Run `cogcoin mine setup` and choose a valid provider model.",
+    );
   } else if (mining.runtime.pauseReason === "zero-reward") {
     nextSteps.push("Wait for the next positive-reward target height; mining resumes automatically.");
   } else if (mining.runtime.currentPhase === "resuming") {

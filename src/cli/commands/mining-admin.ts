@@ -71,6 +71,15 @@ export async function runMiningAdminCommand(
       }
       writeLine(context.stdout, "Built-in mining provider configured.");
       writeLine(context.stdout, `Provider: ${view.provider.provider ?? "unknown"}`);
+      if (view.provider.modelId !== null) {
+        writeLine(context.stdout, `Selected model: ${view.provider.modelId}`);
+      }
+      if (view.provider.modelSelectionSource !== null) {
+        writeLine(context.stdout, `Selection source: ${view.provider.modelSelectionSource}`);
+      }
+      if (view.provider.estimatedDailyCostDisplay !== null) {
+        writeLine(context.stdout, `Approximate daily cost: ${view.provider.estimatedDailyCostDisplay}`);
+      }
       for (const line of formatNextStepLines(nextSteps)) {
         writeLine(context.stdout, line);
       }

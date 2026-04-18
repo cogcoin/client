@@ -11,6 +11,7 @@ test("help text reflects the one-address model", () => {
   assert.match(HELP_TEXT, /bitcoin transfer <sats> --to <address>\s+Send plain BTC from the wallet address/i);
   assert.match(HELP_TEXT, /--satvb <n>\s+Override the mutation fee rate in sat\/vB/);
   assert.match(HELP_TEXT, /cogcoin register alpha --satvb 12\.5/);
+  assert.match(HELP_TEXT, /update\s+Show the current and latest client versions and install updates/i);
   assert.match(HELP_TEXT, /client unlock\s+Unlock password-protected local wallet secrets/i);
   assert.match(HELP_TEXT, /client lock\s+Flush the cached client password unlock session/i);
   assert.match(HELP_TEXT, /client change-password\s+Rotate the client password that protects local wallet secrets/i);
@@ -55,6 +56,13 @@ test("parser accepts client lock, unlock, and change-password", () => {
   assert.equal(parseCliArgs(["client", "unlock"]).command, "client-unlock");
   assert.equal(parseCliArgs(["client", "lock"]).command, "client-lock");
   assert.equal(parseCliArgs(["client", "change-password"]).command, "client-change-password");
+});
+
+test("parser accepts update with --yes", () => {
+  const parsed = parseCliArgs(["update", "--yes"]);
+
+  assert.equal(parsed.command, "update");
+  assert.equal(parsed.assumeYes, true);
 });
 
 test("parser accepts bitcoin transfer with --yes and --seed", () => {

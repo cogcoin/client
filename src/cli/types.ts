@@ -71,6 +71,7 @@ export type CommandName =
   | "restore"
   | "reset"
   | "repair"
+  | "update"
   | "sync"
   | "status"
   | "client-lock"
@@ -225,6 +226,11 @@ export interface CliRunnerContext {
   signalSource?: SignalSource;
   forceExit?: (code: number) => never | void;
   fetchImpl?: typeof fetch;
+  runGlobalClientUpdateInstall?: (options: {
+    stdout: WritableLike;
+    stderr: WritableLike;
+    env: NodeJS.ProcessEnv;
+  }) => Promise<void>;
   openSqliteStore?: typeof openSqliteStore;
   openManagedBitcoindClient?: (options: {
     store: ClientStoreAdapter;

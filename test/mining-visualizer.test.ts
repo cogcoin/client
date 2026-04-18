@@ -395,7 +395,7 @@ test("mining follow visualizer renders the current mined block board when settle
     artworkCogText: "1.2345 COG",
     artworkSatText: "42 SAT",
     extraLines: [
-      "✎ Block #100 Sentences ✎",
+      "✎ Indexed Block #100 Sentences ✎",
       "",
       "1. @alpha: alpha sentence",
       "2. @beta: beta sentence",
@@ -409,7 +409,52 @@ test("mining follow visualizer renders the current mined block board when settle
   });
 });
 
-test("mining follow visualizer leaves the current mined block rows blank until settled winners are available", () => {
+test("mining follow visualizer keeps the raw tip rail while labeling the older indexed sentence board explicitly", () => {
+  let capturedIndexedHeight: number | null | undefined;
+  let capturedNodeHeight: number | null | undefined;
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        cogcoinSyncHeight,
+        cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedIndexedHeight = cogcoinSyncHeight;
+        capturedNodeHeight = cogcoinSyncTargetHeight;
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot({
+    coreBestHeight: 102,
+    indexerTipHeight: 100,
+    currentPhase: "waiting-indexer",
+  }), createUiState({
+    settledBlockHeight: 100,
+    settledBoardEntries: [
+      { rank: 1, domainName: "alpha", sentence: "indexed sentence" },
+    ],
+  }));
+  visualizer.close();
+
+  assert.equal(capturedIndexedHeight, 100);
+  assert.equal(capturedNodeHeight, 102);
+  assert.equal(capturedOptions?.extraLines?.[0], "✎ Indexed Block #100 Sentences ✎");
+  assert.equal(capturedOptions?.extraLines?.[2], "1. @alpha: indexed sentence");
+});
+
+test("mining follow visualizer leaves the indexed block rows blank until settled winners are available", () => {
   let capturedOptions: FollowSceneRenderOptions | undefined;
 
   const visualizer = new MiningFollowVisualizer({
@@ -440,7 +485,7 @@ test("mining follow visualizer leaves the current mined block rows blank until s
   assert.equal(capturedOptions?.artworkCogText, null);
   assert.equal(capturedOptions?.artworkSatText, null);
   assert.deepEqual(capturedOptions?.extraLines, [
-    "✎ Block #101 Sentences ✎",
+    "✎ Indexed Block #101 Sentences ✎",
     "",
     "1.",
     "2.",
@@ -498,6 +543,203 @@ test("mining follow visualizer keeps a fixed-height frame across empty, unpublis
   assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[1A/g), expectedFrameHeight - 1);
   assert.equal(countMatches(stream.chunks[3] ?? "", /\u001B\[2K/g), expectedFrameHeight);
   assert.equal(countMatches(stream.chunks[3] ?? "", /\u001B\[1A/g), expectedFrameHeight - 1);
+});
+
+test("mining follow visualizer snapshots runtime and board state for ticker redraws", () => {
+  const clock = new FakeClock(0);
+  const renders: Array<{
+    message: string;
+    indexedHeight: number | null;
+    nodeHeight: number | null;
+    extraLines: string[];
+  }> = [];
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    clock,
+    platform: "linux",
+    env: { DISPLAY: ":0" },
+    rendererFactory: () => ({
+      renderFollowScene(
+        progress,
+        cogcoinSyncHeight,
+        cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        renders.push({
+          message: progress.message,
+          indexedHeight: cogcoinSyncHeight,
+          nodeHeight: cogcoinSyncTargetHeight,
+          extraLines: [...(renderOptions?.extraLines ?? [])],
+        });
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  const snapshot = createSnapshot({
+    currentPhase: "waiting",
+    note: "Stable runtime frame.",
+    coreBestHeight: 100,
+    indexerTipHeight: 100,
+  });
+  const uiState = createUiState({
+    settledBlockHeight: 100,
+    settledBoardEntries: [
+      { rank: 1, domainName: "alpha", sentence: "indexed sentence" },
+    ],
+    provisionalRequiredWords: ["under", "tree", "monkey", "youth", "basket"],
+    provisionalEntry: {
+      domainName: "local",
+      sentence: "local sentence",
+    },
+  });
+
+  visualizer.update(snapshot, uiState);
+  assert.equal(renders.length, 1);
+
+  snapshot.currentPhase = "publishing";
+  snapshot.note = "Mutated runtime frame.";
+  snapshot.coreBestHeight = 101;
+  snapshot.indexerTipHeight = 101;
+  uiState.settledBlockHeight = 101;
+  uiState.settledBoardEntries[0]!.sentence = "mutated sentence";
+  uiState.provisionalRequiredWords = ["raise", "shove", "only", "nasty", "wrestle"];
+  uiState.provisionalEntry = {
+    domainName: "mutated",
+    sentence: "mutated local sentence",
+  };
+
+  clock.advance(250);
+
+  assert.ok(renders.length >= 2);
+  assert.deepEqual(renders.at(-1), {
+    message: "Stable runtime frame.",
+    indexedHeight: 100,
+    nodeHeight: 100,
+    extraLines: [
+      "✎ Indexed Block #100 Sentences ✎",
+      "",
+      "1. @alpha: indexed sentence",
+      "2.",
+      "3.",
+      "4.",
+      "5.",
+      "----------",
+      "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
+      "@local: local sentence",
+    ],
+  });
+
+  visualizer.close();
+});
+
+test("mining follow visualizer snapshots queued headless redraw state", () => {
+  const clock = new FakeClock(1_700_000_000_000);
+  const renders: Array<{
+    message: string;
+    indexedHeight: number | null;
+    nodeHeight: number | null;
+    extraLines: string[];
+  }> = [];
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    clock,
+    platform: "linux",
+    env: {},
+    rendererFactory: () => ({
+      renderFollowScene(
+        progress,
+        cogcoinSyncHeight,
+        cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        renders.push({
+          message: progress.message,
+          indexedHeight: cogcoinSyncHeight,
+          nodeHeight: cogcoinSyncTargetHeight,
+          extraLines: [...(renderOptions?.extraLines ?? [])],
+        });
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot({
+    currentPhase: "generating",
+    note: "Initial frame.",
+  }), createUiState({
+    settledBlockHeight: 99,
+  }));
+  assert.equal(renders.length, 1);
+
+  clock.advance(500);
+
+  const queuedSnapshot = createSnapshot({
+    currentPhase: "waiting-indexer",
+    note: "Queued frame.",
+    coreBestHeight: 101,
+    indexerTipHeight: 100,
+  });
+  const queuedUiState = createUiState({
+    settledBlockHeight: 100,
+    settledBoardEntries: [
+      { rank: 1, domainName: "alpha", sentence: "queued sentence" },
+    ],
+    provisionalRequiredWords: ["under", "tree", "monkey", "youth", "basket"],
+    provisionalEntry: {
+      domainName: "local",
+      sentence: "queued local sentence",
+    },
+  });
+
+  visualizer.update(queuedSnapshot, queuedUiState);
+  assert.equal(renders.length, 1);
+
+  queuedSnapshot.note = "Mutated queued frame.";
+  queuedSnapshot.coreBestHeight = 102;
+  queuedSnapshot.indexerTipHeight = 102;
+  queuedUiState.settledBlockHeight = 101;
+  queuedUiState.settledBoardEntries[0]!.sentence = "mutated queued sentence";
+  queuedUiState.provisionalRequiredWords = ["raise", "shove", "only", "nasty", "wrestle"];
+  queuedUiState.provisionalEntry = {
+    domainName: "mutated",
+    sentence: "mutated queued local sentence",
+  };
+
+  clock.advance(500);
+
+  assert.equal(renders.length, 2);
+  assert.deepEqual(renders[1], {
+    message: "Queued frame.",
+    indexedHeight: 100,
+    nodeHeight: 101,
+    extraLines: [
+      "✎ Indexed Block #100 Sentences ✎",
+      "",
+      "1. @alpha: queued sentence",
+      "2.",
+      "3.",
+      "4.",
+      "5.",
+      "----------",
+      "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
+      "@local: queued local sentence",
+    ],
+  });
+
+  visualizer.close();
 });
 
 test("mining visualizer status prefers the recent settled win banner", () => {

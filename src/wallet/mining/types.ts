@@ -14,11 +14,14 @@ export type MiningServiceHealth =
 
 export type MiningProviderKind = "openai" | "anthropic";
 
+export type MiningModelSelectionSource = "catalog" | "custom" | "legacy-default" | "legacy-custom";
+
 export interface MiningProviderConfigRecord {
   provider: MiningProviderKind;
   apiKey: string;
   extraPrompt: string | null;
   modelOverride: string | null;
+  modelSelectionSource: MiningModelSelectionSource;
   updatedAtUnixMs: number;
 }
 
@@ -90,7 +93,7 @@ export interface MiningRuntimeStatusV1 {
     | "mempool-loading"
     | "healthy"
     | null;
-  providerState: "ready" | "backoff" | "unavailable" | "rate-limited" | "auth-error" | null;
+  providerState: "ready" | "backoff" | "unavailable" | "rate-limited" | "auth-error" | "not-found" | null;
   lastSuspendDetectedAtUnixMs: number | null;
   reconnectSettledUntilUnixMs: number | null;
   tipSettledUntilUnixMs: number | null;
@@ -157,8 +160,14 @@ export interface MiningProviderInspection {
   provider: MiningProviderKind | null;
   status: "ready" | "missing" | "error";
   message: string | null;
+  modelId: string | null;
+  effectiveModel: string | null;
   modelOverride: string | null;
+  modelSelectionSource: MiningModelSelectionSource | null;
+  usingDefaultModel: boolean | null;
   extraPromptConfigured: boolean;
+  estimatedDailyCostUsd: number | null;
+  estimatedDailyCostDisplay: string | null;
 }
 
 export interface MiningControlPlaneView {

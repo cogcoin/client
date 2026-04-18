@@ -12,8 +12,10 @@ import {
   buildStatusSnapshotForTesting,
   cacheSelectedCandidateForTipForTesting,
   createMiningLoopStateForTesting,
+  handleDetectedMiningRuntimeResumeForTesting,
   getSelectedCandidateForTipForTesting,
   loadMiningVisibleFollowBlockTimesForTesting,
+  performMiningCycleForTesting,
   publishCandidateForTesting,
   refreshMiningCandidateFromCurrentStateForTesting,
   resolveFundingDisplaySatsForTesting,
@@ -23,12 +25,17 @@ import {
   shouldKeepCurrentTipLivePublishForTesting,
   syncMiningVisualizerBlockTimesForTesting,
 } from "../src/wallet/mining/runner.js";
+import { loadMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
+import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
+import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
+import type { MiningFollowVisualizerState } from "../src/wallet/mining/visualizer.js";
 import {
   createMiningControlPlaneView,
   createMiningState,
   createWalletReadContext,
   createWalletState,
 } from "./current-model-helpers.js";
+import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 
 function createTestMiningCandidate(overrides: Record<string, unknown> = {}) {
   return {
@@ -55,6 +62,7 @@ function createTestMiningCandidate(overrides: Record<string, unknown> = {}) {
 function createReadyMiningReadContext(options: {
   miningState?: ReturnType<typeof createMiningState>;
   close?: () => Promise<void>;
+  readContextOverrides?: Record<string, unknown>;
 }) {
   const walletScriptPubKeyHex = "0014" + "11".repeat(20);
   const state = createWalletState({
@@ -115,9 +123,11 @@ function createReadyMiningReadContext(options: {
               anchorHeight: 100,
               endpoint: null,
             }]]),
+            balances: new Map(),
           },
           history: {
             foundingMessageByDomain: new Map(),
+            blockWinnersByHeight: new Map(),
           },
         },
       },
@@ -129,6 +139,7 @@ function createReadyMiningReadContext(options: {
           proofStatus: "ready",
         },
       },
+      ...options.readContextOverrides,
     }),
     close: options.close ?? (async () => undefined),
   } as any;
@@ -270,10 +281,18 @@ test("mining board resolves the latest mined block winners and falls back when d
   ]);
 });
 
-test("mining board header tracks the newest mined block and blanks rows until the snapshot catches up", () => {
+test("mining board stays pinned to the indexed snapshot block until the snapshot catches up", () => {
   const snapshotState = {
     consensus: {
-      domainsById: new Map(),
+      domainsById: new Map([
+        [7, {
+          domainId: 7,
+          name: "cogdemo",
+          anchored: true,
+          anchorHeight: 100,
+          endpoint: null,
+        }],
+      ]),
     },
     history: {
       blockWinnersByHeight: new Map([
@@ -300,8 +319,10 @@ test("mining board header tracks the newest mined block and blanks rows until th
     nodeBestHeight: 101,
   });
 
-  assert.equal(settled.settledBlockHeight, 101);
-  assert.deepEqual(settled.settledBoardEntries, []);
+  assert.equal(settled.settledBlockHeight, 100);
+  assert.deepEqual(settled.settledBoardEntries, [
+    { rank: 1, domainName: "cogdemo", sentence: "Settled prior block sentence." },
+  ]);
 });
 
 test("mining board falls back to the snapshot tip height when the node best height is unavailable", () => {
@@ -346,6 +367,382 @@ test("mining board falls back to the snapshot tip height when the node best heig
   assert.deepEqual(settled.settledBoardEntries, [
     { rank: 1, domainName: "cogdemo", sentence: "Snapshot tip sentence." },
   ]);
+});
+
+test("performMiningCycle keeps the mining board pinned to the indexed snapshot while resetting provisional tip state", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-board-stale");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const previousTipHash = "10".repeat(32);
+  const snapshotTipHash = "11".repeat(32);
+  const currentTipHash = "12".repeat(32);
+  const loopState = createMiningLoopStateForTesting();
+  loopState.currentTipKey = `${previousTipHash}:101`;
+  loopState.ui.settledBlockHeight = 100;
+  loopState.ui.settledBoardEntries = [
+    { rank: 1, domainName: "cogdemo", sentence: "Prior settled sentence." },
+  ];
+  loopState.ui.provisionalRequiredWords = ["under", "tree", "monkey", "youth", "basket"];
+  loopState.ui.provisionalEntry = {
+    domainName: "cogdemo",
+    sentence: "Old tip provisional sentence.",
+  };
+  loopState.ui.latestSentence = "Old tip provisional sentence.";
+
+  const rpc = {
+    async listLockUnspent() {
+      return [];
+    },
+    async lockUnspent() {
+      return true;
+    },
+    async listUnspent() {
+      return [];
+    },
+    async getBlock(hashHex: string) {
+      if (hashHex === snapshotTipHash) {
+        return {
+          hash: snapshotTipHash,
+          height: 100,
+          time: 1_700_000_100,
+        };
+      }
+
+      if (hashHex === currentTipHash) {
+        return {
+          hash: currentTipHash,
+          height: 101,
+          time: 1_700_000_101,
+        };
+      }
+
+      throw new Error(`unexpected getBlock ${hashHex}`);
+    },
+    async getBlockchainInfo() {
+      return {
+        blocks: 101,
+        bestblockhash: currentTipHash,
+        initialblockdownload: false,
+      };
+    },
+    async getNetworkInfo() {
+      return {
+        networkactive: true,
+        connections_out: 8,
+      };
+    },
+    async getMempoolInfo() {
+      return {
+        loaded: true,
+      };
+    },
+  };
+
+  const catchingUpContext = createReadyMiningReadContext({
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+    readContextOverrides: {
+      snapshot: {
+        tip: {
+          height: 100,
+          blockHashHex: snapshotTipHash,
+          previousHashHex: null,
+          stateHashHex: null,
+        },
+        state: {
+          consensus: {
+            domainIdsByName: new Map([["cogdemo", 7]]),
+            domainsById: new Map([[7, {
+              domainId: 7,
+              name: "cogdemo",
+              anchored: true,
+              anchorHeight: 100,
+              endpoint: null,
+            }]]),
+            balances: new Map(),
+          },
+          history: {
+            foundingMessageByDomain: new Map(),
+            blockWinnersByHeight: new Map([
+              [100, [{
+                height: 100,
+                rank: 1,
+                domainId: 7,
+                creditedScriptPubKeyHex: "0014" + "11".repeat(20),
+                rewardCogtoshi: 123_000_000n,
+                canonicalBlend: 1000n,
+                sentenceHex: "",
+                sentenceText: "Prior settled sentence.",
+                txIndex: 0,
+                txidHex: "aa".repeat(32),
+              }]],
+            ]),
+          },
+        },
+      },
+      indexer: {
+        health: "catching-up",
+        message: "Indexer daemon is still catching up to the managed Bitcoin tip.",
+        status: null,
+        source: "lease",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-100",
+        openedAtUnixMs: 1,
+        snapshotTip: {
+          height: 100,
+          blockHashHex: snapshotTipHash,
+          previousHashHex: null,
+          stateHashHex: null,
+        },
+      },
+      nodeStatus: {
+        chain: "mainnet",
+        nodeBestHeight: 101,
+        nodeBestHashHex: currentTipHash,
+        walletReplica: {
+          proofStatus: "ready",
+        },
+      },
+      model: {
+        walletScriptPubKeyHex: "0014" + "11".repeat(20),
+        domains: [],
+      },
+    },
+  });
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => catchingUpContext,
+    attachService: async () => ({ rpc: {} } as any),
+    rpcFactory: () => rpc as any,
+    loopState,
+  });
+
+  const waitingSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(waitingSnapshot?.currentPhase, "waiting-indexer");
+  assert.equal(loopState.ui.settledBlockHeight, 100);
+  assert.deepEqual(loopState.ui.settledBoardEntries, [
+    { rank: 1, domainName: "cogdemo", sentence: "Prior settled sentence." },
+  ]);
+  assert.deepEqual(loopState.ui.provisionalRequiredWords, []);
+  assert.deepEqual(loopState.ui.provisionalEntry, {
+    domainName: null,
+    sentence: null,
+  });
+  assert.equal(loopState.ui.latestSentence, null);
+
+  const syncedContext = createReadyMiningReadContext({
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+    readContextOverrides: {
+      snapshot: {
+        tip: {
+          height: 101,
+          blockHashHex: currentTipHash,
+          previousHashHex: snapshotTipHash,
+          stateHashHex: null,
+        },
+        state: {
+          consensus: {
+            domainIdsByName: new Map([["cogdemo", 7]]),
+            domainsById: new Map([[7, {
+              domainId: 7,
+              name: "cogdemo",
+              anchored: true,
+              anchorHeight: 100,
+              endpoint: null,
+            }]]),
+            balances: new Map(),
+          },
+          history: {
+            foundingMessageByDomain: new Map(),
+            blockWinnersByHeight: new Map([
+              [101, [{
+                height: 101,
+                rank: 1,
+                domainId: 7,
+                creditedScriptPubKeyHex: "0014" + "11".repeat(20),
+                rewardCogtoshi: 123_000_000n,
+                canonicalBlend: 1001n,
+                sentenceHex: "",
+                sentenceText: "Caught-up settled sentence.",
+                txIndex: 0,
+                txidHex: "bb".repeat(32),
+              }]],
+            ]),
+          },
+        },
+      },
+      indexer: {
+        health: "synced",
+        message: null,
+        status: null,
+        source: "lease",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-101",
+        openedAtUnixMs: 2,
+        snapshotTip: {
+          height: 101,
+          blockHashHex: currentTipHash,
+          previousHashHex: snapshotTipHash,
+          stateHashHex: null,
+        },
+      },
+      nodeStatus: {
+        chain: "mainnet",
+        nodeBestHeight: 101,
+        nodeBestHashHex: currentTipHash,
+        walletReplica: {
+          proofStatus: "ready",
+        },
+      },
+      model: {
+        walletScriptPubKeyHex: "0014" + "11".repeat(20),
+        domains: [],
+      },
+    },
+  });
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => syncedContext,
+    attachService: async () => ({ rpc: {} } as any),
+    rpcFactory: () => rpc as any,
+    loopState,
+  });
+
+  assert.equal(loopState.ui.settledBlockHeight, 101);
+  assert.deepEqual(loopState.ui.settledBoardEntries, [
+    { rank: 1, domainName: "cogdemo", sentence: "Caught-up settled sentence." },
+  ]);
+});
+
+test("resume refresh passes a freshly indexed board state to the visualizer", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-resume-board");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const snapshotTipHash = "11".repeat(32);
+  let capturedUiState: { settledBlockHeight: number | null; settledBoardEntries: Array<{ rank: number; domainName: string; sentence: string }> } | null = null;
+
+  await handleDetectedMiningRuntimeResumeForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    detectedAtUnixMs: 1_700_000_999,
+    openReadContext: async () => createReadyMiningReadContext({
+      miningState: createMiningState({
+        livePublishInMempool: false,
+      }),
+      readContextOverrides: {
+        snapshot: {
+          tip: {
+            height: 100,
+            blockHashHex: snapshotTipHash,
+            previousHashHex: null,
+            stateHashHex: null,
+          },
+          state: {
+            consensus: {
+              domainIdsByName: new Map([["cogdemo", 7]]),
+              domainsById: new Map([[7, {
+                domainId: 7,
+                name: "cogdemo",
+                anchored: true,
+                anchorHeight: 100,
+                endpoint: null,
+              }]]),
+              balances: new Map(),
+            },
+            history: {
+              foundingMessageByDomain: new Map(),
+              blockWinnersByHeight: new Map([
+                [100, [{
+                  height: 100,
+                  rank: 1,
+                  domainId: 7,
+                  creditedScriptPubKeyHex: "0014" + "11".repeat(20),
+                  rewardCogtoshi: 123_000_000n,
+                  canonicalBlend: 1000n,
+                  sentenceHex: "",
+                  sentenceText: "Indexed settled sentence.",
+                  txIndex: 0,
+                  txidHex: "aa".repeat(32),
+                }]],
+              ]),
+            },
+          },
+        },
+        indexer: {
+          health: "catching-up",
+          message: "Indexer daemon is still catching up to the managed Bitcoin tip.",
+          status: null,
+          source: "lease",
+          daemonInstanceId: "daemon-1",
+          snapshotSeq: "seq-100",
+          openedAtUnixMs: 1,
+          snapshotTip: {
+            height: 100,
+            blockHashHex: snapshotTipHash,
+            previousHashHex: null,
+            stateHashHex: null,
+          },
+        },
+        nodeStatus: {
+          chain: "mainnet",
+          nodeBestHeight: 101,
+          nodeBestHashHex: "12".repeat(32),
+          walletReplica: {
+            proofStatus: "ready",
+          },
+        },
+        model: {
+          walletScriptPubKeyHex: "0014" + "11".repeat(20),
+          domains: [],
+        },
+      },
+    }),
+    visualizer: {
+      update(_snapshot: unknown, uiState: MiningFollowVisualizerState | undefined) {
+        capturedUiState = uiState === undefined
+          ? null
+          : {
+            settledBlockHeight: uiState.settledBlockHeight,
+            settledBoardEntries: uiState.settledBoardEntries,
+          };
+      },
+    } as any,
+  });
+
+  assert.deepEqual(capturedUiState, {
+    settledBlockHeight: 100,
+    settledBoardEntries: [
+      { rank: 1, domainName: "cogdemo", sentence: "Indexed settled sentence." },
+    ],
+  });
 });
 
 test("publish-time candidate refresh updates sender metadata from current state", () => {

@@ -342,6 +342,8 @@ export function classifyCliError(error: unknown): {
   if (
     message === "mining_setup_invalid_provider"
     || message === "mining_setup_missing_api_key"
+    || message === "mining_setup_missing_model_id"
+    || message === "mining_setup_canceled"
   ) {
     return { exitCode: 2, errorCode: message, message };
   }
@@ -798,6 +800,22 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode === "mining_setup_missing_model_id") {
+    return {
+      what: "Mining model ID is required.",
+      why: "Built-in mining setup cannot save a custom mining model choice unless it has a non-empty model ID.",
+      next: "Rerun `cogcoin mine setup`, choose `Custom model ID...`, and enter the model ID when prompted.",
+    };
+  }
+
+  if (errorCode === "mining_setup_canceled") {
+    return {
+      what: "Mining setup was canceled.",
+      why: "The interactive mining-model selection was canceled before any provider configuration was saved.",
+      next: "Rerun `cogcoin mine setup` when you are ready to choose a provider model.",
+    };
+  }
+
   if (errorCode.endsWith("_confirmation_rejected")) {
     return {
       what: "Confirmation was declined.",
@@ -859,7 +877,7 @@ export function createCliErrorPresentation(
     };
   }
 
-  if (errorCode.endsWith("_requires_tty")) {
+  if (errorCode.endsWith("_requires_tty") && errorCode !== "cli_update_requires_tty") {
     return {
       what: "Interactive terminal input is required.",
       why: "This command needs terminal input before it can continue safely.",
@@ -1211,6 +1229,38 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode === "cli_update_requires_tty") {
+    return {
+      what: "Updating Cogcoin needs an interactive terminal or `--yes`.",
+      why: "When a newer client release is available, `cogcoin update` prompts before running the global npm install unless `--yes` is provided.",
+      next: "Rerun `cogcoin update` in an interactive terminal, or add `--yes` to apply the update non-interactively.",
+    };
+  }
+
+  if (errorCode === "cli_update_registry_unavailable") {
+    return {
+      what: "Cogcoin could not read the latest client version from the npm registry.",
+      why: "The explicit update command requires a fresh registry lookup before it can compare versions or run the install.",
+      next: "Check network access and rerun `cogcoin update`.",
+    };
+  }
+
+  if (errorCode === "cli_update_npm_not_found") {
+    return {
+      what: "Cogcoin could not find npm to install the update.",
+      why: "The update command runs `npm install -g @cogcoin/client`, and no usable `npm` executable was available on PATH.",
+      next: "Install Node.js/npm or fix PATH, then rerun `cogcoin update`.",
+    };
+  }
+
+  if (errorCode === "cli_update_install_failed") {
+    return {
+      what: "Cogcoin update installation failed.",
+      why: "The global npm install exited unsuccessfully before the client update completed.",
+      next: "Review the npm output above, fix the installation issue, then rerun `cogcoin update`.",
+    };
+  }
+
   if (errorCode === "wallet_claim_sender_not_local") {
     return {
       what: "The claim sender is not locally controlled.",
@@ -1276,6 +1326,8 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
       return "cogcoin reset";
     case "repair":
       return "cogcoin repair";
+    case "update":
+      return "cogcoin update";
     case "anchor":
     case "domain-anchor":
       return `cogcoin anchor ${args[0] ?? "<domain>"}`;
@@ -1460,6 +1512,8 @@ export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string |
       return "cogcoin/reset/v1";
     case "repair":
       return "cogcoin/repair/v1";
+    case "update":
+      return "cogcoin/update/v1";
     case "anchor":
     case "domain-anchor":
       return "cogcoin/anchor/v1";
