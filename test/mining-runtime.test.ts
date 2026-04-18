@@ -8,6 +8,8 @@ import {
   normalizeMiningStateRecord,
 } from "../src/wallet/mining/state.js";
 import {
+  buildPrePublishStatusOverridesForTesting,
+  buildStatusSnapshotForTesting,
   cacheSelectedCandidateForTipForTesting,
   createMiningLoopStateForTesting,
   getSelectedCandidateForTipForTesting,
@@ -21,7 +23,12 @@ import {
   shouldKeepCurrentTipLivePublishForTesting,
   syncMiningVisualizerBlockTimesForTesting,
 } from "../src/wallet/mining/runner.js";
-import { createMiningState, createWalletReadContext, createWalletState } from "./current-model-helpers.js";
+import {
+  createMiningControlPlaneView,
+  createMiningState,
+  createWalletReadContext,
+  createWalletState,
+} from "./current-model-helpers.js";
 
 function createTestMiningCandidate(overrides: Record<string, unknown> = {}) {
   return {
@@ -551,6 +558,104 @@ test("publish candidate returns a same-tip retry result after missing inputs", a
   assert.equal(events.length, 1);
   assert.equal(events[0]?.kind, "publish-retry-pending");
   assert.equal(events[0]?.reason, "missing-inputs");
+});
+
+test("publish candidate pauses with a waiting result after insufficient funds", async () => {
+  const events: any[] = [];
+  let attempts = 0;
+
+  const result = await publishCandidateForTesting({
+    candidate: createTestMiningCandidate(),
+    dataDir: "/tmp",
+    databasePath: "/tmp/test.db",
+    provider: {} as any,
+    paths: {} as any,
+    fallbackState: createReadyMiningReadContext({}).localState.state,
+    openReadContext: async () => createReadyMiningReadContext({}),
+    attachService: async () => {
+      throw new Error("attachService should not be called when publishAttempt is stubbed");
+    },
+    rpcFactory: () => {
+      throw new Error("rpcFactory should not be called when publishAttempt is stubbed");
+    },
+    runId: "run-1",
+    publishAttempt: async () => {
+      attempts += 1;
+      throw new Error("bitcoind_rpc_walletcreatefundedpsbt_-4_Insufficient funds");
+    },
+    appendEventFn: async (_paths, event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(attempts, 1);
+  assert.equal(result.skipped, true);
+  if (result.skipped !== true) {
+    assert.fail("expected insufficient-funds publish result to skip the current tip");
+  }
+  assert.equal(result.txid, null);
+  assert.equal(result.decision, "publish-paused-insufficient-funds");
+  assert.match(result.note, /waiting for enough confirmed safe btc funding/i);
+  assert.equal(result.lastError, "Bitcoin Core could not fund the next mining publish with confirmed safe BTC.");
+  assert.equal(result.candidate, null);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.kind, "publish-paused-insufficient-funds");
+  assert.equal(events[0]?.reason, "insufficient-funds");
+  assert.doesNotMatch(events[0]?.message ?? "", /walletcreatefundedpsbt/i);
+});
+
+test("pre-publish status on a new tip shows the pending candidate instead of stale prior-tip tx metadata", () => {
+  const state = createWalletState({
+    miningState: createMiningState({
+      currentPublishState: "in-mempool",
+      currentDomain: "mitfrog",
+      currentDomainId: 40,
+      currentTxid: "aa".repeat(32),
+      currentWtxid: "bb".repeat(32),
+      currentFeeRateSatVb: 3.004,
+      currentAbsoluteFeeSats: 580,
+      currentScore: "488882815",
+      currentSentence: "old tip sentence",
+      currentBlockTargetHeight: 945636,
+      currentReferencedBlockHashDisplay: "11".repeat(32),
+      livePublishInMempool: true,
+      currentPublishDecision: "paused-stale-mempool",
+      currentBlockFeeSpentSats: "580",
+    }),
+  });
+  const candidate = createTestMiningCandidate({
+    domainId: 40,
+    domainName: "mitfrog",
+    sentence: "new tip sentence",
+    canonicalBlend: 384387886n,
+    referencedBlockHashDisplay: "22".repeat(32),
+    targetBlockHeight: 945637,
+  });
+
+  const snapshot = buildStatusSnapshotForTesting(
+    createMiningControlPlaneView(),
+    buildPrePublishStatusOverridesForTesting({
+      state,
+      candidate,
+    }),
+  );
+
+  assert.equal(snapshot.currentPhase, "replacing");
+  assert.equal(snapshot.currentPublishDecision, "replacing");
+  assert.equal(snapshot.note, "Replacing the live mining transaction for the current tip.");
+  assert.equal(snapshot.targetBlockHeight, 945637);
+  assert.equal(snapshot.referencedBlockHashDisplay, "22".repeat(32));
+  assert.equal(snapshot.currentDomainId, 40);
+  assert.equal(snapshot.currentDomainName, "mitfrog");
+  assert.equal(snapshot.currentSentenceDisplay, "new tip sentence");
+  assert.equal(snapshot.currentCanonicalBlend, "384387886");
+  assert.equal(snapshot.currentPublishState, "none");
+  assert.equal(snapshot.currentTxid, null);
+  assert.equal(snapshot.currentWtxid, null);
+  assert.equal(snapshot.livePublishInMempool, false);
+  assert.equal(snapshot.currentFeeRateSatVb, null);
+  assert.equal(snapshot.currentAbsoluteFeeSats, null);
+  assert.equal(snapshot.currentBlockFeeSpentSats, "0");
 });
 
 test("publish candidate reuses the same selected sentence across same-tip retries", async () => {

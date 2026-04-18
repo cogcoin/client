@@ -253,6 +253,7 @@ export async function transferBitcoin(options: TransferBitcoinOptions): Promise<
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
+        serviceLifetime: "ephemeral",
         walletRootId: state.walletRootId,
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);

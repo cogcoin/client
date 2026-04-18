@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -16,6 +14,7 @@ import {
   lockClientPassword,
   readClientPasswordStatus,
 } from "../src/wallet/state/provider.js";
+import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createWalletState } from "./current-model-helpers.js";
 import { configureTestClientPassword } from "./client-password-test-helpers.js";
 
@@ -105,10 +104,10 @@ function createInitAutoSyncOverrides(options: {
 
 const WELCOME_ART = readFileSync(new URL("../src/art/welcome.txt", import.meta.url), "utf8");
 
-test("init text output starts with the welcome art before the existing init content", async () => {
+test("init text output starts with the welcome art before the existing init content", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-cli-init-welcome-output-")));
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-cli-init-welcome-output"));
   const paths = resolvePaths();
   let syncCalls = 0;
   const context = createDefaultContext({
@@ -161,10 +160,10 @@ test("init text output starts with the welcome art before the existing init cont
   assert.doesNotMatch(rendered, /Next step:/);
 });
 
-test("init text output describes the 24-hour client unlock window after setup migration", async () => {
+test("init text output describes the 24-hour client unlock window after setup migration", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-cli-init-output-")));
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-cli-init-output"));
   const paths = resolvePaths();
   const context = createDefaultContext({
     stdout: stdout.stream,
@@ -210,10 +209,12 @@ test("init text output describes the 24-hour client unlock window after setup mi
   assert.doesNotMatch(rendered, /Next step:/);
 });
 
-test("init text output shows a checkmarked wallet section when already configured", async () => {
+test("init text output shows a checkmarked wallet section when already configured", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-cli-init-already-configured-output-")));
+  const resolvePaths = createTestRuntimePaths(
+    await createTrackedTempDirectory(t, "cogcoin-cli-init-already-configured-output"),
+  );
   const paths = resolvePaths();
   const context = createDefaultContext({
     stdout: stdout.stream,
@@ -261,10 +262,10 @@ test("init text output shows a checkmarked wallet section when already configure
   assert.doesNotMatch(rendered, /Next step:/);
 });
 
-test("restore text output describes the 24-hour client unlock window after password setup", async () => {
+test("restore text output describes the 24-hour client unlock window after password setup", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-cli-restore-output-")));
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-cli-restore-output"));
   const paths = resolvePaths("seed-2");
   const context = createDefaultContext({
     stdout: stdout.stream,
@@ -384,7 +385,7 @@ test("client change-password json output uses the stable mutation envelope", asy
 });
 
 test("client unlock text output reports the refreshed unlock expiry", async (t) => {
-  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-cli-client-unlock-output-"));
+  const tempRoot = await createTrackedTempDirectory(t, "cogcoin-cli-client-unlock-output");
   const resolvePaths = createTestRuntimePaths(tempRoot);
   const paths = resolvePaths();
   const provider = createDefaultWalletSecretProviderForTesting({

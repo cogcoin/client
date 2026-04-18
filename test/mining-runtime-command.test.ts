@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -20,6 +18,7 @@ import { buildMineStartPreviewData } from "../src/cli/preview-json.js";
 import { acquireFileLock } from "../src/wallet/fs/lock.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
+import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createMiningRuntimeStatus } from "./current-model-helpers.js";
 
 function createStringWriter() {
@@ -161,12 +160,12 @@ function createCompletedSyncClient(events: string[], onProgress?: (event: any) =
   };
 }
 
-test("mine text ensures provider setup, syncs managed services, then starts foreground mining", async () => {
+test("mine text ensures provider setup, syncs managed services, then starts foreground mining", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
   const provider = createMemoryWalletSecretProviderForTesting();
   const prompter = createPrompter();
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-mine-runtime-")));
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-runtime"));
   const runtimePaths = resolvePaths(null);
   const events: string[] = [];
   let runOptions: {
@@ -240,12 +239,12 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
   assert.deepEqual(actualRunOptions.paths, runtimePaths);
 });
 
-test("mine start text ensures provider setup, syncs managed services, then starts background mining", async () => {
+test("mine start text ensures provider setup, syncs managed services, then starts background mining", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
   const provider = createMemoryWalletSecretProviderForTesting();
   const prompter = createPrompter();
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-mine-start-runtime-")));
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-start-runtime"));
   const runtimePaths = resolvePaths(null);
   const events: string[] = [];
   let startOptions: {
@@ -326,11 +325,11 @@ test("mine start text ensures provider setup, syncs managed services, then start
   assert.deepEqual(actualStartOptions.paths, runtimePaths);
 });
 
-test("mine start JSON output stays on stdout while sync progress goes to stderr", async () => {
+test("mine start JSON output stays on stdout while sync progress goes to stderr", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
   const provider = createMemoryWalletSecretProviderForTesting();
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-mine-start-json-")));
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-start-json"));
   const snapshot = createMiningRuntimeStatus({
     runMode: "background",
     backgroundWorkerPid: 5151,
@@ -378,11 +377,11 @@ test("mine start JSON output stays on stdout while sync progress goes to stderr"
   );
 });
 
-test("mine start preview JSON output stays on stdout while sync progress goes to stderr", async () => {
+test("mine start preview JSON output stays on stdout while sync progress goes to stderr", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
   const provider = createMemoryWalletSecretProviderForTesting();
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-mine-start-preview-")));
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-start-preview"));
   const snapshot = createMiningRuntimeStatus({
     runMode: "background",
     backgroundWorkerPid: 6161,
@@ -430,10 +429,10 @@ test("mine start preview JSON output stays on stdout while sync progress goes to
   );
 });
 
-test("mine reports a handled error and skips foreground mining when sync preflight fails", async () => {
+test("mine reports a handled error and skips foreground mining when sync preflight fails", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-mine-preflight-fail-")));
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-preflight-fail"));
   let runCalls = 0;
   const context = createDefaultContext({
     stdout: stdout.stream,
@@ -475,10 +474,12 @@ test("mine reports a handled error and skips foreground mining when sync preflig
   assert.ok(stderr.read().length > 0);
 });
 
-test("mine start reports a handled error and skips background mining when sync preflight fails", async () => {
+test("mine start reports a handled error and skips background mining when sync preflight fails", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-mine-start-preflight-fail-")));
+  const resolvePaths = createTestRuntimePaths(
+    await createTrackedTempDirectory(t, "cogcoin-mine-start-preflight-fail"),
+  );
   let startCalls = 0;
   const context = createDefaultContext({
     stdout: stdout.stream,
@@ -524,10 +525,10 @@ test("mine start reports a handled error and skips background mining when sync p
   assert.ok(stderr.read().length > 0);
 });
 
-test("mine reports the existing wallet-control-lock error when sync preflight is busy", async () => {
+test("mine reports the existing wallet-control-lock error when sync preflight is busy", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-mine-lock-busy-")));
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-lock-busy"));
   const runtimePaths = resolvePaths(null);
   const heldLock = await acquireFileLock(runtimePaths.walletControlLockPath, {
     purpose: "test-lock-holder",
@@ -563,11 +564,11 @@ test("mine reports the existing wallet-control-lock error when sync preflight is
   }
 });
 
-test("mine interrupt during sync preflight exits before foreground mining starts", async () => {
+test("mine interrupt during sync preflight exits before foreground mining starts", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
   const signalSource = createSignalSource();
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-mine-interrupt-")));
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-interrupt"));
   let runCalls = 0;
   const context = createDefaultContext({
     stdout: stdout.stream,

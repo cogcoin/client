@@ -29,6 +29,10 @@ export function isRetryableManagedRpcError(error: unknown): boolean {
     return true;
   }
 
+  if (/^bitcoind_rpc_[^_]+_-28(?:_|$)/.test(message)) {
+    return true;
+  }
+
   if (message.startsWith("The managed Bitcoin RPC request to ")) {
     return message.includes(" failed");
   }

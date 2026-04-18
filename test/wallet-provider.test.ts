@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
@@ -15,12 +14,13 @@ import {
   readClientPasswordStatus,
   unlockClientPassword,
 } from "../src/wallet/state/provider.js";
+import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { configureTestClientPassword, createScriptedPrompter } from "./client-password-test-helpers.js";
 
 const execFileAsync = promisify(execFile);
 
-async function createTempStateRoot(prefix: string): Promise<string> {
-  return await mkdtemp(join(tmpdir(), prefix));
+async function createTempStateRoot(t: TestContext, prefix: string): Promise<string> {
+  return await createTrackedTempDirectory(t, prefix);
 }
 
 function sanitizeSecretKeyIdForTest(keyId: string): string {
@@ -72,7 +72,7 @@ async function writeReferencedSecretForTest(stateRoot: string, keyId: string): P
 }
 
 test("Linux default secret provider stores, loads, and deletes local secret files", async (t) => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-linux-local-file-");
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-local-file");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
     stateRoot,
@@ -100,7 +100,7 @@ test("Linux default secret provider stores, loads, and deletes local secret file
 });
 
 test("Linux default secret provider reports missing secrets without probing external secret stores", async (t) => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-linux-missing-secret-");
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-missing-secret");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
     stateRoot,
@@ -113,8 +113,8 @@ test("Linux default secret provider reports missing secrets without probing exte
   await assert.rejects(() => provider.loadSecret(keyId), /wallet_secret_missing_wallet-state:wallet-root-test/);
 });
 
-test("Linux default secret provider surfaces local file runtime failures", async () => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-linux-runtime-error-");
+test("Linux default secret provider surfaces local file runtime failures", async (t) => {
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-runtime-error");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
     stateRoot,
@@ -130,7 +130,7 @@ test("Linux default secret provider surfaces local file runtime failures", async
 });
 
 test("Windows default secret provider stores, loads, and deletes local secret files", async (t) => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-win32-local-file-");
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-win32-local-file");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "win32",
     stateRoot,
@@ -156,7 +156,7 @@ test("Windows default secret provider stores, loads, and deletes local secret fi
 });
 
 test("Windows default secret provider reports missing secrets generically", async (t) => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-win32-missing-secret-");
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-win32-missing-secret");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "win32",
     stateRoot,
@@ -174,7 +174,7 @@ test("Windows default secret provider reports missing secrets generically", asyn
 });
 
 test("client password setup opens a 24-hour session", async (t) => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-linux-setup-session-");
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-setup-session");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
     stateRoot,
@@ -192,7 +192,7 @@ test("client password setup opens a 24-hour session", async (t) => {
 });
 
 test("client unlock refreshes an active session without re-entering the password", async (t) => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-linux-refresh-session-");
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-refresh-session");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
     stateRoot,
@@ -219,7 +219,7 @@ test("client unlock refreshes an active session without re-entering the password
 });
 
 test("client unlock still prompts for password when the session is locked", async (t) => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-linux-locked-session-");
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-locked-session");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
     stateRoot,
@@ -242,7 +242,7 @@ test("client unlock still prompts for password when the session is locked", asyn
 });
 
 test("client change-password requires the current password even while unlocked and replaces the stored hint", async (t) => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-linux-change-password-");
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-change-password");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
     stateRoot,
@@ -305,7 +305,7 @@ test("client change-password requires the current password even while unlocked a
 });
 
 test("client change-password leaves a fresh 24-hour session when it starts locked", async (t) => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-linux-change-password-locked-");
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-change-password-locked");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
     stateRoot,
@@ -329,8 +329,8 @@ test("client change-password leaves a fresh 24-hour session when it starts locke
   assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() > 80_000_000);
 });
 
-test("client change-password requires an interactive terminal", async () => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-linux-change-password-no-tty-");
+test("client change-password requires an interactive terminal", async (t) => {
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-change-password-no-tty");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
     stateRoot,
@@ -359,7 +359,7 @@ test("client change-password requires an interactive terminal", async () => {
 });
 
 test("client password rotation journal finalizes cleanly on the next password-aware operation", async (t) => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-linux-change-password-journal-");
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-change-password-journal");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
     stateRoot,
@@ -413,7 +413,7 @@ test("client password rotation journal finalizes cleanly on the next password-aw
 });
 
 test("client password rotation journal repairs a partial committed state", async (t) => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-linux-change-password-partial-journal-");
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-change-password-partial-journal");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
     stateRoot,
@@ -465,8 +465,8 @@ test("client password rotation journal repairs a partial committed state", async
   await assert.rejects(() => readFile(journalPath, "utf8"), /ENOENT/);
 });
 
-test("client password migration exits cleanly after starting the unlock session", { timeout: 15_000 }, async () => {
-  const stateRoot = await createTempStateRoot("cogcoin-wallet-provider-linux-migration-exit-");
+test("client password migration exits cleanly after starting the unlock session", { timeout: 15_000 }, async (t) => {
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-migration-exit");
   const keyId = createWalletSecretReference("wallet-root-test").keyId;
   const secretPath = join(stateRoot, "secrets", `${sanitizeSecretKeyIdForTest(keyId)}.secret`);
   const providerModuleUrl = pathToFileURL(

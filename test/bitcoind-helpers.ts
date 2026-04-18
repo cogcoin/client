@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import { mkdtempSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TestContext } from "node:test";
 import { promisify } from "node:util";
 
 import {
@@ -20,6 +21,16 @@ let bitcoinCliPathPromise: Promise<string> | null = null;
 
 export function createTempDirectory(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `${prefix}-`));
+}
+
+export async function createTrackedTempDirectory(t: TestContext, prefix: string): Promise<string> {
+  const path = await mkdtemp(join(tmpdir(), `${prefix}-`));
+  setImmediate(() => {
+    t.after(async () => {
+      await removeTempDirectory(path);
+    });
+  });
+  return path;
 }
 
 function isRetriableRemoveError(error: unknown): boolean {

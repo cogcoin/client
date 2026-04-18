@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { buildAddressJson, buildIdsJson } from "../src/cli/read-json.js";
@@ -15,6 +14,7 @@ import {
   lockClientPassword,
 } from "../src/wallet/state/provider.js";
 import { saveWalletState } from "../src/wallet/state/storage.js";
+import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createWalletReadContext, createWalletState } from "./current-model-helpers.js";
 import { configureTestClientPassword } from "./client-password-test-helpers.js";
 
@@ -36,8 +36,8 @@ test("ids JSON exposes a single wallet-address entry", () => {
   assert.deepEqual(result.data.addresses?.[0]?.localDomains, []);
 });
 
-test("wallet read status recommends init when client password setup is still missing", async () => {
-  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-win32-missing-secret-"));
+test("wallet read status recommends init when client password setup is still missing", async (t) => {
+  const tempRoot = await createTrackedTempDirectory(t, "cogcoin-wallet-read-win32-missing-secret");
   const paths = resolveWalletRuntimePathsForTesting({
     env: {
       ...process.env,
@@ -77,8 +77,8 @@ test("wallet read status recommends init when client password setup is still mis
   assert.match(status.message ?? "", /cogcoin init/i);
 });
 
-test("wallet read status treats unsupported legacy wallet-state envelopes as corrupt", async () => {
-  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-legacy-envelope-"));
+test("wallet read status treats unsupported legacy wallet-state envelopes as corrupt", async (t) => {
+  const tempRoot = await createTrackedTempDirectory(t, "cogcoin-wallet-read-legacy-envelope");
   const paths = resolveWalletRuntimePathsForTesting({
     homeDirectory: tempRoot,
     platform: "linux",
@@ -114,7 +114,7 @@ test("wallet read status treats unsupported legacy wallet-state envelopes as cor
 });
 
 test("wallet read status reports missing Linux local-file secrets generically", async (t) => {
-  const tempRoot = await mkdtemp(join(tmpdir(), "cogcoin-wallet-read-linux-missing-secret-"));
+  const tempRoot = await createTrackedTempDirectory(t, "cogcoin-wallet-read-linux-missing-secret");
   const paths = resolveWalletRuntimePathsForTesting({
     homeDirectory: tempRoot,
     platform: "linux",

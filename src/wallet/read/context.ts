@@ -142,6 +142,7 @@ async function normalizeLoadedWalletStateForRead(options: {
     dataDir: options.dataDir,
     chain: "main",
     startHeight: 0,
+    serviceLifetime: "ephemeral",
     walletRootId: options.loaded.state.walletRootId,
   });
 
@@ -577,6 +578,7 @@ async function attachNodeStatus(options: {
       dataDir: options.dataDir,
       chain: "main",
       startHeight: resolveCogcoinProcessingStartHeight(genesis),
+      serviceLifetime: "ephemeral",
       walletRootId: options.walletRootId,
       startupTimeoutMs: options.startupTimeoutMs,
     });
@@ -701,6 +703,7 @@ export async function openWalletReadContext(options: {
       daemonClient = await attachOrStartIndexerDaemon({
         dataDir: options.dataDir,
         databasePath: options.databasePath,
+        serviceLifetime: "ephemeral",
         walletRootId,
         startupTimeoutMs,
       });

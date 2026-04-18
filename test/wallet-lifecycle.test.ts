@@ -1,7 +1,6 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import {
@@ -21,8 +20,13 @@ import {
 } from "../src/wallet/state/provider.js";
 import { loadWalletState, saveWalletState } from "../src/wallet/state/storage.js";
 import type { WalletStateV1 } from "../src/wallet/types.js";
+import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createMiningRuntimeStatus, createMiningState, createWalletState } from "./current-model-helpers.js";
 import { configureTestClientPassword } from "./client-password-test-helpers.js";
+
+type RepairAttachServiceOptions = Parameters<
+  NonNullable<Parameters<typeof repairWallet>[0]["attachService"]>
+>[0];
 
 function createRepairWalletState(overrides: {
   walletRootId?: string;
@@ -174,7 +178,12 @@ function createFakeIndexerDaemon(walletRootId: string) {
   };
 }
 
-function createRepairDependencies(state: WalletStateV1) {
+function createRepairDependencies(
+  state: WalletStateV1,
+  options: {
+    onAttachService?: (options: RepairAttachServiceOptions) => void;
+  } = {},
+) {
   const normalizedPublicDescriptor = state.descriptor.publicExternal.replace(/#[A-Za-z0-9]+$/, "");
 
   return {
@@ -184,11 +193,14 @@ function createRepairDependencies(state: WalletStateV1) {
       status: null,
       error: null,
     }) as any,
-    attachService: async () => ({
-      rpc: {} as any,
-      refreshServiceStatus: async () => ({ state: "ready" }),
-      stop: async () => undefined,
-    }) as any,
+    attachService: async (serviceOptions: RepairAttachServiceOptions) => {
+      options.onAttachService?.(serviceOptions);
+      return {
+        rpc: {} as any,
+        refreshServiceStatus: async () => ({ state: "ready" }),
+        stop: async () => undefined,
+      } as any;
+    },
     rpcFactory: () => ({
       getDescriptorInfo: async (descriptor: string) => ({
         descriptor,
@@ -276,7 +288,7 @@ function installProcessKillMock(t: TestContext, livePids: readonly number[]) {
 async function createRepairFixture(t: TestContext, options: {
   walletState?: WalletStateV1;
 } = {}) {
-  const homeDirectory = await mkdtemp(join(tmpdir(), "cogcoin-wallet-repair-"));
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-wallet-repair");
   const paths = resolveWalletRuntimePathsForTesting({ homeDirectory, platform: "linux" });
   const provider = createMemoryWalletSecretProviderForTesting();
   const state = options.walletState ?? createRepairWalletState();
@@ -305,7 +317,7 @@ async function createRepairFixture(t: TestContext, options: {
 }
 
 test("provider-backed Linux local-file wallets load after client password setup", async (t) => {
-  const homeDirectory = await mkdtemp(join(tmpdir(), "cogcoin-wallet-lifecycle-linux-"));
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-wallet-lifecycle-linux");
   const paths = resolveWalletRuntimePathsForTesting({ homeDirectory, platform: "linux" });
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
@@ -352,6 +364,7 @@ test("repair kills recorded background mining and clears mining control artifact
     walletState,
   });
   const killLog = installProcessKillMock(t, [4_111]);
+  let attachServiceLifetime: string | null = null;
 
   await writeJsonFile(fixture.paths.miningControlLockPath, {
     processId: 4_111,
@@ -384,7 +397,11 @@ test("repair kills recorded background mining and clears mining control artifact
     databasePath: fixture.databasePath,
     provider: fixture.provider,
     paths: fixture.paths,
-    ...createRepairDependencies(fixture.state),
+    ...createRepairDependencies(fixture.state, {
+      onAttachService(serviceOptions) {
+        attachServiceLifetime = serviceOptions.serviceLifetime ?? null;
+      },
+    }),
   });
 
   assert.equal(result.miningPreRepairRunMode, "background");
@@ -394,6 +411,7 @@ test("repair kills recorded background mining and clears mining control artifact
   );
   assert.equal(await pathExists(fixture.paths.miningControlLockPath), false);
   assert.equal(await pathExists(join(fixture.paths.miningRoot, "generation-request.json")), false);
+  assert.equal(attachServiceLifetime, "ephemeral");
   const runtime = await loadMiningRuntimeStatus(fixture.paths.miningStatusPath);
   assert.equal(runtime?.runMode, "stopped");
   assert.equal(runtime?.backgroundWorkerPid, null);

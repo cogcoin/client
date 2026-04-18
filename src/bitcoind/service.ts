@@ -98,7 +98,10 @@ type ManagedBitcoindServiceOptions = Pick<
   getblockArchivePath?: string | null;
   getblockArchiveEndHeight?: number | null;
   getblockArchiveSha256?: string | null;
+  serviceLifetime?: "persistent" | "ephemeral";
 };
+
+type ManagedBitcoindServiceOwnership = "attached" | "started";
 
 export type ManagedBitcoindServiceCompatibility =
   | "compatible"
@@ -973,9 +976,11 @@ function createNodeHandle(
   status: ManagedBitcoindServiceStatus,
   paths: ReturnType<typeof resolveManagedServicePaths>,
   options: ManagedBitcoindServiceOptions,
+  ownership: ManagedBitcoindServiceOwnership,
 ): ManagedBitcoindNodeHandle {
   let currentStatus = status;
   const rpc = createRpcClient(currentStatus.rpc);
+  let stopped = false;
 
   return {
     rpc: currentStatus.rpc,
@@ -999,9 +1004,23 @@ function createNodeHandle(
       return currentStatus;
     },
     async stop(): Promise<void> {
-      // Public managed clients detach from the persistent service instead of
-      // shutting it down on ordinary command exit.
-      return;
+      if (stopped) {
+        return;
+      }
+
+      stopped = true;
+
+      if (options.serviceLifetime !== "ephemeral" || ownership === "attached") {
+        // Public managed clients detach from persistent services, and ephemeral
+        // attach callers must not shut down services they did not launch.
+        return;
+      }
+
+      await stopManagedBitcoindService({
+        dataDir: currentStatus.dataDir,
+        walletRootId: currentStatus.walletRootId,
+        shutdownTimeoutMs: options.shutdownTimeoutMs,
+      });
     },
   };
 }
@@ -1023,7 +1042,7 @@ async function tryAttachExistingManagedBitcoindService(
     options,
   );
 
-  return createNodeHandle(refreshed, paths, options);
+  return createNodeHandle(refreshed, paths, options, "attached");
 }
 
 async function waitForManagedBitcoindService(
@@ -1086,6 +1105,7 @@ export async function attachOrStartManagedBitcoindService(
   const resolvedOptions: ManagedBitcoindServiceOptions = {
     ...options,
     dataDir: options.dataDir,
+    serviceLifetime: options.serviceLifetime ?? "persistent",
     walletRootId: options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID,
   };
   const startupTimeoutMs = resolvedOptions.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
@@ -1151,11 +1171,20 @@ export async function attachOrStartManagedBitcoindService(
             port: runtimeConfig.zmqPort,
             pollIntervalMs: startOptions.pollIntervalMs ?? 15_000,
           };
+          const spawnOptions = startOptions.serviceLifetime === "ephemeral"
+            ? {
+              stdio: "ignore" as const,
+            }
+            : {
+              detached: true,
+              stdio: "ignore" as const,
+            };
           const child = spawn(bitcoindPath, buildManagedServiceArgs(startOptions, runtimeConfig), {
-            detached: true,
-            stdio: "ignore",
+            ...spawnOptions,
           });
-          child.unref();
+          if (startOptions.serviceLifetime !== "ephemeral") {
+            child.unref();
+          }
 
           const rpc = createRpcClient(rpcConfig);
 
@@ -1222,7 +1251,7 @@ export async function attachOrStartManagedBitcoindService(
 
         await writeBitcoindStatus(paths, status);
 
-        return createNodeHandle(status, paths, resolvedOptions);
+        return createNodeHandle(status, paths, resolvedOptions, "started");
       } finally {
         await lock.release();
       }

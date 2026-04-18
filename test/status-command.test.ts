@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -10,6 +8,7 @@ import { parseCliArgs } from "../src/cli/parse.js";
 import { formatBalanceReport, formatWalletOverviewReport } from "../src/cli/wallet-format.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
+import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createWalletReadContext } from "./current-model-helpers.js";
 
 function createStringWriter() {
@@ -48,11 +47,11 @@ function createTestRuntimePaths(homeDirectory: string) {
   });
 }
 
-test("status text output immediately renders the balance report after the overview", async () => {
+test("status text output immediately renders the balance report after the overview", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
   const version = "9.9.9";
-  const resolvePaths = createTestRuntimePaths(await mkdtemp(join(tmpdir(), "cogcoin-status-command-")));
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-status-command"));
   const readContext = createWalletReadContext();
   let closeCalls = 0;
   const context = createDefaultContext({

@@ -21,6 +21,10 @@ function createRetryableRpcTimeout(method: string): Error {
   );
 }
 
+function createRetryableRpcWarmup(method: string): Error {
+  return new Error(`bitcoind_rpc_${method}_-28_Verifying blocks…`);
+}
+
 function createBlockchainInfo(blocks: number, headers = blocks): RpcBlockchainInfo {
   return {
     chain: "main",
@@ -404,6 +408,31 @@ test("syncToTip retries a transient managed RPC timeout during bitcoin sync poll
   assert.equal(result.bestHeight, 0);
   assert.ok(messages.includes("Managed Bitcoin RPC temporarily unavailable; retrying until canceled."));
   assert.match(lastErrors[0] ?? "", /getblockchaininfo failed/);
+  assert.equal(phases.includes("error"), false);
+});
+
+test("syncToTip retries a transient raw Core warmup error during bitcoin sync polling", async () => {
+  let blockchainInfoCalls = 0;
+  const { dependencies, phases, messages, lastErrors } = createSyncDependencies({
+    startHeight: 1,
+    async getBlockchainInfo() {
+      blockchainInfoCalls += 1;
+
+      if (blockchainInfoCalls === 1) {
+        throw createRetryableRpcWarmup("getblockchaininfo");
+      }
+
+      return createBlockchainInfo(0);
+    },
+  });
+
+  const result = await syncToTip(dependencies as never);
+
+  assert.equal(result.appliedBlocks, 0);
+  assert.equal(result.bestHeight, 0);
+  assert.ok(blockchainInfoCalls >= 2);
+  assert.ok(messages.includes("Managed Bitcoin RPC temporarily unavailable; retrying until canceled."));
+  assert.equal(lastErrors[0], "bitcoind_rpc_getblockchaininfo_-28_Verifying blocks…");
   assert.equal(phases.includes("error"), false);
 });
 

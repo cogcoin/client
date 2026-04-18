@@ -1,8 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 
 import {
   extractWalletRootIdHintFromWalletStateEnvelope,
@@ -14,10 +13,11 @@ import {
   createMemoryWalletSecretProviderForTesting,
   createWalletSecretReference,
 } from "../src/wallet/state/provider.js";
+import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createWalletState } from "./current-model-helpers.js";
 
-test("wallet state storage round-trips schema 5 state", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "cogcoin-state-"));
+test("wallet state storage round-trips schema 5 state", async (t) => {
+  const dir = await createTrackedTempDirectory(t, "cogcoin-state");
   const paths = {
     primaryPath: join(dir, "wallet-state.enc"),
     backupPath: join(dir, "wallet-state.enc.bak"),
@@ -36,8 +36,8 @@ test("wallet state storage round-trips schema 5 state", async () => {
   assert.equal(loaded.state.managedCoreWallet.walletAddress, "bc1qfunding");
 });
 
-test("wallet state envelope exposes the wallet root id hint", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "cogcoin-state-"));
+test("wallet state envelope exposes the wallet root id hint", async (t) => {
+  const dir = await createTrackedTempDirectory(t, "cogcoin-state");
   const paths = {
     primaryPath: join(dir, "wallet-state.enc"),
     backupPath: join(dir, "wallet-state.enc.bak"),
@@ -55,8 +55,8 @@ test("wallet state envelope exposes the wallet root id hint", async () => {
   assert.equal(extractWalletRootIdHintFromWalletStateEnvelope(raw?.envelope ?? null), "wallet-root-2");
 });
 
-test("wallet state storage rejects unsupported legacy envelopes without a secret provider", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "cogcoin-state-"));
+test("wallet state storage rejects unsupported legacy envelopes without a secret provider", async (t) => {
+  const dir = await createTrackedTempDirectory(t, "cogcoin-state");
   const paths = {
     primaryPath: join(dir, "wallet-state.enc"),
     backupPath: join(dir, "wallet-state.enc.bak"),

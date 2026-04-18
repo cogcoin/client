@@ -128,6 +128,21 @@ function createTempWalletPaths(root: string) {
   });
 }
 
+async function waitForProcessExitForTesting(pid: number): Promise<void> {
+  await waitForCondition(() => {
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (error) {
+      if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH") {
+        return true;
+      }
+
+      throw error;
+    }
+  }, 15_000);
+}
+
 function createWalletStateEnvelopeStub(walletRootId: string) {
   return {
     source: "primary" as const,
@@ -1400,9 +1415,9 @@ test("sync CLI does not print the balance hint when auto-detach fails", async ()
   }
 });
 
-test("wallet read context close detaches without stopping managed services", async (t) => {
+test("wallet read context close stops ephemeral managed services it started", async (t) => {
   await ensureBitcoinBinaries(t);
-  const fixture = createFixture("cogcoin-client-read-context-detach");
+  const fixture = createFixture("cogcoin-client-read-context-ephemeral-close");
   const runtimePaths = createTempWalletPaths(join(fixture.rootDir, "wallet-home"));
   let readContext: Awaited<ReturnType<typeof openWalletReadContext>> | null = null;
 
@@ -1414,28 +1429,21 @@ test("wallet read context close detaches without stopping managed services", asy
     });
     assert.equal(readContext.localState.availability, "uninitialized");
 
-    const bitcoindPidBeforeClose = readContext.nodeStatus?.pid ?? null;
-    const daemonInstanceIdBeforeClose = readContext.indexer.status?.daemonInstanceId ?? null;
+    const bitcoindPid = readContext.nodeStatus?.pid ?? null;
+    const daemonPid = readContext.indexer.status?.processId ?? null;
 
     await readContext.close();
     readContext = null;
 
-    const reattachedNode = await attachOrStartManagedBitcoindService({
-      dataDir: fixture.dataDir,
-      chain: "main",
-      startHeight: 0,
-    });
-    const reattachedDaemon = await attachOrStartIndexerDaemon({
-      dataDir: fixture.dataDir,
-      databasePath: fixture.databasePath,
-    });
+    assert.equal(await readManagedBitcoindServiceStatusForTesting(fixture.dataDir), null);
+    assert.equal(await readIndexerDaemonStatusForTesting({ dataDir: fixture.dataDir }), null);
 
-    try {
-      const daemonStatus = await reattachedDaemon.getStatus();
-      assert.equal(reattachedNode.pid, bitcoindPidBeforeClose);
-      assert.equal(daemonStatus.daemonInstanceId, daemonInstanceIdBeforeClose);
-    } finally {
-      await reattachedDaemon.close();
+    if (bitcoindPid !== null) {
+      await waitForProcessExitForTesting(bitcoindPid);
+    }
+
+    if (daemonPid !== null) {
+      await waitForProcessExitForTesting(daemonPid);
     }
   } finally {
     await readContext?.close().catch(() => undefined);

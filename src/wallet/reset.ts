@@ -470,6 +470,7 @@ async function recreateManagedCoreWalletReplicaForReset(options: {
     dataDir: options.dataDir,
     chain: "main",
     startHeight: 0,
+    serviceLifetime: "ephemeral",
     walletRootId: options.state.walletRootId,
     managedWalletPassphrase: options.state.managedCoreWallet.internalPassphrase,
   });

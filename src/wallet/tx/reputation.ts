@@ -869,6 +869,7 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
+        serviceLifetime: "ephemeral",
         walletRootId: operation.state.walletRootId,
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);

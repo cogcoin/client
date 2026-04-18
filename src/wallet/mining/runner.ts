@@ -26,6 +26,7 @@ import { extractOpReturnPayloadFromScriptHex } from "../tx/register.js";
 import {
   assertFixedInputPrefixMatches,
   buildWalletMutationTransaction,
+  isInsufficientFundsError,
   outpointKey as walletMutationOutpointKey,
   isAlreadyAcceptedError,
   isBroadcastUnknownError,
@@ -158,6 +159,18 @@ interface MiningRunnerStatusOverrides {
   backgroundWorkerRunId?: string | null;
   backgroundWorkerHeartbeatAtUnixMs?: number | null;
   currentPhase?: MiningRuntimeStatusV1["currentPhase"];
+  currentPublishState?: MiningRuntimeStatusV1["currentPublishState"];
+  targetBlockHeight?: number | null;
+  referencedBlockHashDisplay?: string | null;
+  currentDomainId?: number | null;
+  currentDomainName?: string | null;
+  currentSentenceDisplay?: string | null;
+  currentCanonicalBlend?: string | null;
+  currentTxid?: string | null;
+  currentWtxid?: string | null;
+  currentFeeRateSatVb?: number | null;
+  currentAbsoluteFeeSats?: number | null;
+  currentBlockFeeSpentSats?: string;
   lastSuspendDetectedAtUnixMs?: number | null;
   providerState?: MiningRuntimeStatusV1["providerState"];
   corePublishState?: MiningRuntimeStatusV1["corePublishState"];
@@ -198,8 +211,9 @@ type ReadyMiningReadContext = WalletReadContext & {
 interface MiningPublishSkipResult {
   state: WalletStateV1;
   txid: null;
-  decision: "publish-skipped-stale-candidate";
+  decision: "publish-skipped-stale-candidate" | "publish-paused-insufficient-funds";
   note: string;
+  lastError?: string | null;
   skipped: true;
   retryable?: false;
   candidate: null;
@@ -306,6 +320,10 @@ interface MiningLoopState {
 
 interface MiningSuspendDetector {
   lastMonotonicMs: number;
+}
+
+function resolveSnapshotOverride<T>(override: T | undefined, fallback: T): T {
+  return override === undefined ? fallback : override;
 }
 
 class MiningSuspendDetectedError extends Error {
@@ -1211,26 +1229,113 @@ function buildStatusSnapshot(
 ): MiningRuntimeStatusV1 {
   return {
     ...view.runtime,
-    runMode: overrides.runMode ?? view.runtime.runMode,
-    backgroundWorkerPid: overrides.backgroundWorkerPid ?? view.runtime.backgroundWorkerPid,
-    backgroundWorkerRunId: overrides.backgroundWorkerRunId ?? view.runtime.backgroundWorkerRunId,
-    backgroundWorkerHeartbeatAtUnixMs: overrides.backgroundWorkerHeartbeatAtUnixMs ?? view.runtime.backgroundWorkerHeartbeatAtUnixMs,
-    currentPhase: overrides.currentPhase ?? view.runtime.currentPhase,
-    lastSuspendDetectedAtUnixMs: overrides.lastSuspendDetectedAtUnixMs ?? view.runtime.lastSuspendDetectedAtUnixMs,
-    providerState: overrides.providerState ?? view.runtime.providerState,
-    corePublishState: overrides.corePublishState ?? view.runtime.corePublishState,
-    currentPublishDecision: overrides.currentPublishDecision ?? view.runtime.currentPublishDecision,
-    sameDomainCompetitorSuppressed: overrides.sameDomainCompetitorSuppressed ?? view.runtime.sameDomainCompetitorSuppressed,
-    higherRankedCompetitorDomainCount: overrides.higherRankedCompetitorDomainCount ?? view.runtime.higherRankedCompetitorDomainCount,
-    dedupedCompetitorDomainCount: overrides.dedupedCompetitorDomainCount ?? view.runtime.dedupedCompetitorDomainCount,
-    competitivenessGateIndeterminate: overrides.competitivenessGateIndeterminate ?? view.runtime.competitivenessGateIndeterminate,
-    mempoolSequenceCacheStatus: overrides.mempoolSequenceCacheStatus ?? view.runtime.mempoolSequenceCacheStatus,
-    lastMempoolSequence: overrides.lastMempoolSequence ?? view.runtime.lastMempoolSequence,
-    lastCompetitivenessGateAtUnixMs: overrides.lastCompetitivenessGateAtUnixMs ?? view.runtime.lastCompetitivenessGateAtUnixMs,
-    lastError: overrides.lastError ?? view.runtime.lastError,
-    note: overrides.note ?? view.runtime.note,
-    livePublishInMempool: overrides.livePublishInMempool ?? view.runtime.livePublishInMempool,
+    runMode: resolveSnapshotOverride(overrides.runMode, view.runtime.runMode),
+    backgroundWorkerPid: resolveSnapshotOverride(overrides.backgroundWorkerPid, view.runtime.backgroundWorkerPid),
+    backgroundWorkerRunId: resolveSnapshotOverride(overrides.backgroundWorkerRunId, view.runtime.backgroundWorkerRunId),
+    backgroundWorkerHeartbeatAtUnixMs: resolveSnapshotOverride(
+      overrides.backgroundWorkerHeartbeatAtUnixMs,
+      view.runtime.backgroundWorkerHeartbeatAtUnixMs,
+    ),
+    currentPhase: resolveSnapshotOverride(overrides.currentPhase, view.runtime.currentPhase),
+    currentPublishState: resolveSnapshotOverride(overrides.currentPublishState, view.runtime.currentPublishState),
+    targetBlockHeight: resolveSnapshotOverride(overrides.targetBlockHeight, view.runtime.targetBlockHeight),
+    referencedBlockHashDisplay: resolveSnapshotOverride(
+      overrides.referencedBlockHashDisplay,
+      view.runtime.referencedBlockHashDisplay,
+    ),
+    currentDomainId: resolveSnapshotOverride(overrides.currentDomainId, view.runtime.currentDomainId),
+    currentDomainName: resolveSnapshotOverride(overrides.currentDomainName, view.runtime.currentDomainName),
+    currentSentenceDisplay: resolveSnapshotOverride(
+      overrides.currentSentenceDisplay,
+      view.runtime.currentSentenceDisplay,
+    ),
+    currentCanonicalBlend: resolveSnapshotOverride(
+      overrides.currentCanonicalBlend,
+      view.runtime.currentCanonicalBlend,
+    ),
+    currentTxid: resolveSnapshotOverride(overrides.currentTxid, view.runtime.currentTxid),
+    currentWtxid: resolveSnapshotOverride(overrides.currentWtxid, view.runtime.currentWtxid),
+    currentFeeRateSatVb: resolveSnapshotOverride(overrides.currentFeeRateSatVb, view.runtime.currentFeeRateSatVb),
+    currentAbsoluteFeeSats: resolveSnapshotOverride(
+      overrides.currentAbsoluteFeeSats,
+      view.runtime.currentAbsoluteFeeSats,
+    ),
+    currentBlockFeeSpentSats: resolveSnapshotOverride(
+      overrides.currentBlockFeeSpentSats,
+      view.runtime.currentBlockFeeSpentSats,
+    ),
+    lastSuspendDetectedAtUnixMs: resolveSnapshotOverride(
+      overrides.lastSuspendDetectedAtUnixMs,
+      view.runtime.lastSuspendDetectedAtUnixMs,
+    ),
+    providerState: resolveSnapshotOverride(overrides.providerState, view.runtime.providerState),
+    corePublishState: resolveSnapshotOverride(overrides.corePublishState, view.runtime.corePublishState),
+    currentPublishDecision: resolveSnapshotOverride(overrides.currentPublishDecision, view.runtime.currentPublishDecision),
+    sameDomainCompetitorSuppressed: resolveSnapshotOverride(
+      overrides.sameDomainCompetitorSuppressed,
+      view.runtime.sameDomainCompetitorSuppressed,
+    ),
+    higherRankedCompetitorDomainCount: resolveSnapshotOverride(
+      overrides.higherRankedCompetitorDomainCount,
+      view.runtime.higherRankedCompetitorDomainCount,
+    ),
+    dedupedCompetitorDomainCount: resolveSnapshotOverride(
+      overrides.dedupedCompetitorDomainCount,
+      view.runtime.dedupedCompetitorDomainCount,
+    ),
+    competitivenessGateIndeterminate: resolveSnapshotOverride(
+      overrides.competitivenessGateIndeterminate,
+      view.runtime.competitivenessGateIndeterminate,
+    ),
+    mempoolSequenceCacheStatus: resolveSnapshotOverride(
+      overrides.mempoolSequenceCacheStatus,
+      view.runtime.mempoolSequenceCacheStatus,
+    ),
+    lastMempoolSequence: resolveSnapshotOverride(overrides.lastMempoolSequence, view.runtime.lastMempoolSequence),
+    lastCompetitivenessGateAtUnixMs: resolveSnapshotOverride(
+      overrides.lastCompetitivenessGateAtUnixMs,
+      view.runtime.lastCompetitivenessGateAtUnixMs,
+    ),
+    lastError: resolveSnapshotOverride(overrides.lastError, view.runtime.lastError),
+    note: resolveSnapshotOverride(overrides.note, view.runtime.note),
+    livePublishInMempool: resolveSnapshotOverride(overrides.livePublishInMempool, view.runtime.livePublishInMempool),
     updatedAtUnixMs: Date.now(),
+  };
+}
+
+function buildPrePublishStatusOverrides(options: {
+  state: WalletStateV1;
+  candidate: MiningCandidate;
+}): MiningRunnerStatusOverrides {
+  const replacing = options.state.miningState.currentTxid !== null;
+  const replacingAcrossTips = replacing && !livePublishTargetsCandidateTip({
+    liveState: options.state.miningState,
+    candidate: options.candidate,
+  });
+
+  return {
+    currentPhase: replacing ? "replacing" : "publishing",
+    currentPublishDecision: replacing ? "replacing" : "publishing",
+    targetBlockHeight: options.candidate.targetBlockHeight,
+    referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+    currentDomainId: options.candidate.domainId,
+    currentDomainName: options.candidate.domainName,
+    currentSentenceDisplay: options.candidate.sentence,
+    currentCanonicalBlend: options.candidate.canonicalBlend.toString(),
+    note: replacing
+      ? "Replacing the live mining transaction for the current tip."
+      : "Broadcasting the best mining candidate for the current tip.",
+    ...(replacingAcrossTips
+      ? {
+        currentPublishState: "none" as const,
+        currentTxid: null,
+        currentWtxid: null,
+        livePublishInMempool: false,
+        currentFeeRateSatVb: null,
+        currentAbsoluteFeeSats: null,
+        currentBlockFeeSpentSats: "0",
+      }
+      : {}),
   };
 }
 
@@ -1631,6 +1736,14 @@ function createStaleMiningCandidateWaitingNote(): string {
 
 function createRetryableMiningPublishWaitingNote(): string {
   return "Selected mining candidate did not reach mempool and will be retried on the current tip with refreshed wallet state.";
+}
+
+function createInsufficientFundsMiningPublishWaitingNote(): string {
+  return "Mining is waiting for enough confirmed safe BTC funding that Bitcoin Core can use for the next publish.";
+}
+
+function createInsufficientFundsMiningPublishErrorMessage(): string {
+  return "Bitcoin Core could not fund the next mining publish with confirmed safe BTC.";
 }
 
 async function generateCandidatesForDomains(options: {
@@ -2394,6 +2507,7 @@ async function publishCandidateOnce(options: {
     dataDir: options.dataDir,
     chain: "main",
     startHeight: 0,
+    serviceLifetime: "ephemeral",
     walletRootId: options.readContext.localState.state.walletRootId,
   });
   const rpc = options.rpcFactory(service.rpc);
@@ -2723,6 +2837,34 @@ async function publishCandidate(options: {
         };
       }
 
+      if (isInsufficientFundsError(error)) {
+        const note = createInsufficientFundsMiningPublishWaitingNote();
+        const lastError = createInsufficientFundsMiningPublishErrorMessage();
+        await appendEventFn(options.paths, createEvent(
+          "publish-paused-insufficient-funds",
+          "Paused mining publish because Bitcoin Core could not fund the next mining transaction with confirmed safe BTC.",
+          {
+            level: "warn",
+            runId: options.runId,
+            targetBlockHeight: refreshedCandidate.targetBlockHeight,
+            referencedBlockHashDisplay: refreshedCandidate.referencedBlockHashDisplay,
+            domainId: refreshedCandidate.domainId,
+            domainName: refreshedCandidate.domainName,
+            score: refreshedCandidate.canonicalBlend.toString(),
+            reason: "insufficient-funds",
+          },
+        ));
+        return {
+          state: readyReadContext.localState.state,
+          txid: null,
+          decision: "publish-paused-insufficient-funds",
+          note,
+          lastError,
+          skipped: true,
+          candidate: null,
+        };
+      }
+
       throw error;
     }
   } finally {
@@ -2833,6 +2975,7 @@ async function performMiningCycle(options: {
       dataDir: options.dataDir,
       chain: "main",
       startHeight: 0,
+      serviceLifetime: "ephemeral",
       walletRootId: readContext.localState.state.walletRootId,
     });
     checkpointMiningSuspendDetector(options.suspendDetector);
@@ -3460,12 +3603,10 @@ async function performMiningCycle(options: {
       readContext: effectiveReadContext,
       overrides: {
         runMode: options.runMode,
-        currentPhase: effectiveReadContext.localState.state.miningState.currentTxid === null
-          ? "publishing"
-          : "replacing",
-        note: effectiveReadContext.localState.state.miningState.currentTxid === null
-          ? "Broadcasting the best mining candidate for the current tip."
-          : "Replacing the live mining transaction for the current tip.",
+        ...buildPrePublishStatusOverrides({
+          state: effectiveReadContext.localState.state,
+          candidate: selectedCandidate,
+        }),
       },
       visualizer: options.visualizer,
       visualizerState: options.loopState.ui,
@@ -3535,6 +3676,9 @@ async function performMiningCycle(options: {
         clearSelectedCandidate(options.loopState);
         setMiningUiCandidate(options.loopState, selectedCandidate);
         options.loopState.waitingNote = published.note;
+        const lastError = published.decision === "publish-paused-insufficient-funds"
+          ? published.lastError ?? createInsufficientFundsMiningPublishErrorMessage()
+          : undefined;
         await refreshAndSaveStatus({
           paths: options.paths,
           provider: options.provider,
@@ -3556,6 +3700,7 @@ async function performMiningCycle(options: {
             mempoolSequenceCacheStatus: gateSnapshot.mempoolSequenceCacheStatus,
             lastMempoolSequence: gateSnapshot.lastMempoolSequence,
             lastCompetitivenessGateAtUnixMs: Date.now(),
+            lastError,
             note: published.note,
             livePublishInMempool: published.state.miningState.livePublishInMempool,
           },
@@ -3661,6 +3806,7 @@ async function saveStopSnapshot(options: {
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
+        serviceLifetime: "ephemeral",
         walletRootId: localState.state.walletRootId,
       }).catch(() => null);
 
@@ -3801,6 +3947,7 @@ async function runMiningLoop(options: {
     dataDir: options.dataDir,
     chain: "main",
     startHeight: 0,
+    serviceLifetime: "ephemeral",
     walletRootId: undefined,
   }).catch(() => null);
   if (service !== null) {
@@ -4137,6 +4284,20 @@ export async function performMiningCycleForTesting(options: {
     ...options,
     loopState: options.loopState ?? createMiningLoopState(),
   });
+}
+
+export function buildPrePublishStatusOverridesForTesting(options: {
+  state: WalletStateV1;
+  candidate: MiningCandidate;
+}): MiningRunnerStatusOverrides {
+  return buildPrePublishStatusOverrides(options);
+}
+
+export function buildStatusSnapshotForTesting(
+  view: MiningControlPlaneView,
+  overrides: MiningRunnerStatusOverrides = {},
+): MiningRuntimeStatusV1 {
+  return buildStatusSnapshot(view, overrides);
 }
 
 export function shouldKeepCurrentTipLivePublishForTesting(options: {

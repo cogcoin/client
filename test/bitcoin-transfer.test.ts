@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -9,7 +7,12 @@ import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
 import { renderScriptPubKeyAsAddress } from "../src/wallet/tx/targets.js";
 import { transferBitcoin } from "../src/wallet/tx/index.js";
+import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createWalletReadContext, createWalletState } from "./current-model-helpers.js";
+
+type TransferAttachServiceOptions = Parameters<
+  NonNullable<Parameters<typeof transferBitcoin>[0]["attachService"]>
+>[0];
 
 function createStringWriter() {
   let text = "";
@@ -83,9 +86,12 @@ test("transferBitcoin rejects opaque script targets", async () => {
   );
 });
 
-test("transferBitcoin rejects self-transfers to the wallet funding script", async () => {
+test("transferBitcoin rejects self-transfers to the wallet funding script", async (t) => {
   const fundingScriptPubKeyHex = `0014${"11".repeat(20)}`;
   const fundingAddress = renderScriptPubKeyAsAddress(fundingScriptPubKeyHex)!;
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-bitcoin-transfer-self");
+  const resolvePaths = createTestRuntimePaths(homeDirectory);
+  const paths = resolvePaths();
   const state = createWalletState({
     funding: {
       address: fundingAddress,
@@ -101,6 +107,7 @@ test("transferBitcoin rejects self-transfers to the wallet funding script", asyn
       databasePath: "/tmp/test.db",
       prompter: createQuietPrompter(),
       assumeYes: true,
+      paths,
       openReadContext: async () => ({
         ...createWalletReadContext({
           localState: {
@@ -122,8 +129,8 @@ test("transferBitcoin rejects self-transfers to the wallet funding script", asyn
   );
 });
 
-test("transferBitcoin succeeds without indexer state when bitcoind and wallet state are ready", async () => {
-  const homeDirectory = await mkdtemp(join(tmpdir(), "cogcoin-bitcoin-transfer-"));
+test("transferBitcoin succeeds without indexer state when bitcoind and wallet state are ready", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-bitcoin-transfer");
   const resolvePaths = createTestRuntimePaths(homeDirectory);
   const paths = resolvePaths();
   const fundingScriptPubKeyHex = `0014${"11".repeat(20)}`;
@@ -142,6 +149,7 @@ test("transferBitcoin succeeds without indexer state when bitcoind and wallet st
     },
   });
   let sendRawTransactionCalls = 0;
+  let attachServiceLifetime: string | null = null;
 
   const result = await transferBitcoin({
     amountSatsText: "1234",
@@ -175,7 +183,10 @@ test("transferBitcoin succeeds without indexer state when bitcoind and wallet st
       }),
       close: async () => {},
     }),
-    attachService: async () => ({ rpc: {} } as any),
+    attachService: async (options: TransferAttachServiceOptions) => {
+      attachServiceLifetime = options.serviceLifetime ?? null;
+      return { rpc: {} } as any;
+    },
     rpcFactory: () => ({
       async listUnspent() {
         return [{
@@ -256,6 +267,7 @@ test("transferBitcoin succeeds without indexer state when bitcoind and wallet st
   assert.equal(result.txid, "txid-1");
   assert.equal(result.wtxid, "wtxid-1");
   assert.equal(sendRawTransactionCalls, 1);
+  assert.equal(attachServiceLifetime, "ephemeral");
 });
 
 test("runCli routes bitcoin transfer through the wallet mutation path and renders text output", async () => {
