@@ -23,6 +23,8 @@ interface StreamWriteObserver {
 export interface FollowSceneRenderOptions {
   artworkCogText?: string | null;
   artworkSatText?: string | null;
+  artworkStatusLeftText?: string | null;
+  artworkStatusRightText?: string | null;
   extraLines?: string[];
 }
 
@@ -177,6 +179,8 @@ export class TtyProgressRenderer {
       ? [...renderFollowFrame(followScene, statusFieldText, now, {
         artworkCogText: renderOptions.artworkCogText ?? null,
         artworkSatText: renderOptions.artworkSatText ?? null,
+        artworkStatusLeftText: renderOptions.artworkStatusLeftText ?? null,
+        artworkStatusRightText: renderOptions.artworkStatusRightText ?? null,
       }), "", progressLine, "", ...extraLines]
       : [truncateLine(NEUTRAL_MESSAGE_TITLE, width), progressLine, "", ...extraLines];
     const frame = lines.join("\n");

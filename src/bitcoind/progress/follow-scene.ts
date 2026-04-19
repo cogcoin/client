@@ -28,7 +28,6 @@ import {
 import {
   centerLine,
   computeCenteredLeftPadding,
-  overlayCenteredField,
   replaceSegment,
   rightAlignLine,
   truncateLine,
@@ -40,6 +39,7 @@ const FOLLOW_COG_LEFT = 0;
 const FOLLOW_COG_WIDTH = FOLLOW_TITLE_LEFT;
 const FOLLOW_SAT_LEFT = FOLLOW_TITLE_LEFT + FOLLOW_TITLE_WIDTH;
 const FOLLOW_SAT_WIDTH = FIELD_WIDTH - FOLLOW_SAT_LEFT;
+const FOLLOW_STATUS_VERSION_GAP = 2;
 
 export type FollowAnimationKind = "placeholder_enter" | "tip_approach" | "convoy_shift";
 
@@ -73,6 +73,8 @@ interface FollowCarPlacement {
 export interface FollowFrameRenderOptions {
   artworkCogText?: string | null;
   artworkSatText?: string | null;
+  artworkStatusLeftText?: string | null;
+  artworkStatusRightText?: string | null;
 }
 
 export function createFollowSceneState(
@@ -185,6 +187,66 @@ function renderFollowHeaderField(options: FollowFrameRenderOptions): string {
       FOLLOW_SAT_LEFT,
       FOLLOW_SAT_WIDTH,
       rightAlignLine(options.artworkSatText, FOLLOW_SAT_WIDTH),
+    );
+  }
+
+  return field;
+}
+
+function renderFollowStatusField(
+  statusFieldText: string,
+  options: FollowFrameRenderOptions,
+): string {
+  const leftText = options.artworkStatusLeftText === null || options.artworkStatusLeftText === undefined
+    ? ""
+    : truncateLine(options.artworkStatusLeftText, FIELD_WIDTH);
+  const rightText = options.artworkStatusRightText === null || options.artworkStatusRightText === undefined
+    ? ""
+    : truncateLine(options.artworkStatusRightText, FIELD_WIDTH);
+  const leftWidth = Math.min(FIELD_WIDTH, leftText.length);
+  const rightWidth = Math.min(FIELD_WIDTH, rightText.length);
+
+  if (leftWidth === 0 && rightWidth === 0) {
+    return centerLine(statusFieldText, FIELD_WIDTH);
+  }
+
+  let field = centerLine(statusFieldText, FIELD_WIDTH);
+
+  if (leftWidth > 0) {
+    field = replaceSegment(
+      field,
+      0,
+      leftWidth,
+      leftAlignLane(leftText, leftWidth),
+    );
+
+    if (leftWidth < FIELD_WIDTH) {
+      field = replaceSegment(
+        field,
+        leftWidth,
+        Math.min(FOLLOW_STATUS_VERSION_GAP, FIELD_WIDTH - leftWidth),
+        "".padEnd(Math.min(FOLLOW_STATUS_VERSION_GAP, FIELD_WIDTH - leftWidth), " "),
+      );
+    }
+  }
+
+  if (rightWidth > 0) {
+    if (rightWidth < FIELD_WIDTH) {
+      const gapStart = Math.max(0, FIELD_WIDTH - rightWidth - FOLLOW_STATUS_VERSION_GAP);
+      const gapWidth = Math.min(FOLLOW_STATUS_VERSION_GAP, FIELD_WIDTH - rightWidth);
+      field = replaceSegment(
+        field,
+        gapStart,
+        gapWidth,
+        "".padEnd(gapWidth, " "),
+      );
+    }
+
+    field = replaceSegment(
+      field,
+      FIELD_WIDTH - rightWidth,
+      rightWidth,
+      rightAlignLine(rightText, rightWidth),
     );
   }
 
@@ -671,7 +733,31 @@ export function renderFollowFrame(
       renderFollowHeaderField(options),
     );
   }
-  overlayCenteredField(frame, STATUS_FIELD_ROW, statusFieldText);
+
+  if (
+    statusFieldText.length > 0
+    || (
+      options.artworkStatusLeftText !== null
+      && options.artworkStatusLeftText !== undefined
+      && options.artworkStatusLeftText.length > 0
+    )
+    || (
+      options.artworkStatusRightText !== null
+      && options.artworkStatusRightText !== undefined
+      && options.artworkStatusRightText.length > 0
+    )
+  ) {
+    const statusRow = frame[STATUS_FIELD_ROW];
+
+    if (statusRow !== undefined) {
+      frame[STATUS_FIELD_ROW] = replaceSegment(
+        statusRow,
+        FIELD_LEFT,
+        FIELD_WIDTH,
+        renderFollowStatusField(statusFieldText, options),
+      );
+    }
+  }
 
   return frame;
 }

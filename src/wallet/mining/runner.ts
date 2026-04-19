@@ -481,6 +481,8 @@ function clearMiningGateCache(walletRootId: string | null | undefined): void {
 export interface RunForegroundMiningOptions extends RunnerDependencies {
   dataDir: string;
   databasePath: string;
+  clientVersion?: string | null;
+  updateAvailable?: boolean;
   provider?: WalletSecretProvider;
   prompter: WalletPrompter;
   builtInSetupEnsured?: boolean;
@@ -4824,6 +4826,8 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
     });
 
     visualizer = new MiningFollowVisualizer({
+      clientVersion: options.clientVersion,
+      updateAvailable: options.updateAvailable,
       progressOutput: options.progressOutput ?? "auto",
       stream: options.stderr,
     });

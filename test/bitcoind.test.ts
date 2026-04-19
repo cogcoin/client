@@ -1800,7 +1800,7 @@ test("attach restarts a compatible stale daemon when expectedBinaryVersion is ne
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.0.3",
+      expectedBinaryVersion: "1.1.0",
       startupTimeoutMs: 5_000,
     });
 
@@ -1823,8 +1823,8 @@ test("attach restarts a compatible stale daemon when expectedBinaryVersion is ne
 
 test("attach keeps compatible equal, newer, and unparseable daemon versions running", async () => {
   const cases = [
-    { name: "equal", binaryVersion: "1.0.3" },
-    { name: "newer", binaryVersion: "1.0.4" },
+    { name: "equal", binaryVersion: "1.1.0" },
+    { name: "newer", binaryVersion: "1.1.1" },
     { name: "unparseable", binaryVersion: "dev-build" },
   ];
 
@@ -1848,7 +1848,7 @@ test("attach keeps compatible equal, newer, and unparseable daemon versions runn
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.0.3",
+        expectedBinaryVersion: "1.1.0",
         startupTimeoutMs: 1_000,
       });
 
@@ -1901,7 +1901,7 @@ test("attach rejects a live daemon with incompatible service metadata without sp
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.0.3",
+        expectedBinaryVersion: "1.1.0",
         startupTimeoutMs: 1_000,
       }),
       /indexer_daemon_service_version_mismatch/,
@@ -1930,7 +1930,7 @@ test("attach accepts a live daemon for a different wallet root when the daemon i
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.0.3",
+      expectedBinaryVersion: "1.1.0",
       startupTimeoutMs: 1_000,
     });
     await daemon.close();
@@ -1958,7 +1958,7 @@ test("attach rejects a live daemon with an incompatible schema version", async (
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.0.3",
+        expectedBinaryVersion: "1.1.0",
         startupTimeoutMs: 1_000,
       }),
       /indexer_daemon_schema_mismatch/,

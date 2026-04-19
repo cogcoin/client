@@ -32,6 +32,17 @@ import {
 } from "../workflow-hints.js";
 import { createCloseSignalWatcher, waitForCompletionOrStop } from "../signals.js";
 import { createSyncProgressReporter } from "../sync-progress.js";
+import {
+  PASSIVE_UPDATE_CHECK_TIMEOUT_MS,
+  applyUpdateCheckResult,
+  compareSemver,
+  createEmptyUpdateCheckCache,
+  fetchLatestPublishedVersion,
+  isUpdateCheckDisabled,
+  loadUpdateCheckCache,
+  persistUpdateCheckCache,
+  shouldRefreshUpdateCheck,
+} from "../update-service.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 
 function createCommandPrompter(
@@ -139,6 +150,43 @@ async function syncManagedMiningReadiness(options: {
   }
 }
 
+async function resolveMineUpdateAvailable(
+  currentVersion: string,
+  context: RequiredCliRunnerContext,
+): Promise<boolean> {
+  if (isUpdateCheckDisabled(context.env)) {
+    return false;
+  }
+
+  try {
+    const cachePath = context.resolveUpdateCheckStatePath();
+    const now = context.now();
+    let cache = await loadUpdateCheckCache(cachePath) ?? createEmptyUpdateCheckCache();
+    let cacheChanged = false;
+
+    if (shouldRefreshUpdateCheck(cache, now)) {
+      const updateResult = await fetchLatestPublishedVersion(context.fetchImpl, {
+        timeoutMs: PASSIVE_UPDATE_CHECK_TIMEOUT_MS,
+      });
+      cache = applyUpdateCheckResult(cache, updateResult, now);
+      cacheChanged = true;
+    }
+
+    if (cacheChanged) {
+      await persistUpdateCheckCache(cachePath, cache);
+    }
+
+    if (cache.latestVersion === null) {
+      return false;
+    }
+
+    const comparison = compareSemver(cache.latestVersion, currentVersion);
+    return comparison !== null && comparison > 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function runMiningRuntimeCommand(
   parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
@@ -170,6 +218,9 @@ export async function runMiningRuntimeCommand(
       if (preflightCode !== null) {
         return preflightCode;
       }
+      const updateAvailable = usesTtyProgress(parsed.progressOutput, context.stderr)
+        ? await resolveMineUpdateAvailable(packageVersion, context)
+        : false;
       const abortController = new AbortController();
       const onStop = (): void => {
         abortController.abort();
@@ -180,6 +231,8 @@ export async function runMiningRuntimeCommand(
 
       try {
         await context.runForegroundMining({
+          clientVersion: packageVersion,
+          updateAvailable,
           dataDir,
           databasePath: dbPath,
           provider,

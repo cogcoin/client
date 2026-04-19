@@ -1807,6 +1807,39 @@ test("follow scene leaves missing mining balance lanes blank while keeping the c
   assert.equal(extractField(emptyFrame, 2).trim(), "⛭  C O G C O I N  ⛭");
 });
 
+test("follow scene renders a lower-right mining version beside the status text", () => {
+  const statusText = "Waiting for next block";
+  const frame = renderFollowFrameForTesting(
+    createFollowSceneStateForTesting(),
+    statusText,
+    0,
+    {
+      artworkStatusRightText: "v1.1.0",
+    },
+  );
+  const field = extractField(frame, 13);
+
+  assert.match(field, /Waiting for next block\s{2,}v1\.1\.0$/);
+  assert.equal(field.indexOf(statusText), Math.floor((64 - statusText.length) / 2));
+});
+
+test("follow scene renders an UPDATE badge on the left while keeping semver on the right", () => {
+  const statusText = "Waiting for next block";
+  const frame = renderFollowFrameForTesting(
+    createFollowSceneStateForTesting(),
+    statusText,
+    0,
+    {
+      artworkStatusLeftText: "UPDATE",
+      artworkStatusRightText: "v1.1.0",
+    },
+  );
+  const field = extractField(frame, 13);
+
+  assert.match(field, /^UPDATE\s{2,}.*Waiting for next block.*\s{2,}v1\.1\.0$/);
+  assert.equal(field.indexOf(statusText), Math.floor((64 - statusText.length) / 2));
+});
+
 test("follow scene animates the pending placeholder car in from the left", () => {
   const state = createFollowSceneStateForTesting(910_000);
 

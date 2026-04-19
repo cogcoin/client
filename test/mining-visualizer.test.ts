@@ -280,6 +280,73 @@ test("mining follow visualizer renders the follow scene on tty streams", () => {
   assert.match(output, /Generating mining sentences for eligible root domains\./);
 });
 
+test("mining follow visualizer passes the client semver to the right artwork status lane", () => {
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+
+  const visualizer = new MiningFollowVisualizer({
+    clientVersion: " 1.1.0 ",
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot({
+    currentPhase: "waiting",
+  }));
+  visualizer.close();
+
+  assert.equal(capturedOptions?.artworkStatusLeftText, undefined);
+  assert.equal(capturedOptions?.artworkStatusRightText, "v1.1.0");
+});
+
+test("mining follow visualizer adds an UPDATE badge on the left while keeping semver on the right", () => {
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+
+  const visualizer = new MiningFollowVisualizer({
+    clientVersion: "1.1.0",
+    updateAvailable: true,
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot({
+    currentPhase: "waiting",
+  }));
+  visualizer.close();
+
+  assert.equal(capturedOptions?.artworkStatusLeftText, "UPDATE");
+  assert.equal(capturedOptions?.artworkStatusRightText, "v1.1.0");
+});
+
 test("mining follow visualizer stays quiet when tty progress is disabled", () => {
   const stream = new MemoryStream({ isTTY: true, columns: 120 });
   const visualizer = new MiningFollowVisualizer({
@@ -447,7 +514,7 @@ test("mining follow visualizer renders the current mined block board when settle
     artworkCogText: "1.2345 COG",
     artworkSatText: "42 SAT",
     extraLines: [
-      "✎ Indexed Block #100 Sentences ✎",
+      "✎ Block #100 Sentences ✎",
       "",
       "1. @alpha: alpha sentence",
       "",
@@ -649,7 +716,7 @@ test("mining follow visualizer keeps the raw tip rail while labeling the older i
 
   assert.equal(capturedIndexedHeight, 100);
   assert.equal(capturedNodeHeight, 102);
-  assert.equal(capturedOptions?.extraLines?.[0], "✎ Indexed Block #100 Sentences ✎");
+  assert.equal(capturedOptions?.extraLines?.[0], "✎ Block #100 Sentences ✎");
   assert.equal(capturedOptions?.extraLines?.[2], "1. @alpha: indexed sentence");
   assert.equal(capturedOptions?.extraLines?.[3], "");
 });
@@ -685,7 +752,7 @@ test("mining follow visualizer leaves the indexed block rows blank until settled
   assert.equal(capturedOptions?.artworkCogText, null);
   assert.equal(capturedOptions?.artworkSatText, null);
   assert.deepEqual(capturedOptions?.extraLines, [
-    "✎ Indexed Block #101 Sentences ✎",
+    "✎ Block #101 Sentences ✎",
     "",
     "1.",
     "",
@@ -832,7 +899,7 @@ test("mining follow visualizer snapshots runtime and board state for ticker redr
     indexedHeight: 100,
     nodeHeight: 100,
     extraLines: [
-      "✎ Indexed Block #100 Sentences ✎",
+      "✎ Block #100 Sentences ✎",
       "",
       "1. @alpha: UNDER indexed sentence",
       "",
@@ -944,7 +1011,7 @@ test("mining follow visualizer snapshots queued headless redraw state", () => {
     indexedHeight: 100,
     nodeHeight: 101,
     extraLines: [
-      "✎ Indexed Block #100 Sentences ✎",
+      "✎ Block #100 Sentences ✎",
       "",
       "1. @alpha: UNDER queued sentence",
       "",

@@ -122,6 +122,22 @@ function formatCompactSatBalanceText(balanceSats: bigint | null): string | null 
   return balanceSats === null ? null : `${balanceSats.toString()} SAT`;
 }
 
+function formatArtworkVersionText(clientVersion: string | null | undefined): string | null {
+  if (typeof clientVersion !== "string") {
+    return null;
+  }
+
+  const normalizedVersion = normalizeInlineText(clientVersion);
+
+  if (normalizedVersion.length === 0) {
+    return null;
+  }
+
+  return normalizedVersion.startsWith("v")
+    ? normalizedVersion
+    : `v${normalizedVersion}`;
+}
+
 function formatRewardCogAmount(value: bigint): string {
   return `${formatCogAmountWithDecimals(value, {
     maxFractionDigits: 8,
@@ -399,6 +415,8 @@ export function describeMiningVisualizerProgress(
 
 export class MiningFollowVisualizer {
   readonly #renderer: VisualizerRendererLike | null;
+  readonly #artworkStatusLeftText: string | null;
+  readonly #artworkStatusRightText: string | null;
   readonly #clock: RenderClock;
   readonly #renderThrottle: TtyRenderThrottle;
   readonly #progress = createBootstrapProgress("follow_tip", VISUALIZER_PROGRESS_SNAPSHOT);
@@ -413,6 +431,8 @@ export class MiningFollowVisualizer {
     platform?: NodeJS.Platform;
     env?: NodeJS.ProcessEnv;
     clock?: RenderClock;
+    clientVersion?: string | null;
+    updateAvailable?: boolean;
     rendererFactory?: (stream: TtyRenderStream) => VisualizerRendererLike;
   } = {}) {
     const stream = options.stream ?? process.stderr;
@@ -426,6 +446,9 @@ export class MiningFollowVisualizer {
       },
     );
     this.#clock = options.clock ?? DEFAULT_RENDER_CLOCK;
+    const artworkVersionText = formatArtworkVersionText(options.clientVersion);
+    this.#artworkStatusLeftText = options.updateAvailable === true ? "UPDATE" : null;
+    this.#artworkStatusRightText = artworkVersionText;
 
     this.#renderer = renderPolicy.enabled
       ? options.rendererFactory?.(stream) ?? new TtyProgressRenderer(stream)
@@ -505,29 +528,39 @@ export class MiningFollowVisualizer {
     this.#progress.etaSeconds = null;
     this.#progress.lastError = snapshot.lastError;
 
+    const renderOptions: FollowSceneRenderOptions = {
+      artworkCogText: formatCompactCogBalanceText(uiState.balanceCogtoshi),
+      artworkSatText: formatCompactSatBalanceText(uiState.balanceSats),
+      extraLines: [
+        `✎ Block #${uiState.settledBlockHeight ?? "-----"} Sentences ✎`,
+        "",
+        ...Array.from({ length: MINING_SENTENCE_BOARD_SIZE }, (_value, index) => {
+          const entry = uiState.settledBoardEntries[index];
+          return entry === undefined
+            ? [`${index + 1}.`, ""]
+            : formatSentenceRow(entry);
+        }).flat(),
+        "----------",
+        formatRequiredWordsLine(uiState.provisionalRequiredWords),
+        ...formatProvisionalSentenceRow(uiState.provisionalEntry, uiState.provisionalRequiredWords),
+      ],
+    };
+
+    if (this.#artworkStatusLeftText !== null) {
+      renderOptions.artworkStatusLeftText = this.#artworkStatusLeftText;
+    }
+
+    if (this.#artworkStatusRightText !== null) {
+      renderOptions.artworkStatusRightText = this.#artworkStatusRightText;
+    }
+
     this.#renderer.renderFollowScene(
       this.#progress,
       indexedHeight,
       nodeHeight,
       this.#scene,
       describeMiningVisualizerStatus(snapshot, uiState),
-      {
-        artworkCogText: formatCompactCogBalanceText(uiState.balanceCogtoshi),
-        artworkSatText: formatCompactSatBalanceText(uiState.balanceSats),
-        extraLines: [
-          `✎ Indexed Block #${uiState.settledBlockHeight ?? "-----"} Sentences ✎`,
-          "",
-          ...Array.from({ length: MINING_SENTENCE_BOARD_SIZE }, (_value, index) => {
-            const entry = uiState.settledBoardEntries[index];
-            return entry === undefined
-              ? [`${index + 1}.`, ""]
-              : formatSentenceRow(entry);
-          }).flat(),
-          "----------",
-          formatRequiredWordsLine(uiState.provisionalRequiredWords),
-          ...formatProvisionalSentenceRow(uiState.provisionalEntry, uiState.provisionalRequiredWords),
-        ],
-      },
+      renderOptions,
     );
   }
 }

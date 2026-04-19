@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -19,12 +20,13 @@ import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createMiningRuntimeStatus } from "./current-model-helpers.js";
 
-function createStringWriter() {
+function createStringWriter(options: { isTTY?: boolean; columns?: number } = {}) {
   let text = "";
 
   return {
     stream: {
-      isTTY: false,
+      isTTY: options.isTTY ?? false,
+      columns: options.columns,
       write(chunk: string) {
         text += chunk;
       },
@@ -186,6 +188,8 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
   const events: string[] = [];
   let expectedBinaryVersion: string | null = null;
   let runOptions: {
+    clientVersion: string | null | undefined;
+    updateAvailable: boolean | undefined;
     dataDir: string;
     databasePath: string;
     provider: unknown;
@@ -214,6 +218,8 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
     },
     runForegroundMining: async (options) => {
       runOptions = {
+        clientVersion: options.clientVersion,
+        updateAvailable: options.updateAvailable,
         dataDir: options.dataDir,
         databasePath: options.databasePath,
         provider: options.provider,
@@ -239,12 +245,74 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
   assert.notEqual(runOptions, null);
   assert.equal(expectedBinaryVersion, version);
   const actualRunOptions = runOptions!;
+  assert.equal(actualRunOptions.clientVersion, version);
+  assert.equal(actualRunOptions.updateAvailable, false);
   assert.equal(actualRunOptions.dataDir, "/tmp/bitcoind");
   assert.equal(actualRunOptions.databasePath, "/tmp/cogcoin.db");
   assert.equal(actualRunOptions.provider, provider);
   assert.equal(actualRunOptions.prompter, prompter);
   assert.equal(actualRunOptions.builtInSetupEnsured, true);
   assert.deepEqual(actualRunOptions.paths, runtimePaths);
+});
+
+test("mine text marks updateAvailable when tty mining sees a newer npm version", async (t) => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter({ isTTY: true, columns: 120 });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const prompter = createPrompter();
+  const version = "1.1.0";
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mine-runtime-update");
+  const resolvePaths = createTestRuntimePaths(homeDirectory);
+  const runtimePaths = resolvePaths(null);
+  const cachePath = join(homeDirectory, "update-check.json");
+  let runOptions: {
+    clientVersion: string | null | undefined;
+    updateAvailable: boolean | undefined;
+    paths: unknown;
+  } | null = null;
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    signalSource: QUIET_SIGNAL_SOURCE,
+    walletSecretProvider: provider,
+    createPrompter: () => prompter,
+    readPackageVersion: async () => version,
+    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
+    resolveUpdateCheckStatePath: () => cachePath,
+    ensureBuiltInMiningSetupIfNeeded: async () => true,
+    loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
+    openManagedIndexerMonitor: async () => createCompletedSyncMonitor([]) as any,
+    fetchImpl: async () => new Response(JSON.stringify({
+      version: "1.1.1",
+    }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+      },
+    }),
+    runForegroundMining: async (options) => {
+      runOptions = {
+        clientVersion: options.clientVersion,
+        updateAvailable: options.updateAvailable,
+        paths: options.paths,
+      };
+    },
+  });
+
+  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine"]), context);
+
+  assert.equal(exitCode, 0);
+  assert.notEqual(runOptions, null);
+  const actualRunOptions = runOptions!;
+  assert.equal(actualRunOptions.clientVersion, version);
+  assert.equal(actualRunOptions.updateAvailable, true);
+  assert.deepEqual(actualRunOptions.paths, runtimePaths);
+  assert.match(
+    await readFile(cachePath, "utf8"),
+    /"latestVersion": "1.1.1"/,
+  );
 });
 
 test("mine start text ensures provider setup, syncs managed services, then starts background mining", async (t) => {
