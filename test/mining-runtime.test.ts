@@ -149,6 +149,83 @@ function createReadyMiningReadContext(options: {
   } as any;
 }
 
+function createManagedBitcoindTimeoutMessage(method = "getblockchaininfo"): string {
+  return `The managed Bitcoin RPC request to 127.0.0.1:49987 for ${method} failed: timeout`;
+}
+
+function createRecoveryReadContext(overrides: Record<string, unknown> = {}) {
+  return createReadyMiningReadContext({
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+    readContextOverrides: {
+      indexer: {
+        health: "synced",
+        message: null,
+        status: null,
+        source: "lease",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-100",
+        openedAtUnixMs: 1,
+        snapshotTip: null,
+      },
+      nodeStatus: {
+        chain: "mainnet",
+        nodeBestHeight: 100,
+        nodeBestHashHex: "11".repeat(32),
+        walletReplica: {
+          proofStatus: "ready",
+        },
+        serviceStatus: {
+          serviceInstanceId: "svc-1",
+          processId: 9_001,
+        },
+      },
+      model: {
+        walletScriptPubKeyHex: "0014" + "11".repeat(20),
+        domains: [],
+      },
+      ...overrides,
+    },
+  });
+}
+
+function createHealthyMiningRpc(overrides: Record<string, unknown> = {}) {
+  return {
+    async listLockUnspent() {
+      return [];
+    },
+    async lockUnspent() {
+      return true;
+    },
+    async listUnspent() {
+      return [];
+    },
+    async getBlockchainInfo() {
+      return {
+        blocks: 100,
+        bestblockhash: "11".repeat(32),
+        initialblockdownload: false,
+      };
+    },
+    async getNetworkInfo() {
+      return {
+        networkactive: true,
+        connections_out: 8,
+      };
+    },
+    async getMempoolInfo() {
+      return {
+        loaded: true,
+      };
+    },
+    async saveMempool() {
+      return null;
+    },
+    ...overrides,
+  };
+}
+
 test("normalizeMiningStateRecord accepts legacy liveMiningFamilyInMempool snapshots", () => {
   const normalized = normalizeMiningStateRecord({
     ...createMiningState({
@@ -636,6 +713,352 @@ test("performMiningCycle keeps the mining board pinned to the indexed snapshot w
   assert.deepEqual(loopState.ui.settledBoardEntries, [
     { rank: 1, domainName: "cogdemo", sentence: "Caught-up settled sentence." },
   ]);
+});
+
+test("performMiningCycle waits instead of throwing on recoverable managed Bitcoin RPC failures", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-rpc-recovery");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const failureMessage = createManagedBitcoindTimeoutMessage();
+  let attachCalls = 0;
+  let probeCalls = 0;
+  let stopCalls = 0;
+
+  await assert.doesNotReject(async () => {
+    await performMiningCycleForTesting({
+      dataDir: homeDirectory,
+      databasePath: `${homeDirectory}/client.sqlite`,
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      openReadContext: async () => createRecoveryReadContext(),
+      attachService: async () => {
+        attachCalls += 1;
+        return {
+          rpc: {},
+          pid: 9_001,
+          refreshServiceStatus: async () => ({
+            serviceInstanceId: "svc-1",
+            processId: 9_001,
+          }),
+        } as any;
+      },
+      probeService: async () => {
+        probeCalls += 1;
+        return {
+          compatibility: "compatible",
+          status: {
+            serviceInstanceId: "svc-1",
+            processId: 9_001,
+          },
+          error: null,
+        } as any;
+      },
+      stopService: async () => {
+        stopCalls += 1;
+        return {
+          status: "not-running",
+          walletRootId: "wallet-root",
+        } as any;
+      },
+      rpcFactory: () => createHealthyMiningRpc({
+        async getBlockchainInfo() {
+          throw new Error(failureMessage);
+        },
+      }) as any,
+      loopState,
+      nowImpl: () => 1_000,
+    });
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-bitcoin-network");
+  assert.equal(snapshot?.lastError, failureMessage);
+  assert.equal(
+    snapshot?.note,
+    "Mining lost contact with the local Bitcoin RPC service and is waiting for it to recover.",
+  );
+  assert.equal(loopState.attemptedTipKey, null);
+  assert.equal(attachCalls, 1);
+  assert.equal(probeCalls, 1);
+  assert.equal(stopCalls, 0);
+});
+
+test("performMiningCycle waits through the live-pid grace window and throttles managed bitcoind restarts", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-rpc-grace");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  let attachCalls = 0;
+  let stopCalls = 0;
+
+  const runCycle = async (nowUnixMs: number) => {
+    await performMiningCycleForTesting({
+      dataDir: homeDirectory,
+      databasePath: `${homeDirectory}/client.sqlite`,
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      openReadContext: async () => createRecoveryReadContext(),
+      attachService: async () => {
+        attachCalls += 1;
+        throw new Error("managed_bitcoind_service_start_timeout");
+      },
+      probeService: async () => ({
+        compatibility: "unreachable",
+        status: {
+          serviceInstanceId: "svc-1",
+          processId: process.pid,
+        },
+        error: null,
+      }) as any,
+      stopService: async () => {
+        stopCalls += 1;
+        return {
+          status: "stopped",
+          walletRootId: "wallet-root",
+        } as any;
+      },
+      rpcFactory: () => {
+        throw new Error("rpcFactory should not be used when attachService fails");
+      },
+      loopState,
+      nowImpl: () => nowUnixMs,
+    });
+  };
+
+  await runCycle(1_000);
+  assert.equal(stopCalls, 0);
+
+  await runCycle(10_000);
+  assert.equal(stopCalls, 0);
+
+  await runCycle(17_000);
+  assert.equal(stopCalls, 1);
+
+  await runCycle(20_000);
+  assert.equal(stopCalls, 1);
+  assert.equal(attachCalls, 5);
+});
+
+test("performMiningCycle immediately reattaches managed bitcoind when no live pid remains", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-rpc-reattach");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const candidate = createTestMiningCandidate();
+  let attachCalls = 0;
+  let stopCalls = 0;
+
+  cacheSelectedCandidateForTipForTesting(loopState, "tip-1", candidate);
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => createRecoveryReadContext(),
+    attachService: async () => {
+      attachCalls += 1;
+      if (attachCalls === 1) {
+        throw new Error("managed_bitcoind_service_start_timeout");
+      }
+
+      return {
+        rpc: {},
+        pid: 9_002,
+        refreshServiceStatus: async () => ({
+          serviceInstanceId: "svc-2",
+          processId: 9_002,
+        }),
+      } as any;
+    },
+    probeService: async () => ({
+      compatibility: "unreachable",
+      status: {
+        serviceInstanceId: "svc-1",
+        processId: null,
+      },
+      error: null,
+    }) as any,
+    stopService: async () => {
+      stopCalls += 1;
+      return {
+        status: "not-running",
+        walletRootId: "wallet-root",
+      } as any;
+    },
+    rpcFactory: () => {
+      throw new Error("rpcFactory should not be used when attachService fails");
+    },
+    loopState,
+    nowImpl: () => 1_000,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-bitcoin-network");
+  assert.equal(attachCalls, 2);
+  assert.equal(stopCalls, 0);
+  assert.equal(getSelectedCandidateForTipForTesting(loopState, "tip-1"), null);
+  assert.deepEqual(loopState.ui.provisionalRequiredWords, []);
+  assert.deepEqual(loopState.ui.provisionalEntry, {
+    domainName: null,
+    sentence: null,
+  });
+  assert.equal(loopState.ui.latestSentence, null);
+});
+
+test("performMiningCycle clears transient recovery errors once Bitcoin RPC recovers", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-rpc-clear");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const failureMessage = createManagedBitcoindTimeoutMessage();
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => createRecoveryReadContext(),
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    probeService: async () => ({
+      compatibility: "compatible",
+      status: {
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      },
+      error: null,
+    }) as any,
+    stopService: async () => ({
+      status: "not-running",
+      walletRootId: "wallet-root",
+    }) as any,
+    rpcFactory: () => createHealthyMiningRpc({
+      async getBlockchainInfo() {
+        throw new Error(failureMessage);
+      },
+    }) as any,
+    loopState,
+    nowImpl: () => 1_000,
+  });
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => createRecoveryReadContext({
+      indexer: {
+        health: "catching-up",
+        message: "Indexer daemon is still catching up to the managed Bitcoin tip.",
+        status: null,
+        source: "lease",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-100",
+        openedAtUnixMs: 2,
+        snapshotTip: null,
+      },
+    }),
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    probeService: async () => ({
+      compatibility: "compatible",
+      status: {
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      },
+      error: null,
+    }) as any,
+    stopService: async () => ({
+      status: "not-running",
+      walletRootId: "wallet-root",
+    }) as any,
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+    nowImpl: () => 2_000,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-indexer");
+  assert.equal(snapshot?.lastError, null);
+  assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
+});
+
+test("performMiningCycle still throws on non-recoverable managed bitcoind mismatches", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-rpc-fatal");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+
+  await assert.rejects(
+    async () => {
+      await performMiningCycleForTesting({
+        dataDir: homeDirectory,
+        databasePath: `${homeDirectory}/client.sqlite`,
+        provider,
+        paths,
+        runMode: "foreground",
+        backgroundWorkerPid: null,
+        backgroundWorkerRunId: null,
+        openReadContext: async () => createRecoveryReadContext(),
+        attachService: async () => {
+          throw new Error("managed_bitcoind_runtime_mismatch");
+        },
+        probeService: async () => {
+          throw new Error("probeService should not be reached for fatal mismatches");
+        },
+        stopService: async () => {
+          throw new Error("stopService should not be reached for fatal mismatches");
+        },
+        rpcFactory: () => {
+          throw new Error("rpcFactory should not be used when attachService fails");
+        },
+      });
+    },
+    /managed_bitcoind_runtime_mismatch/,
+  );
 });
 
 test("resume refresh passes a freshly indexed board state to the visualizer", async (t) => {

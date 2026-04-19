@@ -6,6 +6,7 @@ import test, { type TestContext } from "node:test";
 import {
   buildMiningGenerationRequestForTesting,
   runForegroundMining,
+  runMiningLoopForTesting,
   startBackgroundMining,
   takeOverMiningRuntimeForTesting,
 } from "../src/wallet/mining/runner.js";
@@ -13,7 +14,12 @@ import { loadMiningRuntimeStatus, saveMiningRuntimeStatus } from "../src/wallet/
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
-import { createMiningRuntimeStatus } from "./current-model-helpers.js";
+import {
+  createMiningRuntimeStatus,
+  createMiningState,
+  createWalletReadContext,
+  createWalletState,
+} from "./current-model-helpers.js";
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -57,6 +63,132 @@ function createStderrStream() {
     write() {
       return true;
     },
+  };
+}
+
+function createLoopReadContext(overrides: Record<string, unknown> = {}) {
+  const walletScriptPubKeyHex = "0014" + "11".repeat(20);
+  const state = createWalletState({
+    managedCoreWallet: {
+      walletName: "wallet.dat",
+      internalPassphrase: "passphrase",
+      descriptorChecksum: "abcd1234",
+      walletAddress: "bc1qfunding",
+      walletScriptPubKeyHex,
+      proofStatus: "ready",
+      lastImportedAtUnixMs: null,
+      lastVerifiedAtUnixMs: null,
+    },
+    domains: [{
+      name: "cogdemo",
+      domainId: 7,
+      currentOwnerScriptPubKeyHex: walletScriptPubKeyHex,
+      canonicalChainStatus: "anchored",
+      foundingMessageText: null,
+      birthTime: null,
+    } as any],
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+  });
+
+  return {
+    ...createWalletReadContext({
+      localState: {
+        availability: "ready",
+        clientPasswordReadiness: "ready",
+        unlockRequired: false,
+        walletRootId: state.walletRootId,
+        state,
+        source: "primary",
+        hasPrimaryStateFile: true,
+        hasBackupStateFile: false,
+        message: null,
+      },
+      snapshot: {
+        state: {
+          consensus: {
+            domainIdsByName: new Map([["cogdemo", 7]]),
+            domainsById: new Map([[7, {
+              domainId: 7,
+              name: "cogdemo",
+              anchored: true,
+              anchorHeight: 100,
+              endpoint: null,
+            }]]),
+            balances: new Map(),
+          },
+          history: {
+            foundingMessageByDomain: new Map(),
+            blockWinnersByHeight: new Map(),
+          },
+        },
+      },
+      indexer: {
+        health: "catching-up",
+        message: "Indexer daemon is still catching up to the managed Bitcoin tip.",
+        status: null,
+        source: "lease",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-100",
+        openedAtUnixMs: 1,
+        snapshotTip: null,
+      },
+      nodeStatus: {
+        chain: "mainnet",
+        nodeBestHeight: 100,
+        nodeBestHashHex: "11".repeat(32),
+        walletReplica: {
+          proofStatus: "ready",
+        },
+        serviceStatus: {
+          serviceInstanceId: "svc-1",
+          processId: 9_001,
+        },
+      },
+      model: {
+        walletScriptPubKeyHex,
+        domains: [],
+      },
+      ...overrides,
+    }),
+    close: async () => undefined,
+  } as any;
+}
+
+function createLoopMiningRpc(overrides: Record<string, unknown> = {}) {
+  return {
+    async listLockUnspent() {
+      return [];
+    },
+    async lockUnspent() {
+      return true;
+    },
+    async listUnspent() {
+      return [];
+    },
+    async getBlockchainInfo() {
+      return {
+        blocks: 100,
+        bestblockhash: "11".repeat(32),
+        initialblockdownload: false,
+      };
+    },
+    async getNetworkInfo() {
+      return {
+        networkactive: true,
+        connections_out: 8,
+      };
+    },
+    async getMempoolInfo() {
+      return {
+        loaded: true,
+      };
+    },
+    async saveMempool() {
+      return null;
+    },
+    ...overrides,
   };
 }
 
@@ -205,6 +337,75 @@ test("buildMiningGenerationRequestForTesting attaches distinct per-domain prompt
       { domainName: "beta", extraPrompt: "focus beta" },
     ],
   );
+});
+
+test("runMiningLoop survives a recoverable managed Bitcoin RPC failure and reaches a later healthy cycle", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-loop-recovery");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const abortController = new AbortController();
+  const failureMessage = "The managed Bitcoin RPC request to 127.0.0.1:49987 for getblockchaininfo failed: timeout";
+  let blockchainCalls = 0;
+  let sleepCalls = 0;
+
+  await assert.doesNotReject(async () => {
+    await runMiningLoopForTesting({
+      dataDir: homeDirectory,
+      databasePath: join(homeDirectory, "indexer.sqlite"),
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      signal: abortController.signal,
+      openReadContext: async () => createLoopReadContext(),
+      attachService: async () => ({
+        rpc: {},
+        pid: 9_001,
+        refreshServiceStatus: async () => ({
+          serviceInstanceId: "svc-1",
+          processId: 9_001,
+        }),
+      }) as any,
+      probeService: async () => ({
+        compatibility: "compatible",
+        status: {
+          serviceInstanceId: "svc-1",
+          processId: 9_001,
+        },
+        error: null,
+      }) as any,
+      stopService: async () => {
+        throw new Error("stopService should not be used for compatible retryable failures");
+      },
+      rpcFactory: () => createLoopMiningRpc({
+        async getBlockchainInfo() {
+          blockchainCalls += 1;
+          if (blockchainCalls === 1) {
+            throw new Error(failureMessage);
+          }
+
+          return {
+            blocks: 100,
+            bestblockhash: "11".repeat(32),
+            initialblockdownload: false,
+          };
+        },
+      }) as any,
+      sleepImpl: async () => {
+        sleepCalls += 1;
+        if (sleepCalls >= 2) {
+          abortController.abort();
+        }
+      },
+    });
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(blockchainCalls, 2);
+  assert.equal(snapshot?.currentPhase, "waiting-indexer");
+  assert.equal(snapshot?.lastError, null);
+  assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
 });
 
 test("runForegroundMining replaces an existing foreground miner in the same runtime", async (t) => {
