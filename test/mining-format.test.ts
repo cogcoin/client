@@ -59,3 +59,17 @@ test("mine status text renders the override provider model and 404 next step", (
   assert.match(report, /Provider runtime: not-found/);
   assert.match(report, /Next: run `cogcoin mine setup` and clear or correct the provider model\./);
 });
+
+test("mine status text shows the insufficient-funds next step from publish decision", () => {
+  const report = formatMineStatusReport(createMiningControlPlaneView({
+    runtime: createMiningRuntimeStatus({
+      currentPhase: "waiting",
+      miningState: "paused",
+      currentPublishDecision: "publish-paused-insufficient-funds",
+      note: "Mining is waiting for enough safe BTC funding that Bitcoin Core can use for the next publish.",
+    }),
+  }));
+
+  assert.match(report, /Publish decision: publish-paused-insufficient-funds/);
+  assert.match(report, /Next: wait for enough safe BTC funding to become spendable for the next publish; mining resumes automatically\./);
+});

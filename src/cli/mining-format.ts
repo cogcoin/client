@@ -40,6 +40,10 @@ function resolveProviderNotFoundNextStep(mining: MiningControlPlaneView): string
     : "Next: run `cogcoin mine setup` and choose a valid provider model.";
 }
 
+function resolveInsufficientFundsNextStep(): string {
+  return "Next: wait for enough safe BTC funding to become spendable for the next publish; mining resumes automatically.";
+}
+
 export function formatMiningSummaryLine(mining: MiningControlPlaneView): string {
   const provider = mining.provider.configured
     ? `${mining.provider.provider} configured`
@@ -143,6 +147,8 @@ export function formatMineStatusReport(mining: MiningControlPlaneView): string {
     lines.push("Next: run `cogcoin repair` before mining again.");
   } else if (mining.runtime.providerState === "not-found") {
     lines.push(resolveProviderNotFoundNextStep(mining));
+  } else if (mining.runtime.currentPublishDecision === "publish-paused-insufficient-funds") {
+    lines.push(resolveInsufficientFundsNextStep());
   } else if (mining.runtime.pauseReason === "zero-reward") {
     lines.push("Next: wait for the next positive-reward target height; mining resumes automatically.");
   } else if (mining.runtime.currentPhase === "resuming") {

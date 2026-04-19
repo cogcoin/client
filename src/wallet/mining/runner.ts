@@ -1887,7 +1887,7 @@ function createMiningPlan(options: {
 } {
   const fundingUtxos = options.allUtxos.filter((entry) =>
     entry.scriptPubKey === options.state.funding.scriptPubKeyHex
-    && entry.confirmations >= 1
+    && entry.confirmations >= MINING_FUNDING_MIN_CONF
     && entry.spendable !== false
     && entry.safe !== false
     && !(
@@ -1968,6 +1968,7 @@ async function buildMiningTransaction(options: {
     finalizeErrorCode: "wallet_mining_finalize_failed",
     mempoolRejectPrefix: "wallet_mining_mempool_rejected",
     feeRate: options.plan.feeRateSatVb,
+    availableFundingMinConf: MINING_FUNDING_MIN_CONF,
   });
 }
 
@@ -1987,7 +1988,7 @@ export function createMiningPlanForTesting(options: {
     referencedBlockHashInternal: Uint8Array;
     targetBlockHeight: number;
   };
-  conflictOutpoint: OutpointRecord;
+  conflictOutpoint: OutpointRecord | null;
   allUtxos: Awaited<ReturnType<MiningRpcClient["listUnspent"]>>;
   feeRateSatVb: number;
 }) {
@@ -2111,12 +2112,14 @@ function createRetryableMiningPublishWaitingNote(): string {
   return "Selected mining candidate did not reach mempool and will be retried on the current tip with refreshed wallet state.";
 }
 
+const MINING_FUNDING_MIN_CONF = 0;
+
 function createInsufficientFundsMiningPublishWaitingNote(): string {
-  return "Mining is waiting for enough confirmed safe BTC funding that Bitcoin Core can use for the next publish.";
+  return "Mining is waiting for enough safe BTC funding that Bitcoin Core can use for the next publish.";
 }
 
 function createInsufficientFundsMiningPublishErrorMessage(): string {
-  return "Bitcoin Core could not fund the next mining publish with confirmed safe BTC.";
+  return "Bitcoin Core could not fund the next mining publish with safe BTC.";
 }
 
 function buildMiningGenerationRequest(options: {
@@ -2938,7 +2941,7 @@ async function publishCandidateOnce(options: {
     nodeBestHeight: options.readContext.nodeStatus?.nodeBestHeight ?? null,
     snapshotState: options.readContext.snapshot.state,
   })).state;
-  const allUtxos = await rpc.listUnspent(state.managedCoreWallet.walletName, 0);
+  const allUtxos = await rpc.listUnspent(state.managedCoreWallet.walletName, MINING_FUNDING_MIN_CONF);
   const conflictOutpoint = resolveMiningConflictOutpoint({
     state,
     allUtxos,
@@ -3262,7 +3265,7 @@ async function publishCandidate(options: {
         const lastError = createInsufficientFundsMiningPublishErrorMessage();
         await appendEventFn(options.paths, createEvent(
           "publish-paused-insufficient-funds",
-          "Paused mining publish because Bitcoin Core could not fund the next mining transaction with confirmed safe BTC.",
+          "Paused mining publish because Bitcoin Core could not fund the next mining transaction with safe BTC.",
           {
             level: "warn",
             runId: options.runId,

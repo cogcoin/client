@@ -550,6 +550,8 @@ export function buildMineStatusJson(mining: MiningControlPlaneView): ReadJsonRes
         ? "Run `cogcoin mine setup` and clear or correct the provider model."
         : "Run `cogcoin mine setup` and choose a valid provider model.",
     );
+  } else if (mining.runtime.currentPublishDecision === "publish-paused-insufficient-funds") {
+    nextSteps.push("Wait for enough safe BTC funding to become spendable for the next publish; mining resumes automatically.");
   } else if (mining.runtime.pauseReason === "zero-reward") {
     nextSteps.push("Wait for the next positive-reward target height; mining resumes automatically.");
   } else if (mining.runtime.currentPhase === "resuming") {

@@ -770,7 +770,7 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
         {
           add_inputs: true,
           include_unsafe: false,
-          minconf: 1,
+          minconf: availableFundingMinConf,
           changeAddress: options.plan.changeAddress,
           ...(options.plan.changePosition == null ? {} : { changePosition: options.plan.changePosition }),
           lockUnspents: false,

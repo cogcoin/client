@@ -11,6 +11,7 @@ import {
   buildPrePublishStatusOverridesForTesting,
   buildStatusSnapshotForTesting,
   cacheSelectedCandidateForTipForTesting,
+  createMiningPlanForTesting,
   createMiningLoopStateForTesting,
   handleDetectedMiningRuntimeResumeForTesting,
   getSelectedCandidateForTipForTesting,
@@ -27,7 +28,10 @@ import {
 } from "../src/wallet/mining/runner.js";
 import { loadMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
-import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
+import {
+  createMemoryWalletSecretProviderForTesting,
+  createWalletSecretReference,
+} from "../src/wallet/state/provider.js";
 import type { MiningFollowVisualizerState } from "../src/wallet/mining/visualizer.js";
 import {
   createMiningControlPlaneView,
@@ -992,13 +996,146 @@ test("publish candidate pauses with a waiting result after insufficient funds", 
   }
   assert.equal(result.txid, null);
   assert.equal(result.decision, "publish-paused-insufficient-funds");
-  assert.match(result.note, /waiting for enough confirmed safe btc funding/i);
-  assert.equal(result.lastError, "Bitcoin Core could not fund the next mining publish with confirmed safe BTC.");
+  assert.match(result.note, /waiting for enough safe btc funding/i);
+  assert.equal(result.lastError, "Bitcoin Core could not fund the next mining publish with safe BTC.");
   assert.equal(result.candidate, null);
   assert.equal(events.length, 1);
   assert.equal(events[0]?.kind, "publish-paused-insufficient-funds");
   assert.equal(events[0]?.reason, "insufficient-funds");
   assert.doesNotMatch(events[0]?.message ?? "", /walletcreatefundedpsbt/i);
+  assert.match(events[0]?.message ?? "", /with safe BTC/i);
+});
+
+test("publish candidate broadcasts when only safe 0-conf BTC funding is available", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-safe-zeroconf");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const publishableSentence = "a".repeat(60);
+  const candidate = createTestMiningCandidate({
+    sentence: publishableSentence,
+    encodedSentenceBytes: Buffer.from(publishableSentence, "utf8"),
+  });
+  const readContext = createReadyMiningReadContext({});
+  const state = readContext.localState.state;
+  await provider.storeSecret(
+    createWalletSecretReference(state.walletRootId).keyId,
+    new Uint8Array(32).fill(7),
+  );
+  const fundingUtxo = {
+    txid: "aa".repeat(32),
+    vout: 0,
+    scriptPubKey: state.funding.scriptPubKeyHex,
+    amount: 0.0001,
+    confirmations: 0,
+    spendable: true,
+    safe: true,
+  };
+  const plan = createMiningPlanForTesting({
+    state,
+    candidate,
+    conflictOutpoint: null,
+    allUtxos: [fundingUtxo],
+    feeRateSatVb: 10,
+  });
+  const observedListUnspentMinConfs: Array<number | undefined> = [];
+  let fundedMinConf: number | null = null;
+  let attachServiceLifetime: string | null = null;
+
+  const result = await publishCandidateForTesting({
+    candidate,
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    fallbackState: state,
+    openReadContext: async () => readContext,
+    attachService: async (options) => {
+      attachServiceLifetime = options.serviceLifetime ?? null;
+      return { rpc: {} } as any;
+    },
+    rpcFactory: () => ({
+      async listUnspent(_walletName: string, minConf?: number) {
+        observedListUnspentMinConfs.push(minConf);
+        return [fundingUtxo];
+      },
+      async walletCreateFundedPsbt(
+        _walletName: string,
+        _inputs: Array<{ txid: string; vout: number }>,
+        _outputs: unknown[],
+        _locktime: number,
+        options: Record<string, unknown>,
+      ) {
+        fundedMinConf = typeof options["minconf"] === "number" ? options["minconf"] : null;
+        return {
+          psbt: "funded-psbt",
+          fee: 0.00000011,
+          changepos: plan.changePosition,
+        };
+      },
+      async decodePsbt() {
+        return {
+          tx: {
+            vin: [{ txid: fundingUtxo.txid, vout: fundingUtxo.vout }],
+            vout: [
+              {
+                value: 0,
+                scriptPubKey: { hex: plan.expectedOpReturnScriptHex },
+              },
+              {
+                value: 0.0000989,
+                scriptPubKey: { hex: plan.allowedFundingScriptPubKeyHex },
+              },
+            ],
+          },
+          inputs: [],
+        } as never;
+      },
+      async walletPassphrase() {
+        return null;
+      },
+      async walletProcessPsbt() {
+        return {
+          psbt: "signed-psbt",
+          complete: true,
+        };
+      },
+      async walletLock() {
+        return null;
+      },
+      async finalizePsbt() {
+        return {
+          complete: true,
+          hex: "raw-hex",
+        };
+      },
+      async decodeRawTransaction() {
+        return {
+          txid: "bb".repeat(32),
+          hash: "cc".repeat(32),
+        } as never;
+      },
+      async testMempoolAccept() {
+        return [{ allowed: true }];
+      },
+      async sendRawTransaction() {
+        return "bb".repeat(32);
+      },
+    }) as any,
+    runId: "run-1",
+  });
+
+  assert.equal(attachServiceLifetime, "ephemeral");
+  assert.ok(observedListUnspentMinConfs.length >= 2);
+  assert.deepEqual(new Set(observedListUnspentMinConfs), new Set([0]));
+  assert.equal(fundedMinConf, 0);
+  assert.equal(result.skipped, undefined);
+  assert.equal(result.retryable, undefined);
+  assert.equal(result.decision, "broadcast");
+  assert.equal(result.txid, "bb".repeat(32));
+  assert.equal(result.candidate?.sentence, candidate.sentence);
 });
 
 test("pre-publish status on a new tip shows the pending candidate instead of stale prior-tip tx metadata", () => {

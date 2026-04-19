@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildWalletMutationTransaction,
   createFundingMutationSender,
   getDecodedInputScriptPubKeyHex,
   isLocalWalletScript,
@@ -102,6 +103,104 @@ test("wallet mutation fee selection falls back when smart fee is unavailable", a
     feeRateSatVb: 10,
     source: "fallback-default",
   });
+});
+
+test("wallet mutation builder forwards availableFundingMinConf to PSBT funding and safe UTXO discovery", async () => {
+  const state = createWalletState();
+  const observedListUnspentMinConfs: Array<number | undefined> = [];
+  let fundedOptions: Record<string, unknown> | null = null;
+
+  const built = await buildWalletMutationTransaction({
+    rpc: {
+      async listUnspent(_walletName, minConf) {
+        observedListUnspentMinConfs.push(minConf);
+        return [{
+          txid: "aa".repeat(32),
+          vout: 0,
+          scriptPubKey: state.funding.scriptPubKeyHex,
+          amount: 0.0001,
+          confirmations: 0,
+          spendable: true,
+          safe: true,
+        }];
+      },
+      async walletCreateFundedPsbt(_walletName, _inputs, _outputs, _locktime, options) {
+        fundedOptions = options;
+        return {
+          psbt: "funded-psbt",
+          fee: 0.00000011,
+          changepos: 1,
+        };
+      },
+      async decodePsbt() {
+        return {
+          tx: {
+            vin: [{ txid: "aa".repeat(32), vout: 0 }],
+            vout: [
+              {
+                value: 0.00005,
+                scriptPubKey: { hex: "6a01ff" },
+              },
+              {
+                value: 0.0000489,
+                scriptPubKey: { hex: state.funding.scriptPubKeyHex },
+              },
+            ],
+          },
+          inputs: [],
+        } as never;
+      },
+      async walletPassphrase() {
+        return null;
+      },
+      async walletProcessPsbt() {
+        return {
+          psbt: "signed-psbt",
+          complete: true,
+        };
+      },
+      async walletLock() {
+        return null;
+      },
+      async finalizePsbt() {
+        return {
+          complete: true,
+          hex: "raw-hex",
+        };
+      },
+      async decodeRawTransaction() {
+        return {
+          txid: "bb".repeat(32),
+          hash: "cc".repeat(32),
+        } as never;
+      },
+      async testMempoolAccept() {
+        return [{ allowed: true }];
+      },
+    },
+    walletName: state.managedCoreWallet.walletName,
+    state,
+    plan: {
+      fixedInputs: [],
+      outputs: [{ data: "ff" }],
+      changeAddress: state.funding.address,
+      changePosition: 1,
+      allowedFundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+      eligibleFundingOutpointKeys: new Set<string>(),
+    },
+    validateFundedDraft(_decoded, _funded, plan) {
+      assert.deepEqual(observedListUnspentMinConfs, [0]);
+      assert.equal(fundedOptions?.["include_unsafe"], false);
+      assert.equal(fundedOptions?.["minconf"], 0);
+      assert.equal(plan.eligibleFundingOutpointKeys.has(`${"aa".repeat(32)}:0`), true);
+    },
+    finalizeErrorCode: "wallet_mutation_finalize_failed",
+    mempoolRejectPrefix: "wallet_mutation_mempool_rejected",
+    availableFundingMinConf: 0,
+  });
+
+  assert.equal(built.txid, "bb".repeat(32));
+  assert.equal(built.wtxid, "cc".repeat(32));
 });
 
 test("pending mutation reuse switches to replacement when the new fee rate is higher", async () => {

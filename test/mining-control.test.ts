@@ -75,3 +75,19 @@ test("mine status JSON exposes the effective provider model and not-found next s
   assert.equal(result.data.providerState, "not-found");
   assert.equal(result.nextSteps[0], "Run `cogcoin mine setup` and clear or correct the provider model.");
 });
+
+test("mine status JSON shows the insufficient-funds next step from publish decision", () => {
+  const mining = createMiningControlPlaneView({
+    runtime: createMiningRuntimeStatus({
+      currentPhase: "waiting",
+      miningState: "paused",
+      currentPublishDecision: "publish-paused-insufficient-funds",
+      note: "Mining is waiting for enough safe BTC funding that Bitcoin Core can use for the next publish.",
+    }),
+  });
+
+  const result = buildMineStatusJson(mining);
+
+  assert.equal(result.data.publishDecision, "publish-paused-insufficient-funds");
+  assert.equal(result.nextSteps[0], "Wait for enough safe BTC funding to become spendable for the next publish; mining resumes automatically.");
+});
