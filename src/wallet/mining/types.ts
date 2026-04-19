@@ -25,10 +25,13 @@ export interface MiningProviderConfigRecord {
   updatedAtUnixMs: number;
 }
 
+export type MiningProviderConfigByProvider = Partial<Record<MiningProviderKind, MiningProviderConfigRecord>>;
+
 export interface ClientConfigV1 {
   schemaVersion: 1;
   mining: {
     builtIn: MiningProviderConfigRecord | null;
+    builtInByProvider?: MiningProviderConfigByProvider;
     domainExtraPrompts: Record<string, string>;
   };
 }

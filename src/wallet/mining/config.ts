@@ -3,8 +3,15 @@ import { readFile } from "node:fs/promises";
 import { writeJsonFileAtomic } from "../fs/atomic.js";
 import { decryptJsonWithSecretProvider, encryptJsonWithSecretProvider } from "../state/crypto.js";
 import type { WalletSecretProvider, WalletSecretReference } from "../state/provider.js";
-import type { ClientConfigV1, MiningProviderConfigRecord } from "./types.js";
+import type {
+  ClientConfigV1,
+  MiningProviderConfigByProvider,
+  MiningProviderConfigRecord,
+  MiningProviderKind,
+} from "./types.js";
 import { normalizeMiningProviderConfigRecord } from "./provider-model.js";
+
+const MINING_PROVIDER_KINDS: readonly MiningProviderKind[] = ["openai", "anthropic"];
 
 function normalizeDomainExtraPrompts(raw: unknown): Record<string, string> {
   if (raw === null || typeof raw !== "object") {
@@ -43,14 +50,44 @@ function createEmptyClientConfig(): ClientConfigV1 {
   };
 }
 
+function normalizeBuiltInProviderConfigMap(raw: unknown): MiningProviderConfigByProvider {
+  if (raw === null || typeof raw !== "object") {
+    return {};
+  }
+
+  const normalized: MiningProviderConfigByProvider = {};
+  const entries = raw as Record<string, MiningProviderConfigRecord>;
+
+  for (const provider of MINING_PROVIDER_KINDS) {
+    const config = entries[provider];
+    if (config == null) {
+      continue;
+    }
+
+    normalized[provider] = normalizeMiningProviderConfigRecord({
+      ...config,
+      provider,
+    });
+  }
+
+  return normalized;
+}
+
 function normalizeClientConfig(config: ClientConfigV1): ClientConfigV1 {
   const mining = config.mining ?? createEmptyClientConfig().mining;
+  const builtIn = mining.builtIn === null ? null : normalizeMiningProviderConfigRecord(mining.builtIn);
+  const builtInByProvider = normalizeBuiltInProviderConfigMap(mining.builtInByProvider);
+
+  if (builtIn !== null) {
+    builtInByProvider[builtIn.provider] = builtIn;
+  }
 
   return {
     ...config,
     mining: {
       ...mining,
-      builtIn: mining.builtIn === null ? null : normalizeMiningProviderConfigRecord(mining.builtIn),
+      builtIn,
+      ...(Object.keys(builtInByProvider).length === 0 ? {} : { builtInByProvider }),
       domainExtraPrompts: normalizeDomainExtraPrompts(mining.domainExtraPrompts),
     },
   };
@@ -103,7 +140,12 @@ export async function saveBuiltInMiningProviderConfig(options: {
     provider: options.provider,
   }).catch(() => null);
   const nextConfig = existing ?? createEmptyClientConfig();
-  nextConfig.mining.builtIn = normalizeMiningProviderConfigRecord(options.config);
+  const normalizedConfig = normalizeMiningProviderConfigRecord(options.config);
+  nextConfig.mining.builtIn = normalizedConfig;
+  nextConfig.mining.builtInByProvider = {
+    ...(nextConfig.mining.builtInByProvider ?? {}),
+    [normalizedConfig.provider]: normalizedConfig,
+  };
   await saveClientConfig({
     path: options.path,
     provider: options.provider,

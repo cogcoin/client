@@ -2,7 +2,7 @@ import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 
 import { generateMiningSentences, MiningProviderRequestError } from "../src/wallet/mining/sentences.js";
-import { saveBuiltInMiningProviderConfig } from "../src/wallet/mining/config.js";
+import { loadClientConfig, saveBuiltInMiningProviderConfig, saveClientConfig } from "../src/wallet/mining/config.js";
 import { createMiningSentenceRequestLimits } from "../src/wallet/mining/sentence-protocol.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
@@ -173,4 +173,72 @@ test("OpenAI requests include per-domain prompts and the fallback prompt semanti
   assert.match(String(systemInput?.content), /Request-level fallback instruction: global fallback/);
   assert.match(String(userInput?.content), /"extraPrompt": "focus on cogdemo only"/);
   assert.match(String(userInput?.content), /"extraPrompt": null/);
+});
+
+test("sentence generation uses only the active built-in provider and ignores remembered inactive providers", async (t) => {
+  const fixture = await createSentenceGenerationFixture(t, {
+    provider: "openai",
+    modelOverride: "gpt-5.4-mini",
+  });
+  const secretReference = createWalletSecretReference("wallet-root");
+  const currentConfig = await loadClientConfig({
+    path: fixture.paths.clientConfigPath,
+    provider: fixture.provider,
+  });
+
+  await saveClientConfig({
+    path: fixture.paths.clientConfigPath,
+    provider: fixture.provider,
+    secretReference,
+    config: {
+      schemaVersion: 1,
+      mining: {
+        builtIn: currentConfig?.mining.builtIn ?? null,
+        builtInByProvider: {
+          openai: currentConfig?.mining.builtIn!,
+          anthropic: {
+            provider: "anthropic",
+            apiKey: "inactive-anthropic-key",
+            extraPrompt: "inactive anthropic prompt",
+            modelOverride: "claude-haiku-4-5",
+            modelSelectionSource: "catalog",
+            updatedAtUnixMs: 2,
+          },
+        },
+        domainExtraPrompts: {},
+      },
+    },
+  });
+
+  let capturedUrl: string | null = null;
+  let capturedAuthorization: string | null = null;
+  let capturedAnthropicKey: string | null = null;
+
+  const result = await generateMiningSentences(createMiningSentenceRequest(), {
+    paths: fixture.paths,
+    provider: fixture.provider,
+    fetchImpl: (async (url, init) => {
+      capturedUrl = String(url);
+      const headers = new Headers(init?.headers);
+      capturedAuthorization = headers.get("authorization");
+      capturedAnthropicKey = headers.get("x-api-key");
+      return new Response(JSON.stringify({
+        output_text: JSON.stringify({
+          schemaVersion: 1,
+          requestId: "request-1",
+          candidates: [],
+        }),
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      });
+    }) as typeof fetch,
+  });
+
+  assert.deepEqual(result.candidates, []);
+  assert.equal(capturedUrl, "https://api.openai.com/v1/responses");
+  assert.equal(capturedAuthorization, "Bearer test-api-key");
+  assert.equal(capturedAnthropicKey, null);
 });

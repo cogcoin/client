@@ -28,9 +28,11 @@ import { loadClientConfig, saveBuiltInMiningProviderConfig } from "./config.js";
 import type {
   MiningControlPlaneView,
   MiningEventRecord,
+  MiningProviderConfigByProvider,
   MiningModelSelectionSource,
   MiningProviderConfigRecord,
   MiningProviderInspection,
+  MiningProviderKind,
   MiningRuntimeStatusV1,
 } from "./types.js";
 import {
@@ -44,6 +46,8 @@ import {
   MINING_MODEL_DAILY_COST_ESTIMATE_ASSUMPTION,
   resolveBuiltInProviderSelection,
 } from "./provider-model.js";
+
+const KEEP_CURRENT_MODEL_SELECTION = "__keep_current__";
 
 function createMiningEvent(
   kind: string,
@@ -569,62 +573,221 @@ async function promptForMiningProviderModelSelectionFallback(
   }
 }
 
+function formatMiningProviderDisplayName(provider: MiningProviderKind): string {
+  return provider === "openai" ? "OpenAI" : "Anthropic";
+}
+
+async function promptMiningSetupYesNo(
+  prompter: WalletPrompter,
+  message: string,
+  defaultAnswer: boolean,
+): Promise<boolean> {
+  const prompt = `${message}${defaultAnswer ? " [Y/n]: " : " [y/N]: "}`;
+
+  while (true) {
+    const answer = (await prompter.prompt(prompt)).trim().toLowerCase();
+
+    if (answer.length === 0) {
+      return defaultAnswer;
+    }
+
+    if (answer === "y" || answer === "yes") {
+      return true;
+    }
+
+    if (answer === "n" || answer === "no") {
+      return false;
+    }
+
+    if (answer === "q" || answer === "quit" || answer === "esc" || answer === "escape") {
+      throw new Error("mining_setup_canceled");
+    }
+
+    prompter.writeLine("Enter y or n, or q to cancel.");
+  }
+}
+
+function buildMiningProviderModelSelectorOptions(
+  provider: MiningProviderKind,
+  eligibleRootCount: number,
+  currentConfig: MiningProviderConfigRecord | null,
+): {
+  initialValue: string | null;
+  options: Array<{
+    label: string;
+    description: string | null;
+    value: string;
+  }>;
+} {
+  const catalogOptions = getBuiltInProviderModelCatalog(provider).map((entry) => {
+    const estimate = estimateBuiltInModelDailyCost(provider, entry.modelId, eligibleRootCount);
+    return {
+      label: entry.label,
+      description: `${entry.modelId} - ${estimate?.estimatedDailyCostDisplay ?? "n/a"}`,
+      value: entry.modelId,
+    };
+  });
+  const selection = currentConfig === null ? null : resolveBuiltInProviderSelection(currentConfig);
+  const options = [...catalogOptions];
+  let initialValue: string | null = getRecommendedBuiltInProviderModel(provider);
+
+  if (selection !== null) {
+    if (selection.modelSelectionSource === "custom" || selection.modelSelectionSource === "legacy-custom") {
+      initialValue = "custom";
+    } else if (catalogOptions.some((entry) => entry.value === selection.modelId)) {
+      initialValue = selection.modelId;
+    } else {
+      options.push({
+        label: "Current configured model",
+        description: `${selection.modelId} - current saved setting`,
+        value: KEEP_CURRENT_MODEL_SELECTION,
+      });
+      initialValue = KEEP_CURRENT_MODEL_SELECTION;
+    }
+  }
+
+  options.push({
+    label: "Custom model ID...",
+    description: "",
+    value: "custom",
+  });
+
+  return {
+    initialValue,
+    options,
+  };
+}
+
 async function promptForMiningProviderConfig(
   prompter: WalletPrompter,
   eligibleRootCount: number,
+  options: {
+    currentConfig?: MiningProviderConfigRecord | null;
+    rememberedConfigs?: MiningProviderConfigByProvider;
+  } = {},
 ): Promise<MiningProviderConfigRecord> {
   writeBuiltInMiningProviderDisclosure(prompter);
-  const providerInput = await prompter.prompt("Provider (openai/anthropic): ");
-  const provider = normalizeProviderChoice(providerInput);
+  const currentConfig = options.currentConfig ?? null;
+  const rememberedConfigs = options.rememberedConfigs ?? {};
+  let provider: MiningProviderKind;
+  let rememberedConfig = currentConfig;
+  let reuseSavedApiKey = false;
 
-  if (provider === null) {
-    throw new Error("mining_setup_invalid_provider");
+  if (currentConfig !== null) {
+    const useDifferentProviderOrApiKey = await promptMiningSetupYesNo(
+      prompter,
+      "Use a different provider or API key?",
+      false,
+    );
+
+    if (!useDifferentProviderOrApiKey) {
+      provider = currentConfig.provider;
+      reuseSavedApiKey = true;
+    } else {
+      const providerInput = await prompter.prompt("Provider (openai/anthropic): ");
+      const selectedProvider = normalizeProviderChoice(providerInput);
+
+      if (selectedProvider === null) {
+        throw new Error("mining_setup_invalid_provider");
+      }
+
+      provider = selectedProvider;
+      rememberedConfig = rememberedConfigs[provider] ?? null;
+      if (rememberedConfig !== null) {
+        reuseSavedApiKey = await promptMiningSetupYesNo(
+          prompter,
+          `Use saved ${formatMiningProviderDisplayName(provider)} API key?`,
+          true,
+        );
+      }
+    }
+  } else {
+    const providerInput = await prompter.prompt("Provider (openai/anthropic): ");
+    const selectedProvider = normalizeProviderChoice(providerInput);
+
+    if (selectedProvider === null) {
+      throw new Error("mining_setup_invalid_provider");
+    }
+
+    provider = selectedProvider;
+    rememberedConfig = rememberedConfigs[provider] ?? null;
+    if (rememberedConfig !== null) {
+      reuseSavedApiKey = await promptMiningSetupYesNo(
+        prompter,
+        `Use saved ${formatMiningProviderDisplayName(provider)} API key?`,
+        true,
+      );
+    }
   }
 
+  const selectorModelOptions = buildMiningProviderModelSelectorOptions(provider, eligibleRootCount, rememberedConfig);
   const selectorOptions = {
     message: "Choose the mining model:",
-    options: [
-      ...getBuiltInProviderModelCatalog(provider).map((entry) => {
-        const estimate = estimateBuiltInModelDailyCost(provider, entry.modelId, eligibleRootCount);
-        return {
-          label: entry.label,
-          description: `${entry.modelId} - ${estimate?.estimatedDailyCostDisplay ?? "n/a"}`,
-          value: entry.modelId,
-        };
-      }),
-      {
-        label: "Custom model ID...",
-        description: null,
-        value: "custom",
-      },
-    ],
-    initialValue: getRecommendedBuiltInProviderModel(provider),
+    options: selectorModelOptions.options,
+    initialValue: selectorModelOptions.initialValue,
     footer: MINING_MODEL_DAILY_COST_ESTIMATE_ASSUMPTION,
   };
   const selectedModelId = prompter.selectOption == null
     ? await promptForMiningProviderModelSelectionFallback(prompter, selectorOptions)
     : await prompter.selectOption(selectorOptions);
-  const modelSelectionSource: MiningModelSelectionSource = selectedModelId === "custom" ? "custom" : "catalog";
-  const modelOverride = selectedModelId === "custom"
-    ? (await prompter.prompt("Custom model ID: ")).trim()
-    : selectedModelId;
+  let modelSelectionSource: MiningModelSelectionSource;
+  let modelOverride: string | null;
 
-  if (modelOverride.length === 0) {
-    throw new Error("mining_setup_missing_model_id");
+  if (selectedModelId === KEEP_CURRENT_MODEL_SELECTION) {
+    if (rememberedConfig === null) {
+      throw new Error("mining_setup_missing_model_id");
+    }
+
+    modelSelectionSource = rememberedConfig.modelSelectionSource;
+    modelOverride = rememberedConfig.modelOverride;
+  } else if (selectedModelId === "custom") {
+    const currentCustomModel = rememberedConfig !== null
+      && (rememberedConfig.modelSelectionSource === "custom" || rememberedConfig.modelSelectionSource === "legacy-custom")
+      ? rememberedConfig.modelOverride
+      : null;
+    const customModelId = (await prompter.prompt(
+      currentCustomModel === null
+        ? "Custom model ID: "
+        : `Custom model ID (blank to keep current: ${currentCustomModel}): `,
+    )).trim();
+
+    if (customModelId.length === 0) {
+      if (currentCustomModel === null) {
+        throw new Error("mining_setup_missing_model_id");
+      }
+
+      modelSelectionSource = rememberedConfig?.modelSelectionSource ?? "custom";
+      modelOverride = currentCustomModel;
+    } else {
+      modelSelectionSource = "custom";
+      modelOverride = customModelId;
+    }
+  } else {
+    modelSelectionSource = "catalog";
+    modelOverride = selectedModelId;
   }
 
-  const apiKey = (await prompter.prompt("API key: ")).trim();
+  const apiKey = reuseSavedApiKey && rememberedConfig !== null
+    ? rememberedConfig.apiKey
+    : (await prompter.prompt("API key: ")).trim();
 
   if (apiKey.length === 0) {
     throw new Error("mining_setup_missing_api_key");
   }
 
-  const extraPrompt = (await prompter.prompt("Extra prompt (optional, blank for none): ")).trim();
+  const extraPromptInput = (await prompter.prompt(
+    rememberedConfig === null
+      ? "Extra prompt (optional, blank for none): "
+      : `Extra prompt (optional, blank to keep current: ${rememberedConfig.extraPrompt ?? "none"}): `,
+  )).trim();
+  const extraPrompt = extraPromptInput.length === 0
+    ? rememberedConfig?.extraPrompt ?? null
+    : extraPromptInput;
 
   return {
     provider,
     apiKey,
-    extraPrompt: extraPrompt.length === 0 ? null : extraPrompt,
+    extraPrompt: extraPrompt === null || extraPrompt.length === 0 ? null : extraPrompt,
     modelOverride,
     modelSelectionSource,
     updatedAtUnixMs: Date.now(),
@@ -634,8 +797,12 @@ async function promptForMiningProviderConfig(
 export async function promptForMiningProviderConfigForTesting(
   prompter: WalletPrompter,
   eligibleRootCount: number,
+  options: {
+    currentConfig?: MiningProviderConfigRecord | null;
+    rememberedConfigs?: MiningProviderConfigByProvider;
+  } = {},
 ): Promise<MiningProviderConfigRecord> {
-  return await promptForMiningProviderConfig(prompter, eligibleRootCount);
+  return await promptForMiningProviderConfig(prompter, eligibleRootCount, options);
 }
 
 export async function setupBuiltInMining(options: {
@@ -679,6 +846,10 @@ export async function setupBuiltInMining(options: {
         message: null,
       };
       const eligibleRootCount = countEligibleAnchoredRoots(localState) ?? 0;
+      const clientConfig = await loadClientConfig({
+        path: paths.clientConfigPath,
+        provider,
+      }).catch(() => null);
 
       await appendMiningEvent(
         paths.miningEventsPath,
@@ -690,7 +861,10 @@ export async function setupBuiltInMining(options: {
       );
 
       try {
-        const config = await promptForMiningProviderConfig(options.prompter, eligibleRootCount);
+        const config = await promptForMiningProviderConfig(options.prompter, eligibleRootCount, {
+          currentConfig: clientConfig?.mining.builtIn ?? null,
+          rememberedConfigs: clientConfig?.mining.builtInByProvider ?? {},
+        });
         config.updatedAtUnixMs = nowUnixMs;
         await saveBuiltInMiningProviderConfig({
           path: paths.clientConfigPath,
