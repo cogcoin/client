@@ -2134,6 +2134,60 @@ test("follow scene clears stale block times on a reorg-like reset and accepts re
   assert.match(window[5] ?? "", /2h/);
 });
 
+test("ManagedProgressController follow resume reuses the indexed tip after a bitcoin-sync phase", async () => {
+  const rootDir = createTempDirectory("cogcoin-client-follow-resume");
+  const paths = resolveBootstrapPathsForTesting(rootDir, DEFAULT_SNAPSHOT_METADATA);
+  const progress = new ManagedProgressController({
+    quoteStatePath: paths.quoteStatePath,
+    snapshot: DEFAULT_SNAPSHOT_METADATA,
+    progressOutput: "none",
+  });
+
+  try {
+    await progress.start();
+    await progress.enableFollowVisualMode(945_799);
+    await progress.setPhase("follow_tip", {
+      blocks: 945_799,
+      targetHeight: 945_799,
+      message: "Resuming from the persisted Cogcoin indexed tip.",
+    });
+    await progress.setPhase("bitcoin_sync", {
+      blocks: 945_810,
+      headers: 945_810,
+      targetHeight: 945_810,
+      message: "Fetching Getblock manifest.",
+    });
+    await progress.setPhase("follow_tip", {
+      blocks: 945_799,
+      targetHeight: 945_799,
+      message: "Resuming from the persisted Cogcoin indexed tip.",
+    });
+
+    await assert.doesNotReject(async () => {
+      await progress.setCogcoinSync(945_799, 945_810, 1);
+    });
+  } finally {
+    await progress.close().catch(() => undefined);
+    await removeTempDirectory(rootDir);
+  }
+});
+
+test("follow scene state sync tolerates very large queued height lists", () => {
+  const state = createFollowSceneStateForTesting(945_799);
+  state.liveActivated = true;
+  state.displayedCenterHeight = 945_799;
+  state.observedNodeHeight = 945_799;
+  state.queuedHeights = Array.from({ length: 200_000 }, (_, index) => index);
+
+  assert.doesNotThrow(() => {
+    syncFollowSceneStateForTesting(state, {
+      indexedHeight: 945_799,
+      nodeHeight: 945_810,
+      liveActivated: true,
+    });
+  });
+});
+
 test("scroll art centers the quote and byline inside the usable window", () => {
   const quote: WritingQuote = {
     quote: "Easy reading is damn hard writing.",

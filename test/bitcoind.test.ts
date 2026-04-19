@@ -77,6 +77,76 @@ class FakeSignalSource extends EventEmitter {
   }
 }
 
+function installProcessKillMock(
+  t: TestContext,
+  options: {
+    livePids?: readonly number[];
+    stubbornPids?: readonly number[];
+    immortalPids?: readonly number[];
+  } = {},
+) {
+  const originalKill = process.kill;
+  const alive = new Set([
+    ...(options.livePids ?? []),
+    ...(options.stubbornPids ?? []),
+    ...(options.immortalPids ?? []),
+  ]);
+  const stubborn = new Set(options.stubbornPids ?? []);
+  const immortal = new Set(options.immortalPids ?? []);
+  const calls: Array<{ pid: number; signal: number | NodeJS.Signals | undefined }> = [];
+  const timeline: string[] = [];
+
+  (process as typeof process & {
+    kill: typeof process.kill;
+  }).kill = ((pid: number, signal?: number | NodeJS.Signals) => {
+    calls.push({ pid, signal });
+
+    if (pid === process.pid) {
+      return true;
+    }
+
+    if (!alive.has(pid)) {
+      const error = Object.assign(new Error("process not found"), {
+        code: "ESRCH",
+      });
+      throw error;
+    }
+
+    if (signal === undefined || signal === 0) {
+      return true;
+    }
+
+    if (signal === "SIGTERM") {
+      timeline.push(`SIGTERM:${pid}`);
+      if (!stubborn.has(pid) && !immortal.has(pid)) {
+        alive.delete(pid);
+      }
+      return true;
+    }
+
+    if (signal === "SIGKILL") {
+      timeline.push(`SIGKILL:${pid}`);
+      if (!immortal.has(pid)) {
+        alive.delete(pid);
+      }
+      return true;
+    }
+
+    return true;
+  }) as typeof process.kill;
+
+  t.after(() => {
+    (process as typeof process & {
+      kill: typeof process.kill;
+    }).kill = originalKill;
+  });
+
+  return {
+    calls,
+    timeline,
+  };
+}
+
 type ManagedIndexerDaemonStatusFixture =
   Omit<ManagedIndexerDaemonStatus, "serviceApiVersion" | "schemaVersion">
   & {
@@ -1256,6 +1326,106 @@ test("stopIndexerDaemonService stops only the managed indexer", async (t) => {
   }
 });
 
+test("stopIndexerDaemonService uses only SIGTERM when the managed indexer exits gracefully", async (t) => {
+  const fixture = createFixture("cogcoin-client-indexer-stop-sigterm");
+  const walletRootId = "wallet-root-test";
+  const paths = resolveManagedServicePaths(fixture.dataDir, walletRootId);
+  const killLog = installProcessKillMock(t, {
+    livePids: [9_301],
+  });
+
+  try {
+    await mkdir(paths.indexerServiceRoot, { recursive: true });
+    await writeFile(
+      paths.indexerDaemonStatusPath,
+      JSON.stringify(createManagedIndexerDaemonStatus(walletRootId, {
+        processId: 9_301,
+      })),
+      "utf8",
+    );
+    await writeFile(paths.indexerDaemonSocketPath, "", "utf8");
+
+    const result = await stopIndexerDaemonService({
+      dataDir: fixture.dataDir,
+      walletRootId,
+      shutdownTimeoutMs: 100,
+    });
+
+    assert.equal(result.status, "stopped");
+    assert.deepEqual(killLog.timeline, ["SIGTERM:9301"]);
+    assert.equal(await readIndexerDaemonStatusForTesting({ dataDir: fixture.dataDir, walletRootId }), null);
+  } finally {
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("stopIndexerDaemonService uses SIGKILL when SIGTERM does not stop the managed indexer", async (t) => {
+  const fixture = createFixture("cogcoin-client-indexer-stop-sigkill");
+  const walletRootId = "wallet-root-test";
+  const paths = resolveManagedServicePaths(fixture.dataDir, walletRootId);
+  const killLog = installProcessKillMock(t, {
+    stubbornPids: [9_302],
+  });
+
+  try {
+    await mkdir(paths.indexerServiceRoot, { recursive: true });
+    await writeFile(
+      paths.indexerDaemonStatusPath,
+      JSON.stringify(createManagedIndexerDaemonStatus(walletRootId, {
+        processId: 9_302,
+      })),
+      "utf8",
+    );
+    await writeFile(paths.indexerDaemonSocketPath, "", "utf8");
+
+    const result = await stopIndexerDaemonService({
+      dataDir: fixture.dataDir,
+      walletRootId,
+      shutdownTimeoutMs: 100,
+    });
+
+    assert.equal(result.status, "stopped");
+    assert.deepEqual(killLog.timeline, ["SIGTERM:9302", "SIGKILL:9302"]);
+    assert.equal(await readIndexerDaemonStatusForTesting({ dataDir: fixture.dataDir, walletRootId }), null);
+  } finally {
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("stopIndexerDaemonService surfaces timeout after SIGTERM and SIGKILL both fail", async (t) => {
+  const fixture = createFixture("cogcoin-client-indexer-stop-timeout");
+  const walletRootId = "wallet-root-test";
+  const paths = resolveManagedServicePaths(fixture.dataDir, walletRootId);
+  const killLog = installProcessKillMock(t, {
+    immortalPids: [9_303],
+  });
+
+  try {
+    await mkdir(paths.indexerServiceRoot, { recursive: true });
+    await writeFile(
+      paths.indexerDaemonStatusPath,
+      JSON.stringify(createManagedIndexerDaemonStatus(walletRootId, {
+        processId: 9_303,
+      })),
+      "utf8",
+    );
+    await writeFile(paths.indexerDaemonSocketPath, "", "utf8");
+
+    await assert.rejects(
+      async () => stopIndexerDaemonService({
+        dataDir: fixture.dataDir,
+        walletRootId,
+        shutdownTimeoutMs: 100,
+      }),
+      /indexer_daemon_stop_timeout/,
+    );
+
+    assert.deepEqual(killLog.timeline, ["SIGTERM:9303", "SIGKILL:9303"]);
+  } finally {
+    await cleanupManagedFixture(fixture);
+  }
+});
+
 test("indexer daemon starts, writes status, and serves coherent snapshot IPC", async (t) => {
   await ensureBitcoinBinaries(t);
   const fixture = createFixture("cogcoin-client-indexer-daemon");
@@ -1602,6 +1772,96 @@ test("openWalletReadContext propagates exhausted background-follow recovery inst
   }
 });
 
+test("openManagedIndexerMonitor replaces stale and unparseable daemons using the current package version by default", async (t) => {
+  await ensureBitcoinBinaries(t);
+
+  const cases = [
+    { name: "stale", binaryVersion: "1.1.0" },
+    { name: "unparseable", binaryVersion: "dev-build" },
+  ];
+
+  for (const testCase of cases) {
+    const fixture = createFixture(`cogcoin-client-monitor-default-version-${testCase.name}`);
+    const walletRootId = "wallet-root-test";
+    const paths = resolveManagedServicePaths(fixture.dataDir, walletRootId);
+    await mkdir(paths.indexerServiceRoot, { recursive: true });
+
+    const server = await startFakeIndexerDaemonServer(
+      paths.indexerDaemonSocketPath,
+      createManagedIndexerDaemonStatus(walletRootId, {
+        binaryVersion: testCase.binaryVersion,
+        daemonInstanceId: `daemon-${testCase.name}`,
+        processId: 4321,
+      }),
+    );
+    let monitor: Awaited<ReturnType<typeof openManagedIndexerMonitor>> | null = null;
+
+    try {
+      monitor = await openManagedIndexerMonitor({
+        dataDir: fixture.dataDir,
+        databasePath: fixture.databasePath,
+        walletRootId,
+        startupTimeoutMs: 5_000,
+      });
+      const status = await monitor.getStatus();
+      assert.notEqual(status.daemonInstanceId, `daemon-${testCase.name}`);
+      assert.notEqual(status.binaryVersion, testCase.binaryVersion);
+      assert.notEqual(status.processId, 4321);
+      assert.equal(status.walletRootId, walletRootId);
+    } finally {
+      await monitor?.close().catch(() => undefined);
+      await shutdownIndexerDaemonForTesting({ dataDir: fixture.dataDir, walletRootId }).catch(() => undefined);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
+      await cleanupManagedFixture(fixture);
+    }
+  }
+});
+
+test("openWalletReadContext replaces stale and unparseable daemons using the current package version by default", async (t) => {
+  await ensureBitcoinBinaries(t);
+
+  const cases = [
+    { name: "stale", binaryVersion: "1.1.0" },
+    { name: "unparseable", binaryVersion: "dev-build" },
+  ];
+
+  for (const testCase of cases) {
+    const fixture = createFixture(`cogcoin-client-read-context-default-version-${testCase.name}`);
+    const runtimePaths = createTempWalletPaths(join(fixture.rootDir, "wallet-home"));
+    const walletRootId = "wallet-root-test";
+    const paths = resolveManagedServicePaths(fixture.dataDir, walletRootId);
+    await mkdir(paths.indexerServiceRoot, { recursive: true });
+
+    const server = await startFakeIndexerDaemonServer(
+      paths.indexerDaemonSocketPath,
+      createManagedIndexerDaemonStatus(walletRootId, {
+        binaryVersion: testCase.binaryVersion,
+        daemonInstanceId: `daemon-${testCase.name}`,
+        processId: 4321,
+      }),
+    );
+    let readContext: Awaited<ReturnType<typeof openWalletReadContext>> | null = null;
+
+    try {
+      readContext = await openWalletReadContext({
+        dataDir: fixture.dataDir,
+        databasePath: fixture.databasePath,
+        paths: runtimePaths,
+      });
+      assert.notEqual(readContext.indexer.status?.daemonInstanceId, `daemon-${testCase.name}`);
+      assert.notEqual(readContext.indexer.status?.binaryVersion, testCase.binaryVersion);
+      assert.notEqual(readContext.indexer.status?.processId, 4321);
+    } finally {
+      await readContext?.close().catch(() => undefined);
+      await shutdownIndexerDaemonForTesting({ dataDir: fixture.dataDir, walletRootId }).catch(() => undefined);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
+      await cleanupManagedFixture(fixture);
+    }
+  }
+});
+
 test("indexer daemon snapshotSeq advances when the indexed tip changes", async (t) => {
   await ensureBitcoinBinaries(t);
   const fixture = createFixture("cogcoin-client-indexer-snapshot-seq");
@@ -1789,7 +2049,7 @@ test("attach restarts a compatible stale daemon when expectedBinaryVersion is ne
   const server = await startFakeIndexerDaemonServer(
     paths.indexerDaemonSocketPath,
     createManagedIndexerDaemonStatus(walletRootId, {
-      binaryVersion: "1.0.2",
+      binaryVersion: "1.1.0",
       daemonInstanceId: "daemon-stale",
       processId: 4321,
     }),
@@ -1800,14 +2060,14 @@ test("attach restarts a compatible stale daemon when expectedBinaryVersion is ne
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.1.0",
+      expectedBinaryVersion: "1.1.1",
       startupTimeoutMs: 5_000,
     });
 
     try {
       const status = await daemon.getStatus();
       assert.notEqual(status.daemonInstanceId, "daemon-stale");
-      assert.notEqual(status.binaryVersion, "1.0.2");
+      assert.notEqual(status.binaryVersion, "1.1.0");
       assert.notEqual(status.processId, 4321);
       assert.equal(status.walletRootId, walletRootId);
     } finally {
@@ -1821,11 +2081,51 @@ test("attach restarts a compatible stale daemon when expectedBinaryVersion is ne
   }
 });
 
-test("attach keeps compatible equal, newer, and unparseable daemon versions running", async () => {
+test("attach restarts a compatible unparseable daemon when expectedBinaryVersion is newer", async () => {
+  const fixture = createFixture("cogcoin-client-indexer-unparseable-restart");
+  const walletRootId = "wallet-root-test";
+  const paths = resolveManagedServicePaths(fixture.dataDir, walletRootId);
+  await mkdir(paths.indexerServiceRoot, { recursive: true });
+
+  const server = await startFakeIndexerDaemonServer(
+    paths.indexerDaemonSocketPath,
+    createManagedIndexerDaemonStatus(walletRootId, {
+      binaryVersion: "dev-build",
+      daemonInstanceId: "daemon-unparseable",
+      processId: 4321,
+    }),
+  );
+
+  try {
+    const daemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      walletRootId,
+      expectedBinaryVersion: "1.1.1",
+      startupTimeoutMs: 5_000,
+    });
+
+    try {
+      const status = await daemon.getStatus();
+      assert.notEqual(status.daemonInstanceId, "daemon-unparseable");
+      assert.notEqual(status.binaryVersion, "dev-build");
+      assert.notEqual(status.processId, 4321);
+      assert.equal(status.walletRootId, walletRootId);
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    await shutdownIndexerDaemonForTesting({ dataDir: fixture.dataDir, walletRootId }).catch(() => undefined);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("attach keeps compatible equal and newer daemon versions running", async () => {
   const cases = [
-    { name: "equal", binaryVersion: "1.1.0" },
-    { name: "newer", binaryVersion: "1.1.1" },
-    { name: "unparseable", binaryVersion: "dev-build" },
+    { name: "equal", binaryVersion: "1.1.1" },
+    { name: "newer", binaryVersion: "1.1.2" },
   ];
 
   for (const testCase of cases) {
@@ -1848,7 +2148,7 @@ test("attach keeps compatible equal, newer, and unparseable daemon versions runn
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.1.0",
+        expectedBinaryVersion: "1.1.1",
         startupTimeoutMs: 1_000,
       });
 
@@ -1901,7 +2201,7 @@ test("attach rejects a live daemon with incompatible service metadata without sp
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.1.0",
+        expectedBinaryVersion: "1.1.1",
         startupTimeoutMs: 1_000,
       }),
       /indexer_daemon_service_version_mismatch/,
@@ -1930,7 +2230,7 @@ test("attach accepts a live daemon for a different wallet root when the daemon i
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.1.0",
+      expectedBinaryVersion: "1.1.1",
       startupTimeoutMs: 1_000,
     });
     await daemon.close();
@@ -1958,7 +2258,7 @@ test("attach rejects a live daemon with an incompatible schema version", async (
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.1.0",
+        expectedBinaryVersion: "1.1.1",
         startupTimeoutMs: 1_000,
       }),
       /indexer_daemon_schema_mismatch/,

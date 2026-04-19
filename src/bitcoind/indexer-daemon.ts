@@ -4,7 +4,7 @@ import { mkdir, readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
 
-import { compareSemver } from "../semver.js";
+import { compareSemver, parseSemver } from "../semver.js";
 import { acquireFileLock, FileLockBusyError } from "../wallet/fs/lock.js";
 import { writeRuntimeStatusFile } from "../wallet/fs/status-file.js";
 import {
@@ -19,6 +19,8 @@ import {
 import { resolveManagedServicePaths, UNINITIALIZED_WALLET_ROOT_ID } from "./service-paths.js";
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
+const FORCE_KILL_TIMEOUT_MS = 5_000;
 const INDEXER_DAEMON_REQUEST_TIMEOUT_MS = 15_000;
 const INDEXER_DAEMON_RESUME_BACKGROUND_FOLLOW_REQUEST_TIMEOUT_MS = 35_000;
 const INDEXER_DAEMON_BACKGROUND_FOLLOW_NOT_ACTIVE = "indexer_daemon_background_follow_not_active";
@@ -207,6 +209,12 @@ async function clearIndexerDaemonRuntimeArtifacts(
   await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
 }
 
+function ignoreProcessNotFound(error: unknown): void {
+  if (!(error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH")) {
+    throw error;
+  }
+}
+
 export async function stopIndexerDaemonServiceWithLockHeld(options: {
   dataDir: string;
   walletRootId?: string;
@@ -230,16 +238,33 @@ export async function stopIndexerDaemonServiceWithLockHeld(options: {
   try {
     process.kill(processId, "SIGTERM");
   } catch (error) {
-    if (!(error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH")) {
-      throw error;
-    }
+    ignoreProcessNotFound(error);
   }
 
-  await waitForProcessExit(
-    processId,
-    options.shutdownTimeoutMs ?? 5_000,
-    "indexer_daemon_stop_timeout",
-  );
+  try {
+    await waitForProcessExit(
+      processId,
+      options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
+      "indexer_daemon_stop_timeout",
+    );
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "indexer_daemon_stop_timeout") {
+      throw error;
+    }
+
+    try {
+      process.kill(processId, "SIGKILL");
+    } catch (killError) {
+      ignoreProcessNotFound(killError);
+    }
+
+    await waitForProcessExit(
+      processId,
+      FORCE_KILL_TIMEOUT_MS,
+      "indexer_daemon_stop_timeout",
+    );
+  }
+
   await clearIndexerDaemonRuntimeArtifacts(paths);
   return {
     status: "stopped",
@@ -502,8 +527,12 @@ function isStaleIndexerDaemonVersion(
     return false;
   }
 
+  if (parseSemver(expectedBinaryVersion) === null) {
+    return false;
+  }
+
   const comparison = compareSemver(status.binaryVersion, expectedBinaryVersion);
-  return comparison !== null && comparison < 0;
+  return comparison === null || comparison < 0;
 }
 
 async function probeIndexerDaemonAtSocket(

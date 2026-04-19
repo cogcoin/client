@@ -7,6 +7,7 @@ import { loadBundledGenesisParameters, serializeIndexerState } from "@cogcoin/in
 import { openManagedBitcoindClientInternal } from "./client.js";
 import { DEFAULT_SNAPSHOT_METADATA } from "./bootstrap.js";
 import { openClient } from "../client.js";
+import { readPackageVersionFromDisk } from "../package-version.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import { writeRuntimeStatusFile } from "../wallet/fs/status-file.js";
 import { createRpcClient } from "./node.js";
@@ -100,16 +101,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorCode:
     if (timeoutId !== null) {
       clearTimeout(timeoutId);
     }
-  }
-}
-
-async function readPackageVersionFromDisk(): Promise<string> {
-  try {
-    const raw = await readFile(new URL("../../package.json", import.meta.url), "utf8");
-    const parsed = JSON.parse(raw) as { version?: string };
-    return parsed.version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
   }
 }
 
@@ -230,7 +221,7 @@ async function main(): Promise<void> {
   const walletRootId = parseArg("wallet-root-id") || UNINITIALIZED_WALLET_ROOT_ID;
   const paths = resolveManagedServicePaths(dataDir, walletRootId);
   const daemonInstanceId = randomUUID();
-  const binaryVersion = await readPackageVersionFromDisk();
+  const binaryVersion = await readPackageVersionFromDisk().catch(() => "0.0.0");
   const genesisParameters = await loadBundledGenesisParameters();
   const startedAtUnixMs = Date.now();
   const snapshots = new Map<string, LoadedSnapshot>();

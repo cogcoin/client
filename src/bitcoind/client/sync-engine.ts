@@ -470,6 +470,6 @@ export async function syncToTip(
       lastError: message,
       message: "Managed sync can be resumed after the last error.",
     });
-    throw new Error(message);
+    throw new Error(message, { cause: error instanceof Error ? error : undefined });
   }
 }

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 
 import {
   attachOrStartIndexerDaemon,
@@ -20,6 +20,7 @@ import {
 } from "../app-paths.js";
 import { openManagedBitcoindClient } from "../bitcoind/index.js";
 import { openManagedIndexerMonitor } from "../bitcoind/indexer-monitor.js";
+import { readPackageVersionFromDisk } from "../package-version.js";
 import { inspectPassiveClientStatus } from "../passive-status.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import {
@@ -73,31 +74,6 @@ import {
 } from "../wallet/tx/index.js";
 import { createTerminalPrompter } from "./prompt.js";
 import type { CliRunnerContext, RequiredCliRunnerContext, WritableLike } from "./types.js";
-
-export async function readPackageVersionFromDisk(): Promise<string> {
-  const packageUrls = [
-    new URL("../../package.json", import.meta.url),
-    new URL("../../../package.json", import.meta.url),
-  ];
-
-  for (const packageUrl of packageUrls) {
-    try {
-      const raw = await readFile(packageUrl, "utf8");
-      const parsed = JSON.parse(raw) as { version?: string };
-      return parsed.version ?? "0.0.0";
-    } catch (error) {
-      const code = typeof error === "object" && error !== null && "code" in error
-        ? String((error as { code?: unknown }).code)
-        : null;
-
-      if (code !== "ENOENT") {
-        throw error;
-      }
-    }
-  }
-
-  return "0.0.0";
-}
 
 async function runGlobalClientUpdateInstall(options: {
   stdout: WritableLike;

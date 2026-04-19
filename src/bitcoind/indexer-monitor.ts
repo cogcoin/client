@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { loadBundledGenesisParameters } from "@cogcoin/indexer";
 
+import { readPackageVersionFromDisk } from "../package-version.js";
 import {
   attachOrStartIndexerDaemon,
   readObservedIndexerDaemonStatus,
@@ -63,6 +64,9 @@ export async function openManagedIndexerMonitor(options: {
   startupTimeoutMs?: number;
   expectedBinaryVersion?: string | null;
 }): Promise<ManagedIndexerMonitor> {
+  const expectedBinaryVersion = options.expectedBinaryVersion === undefined
+    ? await readPackageVersionFromDisk()
+    : options.expectedBinaryVersion;
   const walletRootId = options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
   const startOptions = await resolveStartOptions({
     dataDir: options.dataDir,
@@ -83,7 +87,7 @@ export async function openManagedIndexerMonitor(options: {
     walletRootId,
     startupTimeoutMs: options.startupTimeoutMs,
     ensureBackgroundFollow: true,
-    expectedBinaryVersion: options.expectedBinaryVersion,
+    expectedBinaryVersion,
   });
 
   return createManagedIndexerMonitor({

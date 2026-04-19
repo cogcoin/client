@@ -254,12 +254,19 @@ function renderFollowStatusField(
 }
 
 function highestTrackedFollowHeight(state: FollowSceneStateForTesting): number {
-  return Math.max(
+  let highest = Math.max(
     state.indexedHeight ?? Number.NEGATIVE_INFINITY,
     state.displayedCenterHeight ?? Number.NEGATIVE_INFINITY,
     state.animation?.height ?? Number.NEGATIVE_INFINITY,
-    ...state.queuedHeights,
   );
+
+  for (const height of state.queuedHeights) {
+    if (height > highest) {
+      highest = height;
+    }
+  }
+
+  return highest;
 }
 
 function resolveLatestAuthoritativeFollowHeight(

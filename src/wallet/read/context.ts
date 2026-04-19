@@ -1,6 +1,7 @@
 import { access, constants } from "node:fs/promises";
 
 import { deserializeIndexerState, loadBundledGenesisParameters } from "@cogcoin/indexer";
+import { readPackageVersionFromDisk } from "../../package-version.js";
 
 import {
   attachOrStartIndexerDaemon,
@@ -654,6 +655,9 @@ export async function openWalletReadContext(options: {
   now?: number;
   paths?: WalletRuntimePaths;
 }): Promise<WalletReadContext> {
+  const expectedIndexerBinaryVersion = options.expectedIndexerBinaryVersion === undefined
+    ? await readPackageVersionFromDisk()
+    : options.expectedIndexerBinaryVersion;
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_SERVICE_START_TIMEOUT_MS;
   const now = options.now ?? Date.now();
   const localState = await inspectWalletLocalState({
@@ -708,7 +712,7 @@ export async function openWalletReadContext(options: {
         walletRootId,
         startupTimeoutMs,
         ensureBackgroundFollow: true,
-        expectedBinaryVersion: options.expectedIndexerBinaryVersion,
+        expectedBinaryVersion: expectedIndexerBinaryVersion,
       });
     } else {
       observedDaemonStatus = probe.status;

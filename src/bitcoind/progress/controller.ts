@@ -248,8 +248,11 @@ export class ManagedProgressController {
     }
 
     if (this.#followVisualMode) {
+      const followIndexedHeight = phase === "follow_tip"
+        ? this.#cogcoinSyncHeight ?? this.#progress.blocks ?? this.#followScene.indexedHeight
+        : undefined;
       syncFollowSceneState(this.#followScene, {
-        indexedHeight: phase === "follow_tip" ? this.#cogcoinSyncHeight : undefined,
+        indexedHeight: followIndexedHeight,
         nodeHeight: this.#progress.blocks,
         liveActivated: phase === "follow_tip" || this.#followScene.liveActivated,
       });
