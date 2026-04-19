@@ -20,6 +20,7 @@ async function writePostSyncBalanceReport(options: {
   context: RequiredCliRunnerContext;
   dataDir: string;
   databasePath: string;
+  expectedIndexerBinaryVersion: string;
   runtimePaths: ReturnType<RequiredCliRunnerContext["resolveWalletRuntimePaths"]>;
 }): Promise<void> {
   const provider = withInteractiveWalletSecretProvider(
@@ -30,6 +31,7 @@ async function writePostSyncBalanceReport(options: {
     dataDir: options.dataDir,
     databasePath: options.databasePath,
     secretProvider: provider,
+    expectedIndexerBinaryVersion: options.expectedIndexerBinaryVersion,
     paths: options.runtimePaths,
   });
 
@@ -46,6 +48,7 @@ export async function runSyncCommand(
 ): Promise<number> {
   const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
   const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+  const packageVersion = await context.readPackageVersion();
   const runtimePaths = context.resolveWalletRuntimePaths();
   const ttyProgressActive = usesTtyProgress(parsed.progressOutput, context.stderr);
   let monitor: Awaited<ReturnType<typeof context.openManagedIndexerMonitor>> | null = null;
@@ -63,6 +66,7 @@ export async function runSyncCommand(
       dataDir,
       databasePath: dbPath,
       walletRootId: walletRoot.walletRootId,
+      expectedBinaryVersion: packageVersion,
     });
     observer = new ManagedIndexerProgressObserver({
       quoteStatePath: resolveBootstrapPathsForTesting(dataDir, DEFAULT_SNAPSHOT_METADATA).quoteStatePath,
@@ -114,6 +118,7 @@ export async function runSyncCommand(
         context,
         dataDir,
         databasePath: dbPath,
+        expectedIndexerBinaryVersion: packageVersion,
         runtimePaths,
       }).catch(() => undefined);
       return 0;

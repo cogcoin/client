@@ -103,6 +103,7 @@ export async function runWalletReadCommand(
 ): Promise<number> {
   const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
   const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+  const packageVersion = await context.readPackageVersion();
   const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
   await context.ensureDirectory(dirname(dbPath));
 
@@ -113,6 +114,7 @@ export async function runWalletReadCommand(
     dataDir,
     databasePath: dbPath,
     secretProvider: provider,
+    expectedIndexerBinaryVersion: packageVersion,
     paths: runtimePaths,
   });
 

@@ -171,6 +171,8 @@ async function inspectManagedBitcoindStatus(
 
 async function inspectManagedIndexerStatus(
   dataDir: string,
+  databasePath: string,
+  expectedBinaryVersion: string,
   context: RequiredCliRunnerContext,
 ): Promise<IndexerStatusPayload> {
   const resolution = await resolveEffectiveWalletRootId(context);
@@ -179,6 +181,39 @@ async function inspectManagedIndexerStatus(
     dataDir,
     walletRootId: resolution.walletRootId,
   });
+
+  await probe.client?.close().catch(() => undefined);
+
+  if (probe.compatibility === "compatible" || probe.compatibility === "unreachable") {
+    try {
+      const daemonClient = await context.attachIndexerDaemon({
+        dataDir,
+        databasePath,
+        walletRootId: resolution.walletRootId,
+        ensureBackgroundFollow: true,
+        expectedBinaryVersion,
+      });
+
+      try {
+        const daemon = await daemonClient.getStatus();
+        return {
+          dataDir,
+          walletRootId: resolution.walletRootId,
+          walletRootSource: resolution.source,
+          compatibility: "compatible",
+          source: "probe",
+          daemon: {
+            ...daemon,
+            runtimeRoot,
+          },
+        };
+      } finally {
+        await daemonClient.close().catch(() => undefined);
+      }
+    } catch {
+      // Preserve the status-file fallback when the refresh path fails.
+    }
+  }
 
   let source: "probe" | "status-file" | "none" = "probe";
   let daemon = probe.status;
@@ -414,7 +449,10 @@ export async function runServiceRuntimeCommand(
     }
 
     if (parsed.command === "indexer-status") {
-      const payload = await inspectManagedIndexerStatus(dataDir, context);
+      const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
+      const packageVersion = await context.readPackageVersion();
+      await context.ensureDirectory(dirname(dbPath));
+      const payload = await inspectManagedIndexerStatus(dataDir, dbPath, packageVersion, context);
       const messages = buildStatusMessages(payload);
       if (parsed.outputMode === "json") {
         writeJsonValue(context.stdout, createSuccessEnvelope(

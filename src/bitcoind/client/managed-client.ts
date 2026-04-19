@@ -8,7 +8,6 @@ import {
   refreshGetblockManifestCache,
   resolveGetblockArchiveRangeForHeight,
 } from "../bootstrap.js";
-import type { IndexerDaemonClient } from "../indexer-daemon.js";
 import { createRpcClient } from "../node.js";
 import type { ManagedProgressController } from "../progress.js";
 import type { BitcoinRpcClient } from "../rpc.js";
@@ -57,8 +56,6 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
   #rpc: BitcoinRpcClient;
   readonly #progress: ManagedProgressController;
   #bootstrap: AssumeUtxoBootstrapController;
-  #indexerDaemon: IndexerDaemonClient | null;
-  readonly #reattachIndexerDaemon: (() => Promise<IndexerDaemonClient | null>) | null;
   readonly #startHeight: number;
   readonly #syncDebounceMs: number;
   readonly #dataDir: string;
@@ -76,7 +73,6 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
   #syncPromise: Promise<SyncResult> = Promise.resolve(createInitialSyncResult());
   #debounceTimer: ReturnType<typeof setTimeout> | null = null;
   #syncAbortControllers = new Set<AbortController>();
-  #backgroundFollowResumed = false;
 
   constructor(
     client: SyncRecoveryClient,
@@ -85,8 +81,6 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     rpc: BitcoinRpcClient,
     progress: ManagedProgressController,
     bootstrap: AssumeUtxoBootstrapController,
-    indexerDaemon: IndexerDaemonClient | null,
-    reattachIndexerDaemon: (() => Promise<IndexerDaemonClient | null>) | null,
     startHeight: number,
     syncDebounceMs: number,
     dataDir: string,
@@ -101,8 +95,6 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     this.#rpc = rpc;
     this.#progress = progress;
     this.#bootstrap = bootstrap;
-    this.#indexerDaemon = indexerDaemon;
-    this.#reattachIndexerDaemon = reattachIndexerDaemon;
     this.#startHeight = startHeight;
     this.#syncDebounceMs = syncDebounceMs;
     this.#dataDir = dataDir;
@@ -182,7 +174,6 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     const indexedTip = await this.#client.getTip();
     const progressStatus = this.#progress.getStatusSnapshot();
     const serviceStatus = await this.#node.refreshServiceStatus?.();
-    const daemonStatus = await this.#indexerDaemon?.getStatus().catch(() => null);
 
     try {
       const info = await this.#rpc.getBlockchainInfo();
@@ -208,7 +199,7 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
         serviceUpdatedAtUnixMs: serviceStatus?.updatedAtUnixMs ?? null,
         walletReplica: serviceStatus?.walletReplica ?? null,
         serviceStatus: serviceStatus ?? null,
-        indexerDaemon: daemonStatus ?? null,
+        indexerDaemon: null,
       };
     } catch {
       return {
@@ -232,7 +223,7 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
         serviceUpdatedAtUnixMs: serviceStatus?.updatedAtUnixMs ?? null,
         walletReplica: serviceStatus?.walletReplica ?? null,
         serviceStatus: serviceStatus ?? null,
-        indexerDaemon: daemonStatus ?? null,
+        indexerDaemon: null,
       };
     }
   }
@@ -266,21 +257,11 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     await this.#progress.close();
     await this.#node.stop();
     await this.#client.close();
-    await this.#resumeIndexerBackgroundFollow();
-    await this.#indexerDaemon?.close();
-    this.#indexerDaemon = null;
   }
 
   async playSyncCompletionScene(): Promise<void> {
     this.#assertOpen();
     await this.#progress.playCompletionScene();
-  }
-
-  async detachToBackgroundFollow(): Promise<void> {
-    this.#assertOpen();
-    await this.#resumeIndexerBackgroundFollow();
-    await this.#indexerDaemon?.close();
-    this.#indexerDaemon = null;
   }
 
   async #setGetblockStatusMessage(
@@ -558,37 +539,4 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     }
   }
 
-  async #resumeIndexerBackgroundFollow(): Promise<void> {
-    if (this.#backgroundFollowResumed) {
-      return;
-    }
-
-    if (this.#indexerDaemon === null && this.#reattachIndexerDaemon === null) {
-      this.#backgroundFollowResumed = true;
-      return;
-    }
-
-    if (this.#indexerDaemon !== null) {
-      try {
-        await this.#indexerDaemon.resumeBackgroundFollow();
-        this.#backgroundFollowResumed = true;
-        return;
-      } catch (error) {
-        if (this.#reattachIndexerDaemon === null) {
-          throw error;
-        }
-      }
-    }
-
-    const reattachIndexerDaemon = this.#reattachIndexerDaemon;
-
-    if (reattachIndexerDaemon === null) {
-      return;
-    }
-
-    const replacementDaemon = await reattachIndexerDaemon();
-    this.#indexerDaemon = replacementDaemon;
-    await replacementDaemon?.resumeBackgroundFollow();
-    this.#backgroundFollowResumed = true;
-  }
 }

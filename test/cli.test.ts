@@ -12,8 +12,9 @@ test("help text reflects the one-address model", () => {
   assert.match(HELP_TEXT, /--satvb <n>\s+Override the mutation fee rate in sat\/vB/);
   assert.match(HELP_TEXT, /cogcoin register alpha --satvb 12\.5/);
   assert.match(HELP_TEXT, /update\s+Show the current and latest client versions and install updates/i);
+  assert.match(HELP_TEXT, /mine prompt\s+Show per-domain mining prompt state/i);
   assert.match(HELP_TEXT, /mine prompt <domain>\s+Configure a per-domain mining prompt override/i);
-  assert.match(HELP_TEXT, /mine prompt list\s+Show per-domain mining prompt state/i);
+  assert.match(HELP_TEXT, /mine prompt list\s+Alias for mine prompt/i);
   assert.match(HELP_TEXT, /client unlock\s+Unlock password-protected local wallet secrets/i);
   assert.match(HELP_TEXT, /client lock\s+Flush the cached client password unlock session/i);
   assert.match(HELP_TEXT, /client change-password\s+Rotate the client password that protects local wallet secrets/i);
@@ -68,6 +69,8 @@ test("parser accepts update with --yes", () => {
 });
 
 test("parser accepts mine prompt and mine prompt list", () => {
+  assert.equal(parseCliArgs(["mine", "prompt"]).command, "mine-prompt-list");
+  assert.equal(parseCliArgs(["mine", "prompt", "--output", "json"]).command, "mine-prompt-list");
   assert.equal(parseCliArgs(["mine", "prompt", "alpha"]).command, "mine-prompt");
   assert.equal(parseCliArgs(["mine", "prompt", "list", "--output", "json"]).command, "mine-prompt-list");
 });

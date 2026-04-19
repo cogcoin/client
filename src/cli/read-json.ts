@@ -661,6 +661,11 @@ export function buildMinePromptListJson(result: MiningDomainPromptListResult): R
   if (result.prompts.length === 0) {
     explanations.push("No mineable root domains or stored per-domain mining prompts are configured.");
     nextSteps.push("Run `cogcoin domains --mineable` to see eligible mining domains.");
+  } else {
+    const nextDomainPrompt = result.prompts.find((entry) => entry.mineable && entry.prompt === null);
+    if (nextDomainPrompt !== undefined) {
+      nextSteps.push(`cogcoin mine prompt ${nextDomainPrompt.domain.name}`);
+    }
   }
 
   return {

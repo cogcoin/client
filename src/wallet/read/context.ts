@@ -644,6 +644,7 @@ export async function openWalletReadContext(options: {
   secretProvider?: WalletSecretProvider;
   walletControlLockHeld?: boolean;
   startupTimeoutMs?: number;
+  expectedIndexerBinaryVersion?: string | null;
   now?: number;
   paths?: WalletRuntimePaths;
 }): Promise<WalletReadContext> {
@@ -693,18 +694,15 @@ export async function openWalletReadContext(options: {
       walletRootId,
     });
 
-    if (probe.compatibility === "compatible") {
-      daemonClient = probe.client;
-      void probe.client?.resumeBackgroundFollow().catch(() => undefined);
-      observedDaemonStatus = probe.status;
-      indexerSource = "probe";
-    } else if (probe.compatibility === "unreachable") {
+    if (probe.compatibility === "compatible" || probe.compatibility === "unreachable") {
+      await probe.client?.close().catch(() => undefined);
       daemonClient = await attachOrStartIndexerDaemon({
         dataDir: options.dataDir,
         databasePath: options.databasePath,
         walletRootId,
         startupTimeoutMs,
         ensureBackgroundFollow: true,
+        expectedBinaryVersion: options.expectedIndexerBinaryVersion,
       });
     } else {
       observedDaemonStatus = probe.status;

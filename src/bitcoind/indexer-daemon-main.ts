@@ -658,16 +658,6 @@ async function main(): Promise<void> {
               return;
             }
 
-            if (request.method === "PauseBackgroundFollow") {
-              await pauseBackgroundFollow();
-              writeResponse({
-                id: request.id,
-                ok: true,
-                result: null,
-              });
-              return;
-            }
-
             if (request.method === "ResumeBackgroundFollow") {
               await resumeBackgroundFollow();
               writeResponse({

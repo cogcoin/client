@@ -54,6 +54,7 @@ test("status text output immediately renders the balance report after the overvi
   const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-status-command"));
   const readContext = createWalletReadContext();
   let closeCalls = 0;
+  let expectedIndexerBinaryVersion: string | null = null;
   const context = createDefaultContext({
     stdout: stdout.stream,
     stderr: stderr.stream,
@@ -74,12 +75,15 @@ test("status text output immediately renders the balance report after the overvi
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureDirectory: async () => undefined,
-    openWalletReadContext: async () => ({
-      ...readContext,
-      async close() {
-        closeCalls += 1;
-      },
-    }),
+    openWalletReadContext: async (options) => {
+      expectedIndexerBinaryVersion = options.expectedIndexerBinaryVersion ?? null;
+      return {
+        ...readContext,
+        async close() {
+          closeCalls += 1;
+        },
+      };
+    },
   });
 
   const exitCode = await runStatusCommand(parseCliArgs(["status"]), context);
@@ -87,6 +91,7 @@ test("status text output immediately renders the balance report after the overvi
   assert.equal(exitCode, 0);
   assert.equal(stderr.read(), "");
   assert.equal(closeCalls, 1);
+  assert.equal(expectedIndexerBinaryVersion, version);
   assert.equal(
     stdout.read(),
     `${formatWalletOverviewReport(readContext, version)}\n${formatBalanceReport(readContext)}\n`,

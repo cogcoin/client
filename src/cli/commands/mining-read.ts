@@ -15,6 +15,7 @@ import {
   writeJsonValue,
 } from "../output.js";
 import { buildMineLogJson, buildMinePromptListJson, buildMineStatusJson } from "../read-json.js";
+import { formatNextStepLines } from "../workflow-hints.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
@@ -44,6 +45,7 @@ export async function runMiningReadCommand(
   try {
     const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
     const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+    const packageVersion = await context.readPackageVersion();
     const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
     await context.ensureDirectory(dirname(dbPath));
 
@@ -137,6 +139,7 @@ export async function runMiningReadCommand(
         dataDir,
         databasePath: dbPath,
         secretProvider: provider,
+        expectedIndexerBinaryVersion: packageVersion,
         paths: runtimePaths,
       });
 
@@ -162,6 +165,9 @@ export async function runMiningReadCommand(
         }
 
         writeLine(context.stdout, formatMiningPromptListReport(result.data));
+        for (const line of formatNextStepLines(result.nextSteps)) {
+          writeLine(context.stdout, line);
+        }
         return 0;
       } finally {
         await readContext.close();
@@ -175,6 +181,7 @@ export async function runMiningReadCommand(
         dataDir,
         databasePath: dbPath,
         secretProvider: provider,
+        expectedIndexerBinaryVersion: packageVersion,
         paths: runtimePaths,
       });
 

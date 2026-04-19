@@ -172,7 +172,6 @@ function createFakeIndexerDaemon(walletRootId: string) {
       };
     },
     async closeSnapshot() {},
-    async pauseBackgroundFollow() {},
     async resumeBackgroundFollow() {},
     async close() {},
   };

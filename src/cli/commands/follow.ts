@@ -17,6 +17,7 @@ export async function runFollowCommand(
 ): Promise<number> {
   const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
   const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+  const packageVersion = await context.readPackageVersion();
   const runtimePaths = context.resolveWalletRuntimePaths();
   let monitor: Awaited<ReturnType<typeof context.openManagedIndexerMonitor>> | null = null;
   let observer: ManagedIndexerProgressObserver | null = null;
@@ -33,6 +34,7 @@ export async function runFollowCommand(
       dataDir,
       databasePath: dbPath,
       walletRootId: walletRoot.walletRootId,
+      expectedBinaryVersion: packageVersion,
     });
     observer = new ManagedIndexerProgressObserver({
       quoteStatePath: resolveBootstrapPathsForTesting(dataDir, DEFAULT_SNAPSHOT_METADATA).quoteStatePath,

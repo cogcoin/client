@@ -20,7 +20,6 @@ import {
   DefaultManagedBitcoindClient,
   normalizeRpcBlock,
   openManagedBitcoindClientInternal,
-  pauseIndexerDaemonForForegroundClientForTesting,
   readIndexerDaemonStatusForTesting,
   readManagedBitcoindServiceStatusForTesting,
   stopIndexerDaemonService,
@@ -723,7 +722,6 @@ test("managed client close detaches without stopping the managed services", asyn
     client = await openManagedBitcoindClientInternal({
       store,
       dataDir: fixture.dataDir,
-      databasePath: fixture.databasePath,
       chain: "regtest",
       startHeight: 0,
       snapshotInterval: 2,
@@ -731,9 +729,17 @@ test("managed client close detaches without stopping the managed services", asyn
       syncDebounceMs: 50,
     });
 
+    const daemonBeforeClose = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      ensureBackgroundFollow: true,
+    });
     const statusBeforeClose = await client.getNodeStatus();
-    const daemonInstanceIdBeforeClose = statusBeforeClose.indexerDaemon?.daemonInstanceId ?? null;
+    const daemonStatusBeforeClose = await daemonBeforeClose.getStatus();
     const bitcoindPidBeforeClose = statusBeforeClose.pid;
+    const daemonInstanceIdBeforeClose = daemonStatusBeforeClose.daemonInstanceId;
+
+    await daemonBeforeClose.close();
 
     await client.close();
     client = null;
@@ -761,279 +767,6 @@ test("managed client close detaches without stopping the managed services", asyn
   }
 });
 
-test("managed client close reattaches the indexer daemon when background follow resume fails", async () => {
-  let primaryResumeCalls = 0;
-  let replacementResumeCalls = 0;
-  let reattachCalls = 0;
-  let nodeStopCalls = 0;
-  let clientCloseCalls = 0;
-  let progressCloseCalls = 0;
-
-  const managedClient = new DefaultManagedBitcoindClient(
-    {
-      async getTip() {
-        return null;
-      },
-      async getState() {
-        throw new Error("unreachable");
-      },
-      async applyBlock() {
-        throw new Error("unreachable");
-      },
-      async rewindToHeight() {
-        throw new Error("unreachable");
-      },
-      async close() {
-        clientCloseCalls += 1;
-      },
-    } as never,
-    {} as never,
-    {
-      rpc: {} as never,
-      zmq: {} as never,
-      pid: null,
-      expectedChain: "main",
-      startHeight: 0,
-      dataDir: "/tmp/cogcoin-managed-client-reattach",
-      getblockArchiveEndHeight: null,
-      getblockArchiveSha256: null,
-      async validate() {},
-      async stop() {
-        nodeStopCalls += 1;
-      },
-    },
-    {} as never,
-    {
-      async start() {},
-      async close() {
-        progressCloseCalls += 1;
-      },
-      getStatusSnapshot() {
-        return {
-          bootstrapPhase: null,
-          bootstrapProgress: null,
-          cogcoinSyncHeight: null,
-          cogcoinSyncTargetHeight: null,
-          currentQuote: null,
-          snapshot: null,
-        };
-      },
-      async playCompletionScene() {},
-    } as never,
-    {} as never,
-    {
-      async getStatus() {
-        throw new Error("unreachable");
-      },
-      async openSnapshot() {
-        throw new Error("unreachable");
-      },
-      async readSnapshot() {
-        throw new Error("unreachable");
-      },
-      async closeSnapshot() {
-        throw new Error("unreachable");
-      },
-      async pauseBackgroundFollow() {
-        throw new Error("unreachable");
-      },
-      async resumeBackgroundFollow() {
-        primaryResumeCalls += 1;
-        throw new Error("indexer_daemon_protocol_error");
-      },
-      async close() {},
-    },
-    async () => {
-      reattachCalls += 1;
-      return {
-        async getStatus() {
-          throw new Error("unreachable");
-        },
-        async openSnapshot() {
-          throw new Error("unreachable");
-        },
-        async readSnapshot() {
-          throw new Error("unreachable");
-        },
-        async closeSnapshot() {
-          throw new Error("unreachable");
-        },
-        async pauseBackgroundFollow() {
-          throw new Error("unreachable");
-        },
-        async resumeBackgroundFollow() {
-          replacementResumeCalls += 1;
-        },
-        async close() {},
-      };
-    },
-    0,
-    50,
-    "/tmp/cogcoin-managed-client-reattach",
-    "wallet-root-test",
-    undefined,
-    undefined,
-    undefined,
-  );
-
-  await managedClient.close();
-
-  assert.equal(primaryResumeCalls, 1);
-  assert.equal(reattachCalls, 1);
-  assert.equal(replacementResumeCalls, 1);
-  assert.equal(nodeStopCalls, 1);
-  assert.equal(clientCloseCalls, 1);
-  assert.equal(progressCloseCalls, 1);
-});
-
-test("managed client close reattaches the indexer daemon when no daemon handle is attached", async () => {
-  let replacementResumeCalls = 0;
-  let reattachCalls = 0;
-  let nodeStopCalls = 0;
-  let clientCloseCalls = 0;
-  let progressCloseCalls = 0;
-
-  const managedClient = new DefaultManagedBitcoindClient(
-    {
-      async getTip() {
-        return null;
-      },
-      async getState() {
-        throw new Error("unreachable");
-      },
-      async applyBlock() {
-        throw new Error("unreachable");
-      },
-      async rewindToHeight() {
-        throw new Error("unreachable");
-      },
-      async close() {
-        clientCloseCalls += 1;
-      },
-    } as never,
-    {} as never,
-    {
-      rpc: {} as never,
-      zmq: {} as never,
-      pid: null,
-      expectedChain: "main",
-      startHeight: 0,
-      dataDir: "/tmp/cogcoin-managed-client-reattach-missing",
-      getblockArchiveEndHeight: null,
-      getblockArchiveSha256: null,
-      async validate() {},
-      async stop() {
-        nodeStopCalls += 1;
-      },
-    },
-    {} as never,
-    {
-      async start() {},
-      async close() {
-        progressCloseCalls += 1;
-      },
-      getStatusSnapshot() {
-        return {
-          bootstrapPhase: null,
-          bootstrapProgress: null,
-          cogcoinSyncHeight: null,
-          cogcoinSyncTargetHeight: null,
-          currentQuote: null,
-          snapshot: null,
-        };
-      },
-      async playCompletionScene() {},
-    } as never,
-    {} as never,
-    null,
-    async () => {
-      reattachCalls += 1;
-      return {
-        async getStatus() {
-          throw new Error("unreachable");
-        },
-        async openSnapshot() {
-          throw new Error("unreachable");
-        },
-        async readSnapshot() {
-          throw new Error("unreachable");
-        },
-        async closeSnapshot() {
-          throw new Error("unreachable");
-        },
-        async pauseBackgroundFollow() {
-          throw new Error("unreachable");
-        },
-        async resumeBackgroundFollow() {
-          replacementResumeCalls += 1;
-        },
-        async close() {},
-      };
-    },
-    0,
-    50,
-    "/tmp/cogcoin-managed-client-reattach-missing",
-    "wallet-root-test",
-    undefined,
-    undefined,
-    undefined,
-  );
-
-  await managedClient.close();
-
-  assert.equal(reattachCalls, 1);
-  assert.equal(replacementResumeCalls, 1);
-  assert.equal(nodeStopCalls, 1);
-  assert.equal(clientCloseCalls, 1);
-  assert.equal(progressCloseCalls, 1);
-});
-
-test("pauseIndexerDaemonForForegroundClientForTesting stops a timed-out daemon and returns null", async () => {
-  let closeCalls = 0;
-  let stopCalls = 0;
-
-  const result = await pauseIndexerDaemonForForegroundClientForTesting({
-    daemon: {
-      async getStatus() {
-        throw new Error("unreachable");
-      },
-      async openSnapshot() {
-        throw new Error("unreachable");
-      },
-      async readSnapshot() {
-        throw new Error("unreachable");
-      },
-      async closeSnapshot() {
-        throw new Error("unreachable");
-      },
-      async pauseBackgroundFollow() {
-        throw new Error("indexer_daemon_request_timeout");
-      },
-      async resumeBackgroundFollow() {
-        throw new Error("unreachable");
-      },
-      async close() {
-        closeCalls += 1;
-      },
-    },
-    dataDir: "/tmp/cogcoin-indexer-daemon-recovery",
-    walletRootId: "wallet-root-timeout",
-    stopDaemon: async ({ dataDir, walletRootId }) => {
-      stopCalls += 1;
-      assert.equal(dataDir, "/tmp/cogcoin-indexer-daemon-recovery");
-      assert.equal(walletRootId, "wallet-root-timeout");
-      return {
-        status: "stopped",
-        walletRootId,
-      };
-    },
-  });
-
-  assert.equal(result, null);
-  assert.equal(closeCalls, 1);
-  assert.equal(stopCalls, 1);
-});
-
 test("indexer daemon keeps following in the background after sync client close", async (t) => {
   await ensureBitcoinBinaries(t);
   const fixture = createFixture("cogcoin-client-indexer-daemon-background-follow");
@@ -1044,7 +777,6 @@ test("indexer daemon keeps following in the background after sync client close",
     client = await openManagedBitcoindClientInternal({
       store,
       dataDir: fixture.dataDir,
-      databasePath: fixture.databasePath,
       chain: "regtest",
       startHeight: 0,
       snapshotInterval: 2,
@@ -1056,13 +788,16 @@ test("indexer daemon keeps following in the background after sync client close",
     const descriptor = await getMiningDescriptor(fixture.dataDir, startupStatus.rpc.port);
     await generateBlocks(fixture.dataDir, startupStatus.rpc.port, 1, descriptor);
     await client.syncToTip();
-    await client.close();
-    client = null;
 
     const daemon = await attachOrStartIndexerDaemon({
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
+      ensureBackgroundFollow: true,
     });
+
+    const statusBeforeClose = await daemon.getStatus();
+    await client.close();
+    client = null;
 
     try {
       await generateBlocks(fixture.dataDir, startupStatus.rpc.port, 1, descriptor);
@@ -1073,6 +808,7 @@ test("indexer daemon keeps following in the background after sync client close",
       }, 15_000, 100);
 
       const status = await daemon.getStatus();
+      assert.equal(status.daemonInstanceId, statusBeforeClose.daemonInstanceId);
       assert.equal(status.appliedTipHeight, 2);
       assert.equal(status.coreBestHeight, 2);
       assert.equal(status.state, "synced");
@@ -1401,7 +1137,6 @@ test("stopIndexerDaemonService stops only the managed indexer", async (t) => {
     client = await openManagedBitcoindClientInternal({
       store,
       dataDir: fixture.dataDir,
-      databasePath: fixture.databasePath,
       chain: "regtest",
       startHeight: 0,
       snapshotInterval: 2,
@@ -1411,6 +1146,12 @@ test("stopIndexerDaemonService stops only the managed indexer", async (t) => {
 
     const statusBeforeStop = await client.getNodeStatus();
     const nodeRpc = statusBeforeStop.rpc;
+    const daemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      ensureBackgroundFollow: true,
+    });
+    await daemon.close();
     const result = await stopIndexerDaemonService({
       dataDir: fixture.dataDir,
     });
@@ -1437,7 +1178,6 @@ test("indexer daemon starts, writes status, and serves coherent snapshot IPC", a
     client = await openManagedBitcoindClientInternal({
       store,
       dataDir: fixture.dataDir,
-      databasePath: fixture.databasePath,
       chain: "regtest",
       startHeight: 0,
       snapshotInterval: 2,
@@ -1558,7 +1298,6 @@ test("indexer daemon snapshotSeq advances when the indexed tip changes", async (
     client = await openManagedBitcoindClientInternal({
       store,
       dataDir: fixture.dataDir,
-      databasePath: fixture.databasePath,
       chain: "regtest",
       startHeight: 0,
       snapshotInterval: 2,
@@ -1609,7 +1348,6 @@ test("indexer daemon refreshes from durable runtime config even when bitcoind st
     client = await openManagedBitcoindClientInternal({
       store,
       dataDir: fixture.dataDir,
-      databasePath: fixture.databasePath,
       chain: "regtest",
       startHeight: 0,
       snapshotInterval: 2,
@@ -1688,7 +1426,6 @@ test("missing runtime config starts as starting and becomes failed after a succe
     client = await openManagedBitcoindClientInternal({
       store,
       dataDir: fixture.dataDir,
-      databasePath: fixture.databasePath,
       chain: "regtest",
       startHeight: 0,
       snapshotInterval: 2,
@@ -1729,6 +1466,95 @@ test("missing runtime config starts as starting and becomes failed after a succe
   }
 });
 
+test("attach restarts a compatible stale daemon when expectedBinaryVersion is newer", async () => {
+  const fixture = createFixture("cogcoin-client-indexer-stale-restart");
+  const walletRootId = "wallet-root-test";
+  const paths = resolveManagedServicePaths(fixture.dataDir, walletRootId);
+  await mkdir(paths.indexerServiceRoot, { recursive: true });
+
+  const server = await startFakeIndexerDaemonServer(
+    paths.indexerDaemonSocketPath,
+    createManagedIndexerDaemonStatus(walletRootId, {
+      binaryVersion: "1.0.2",
+      daemonInstanceId: "daemon-stale",
+      processId: 4321,
+    }),
+  );
+
+  try {
+    const daemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      walletRootId,
+      expectedBinaryVersion: "1.0.3",
+      startupTimeoutMs: 5_000,
+    });
+
+    try {
+      const status = await daemon.getStatus();
+      assert.notEqual(status.daemonInstanceId, "daemon-stale");
+      assert.notEqual(status.binaryVersion, "1.0.2");
+      assert.notEqual(status.processId, 4321);
+      assert.equal(status.walletRootId, walletRootId);
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    await shutdownIndexerDaemonForTesting({ dataDir: fixture.dataDir, walletRootId }).catch(() => undefined);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("attach keeps compatible equal, newer, and unparseable daemon versions running", async () => {
+  const cases = [
+    { name: "equal", binaryVersion: "1.0.3" },
+    { name: "newer", binaryVersion: "1.0.4" },
+    { name: "unparseable", binaryVersion: "dev-build" },
+  ];
+
+  for (const testCase of cases) {
+    const fixture = createFixture(`cogcoin-client-indexer-compatible-${testCase.name}`);
+    const walletRootId = "wallet-root-test";
+    const paths = resolveManagedServicePaths(fixture.dataDir, walletRootId);
+    await mkdir(paths.indexerServiceRoot, { recursive: true });
+
+    const server = await startFakeIndexerDaemonServer(
+      paths.indexerDaemonSocketPath,
+      createManagedIndexerDaemonStatus(walletRootId, {
+        binaryVersion: testCase.binaryVersion,
+        daemonInstanceId: `daemon-${testCase.name}`,
+        processId: 4321,
+      }),
+    );
+
+    try {
+      const daemon = await attachOrStartIndexerDaemon({
+        dataDir: fixture.dataDir,
+        databasePath: fixture.databasePath,
+        walletRootId,
+        expectedBinaryVersion: "1.0.3",
+        startupTimeoutMs: 1_000,
+      });
+
+      try {
+        const status = await daemon.getStatus();
+        assert.equal(status.daemonInstanceId, `daemon-${testCase.name}`);
+        assert.equal(status.binaryVersion, testCase.binaryVersion);
+        assert.equal(status.processId, 4321);
+      } finally {
+        await daemon.close();
+      }
+    } finally {
+      await shutdownIndexerDaemonForTesting({ dataDir: fixture.dataDir, walletRootId }).catch(() => undefined);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
+      await cleanupManagedFixture(fixture);
+    }
+  }
+});
+
 test("attach rejects a live daemon with incompatible service metadata without spawning a second daemon", async () => {
   const fixture = createFixture("cogcoin-client-indexer-incompatible");
   const walletRootId = "wallet-root-test";
@@ -1761,6 +1587,7 @@ test("attach rejects a live daemon with incompatible service metadata without sp
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
+        expectedBinaryVersion: "1.0.3",
         startupTimeoutMs: 1_000,
       }),
       /indexer_daemon_service_version_mismatch/,
@@ -1789,6 +1616,7 @@ test("attach accepts a live daemon for a different wallet root when the daemon i
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
+      expectedBinaryVersion: "1.0.3",
       startupTimeoutMs: 1_000,
     });
     await daemon.close();
@@ -1816,6 +1644,7 @@ test("attach rejects a live daemon with an incompatible schema version", async (
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
+        expectedBinaryVersion: "1.0.3",
         startupTimeoutMs: 1_000,
       }),
       /indexer_daemon_schema_mismatch/,

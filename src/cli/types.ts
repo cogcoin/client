@@ -209,7 +209,6 @@ export interface ManagedClientLike {
     bestHeight: number;
   }>;
   playSyncCompletionScene?(): Promise<void>;
-  detachToBackgroundFollow?(): Promise<void>;
   startFollowingTip(): Promise<void>;
   getNodeStatus(): Promise<{
     indexedTip: {
@@ -241,7 +240,6 @@ export interface CliRunnerContext {
   openSqliteStore?: typeof openSqliteStore;
   openManagedBitcoindClient?: (options: {
     store: ClientStoreAdapter;
-    databasePath?: string;
     dataDir?: string;
     walletRootId?: string;
     progressOutput?: ProgressOutput;

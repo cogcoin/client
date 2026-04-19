@@ -180,9 +180,11 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
   const stderr = createStringWriter();
   const provider = createMemoryWalletSecretProviderForTesting();
   const prompter = createPrompter();
+  const version = "7.8.9";
   const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-runtime"));
   const runtimePaths = resolvePaths(null);
   const events: string[] = [];
+  let expectedBinaryVersion: string | null = null;
   let runOptions: {
     dataDir: string;
     databasePath: string;
@@ -197,6 +199,7 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
     signalSource: QUIET_SIGNAL_SOURCE,
     walletSecretProvider: provider,
     createPrompter: () => prompter,
+    readPackageVersion: async () => version,
     resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
@@ -205,7 +208,10 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
       return true;
     },
     loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
-    openManagedIndexerMonitor: async () => createCompletedSyncMonitor(events) as any,
+    openManagedIndexerMonitor: async (options) => {
+      expectedBinaryVersion = options.expectedBinaryVersion ?? null;
+      return createCompletedSyncMonitor(events) as any;
+    },
     runForegroundMining: async (options) => {
       runOptions = {
         dataDir: options.dataDir,
@@ -231,6 +237,7 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
     "run",
   ]);
   assert.notEqual(runOptions, null);
+  assert.equal(expectedBinaryVersion, version);
   const actualRunOptions = runOptions!;
   assert.equal(actualRunOptions.dataDir, "/tmp/bitcoind");
   assert.equal(actualRunOptions.databasePath, "/tmp/cogcoin.db");

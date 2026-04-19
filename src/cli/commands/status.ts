@@ -14,6 +14,7 @@ export async function runStatusCommand(
 ): Promise<number> {
   const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
   const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+  const packageVersion = await context.readPackageVersion();
   const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
   await context.ensureDirectory(dirname(dbPath));
   const provider = parsed.outputMode === "text"
@@ -26,6 +27,7 @@ export async function runStatusCommand(
     dataDir,
     databasePath: dbPath,
     secretProvider: provider,
+    expectedIndexerBinaryVersion: packageVersion,
     paths: runtimePaths,
   });
 
@@ -45,7 +47,7 @@ export async function runStatusCommand(
       return 0;
     }
 
-    writeLine(context.stdout, formatWalletOverviewReport(readContext, await context.readPackageVersion()));
+    writeLine(context.stdout, formatWalletOverviewReport(readContext, packageVersion));
     writeLine(context.stdout, formatBalanceReport(readContext));
     return 0;
   } finally {

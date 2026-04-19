@@ -38,6 +38,7 @@ export async function runMiningAdminCommand(
     const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
     const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
     const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+    const packageVersion = await context.readPackageVersion();
 
     if (parsed.command === "mine-setup") {
       const prompter = createCommandPrompter(parsed, context);
@@ -101,6 +102,7 @@ export async function runMiningAdminCommand(
         dataDir,
         databasePath: dbPath,
         secretProvider: provider,
+        expectedIndexerBinaryVersion: packageVersion,
         paths: runtimePaths,
       });
 

@@ -36,12 +36,13 @@ Commands:
   mine setup              Configure the built-in mining provider
   mine setup --output json
                          Emit the stable v1 machine-readable mine setup result envelope
+  mine prompt             Show per-domain mining prompt state
+  mine prompt --output json
+                         Emit the stable v1 machine-readable mine prompt list envelope
   mine prompt <domain>    Configure a per-domain mining prompt override
   mine prompt <domain> --output json
                          Emit the stable v1 machine-readable mine prompt result envelope
-  mine prompt list        Show per-domain mining prompt state
-  mine prompt list --output json
-                         Emit the stable v1 machine-readable mine prompt list envelope
+  mine prompt list        Alias for mine prompt
   mine status             Show mining control-plane health and readiness
   mine log                Show recent mining control-plane events
   anchor <domain>         Anchor an owned unanchored domain with the wallet address
@@ -146,6 +147,7 @@ Examples:
   cogcoin field set alpha bio --text "hello"
   cogcoin rep give alpha beta 10 --review "great operator"
   cogcoin mine setup --output json
+  cogcoin mine prompt
   cogcoin mine prompt alpha
   cogcoin register alpha-child --output preview-json
   cogcoin mine status
@@ -782,7 +784,9 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
         if (subcommand === "prompt") {
           const action = argv[index + 2] ?? null;
-          command = action === "list" ? "mine-prompt-list" : "mine-prompt";
+          command = action === null || action.startsWith("--") || action === "list"
+            ? "mine-prompt-list"
+            : "mine-prompt";
           index += action === "list" ? 2 : 1;
           continue;
         }

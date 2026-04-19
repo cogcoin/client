@@ -61,6 +61,7 @@ export async function openManagedIndexerMonitor(options: {
   databasePath: string;
   walletRootId?: string;
   startupTimeoutMs?: number;
+  expectedBinaryVersion?: string | null;
 }): Promise<ManagedIndexerMonitor> {
   const walletRootId = options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
   const startOptions = await resolveStartOptions({
@@ -82,6 +83,7 @@ export async function openManagedIndexerMonitor(options: {
     walletRootId,
     startupTimeoutMs: options.startupTimeoutMs,
     ensureBackgroundFollow: true,
+    expectedBinaryVersion: options.expectedBinaryVersion,
   });
 
   return createManagedIndexerMonitor({

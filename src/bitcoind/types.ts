@@ -200,7 +200,6 @@ export interface ManagedGetblockArchiveRestartRequest {
 
 export interface ManagedBitcoindOptions extends ClientOptions {
   dataDir?: string;
-  databasePath?: string;
   rpcPort?: number;
   zmqPort?: number;
   p2pPort?: number;
@@ -222,7 +221,6 @@ export interface ManagedBitcoindClient extends Client {
   syncToTip(): Promise<SyncResult>;
   startFollowingTip(): Promise<void>;
   getNodeStatus(): Promise<ManagedBitcoindStatus>;
-  detachToBackgroundFollow(): Promise<void>;
   close(): Promise<void>;
 }
 

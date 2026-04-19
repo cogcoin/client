@@ -65,6 +65,7 @@ async function syncManagedMiningReadiness(options: {
   context: RequiredCliRunnerContext;
   dataDir: string;
   databasePath: string;
+  expectedBinaryVersion: string;
   provider: RequiredCliRunnerContext["walletSecretProvider"];
   runtimePaths: ReturnType<RequiredCliRunnerContext["resolveWalletRuntimePaths"]>;
 }): Promise<number | null> {
@@ -83,6 +84,7 @@ async function syncManagedMiningReadiness(options: {
     dataDir: options.dataDir,
     databasePath: options.databasePath,
     walletRootId: walletRoot.walletRootId,
+    expectedBinaryVersion: options.expectedBinaryVersion,
   });
   observer = new ManagedIndexerProgressObserver({
     quoteStatePath: resolveBootstrapPathsForTesting(
@@ -144,6 +146,7 @@ export async function runMiningRuntimeCommand(
   try {
     const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
     const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
+    const packageVersion = await context.readPackageVersion();
     const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
 
     if (parsed.command === "mine") {
@@ -160,6 +163,7 @@ export async function runMiningRuntimeCommand(
         context,
         dataDir,
         databasePath: dbPath,
+        expectedBinaryVersion: packageVersion,
         provider,
         runtimePaths,
       });
@@ -212,6 +216,7 @@ export async function runMiningRuntimeCommand(
         context,
         dataDir,
         databasePath: dbPath,
+        expectedBinaryVersion: packageVersion,
         provider,
         runtimePaths,
       });

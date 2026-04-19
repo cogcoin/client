@@ -1404,7 +1404,7 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
     case "mine-prompt":
       return `cogcoin mine prompt ${args[0] ?? "<domain>"}`;
     case "mine-prompt-list":
-      return "cogcoin mine prompt list";
+      return "cogcoin mine prompt";
     case "mine-start":
       return "cogcoin mine start";
     case "mine-stop":

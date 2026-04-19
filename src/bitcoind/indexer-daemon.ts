@@ -4,6 +4,7 @@ import { mkdir, readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
 
+import { compareSemver } from "../semver.js";
 import { acquireFileLock, FileLockBusyError } from "../wallet/fs/lock.js";
 import { writeRuntimeStatusFile } from "../wallet/fs/status-file.js";
 import {
@@ -26,7 +27,6 @@ interface DaemonRequest {
     | "OpenSnapshot"
     | "ReadSnapshot"
     | "CloseSnapshot"
-    | "PauseBackgroundFollow"
     | "ResumeBackgroundFollow";
   token?: string;
 }
@@ -99,7 +99,6 @@ export interface IndexerDaemonClient {
   openSnapshot(): Promise<IndexerSnapshotHandle>;
   readSnapshot(token: string): Promise<IndexerSnapshotPayload>;
   closeSnapshot(token: string): Promise<void>;
-  pauseBackgroundFollow(): Promise<void>;
   resumeBackgroundFollow(): Promise<void>;
   close(): Promise<void>;
 }
@@ -207,11 +206,12 @@ export async function stopIndexerDaemonServiceWithLockHeld(options: {
   walletRootId?: string;
   shutdownTimeoutMs?: number;
   paths?: ReturnType<typeof resolveManagedServicePaths>;
+  processId?: number | null;
 }): Promise<IndexerDaemonStopResult> {
   const walletRootId = options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
   const paths = options.paths ?? resolveManagedServicePaths(options.dataDir, walletRootId);
   const status = await readJsonFile<ManagedIndexerDaemonStatus>(paths.indexerDaemonStatusPath);
-  const processId = status?.processId ?? null;
+  const processId = options.processId ?? status?.processId ?? null;
 
   if (status === null || processId === null || !await isProcessAlive(processId)) {
     await clearIndexerDaemonRuntimeArtifacts(paths);
@@ -350,12 +350,6 @@ function createIndexerDaemonClient(
         token,
       });
     },
-    async pauseBackgroundFollow() {
-      await sendRequest<null>({
-        id: randomUUID(),
-        method: "PauseBackgroundFollow",
-      });
-    },
     async resumeBackgroundFollow() {
       await sendRequest<null>({
         id: randomUUID(),
@@ -490,6 +484,18 @@ function buildStatusFromSnapshotHandle(handle: IndexerSnapshotHandle): ManagedIn
   };
 }
 
+function isStaleIndexerDaemonVersion(
+  status: ManagedIndexerDaemonObservedStatus | null,
+  expectedBinaryVersion: string | null | undefined,
+): boolean {
+  if (status === null || expectedBinaryVersion === null || expectedBinaryVersion === undefined) {
+    return false;
+  }
+
+  const comparison = compareSemver(status.binaryVersion, expectedBinaryVersion);
+  return comparison !== null && comparison < 0;
+}
+
 async function probeIndexerDaemonAtSocket(
   socketPath: string,
   expectedWalletRootId: string,
@@ -620,6 +626,7 @@ export async function attachOrStartIndexerDaemon(options: {
   shutdownTimeoutMs?: number;
   serviceLifetime?: ManagedIndexerDaemonServiceLifetime;
   ensureBackgroundFollow?: boolean;
+  expectedBinaryVersion?: string | null;
 }): Promise<IndexerDaemonClient> {
   const requestBackgroundFollow = (client: IndexerDaemonClient): IndexerDaemonClient => {
     if (options.ensureBackgroundFollow !== true) {
@@ -634,13 +641,63 @@ export async function attachOrStartIndexerDaemon(options: {
   const paths = resolveManagedServicePaths(options.dataDir, walletRootId);
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   const serviceLifetime = options.serviceLifetime ?? "persistent";
+  const expectedBinaryVersion = options.expectedBinaryVersion ?? null;
+
+  const startDaemon = async (): Promise<IndexerDaemonClient> => {
+    await mkdir(paths.indexerServiceRoot, { recursive: true });
+    const daemonEntryPath = fileURLToPath(new URL("./indexer-daemon-main.js", import.meta.url));
+    const spawnOptions = serviceLifetime === "ephemeral"
+      ? {
+        stdio: "ignore" as const,
+      }
+      : {
+        detached: true,
+        stdio: "ignore" as const,
+      };
+    const child = spawn(process.execPath, [
+      daemonEntryPath,
+      `--data-dir=${options.dataDir}`,
+      `--database-path=${options.databasePath}`,
+      `--wallet-root-id=${walletRootId}`,
+    ], {
+      ...spawnOptions,
+    });
+    if (serviceLifetime !== "ephemeral") {
+      child.unref();
+    }
+
+    try {
+      await waitForIndexerDaemon(options.dataDir, walletRootId, startupTimeoutMs);
+    } catch (error) {
+      if (child.pid !== undefined) {
+        try {
+          process.kill(child.pid, "SIGTERM");
+        } catch {
+          // ignore shutdown failures while unwinding startup errors
+        }
+      }
+      throw error;
+    }
+
+    return createIndexerDaemonClient(paths.indexerDaemonSocketPath, {
+      dataDir: options.dataDir,
+      walletRootId,
+      serviceLifetime,
+      ownership: "started",
+      shutdownTimeoutMs: options.shutdownTimeoutMs,
+    });
+  };
 
   const existingProbe = await probeIndexerDaemonAtSocket(paths.indexerDaemonSocketPath, walletRootId);
   if (existingProbe.compatibility === "compatible" && existingProbe.client !== null) {
-    return requestBackgroundFollow(existingProbe.client);
+    if (!isStaleIndexerDaemonVersion(existingProbe.status, expectedBinaryVersion)) {
+      return requestBackgroundFollow(existingProbe.client);
+    }
+
+    await existingProbe.client.close().catch(() => undefined);
   }
 
-  if (existingProbe.compatibility !== "unreachable") {
+  if (existingProbe.compatibility !== "unreachable" && existingProbe.compatibility !== "compatible") {
     throw new Error(existingProbe.error ?? "indexer_daemon_protocol_error");
   }
 
@@ -655,68 +712,30 @@ export async function attachOrStartIndexerDaemon(options: {
     try {
       const liveProbe = await probeIndexerDaemonAtSocket(paths.indexerDaemonSocketPath, walletRootId);
       if (liveProbe.compatibility === "compatible" && liveProbe.client !== null) {
-        return requestBackgroundFollow(liveProbe.client);
-      }
+        if (!isStaleIndexerDaemonVersion(liveProbe.status, expectedBinaryVersion)) {
+          return requestBackgroundFollow(liveProbe.client);
+        }
 
-      if (liveProbe.compatibility !== "unreachable") {
+        await liveProbe.client.close().catch(() => undefined);
+        await stopIndexerDaemonServiceWithLockHeld({
+          dataDir: options.dataDir,
+          walletRootId,
+          shutdownTimeoutMs: options.shutdownTimeoutMs,
+          paths,
+          processId: liveProbe.status?.processId ?? null,
+        });
+      } else if (liveProbe.compatibility !== "unreachable") {
         throw new Error(liveProbe.error ?? "indexer_daemon_protocol_error");
       }
 
-      await mkdir(paths.indexerServiceRoot, { recursive: true });
-      const daemonEntryPath = fileURLToPath(new URL("./indexer-daemon-main.js", import.meta.url));
-      const spawnOptions = serviceLifetime === "ephemeral"
-        ? {
-          stdio: "ignore" as const,
-        }
-        : {
-          detached: true,
-          stdio: "ignore" as const,
-        };
-      const child = spawn(process.execPath, [
-        daemonEntryPath,
-        `--data-dir=${options.dataDir}`,
-        `--database-path=${options.databasePath}`,
-        `--wallet-root-id=${walletRootId}`,
-      ], {
-        ...spawnOptions,
-      });
-      if (serviceLifetime !== "ephemeral") {
-        child.unref();
-      }
-
-      try {
-        await waitForIndexerDaemon(options.dataDir, walletRootId, startupTimeoutMs);
-      } catch (error) {
-        if (child.pid !== undefined) {
-          try {
-            process.kill(child.pid, "SIGTERM");
-          } catch {
-            // ignore shutdown failures while unwinding startup errors
-          }
-        }
-        throw error;
-      }
-
-      return requestBackgroundFollow(createIndexerDaemonClient(paths.indexerDaemonSocketPath, {
-        dataDir: options.dataDir,
-        walletRootId,
-        serviceLifetime,
-        ownership: "started",
-        shutdownTimeoutMs: options.shutdownTimeoutMs,
-      }));
+      return requestBackgroundFollow(await startDaemon());
     } finally {
       await lock.release();
     }
   } catch (error) {
     if (error instanceof FileLockBusyError) {
       await waitForIndexerDaemon(options.dataDir, walletRootId, startupTimeoutMs);
-      return requestBackgroundFollow(createIndexerDaemonClient(paths.indexerDaemonSocketPath, {
-        dataDir: options.dataDir,
-        walletRootId,
-        serviceLifetime,
-        ownership: "attached",
-        shutdownTimeoutMs: options.shutdownTimeoutMs,
-      }));
+      return attachOrStartIndexerDaemon(options);
     }
 
     throw error;
