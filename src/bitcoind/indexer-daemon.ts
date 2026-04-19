@@ -9,6 +9,8 @@ import { writeRuntimeStatusFile } from "../wallet/fs/status-file.js";
 import {
   INDEXER_DAEMON_SCHEMA_VERSION,
   INDEXER_DAEMON_SERVICE_API_VERSION,
+  type BootstrapPhase,
+  type BootstrapProgress,
   type ManagedIndexerDaemonRuntimeIdentity,
   type ManagedIndexerDaemonObservedStatus,
   type ManagedIndexerDaemonStatus,
@@ -60,6 +62,11 @@ export interface IndexerSnapshotHandle {
   lastAppliedAtUnixMs: number | null;
   activeSnapshotCount: number;
   lastError: string | null;
+  backgroundFollowActive: boolean;
+  bootstrapPhase: BootstrapPhase | null;
+  bootstrapProgress: BootstrapProgress | null;
+  cogcoinSyncHeight: number | null;
+  cogcoinSyncTargetHeight: number | null;
   tipHeight: number | null;
   tipHash: string | null;
   openedAtUnixMs: number;
@@ -475,6 +482,11 @@ function buildStatusFromSnapshotHandle(handle: IndexerSnapshotHandle): ManagedIn
     lastAppliedAtUnixMs: handle.lastAppliedAtUnixMs,
     activeSnapshotCount: handle.activeSnapshotCount,
     lastError: handle.lastError,
+    backgroundFollowActive: handle.backgroundFollowActive,
+    bootstrapPhase: handle.bootstrapPhase,
+    bootstrapProgress: handle.bootstrapProgress,
+    cogcoinSyncHeight: handle.cogcoinSyncHeight,
+    cogcoinSyncTargetHeight: handle.cogcoinSyncTargetHeight,
   };
 }
 
@@ -607,7 +619,17 @@ export async function attachOrStartIndexerDaemon(options: {
   startupTimeoutMs?: number;
   shutdownTimeoutMs?: number;
   serviceLifetime?: ManagedIndexerDaemonServiceLifetime;
+  ensureBackgroundFollow?: boolean;
 }): Promise<IndexerDaemonClient> {
+  const requestBackgroundFollow = (client: IndexerDaemonClient): IndexerDaemonClient => {
+    if (options.ensureBackgroundFollow !== true) {
+      return client;
+    }
+
+    // The managed daemon should keep its own follow loop alive in the background.
+    void client.resumeBackgroundFollow().catch(() => undefined);
+    return client;
+  };
   const walletRootId = options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
   const paths = resolveManagedServicePaths(options.dataDir, walletRootId);
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
@@ -615,7 +637,7 @@ export async function attachOrStartIndexerDaemon(options: {
 
   const existingProbe = await probeIndexerDaemonAtSocket(paths.indexerDaemonSocketPath, walletRootId);
   if (existingProbe.compatibility === "compatible" && existingProbe.client !== null) {
-    return existingProbe.client;
+    return requestBackgroundFollow(existingProbe.client);
   }
 
   if (existingProbe.compatibility !== "unreachable") {
@@ -633,7 +655,7 @@ export async function attachOrStartIndexerDaemon(options: {
     try {
       const liveProbe = await probeIndexerDaemonAtSocket(paths.indexerDaemonSocketPath, walletRootId);
       if (liveProbe.compatibility === "compatible" && liveProbe.client !== null) {
-        return liveProbe.client;
+        return requestBackgroundFollow(liveProbe.client);
       }
 
       if (liveProbe.compatibility !== "unreachable") {
@@ -675,26 +697,26 @@ export async function attachOrStartIndexerDaemon(options: {
         throw error;
       }
 
-      return createIndexerDaemonClient(paths.indexerDaemonSocketPath, {
+      return requestBackgroundFollow(createIndexerDaemonClient(paths.indexerDaemonSocketPath, {
         dataDir: options.dataDir,
         walletRootId,
         serviceLifetime,
         ownership: "started",
         shutdownTimeoutMs: options.shutdownTimeoutMs,
-      });
+      }));
     } finally {
       await lock.release();
     }
   } catch (error) {
     if (error instanceof FileLockBusyError) {
       await waitForIndexerDaemon(options.dataDir, walletRootId, startupTimeoutMs);
-      return createIndexerDaemonClient(paths.indexerDaemonSocketPath, {
+      return requestBackgroundFollow(createIndexerDaemonClient(paths.indexerDaemonSocketPath, {
         dataDir: options.dataDir,
         walletRootId,
         serviceLifetime,
         ownership: "attached",
         shutdownTimeoutMs: options.shutdownTimeoutMs,
-      });
+      }));
     }
 
     throw error;

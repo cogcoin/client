@@ -8,20 +8,25 @@ import type {
 import { writeLine } from "./io.js";
 import { clearLockIfOwnedByCurrentProcess } from "../wallet/fs/lock.js";
 
-export function createStopSignalWatcher(
-  signalSource: SignalSource,
-  stderr: WritableLike,
-  client: ManagedClientLike,
-  forceExit: (code: number) => never | void,
-  lockPaths: readonly string[] = [],
-): StopSignalWatcher {
+export function createCloseSignalWatcher(options: {
+  signalSource: SignalSource;
+  stderr: WritableLike;
+  closeable: {
+    close(): Promise<void>;
+  };
+  forceExit: (code: number) => never | void;
+  lockPaths?: readonly string[];
+  firstMessage?: string | null;
+  successMessage?: string | null;
+  failureMessage?: string | null;
+}): StopSignalWatcher {
   let closing = false;
   let resolved = false;
   let onSignal = (): void => {};
 
   const cleanup = (): void => {
-    signalSource.off("SIGINT", onSignal);
-    signalSource.off("SIGTERM", onSignal);
+    options.signalSource.off("SIGINT", onSignal);
+    options.signalSource.off("SIGTERM", onSignal);
   };
 
   const promise = new Promise<number>((resolve) => {
@@ -37,7 +42,7 @@ export function createStopSignalWatcher(
 
     const releaseOwnedLocks = async (): Promise<void> => {
       await Promise.allSettled(
-        [...new Set(lockPaths)].map(async (lockPath) => {
+        [...new Set(options.lockPaths ?? [])].map(async (lockPath) => {
           await clearLockIfOwnedByCurrentProcess(lockPath);
         }),
       );
@@ -45,14 +50,18 @@ export function createStopSignalWatcher(
 
     const onFirstSignal = (): void => {
       closing = true;
-      writeLine(stderr, "Detaching from managed Cogcoin client and resuming background indexer follow...");
-      void client.close().then(
+      if (options.firstMessage !== null && options.firstMessage !== undefined) {
+        writeLine(options.stderr, options.firstMessage);
+      }
+      void options.closeable.close().then(
         async () => {
           await releaseOwnedLocks();
           if (resolved) {
             return;
           }
-          writeLine(stderr, "Detached cleanly; background indexer follow resumed.");
+          if (options.successMessage !== null && options.successMessage !== undefined) {
+            writeLine(options.stderr, options.successMessage);
+          }
           settle(0);
         },
         async () => {
@@ -60,7 +69,9 @@ export function createStopSignalWatcher(
           if (resolved) {
             return;
           }
-          writeLine(stderr, "Detach failed before background indexer follow was confirmed.");
+          if (options.failureMessage !== null && options.failureMessage !== undefined) {
+            writeLine(options.stderr, options.failureMessage);
+          }
           settle(1);
         },
       );
@@ -73,24 +84,43 @@ export function createStopSignalWatcher(
       }
 
       settle(130);
-      if (lockPaths.length === 0) {
-        forceExit(130);
+      if ((options.lockPaths ?? []).length === 0) {
+        options.forceExit(130);
         return;
       }
       void releaseOwnedLocks().finally(() => {
-        forceExit(130);
+        options.forceExit(130);
       });
     };
   });
 
-  signalSource.on("SIGINT", onSignal);
-  signalSource.on("SIGTERM", onSignal);
+  options.signalSource.on("SIGINT", onSignal);
+  options.signalSource.on("SIGTERM", onSignal);
 
   return {
     cleanup,
     isStopping: () => closing,
     promise,
   };
+}
+
+export function createStopSignalWatcher(
+  signalSource: SignalSource,
+  stderr: WritableLike,
+  client: ManagedClientLike,
+  forceExit: (code: number) => never | void,
+  lockPaths: readonly string[] = [],
+): StopSignalWatcher {
+  return createCloseSignalWatcher({
+    signalSource,
+    stderr,
+    closeable: client,
+    forceExit,
+    lockPaths,
+    firstMessage: "Detaching from managed Cogcoin client and resuming background indexer follow...",
+    successMessage: "Detached cleanly; background indexer follow resumed.",
+    failureMessage: "Detach failed before background indexer follow was confirmed.",
+  });
 }
 
 export function createOwnedLockCleanupSignalWatcher(

@@ -5,16 +5,20 @@ import { access, constants, mkdir, readFile, rm } from "node:fs/promises";
 import { loadBundledGenesisParameters, serializeIndexerState } from "@cogcoin/indexer";
 
 import { openManagedBitcoindClientInternal } from "./client.js";
+import { DEFAULT_SNAPSHOT_METADATA } from "./bootstrap.js";
 import { openClient } from "../client.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import { writeRuntimeStatusFile } from "../wallet/fs/status-file.js";
 import { createRpcClient } from "./node.js";
 import { normalizeCogcoinProcessingStartHeight } from "./processing-start-height.js";
+import { createBootstrapProgress } from "./progress/formatting.js";
 import { resolveManagedServicePaths, UNINITIALIZED_WALLET_ROOT_ID } from "./service-paths.js";
 import type { ClientTip } from "../types.js";
 import {
   INDEXER_DAEMON_SCHEMA_VERSION,
   INDEXER_DAEMON_SERVICE_API_VERSION,
+  type BootstrapPhase,
+  type BootstrapProgress,
   type ManagedBitcoindObservedStatus,
   type ManagedBitcoindClient,
   type ManagedBitcoindRuntimeConfig,
@@ -227,6 +231,11 @@ async function main(): Promise<void> {
   let backgroundStore: Awaited<ReturnType<typeof openSqliteStore>> | null = null;
   let backgroundClient: ManagedBitcoindClient | null = null;
   let backgroundResumePromise: Promise<void> | null = null;
+  let backgroundFollowActive = false;
+  let bootstrapPhase: BootstrapPhase = "paused";
+  let bootstrapProgress: BootstrapProgress = createBootstrapProgress("paused", DEFAULT_SNAPSHOT_METADATA);
+  let cogcoinSyncHeight: number | null = null;
+  let cogcoinSyncTargetHeight: number | null = null;
 
   await mkdir(paths.indexerServiceRoot, { recursive: true });
   await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
@@ -304,6 +313,11 @@ async function main(): Promise<void> {
     lastAppliedAtUnixMs,
     activeSnapshotCount: snapshots.size,
     lastError,
+    backgroundFollowActive,
+    bootstrapPhase,
+    bootstrapProgress: { ...bootstrapProgress },
+    cogcoinSyncHeight,
+    cogcoinSyncTargetHeight,
   });
 
   const writeStatus = async (): Promise<ManagedIndexerDaemonStatus> => {
@@ -321,26 +335,72 @@ async function main(): Promise<void> {
       readCoreTipStatus(paths),
       readAppliedTipStatus(databasePath),
     ]);
+    const backgroundStatus = await backgroundClient?.getNodeStatus().catch(() => null) ?? null;
     rpcReachable = coreStatus.rpcReachable;
     coreBestHeight = coreStatus.coreBestHeight;
     coreBestHash = coreStatus.coreBestHash;
     observeAppliedTip(indexedStatus.appliedTip, now);
+    backgroundFollowActive = backgroundClient !== null;
+    bootstrapPhase = backgroundStatus?.bootstrapPhase ?? (backgroundFollowActive ? "follow_tip" : "paused");
+    bootstrapProgress = backgroundStatus?.bootstrapProgress ?? createBootstrapProgress(
+      bootstrapPhase,
+      DEFAULT_SNAPSHOT_METADATA,
+    );
+    cogcoinSyncHeight = backgroundStatus?.cogcoinSyncHeight ?? indexedStatus.appliedTip?.height ?? null;
+    cogcoinSyncTargetHeight = backgroundStatus?.cogcoinSyncTargetHeight ?? coreStatus.coreBestHeight;
 
     if (indexedStatus.schemaMismatch) {
       state = "schema-mismatch";
       lastError = indexedStatus.error;
+      bootstrapPhase = "error";
+      bootstrapProgress = {
+        ...bootstrapProgress,
+        phase: "error",
+        message: indexedStatus.error ?? "Indexer schema mismatch.",
+        lastError: indexedStatus.error,
+        updatedAt: now,
+      };
       return writeStatus();
     }
 
     if (indexedStatus.error !== null) {
       state = "failed";
       lastError = indexedStatus.error;
+      bootstrapPhase = "error";
+      bootstrapProgress = {
+        ...bootstrapProgress,
+        phase: "error",
+        message: indexedStatus.error,
+        lastError: indexedStatus.error,
+        updatedAt: now,
+      };
       return writeStatus();
     }
 
     const leaseState = deriveLeaseState(coreStatus, indexedStatus.appliedTip);
     state = leaseState.state;
     lastError = leaseState.lastError;
+    if (lastError !== null) {
+      bootstrapPhase = leaseState.state === "starting" ? "paused" : "error";
+      bootstrapProgress = {
+        ...bootstrapProgress,
+        phase: bootstrapPhase,
+        message: lastError,
+        lastError,
+        updatedAt: now,
+      };
+    } else if (backgroundStatus === null) {
+      bootstrapPhase = leaseState.state === "synced" ? "follow_tip" : "paused";
+      bootstrapProgress = {
+        ...createBootstrapProgress(bootstrapPhase, DEFAULT_SNAPSHOT_METADATA),
+        blocks: coreStatus.coreBestHeight,
+        headers: coreStatus.coreBestHeight,
+        targetHeight: coreStatus.coreBestHeight,
+        updatedAt: now,
+      };
+      cogcoinSyncHeight = indexedStatus.appliedTip?.height ?? null;
+      cogcoinSyncTargetHeight = coreStatus.coreBestHeight;
+    }
 
     return writeStatus();
   };
@@ -357,6 +417,11 @@ async function main(): Promise<void> {
 
     await client?.close().catch(() => undefined);
     await store?.close().catch(() => undefined);
+    backgroundFollowActive = false;
+    bootstrapPhase = "paused";
+    bootstrapProgress = createBootstrapProgress("paused", DEFAULT_SNAPSHOT_METADATA);
+    cogcoinSyncHeight = appliedTipHeight;
+    cogcoinSyncTargetHeight = coreBestHeight;
   };
 
   const resumeBackgroundFollow = async (): Promise<void> => {
@@ -392,6 +457,7 @@ async function main(): Promise<void> {
           await client.startFollowingTip();
           backgroundStore = store;
           backgroundClient = client;
+          backgroundFollowActive = true;
         } catch (error) {
           await client.close().catch(() => undefined);
           throw error;
@@ -521,6 +587,11 @@ async function main(): Promise<void> {
                 lastAppliedAtUnixMs: leaseStatus.lastAppliedAtUnixMs,
                 activeSnapshotCount: leaseStatus.activeSnapshotCount,
                 lastError: leaseStatus.lastError,
+                backgroundFollowActive: leaseStatus.backgroundFollowActive ?? false,
+                bootstrapPhase: leaseStatus.bootstrapPhase ?? null,
+                bootstrapProgress: leaseStatus.bootstrapProgress ?? null,
+                cogcoinSyncHeight: leaseStatus.cogcoinSyncHeight ?? null,
+                cogcoinSyncTargetHeight: leaseStatus.cogcoinSyncTargetHeight ?? null,
                 tipHeight: snapshot.tipHeight,
                 tipHash: snapshot.tipHash,
                 openedAtUnixMs: snapshot.openedAtUnixMs,

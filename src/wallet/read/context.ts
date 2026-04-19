@@ -695,6 +695,7 @@ export async function openWalletReadContext(options: {
 
     if (probe.compatibility === "compatible") {
       daemonClient = probe.client;
+      void probe.client?.resumeBackgroundFollow().catch(() => undefined);
       observedDaemonStatus = probe.status;
       indexerSource = "probe";
     } else if (probe.compatibility === "unreachable") {
@@ -703,6 +704,7 @@ export async function openWalletReadContext(options: {
         databasePath: options.databasePath,
         walletRootId,
         startupTimeoutMs,
+        ensureBackgroundFollow: true,
       });
     } else {
       observedDaemonStatus = probe.status;

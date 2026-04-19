@@ -76,25 +76,39 @@ function createInitAutoSyncOverrides(options: {
 }) {
   return {
     ensureDirectory: async () => undefined,
-    openSqliteStore: async () => ({
-      close: async () => undefined,
-    }) as never,
     loadRawWalletStateEnvelope: async () => createWalletStateEnvelopeStub(options.walletRootId),
-    openManagedBitcoindClient: async () => ({
-      async syncToTip() {
+    openManagedIndexerMonitor: async () => ({
+      async getStatus() {
         options.onSyncStart?.();
         return {
-          appliedBlocks: 0,
-          rewoundBlocks: 0,
-          endingHeight: null,
-          bestHeight: 0,
-        };
-      },
-      async startFollowingTip() {},
-      async getNodeStatus() {
-        return {
-          indexedTip: null,
-          nodeBestHeight: null,
+          serviceApiVersion: "cogcoin/indexer-ipc/v1",
+          binaryVersion: "0.0.0-test",
+          buildId: null,
+          updatedAtUnixMs: 0,
+          walletRootId: options.walletRootId,
+          daemonInstanceId: "daemon-init-test",
+          schemaVersion: "cogcoin/indexer-db/v1",
+          state: "synced" as const,
+          processId: 1,
+          startedAtUnixMs: 0,
+          heartbeatAtUnixMs: 0,
+          ipcReady: true,
+          rpcReachable: true,
+          coreBestHeight: 0,
+          coreBestHash: "00".repeat(32),
+          appliedTipHeight: 0,
+          appliedTipHash: "00".repeat(32),
+          snapshotSeq: "1",
+          backlogBlocks: 0,
+          reorgDepth: null,
+          lastAppliedAtUnixMs: 0,
+          activeSnapshotCount: 0,
+          lastError: null,
+          backgroundFollowActive: true,
+          bootstrapPhase: "follow_tip" as const,
+          bootstrapProgress: null,
+          cogcoinSyncHeight: 0,
+          cogcoinSyncTargetHeight: 0,
         };
       },
       async close() {},
@@ -155,7 +169,7 @@ test("init text output starts with the welcome art before the existing init cont
   assert.match(rendered, /Funding address: bc1qinitwelcome\n\nQuickstart: /);
   assert.match(
     rendered,
-    /Quickstart: .*?\nApplied blocks: 0\nRewound blocks: 0\nIndexed ending height: none\nNode best height: 0\n?$/s,
+    /Quickstart: .*?\nCOG Balance\nWallet state: uninitialized\n/s,
   );
   assert.doesNotMatch(rendered, /Next step:/);
 });

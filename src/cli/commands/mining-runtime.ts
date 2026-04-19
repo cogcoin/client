@@ -1,8 +1,12 @@
 import { dirname } from "node:path";
 
-import { FileLockBusyError, acquireFileLock } from "../../wallet/fs/lock.js";
+import { DEFAULT_SNAPSHOT_METADATA, resolveBootstrapPathsForTesting } from "../../bitcoind/bootstrap.js";
 import { resolveWalletRootIdFromLocalArtifacts } from "../../wallet/root-resolution.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
+import {
+  ManagedIndexerProgressObserver,
+  pollManagedIndexerUntilCaughtUp,
+} from "../managed-indexer-observer.js";
 import {
   buildMineStartData,
   buildMineStopData,
@@ -26,7 +30,7 @@ import {
   formatNextStepLines,
   getMineStopNextSteps,
 } from "../workflow-hints.js";
-import { createStopSignalWatcher, waitForCompletionOrStop } from "../signals.js";
+import { createCloseSignalWatcher, waitForCompletionOrStop } from "../signals.js";
 import { createSyncProgressReporter } from "../sync-progress.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 
@@ -65,95 +69,71 @@ async function syncManagedMiningReadiness(options: {
   runtimePaths: ReturnType<RequiredCliRunnerContext["resolveWalletRuntimePaths"]>;
 }): Promise<number | null> {
   const ttyProgressActive = usesTtyProgress(options.parsed.progressOutput, options.context.stderr);
-  let controlLock: Awaited<ReturnType<typeof acquireFileLock>> | null = null;
-  let store: Awaited<ReturnType<RequiredCliRunnerContext["openSqliteStore"]>> | null = null;
-  let storeOwned = true;
-  let client: Awaited<ReturnType<RequiredCliRunnerContext["openManagedBitcoindClient"]>> | null = null;
-  let clientClosed = false;
+  let monitor: Awaited<ReturnType<RequiredCliRunnerContext["openManagedIndexerMonitor"]>> | null = null;
+  let observer: ManagedIndexerProgressObserver | null = null;
+
+  const walletRoot = await resolveWalletRootIdFromLocalArtifacts({
+    paths: options.runtimePaths,
+    provider: options.provider,
+    loadRawWalletStateEnvelope: options.context.loadRawWalletStateEnvelope,
+  });
+
+  await options.context.ensureDirectory(dirname(options.databasePath));
+  monitor = await options.context.openManagedIndexerMonitor({
+    dataDir: options.dataDir,
+    databasePath: options.databasePath,
+    walletRootId: walletRoot.walletRootId,
+  });
+  observer = new ManagedIndexerProgressObserver({
+    quoteStatePath: resolveBootstrapPathsForTesting(
+      options.dataDir,
+      DEFAULT_SNAPSHOT_METADATA,
+    ).quoteStatePath,
+    stream: options.context.stderr,
+    progressOutput: options.parsed.progressOutput,
+    onProgress: ttyProgressActive ? undefined : createSyncProgressReporter({
+      progressOutput: options.parsed.progressOutput,
+      write: (line) => {
+        writeLine(options.context.stderr, line);
+      },
+    }),
+  });
+  const abortController = new AbortController();
+  const stopWatcher = createCloseSignalWatcher({
+    signalSource: options.context.signalSource,
+    stderr: options.context.stderr,
+    closeable: {
+      close: async () => {
+        abortController.abort(new Error("managed_indexer_preflight_aborted"));
+        await observer?.close().catch(() => undefined);
+        await monitor?.close().catch(() => undefined);
+      },
+    },
+    forceExit: options.context.forceExit,
+    firstMessage: "Stopping managed mining readiness observation...",
+    successMessage: "Stopped observing managed mining readiness.",
+    failureMessage: "Managed mining readiness observation cleanup failed.",
+  });
 
   try {
-    const walletRoot = await resolveWalletRootIdFromLocalArtifacts({
-      paths: options.runtimePaths,
-      provider: options.provider,
-      loadRawWalletStateEnvelope: options.context.loadRawWalletStateEnvelope,
-    });
-
-    try {
-      controlLock = await acquireFileLock(options.runtimePaths.walletControlLockPath, {
-        purpose: "managed-sync",
-        walletRootId: walletRoot.walletRootId,
-      });
-    } catch (error) {
-      if (error instanceof FileLockBusyError) {
-        throw new Error("wallet_control_lock_busy");
-      }
-
-      throw error;
-    }
-
-    await options.context.ensureDirectory(dirname(options.databasePath));
-    store = await options.context.openSqliteStore({ filename: options.databasePath });
-    client = await options.context.openManagedBitcoindClient({
-      store,
-      databasePath: options.databasePath,
-      dataDir: options.dataDir,
-      walletRootId: walletRoot.walletRootId,
-      progressOutput: options.parsed.progressOutput,
-      onProgress: ttyProgressActive ? undefined : createSyncProgressReporter({
-        progressOutput: options.parsed.progressOutput,
-        write: (line) => {
-          writeLine(options.context.stderr, line);
-        },
+    const syncOutcome = await waitForCompletionOrStop(
+      pollManagedIndexerUntilCaughtUp({
+        monitor,
+        observer,
+        signal: abortController.signal,
       }),
-    });
-    storeOwned = false;
-    const stopWatcher = createStopSignalWatcher(
-      options.context.signalSource,
-      options.context.stderr,
-      client,
-      options.context.forceExit,
-      [options.runtimePaths.walletControlLockPath],
+      stopWatcher,
     );
 
-    try {
-      const syncOutcome = await waitForCompletionOrStop(client.syncToTip(), stopWatcher);
-
-      if (syncOutcome.kind === "stopped") {
-        return syncOutcome.code;
-      }
-
-      const result = syncOutcome.value;
-
-      if (result.endingHeight !== null && result.endingHeight === result.bestHeight) {
-        stopWatcher.cleanup();
-        const detachPromise = typeof client.detachToBackgroundFollow === "function"
-          ? client.detachToBackgroundFollow()
-          : Promise.resolve();
-
-        try {
-          await detachPromise;
-          await client.close();
-          clientClosed = true;
-          writeLine(options.context.stderr, "Detached cleanly; background indexer follow resumed.");
-          return null;
-        } catch {
-          writeLine(options.context.stderr, "Detach failed before background indexer follow was confirmed.");
-          return 1;
-        }
-      }
-
-      throw new Error("Managed sync did not reach the current Bitcoin tip.");
-    } finally {
-      stopWatcher.cleanup();
-      if (!clientClosed) {
-        await client.close();
-      }
+    if (syncOutcome.kind === "stopped") {
+      return syncOutcome.code;
     }
+
+    return null;
   } finally {
-    if (storeOwned && store !== null) {
-      await store.close().catch(() => undefined);
-    }
-    await controlLock?.release().catch(() => undefined);
+    stopWatcher.cleanup();
+    await observer?.close().catch(() => undefined);
+    await monitor?.close().catch(() => undefined);
   }
 }
 

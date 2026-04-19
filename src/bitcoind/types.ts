@@ -300,6 +300,11 @@ export interface ManagedIndexerDaemonStatus {
   lastAppliedAtUnixMs: number | null;
   activeSnapshotCount: number;
   lastError: string | null;
+  backgroundFollowActive?: boolean;
+  bootstrapPhase?: BootstrapPhase | null;
+  bootstrapProgress?: BootstrapProgress | null;
+  cogcoinSyncHeight?: number | null;
+  cogcoinSyncTargetHeight?: number | null;
 }
 
 export interface ManagedIndexerDaemonObservedStatus extends Omit<ManagedIndexerDaemonStatus, "serviceApiVersion" | "schemaVersion"> {

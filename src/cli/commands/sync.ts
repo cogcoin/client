@@ -1,13 +1,17 @@
 import { dirname } from "node:path";
 
+import { DEFAULT_SNAPSHOT_METADATA, resolveBootstrapPathsForTesting } from "../../bitcoind/bootstrap.js";
 import { formatManagedSyncErrorMessage } from "../../bitcoind/errors.js";
-import { FileLockBusyError, acquireFileLock } from "../../wallet/fs/lock.js";
 import { resolveWalletRootIdFromLocalArtifacts } from "../../wallet/root-resolution.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
+import {
+  ManagedIndexerProgressObserver,
+  pollManagedIndexerUntilCaughtUp,
+} from "../managed-indexer-observer.js";
 import { usesTtyProgress, writeLine } from "../io.js";
-import { classifyCliError, formatCliTextError } from "../output.js";
+import { classifyCliError } from "../output.js";
 import { createTerminalPrompter } from "../prompt.js";
-import { createStopSignalWatcher, waitForCompletionOrStop } from "../signals.js";
+import { createCloseSignalWatcher, waitForCompletionOrStop } from "../signals.js";
 import { createSyncProgressReporter } from "../sync-progress.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import { formatBalanceReport } from "../wallet-format.js";
@@ -26,7 +30,6 @@ async function writePostSyncBalanceReport(options: {
     dataDir: options.dataDir,
     databasePath: options.databasePath,
     secretProvider: provider,
-    walletControlLockHeld: true,
     paths: options.runtimePaths,
   });
 
@@ -45,11 +48,8 @@ export async function runSyncCommand(
   const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
   const runtimePaths = context.resolveWalletRuntimePaths();
   const ttyProgressActive = usesTtyProgress(parsed.progressOutput, context.stderr);
-  let controlLock: Awaited<ReturnType<typeof acquireFileLock>> | null = null;
-  let store: Awaited<ReturnType<typeof context.openSqliteStore>> | null = null;
-  let storeOwned = true;
-  let client: Awaited<ReturnType<typeof context.openManagedBitcoindClient>> | null = null;
-  let clientClosed = false;
+  let monitor: Awaited<ReturnType<typeof context.openManagedIndexerMonitor>> | null = null;
+  let observer: ManagedIndexerProgressObserver | null = null;
 
   try {
     const walletRoot = await resolveWalletRootIdFromLocalArtifacts({
@@ -58,27 +58,15 @@ export async function runSyncCommand(
       loadRawWalletStateEnvelope: context.loadRawWalletStateEnvelope,
     });
 
-    try {
-      controlLock = await acquireFileLock(runtimePaths.walletControlLockPath, {
-        purpose: "managed-sync",
-        walletRootId: walletRoot.walletRootId,
-      });
-    } catch (error) {
-      if (error instanceof FileLockBusyError) {
-        throw new Error("wallet_control_lock_busy");
-      }
-
-      throw error;
-    }
-
     await context.ensureDirectory(dirname(dbPath));
-    store = await context.openSqliteStore({ filename: dbPath });
-
-    client = await context.openManagedBitcoindClient({
-      store,
-      databasePath: dbPath,
+    monitor = await context.openManagedIndexerMonitor({
       dataDir,
+      databasePath: dbPath,
       walletRootId: walletRoot.walletRootId,
+    });
+    observer = new ManagedIndexerProgressObserver({
+      quoteStatePath: resolveBootstrapPathsForTesting(dataDir, DEFAULT_SNAPSHOT_METADATA).quoteStatePath,
+      stream: context.stderr,
       progressOutput: parsed.progressOutput,
       onProgress: ttyProgressActive ? undefined : createSyncProgressReporter({
         progressOutput: parsed.progressOutput,
@@ -87,98 +75,56 @@ export async function runSyncCommand(
         },
       }),
     });
-    storeOwned = false;
-    const stopWatcher = createStopSignalWatcher(
-      context.signalSource,
-      context.stderr,
-      client,
-      context.forceExit,
-      [runtimePaths.walletControlLockPath],
-    );
+    const abortController = new AbortController();
+    const stopWatcher = createCloseSignalWatcher({
+      signalSource: context.signalSource,
+      stderr: context.stderr,
+      closeable: {
+        close: async () => {
+          abortController.abort(new Error("managed_indexer_observer_aborted"));
+          await observer?.close().catch(() => undefined);
+          await monitor?.close().catch(() => undefined);
+        },
+      },
+      forceExit: context.forceExit,
+      firstMessage: "Stopping managed Cogcoin sync observation...",
+      successMessage: "Stopped observing managed Cogcoin sync.",
+      failureMessage: "Managed Cogcoin sync observation cleanup failed.",
+    });
 
     try {
-      const syncOutcome = await waitForCompletionOrStop(client.syncToTip(), stopWatcher);
+      const syncOutcome = await waitForCompletionOrStop(
+        pollManagedIndexerUntilCaughtUp({
+          monitor,
+          observer,
+          signal: abortController.signal,
+        }),
+        stopWatcher,
+      );
 
       if (syncOutcome.kind === "stopped") {
         return syncOutcome.code;
       }
 
-      const result = syncOutcome.value;
-
-      if (result.endingHeight !== null && result.endingHeight === result.bestHeight) {
-        stopWatcher.cleanup();
-
-        const detachPromise = typeof client.detachToBackgroundFollow === "function"
-          ? client.detachToBackgroundFollow()
-          : Promise.resolve();
-
-        if (typeof client.playSyncCompletionScene === "function") {
-          await client.playSyncCompletionScene().catch(() => undefined);
-        }
-
-        try {
-          await detachPromise;
-          await client.close();
-          clientClosed = true;
-          writeLine(context.stderr, "Detached cleanly; background indexer follow resumed.");
-          await writePostSyncBalanceReport({
-            context,
-            dataDir,
-            databasePath: dbPath,
-            runtimePaths,
-          }).catch(() => undefined);
-          return 0;
-        } catch {
-          writeLine(context.stderr, "Detach failed before background indexer follow was confirmed.");
-          return 1;
-        }
+      if (ttyProgressActive) {
+        await observer.playCompletionScene().catch(() => undefined);
       }
 
-      if (typeof client.playSyncCompletionScene === "function") {
-        const completionOutcome = await waitForCompletionOrStop(
-          client.playSyncCompletionScene().catch(() => undefined),
-          stopWatcher,
-        );
-
-        if (completionOutcome.kind === "stopped") {
-          return completionOutcome.code;
-        }
-      }
-
-      writeLine(context.stdout, `Applied blocks: ${result.appliedBlocks}`);
-      writeLine(context.stdout, `Rewound blocks: ${result.rewoundBlocks}`);
-      writeLine(context.stdout, `Indexed ending height: ${result.endingHeight ?? "none"}`);
-      writeLine(context.stdout, `Node best height: ${result.bestHeight}`);
+      await writePostSyncBalanceReport({
+        context,
+        dataDir,
+        databasePath: dbPath,
+        runtimePaths,
+      }).catch(() => undefined);
       return 0;
     } finally {
       stopWatcher.cleanup();
-      if (!clientClosed) {
-        await client.close();
-      }
+      await observer?.close().catch(() => undefined);
+      await monitor?.close().catch(() => undefined);
     }
   } catch (error) {
-    const classified = classifyCliError(error);
-
-    if (classified.errorCode === "wallet_control_lock_busy") {
-      const formatted = formatCliTextError(error);
-
-      if (formatted !== null) {
-        for (const line of formatted) {
-          writeLine(context.stderr, line);
-        }
-      } else {
-        writeLine(context.stderr, classified.message);
-      }
-    } else {
-      const message = formatManagedSyncErrorMessage(error instanceof Error ? error.message : String(error));
-      writeLine(context.stderr, `sync failed: ${message}`);
-    }
-
-    if (storeOwned && store !== null) {
-      await store.close().catch(() => undefined);
-    }
-    return classified.exitCode;
-  } finally {
-    await controlLock?.release().catch(() => undefined);
+    const message = formatManagedSyncErrorMessage(error instanceof Error ? error.message : String(error));
+    writeLine(context.stderr, `sync failed: ${message}`);
+    return classifyCliError(error).exitCode;
   }
 }

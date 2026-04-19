@@ -9,13 +9,11 @@ import {
   createMutationSuccessEnvelope,
   createPreviewSuccessEnvelope,
   describeCanonicalCommand,
-  formatCliTextError,
   resolvePreviewJsonSchema,
   resolveStableMiningControlJsonSchema,
 } from "../src/cli/output.js";
 import { parseCliArgs } from "../src/cli/parse.js";
 import { buildMineStartPreviewData } from "../src/cli/preview-json.js";
-import { acquireFileLock } from "../src/wallet/fs/lock.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
@@ -115,47 +113,64 @@ function createWalletRootEnvelope(walletRootId = "wallet-root") {
   } as any;
 }
 
-function createCompletedSyncClient(events: string[], onProgress?: (event: any) => void) {
+function createObservedIndexerStatus(overrides: Partial<Record<string, unknown>> = {}) {
   return {
-    async syncToTip() {
-      events.push("sync");
-      onProgress?.({
-        phase: "bitcoin_sync",
-        progress: {
-          message: "Bitcoin sync is catching up.",
-          percent: 50,
-          downloadedBytes: 0,
-          totalBytes: 0,
-          bytesPerSecond: null,
-          etaSeconds: null,
-          blocks: 10,
-          headers: 20,
-          targetHeight: 20,
-        },
-      });
-      return {
-        appliedBlocks: 4,
-        rewoundBlocks: 0,
-        endingHeight: 10,
-        bestHeight: 10,
-      };
+    serviceApiVersion: "cogcoin/indexer-ipc/v1",
+    binaryVersion: "0.0.0-test",
+    buildId: null,
+    updatedAtUnixMs: Date.now(),
+    walletRootId: "wallet-root",
+    daemonInstanceId: "daemon-1",
+    schemaVersion: "cogcoin/indexer-db/v1",
+    state: "synced",
+    processId: 1234,
+    startedAtUnixMs: Date.now(),
+    heartbeatAtUnixMs: Date.now(),
+    ipcReady: true,
+    rpcReachable: true,
+    coreBestHeight: 10,
+    coreBestHash: "00".repeat(32),
+    appliedTipHeight: 10,
+    appliedTipHash: "00".repeat(32),
+    snapshotSeq: "1",
+    backlogBlocks: 0,
+    reorgDepth: null,
+    lastAppliedAtUnixMs: Date.now(),
+    activeSnapshotCount: 0,
+    lastError: null,
+    backgroundFollowActive: true,
+    bootstrapPhase: "bitcoin_sync",
+    bootstrapProgress: {
+      phase: "bitcoin_sync",
+      message: "Bitcoin sync is catching up.",
+      resumed: false,
+      downloadedBytes: 0,
+      totalBytes: 0,
+      percent: 50,
+      bytesPerSecond: null,
+      etaSeconds: null,
+      headers: 20,
+      blocks: 10,
+      targetHeight: 20,
+      baseHeight: null,
+      tipHashHex: null,
+      lastError: null,
+      updatedAt: Date.now(),
     },
-    async detachToBackgroundFollow() {
-      events.push("detach");
-    },
-    async startFollowingTip() {},
-    async getNodeStatus() {
-      return {
-        indexedTip: {
-          height: 10,
-          blockHashHex: "00".repeat(32),
-          stateHashHex: null,
-        },
-        nodeBestHeight: 10,
-      };
+    cogcoinSyncHeight: 10,
+    cogcoinSyncTargetHeight: 10,
+    ...overrides,
+  } as any;
+}
+
+function createCompletedSyncMonitor(events: string[]) {
+  return {
+    async getStatus() {
+      events.push("status");
+      return createObservedIndexerStatus();
     },
     async close() {
-      events.push("close-client");
+      events.push("close-monitor");
     },
   };
 }
@@ -190,18 +205,7 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
       return true;
     },
     loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
-    openSqliteStore: async () => {
-      events.push("open-store");
-      return {
-        async close() {
-          events.push("close-store");
-        },
-      } as any;
-    },
-    openManagedBitcoindClient: async () => {
-      events.push("open-client");
-      return createCompletedSyncClient(events) as any;
-    },
+    openManagedIndexerMonitor: async () => createCompletedSyncMonitor(events) as any,
     runForegroundMining: async (options) => {
       runOptions = {
         dataDir: options.dataDir,
@@ -219,14 +223,11 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
 
   assert.equal(exitCode, 0);
   assert.equal(stdout.read(), "");
-  assert.match(stderr.read(), /Detached cleanly; background indexer follow resumed\./);
+  assert.match(stderr.read(), /Bitcoin sync is catching up\./);
   assert.deepEqual(events, [
     "setup",
-    "open-store",
-    "open-client",
-    "sync",
-    "detach",
-    "close-client",
+    "status",
+    "close-monitor",
     "run",
   ]);
   assert.notEqual(runOptions, null);
@@ -274,18 +275,7 @@ test("mine start text ensures provider setup, syncs managed services, then start
       return true;
     },
     loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
-    openSqliteStore: async () => {
-      events.push("open-store");
-      return {
-        async close() {
-          events.push("close-store");
-        },
-      } as any;
-    },
-    openManagedBitcoindClient: async () => {
-      events.push("open-client");
-      return createCompletedSyncClient(events) as any;
-    },
+    openManagedIndexerMonitor: async () => createCompletedSyncMonitor(events) as any,
     startBackgroundMining: async (options) => {
       startOptions = {
         dataDir: options.dataDir,
@@ -306,14 +296,11 @@ test("mine start text ensures provider setup, syncs managed services, then start
 
   assert.equal(exitCode, 0);
   assert.equal(stdout.read(), "Started background mining.\nWorker pid: 4242\n");
-  assert.match(stderr.read(), /Detached cleanly; background indexer follow resumed\./);
+  assert.match(stderr.read(), /Bitcoin sync is catching up\./);
   assert.deepEqual(events, [
     "setup",
-    "open-store",
-    "open-client",
-    "sync",
-    "detach",
-    "close-client",
+    "status",
+    "close-monitor",
     "start",
   ]);
   assert.notEqual(startOptions, null);
@@ -351,10 +338,7 @@ test("mine start JSON output stays on stdout while sync progress goes to stderr"
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => true,
     loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
-    openSqliteStore: async () => ({
-      async close() {},
-    }) as any,
-    openManagedBitcoindClient: async (options) => createCompletedSyncClient([], options.onProgress) as any,
+    openManagedIndexerMonitor: async () => createCompletedSyncMonitor([]) as any,
     startBackgroundMining: async () => result,
   });
 
@@ -362,7 +346,6 @@ test("mine start JSON output stays on stdout while sync progress goes to stderr"
 
   assert.equal(exitCode, 0);
   assert.match(stderr.read(), /Bitcoin sync is catching up\./);
-  assert.match(stderr.read(), /Detached cleanly; background indexer follow resumed\./);
   assertStableJsonEnvelope(
     stdout.read(),
     createMutationSuccessEnvelope(
@@ -403,10 +386,7 @@ test("mine start preview JSON output stays on stdout while sync progress goes to
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => true,
     loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
-    openSqliteStore: async () => ({
-      async close() {},
-    }) as any,
-    openManagedBitcoindClient: async (options) => createCompletedSyncClient([], options.onProgress) as any,
+    openManagedIndexerMonitor: async () => createCompletedSyncMonitor([]) as any,
     startBackgroundMining: async () => result,
   });
 
@@ -414,7 +394,6 @@ test("mine start preview JSON output stays on stdout while sync progress goes to
 
   assert.equal(exitCode, 0);
   assert.match(stderr.read(), /Bitcoin sync is catching up\./);
-  assert.match(stderr.read(), /Detached cleanly; background indexer follow resumed\./);
   assertStableJsonEnvelope(
     stdout.read(),
     createPreviewSuccessEnvelope(
@@ -445,19 +424,9 @@ test("mine reports a handled error and skips foreground mining when sync preflig
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => true,
     loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
-    openSqliteStore: async () => ({
-      async close() {},
-    }) as any,
-    openManagedBitcoindClient: async () => ({
-      async syncToTip() {
+    openManagedIndexerMonitor: async () => ({
+      async getStatus() {
         throw new Error("managed_bitcoind_protocol_error");
-      },
-      async startFollowingTip() {},
-      async getNodeStatus() {
-        return {
-          indexedTip: null,
-          nodeBestHeight: null,
-        };
       },
       async close() {},
     }) as any,
@@ -492,19 +461,9 @@ test("mine start reports a handled error and skips background mining when sync p
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => true,
     loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
-    openSqliteStore: async () => ({
-      async close() {},
-    }) as any,
-    openManagedBitcoindClient: async () => ({
-      async syncToTip() {
+    openManagedIndexerMonitor: async () => ({
+      async getStatus() {
         throw new Error("indexer_daemon_protocol_error");
-      },
-      async startFollowingTip() {},
-      async getNodeStatus() {
-        return {
-          indexedTip: null,
-          nodeBestHeight: null,
-        };
       },
       async close() {},
     }) as any,
@@ -525,15 +484,10 @@ test("mine start reports a handled error and skips background mining when sync p
   assert.ok(stderr.read().length > 0);
 });
 
-test("mine reports the existing wallet-control-lock error when sync preflight is busy", async (t) => {
+test("mine preflight uses the managed indexer monitor instead of the foreground managed client", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
-  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-lock-busy"));
-  const runtimePaths = resolvePaths(null);
-  const heldLock = await acquireFileLock(runtimePaths.walletControlLockPath, {
-    purpose: "test-lock-holder",
-    walletRootId: "wallet-root",
-  });
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-monitor-only"));
   let runCalls = 0;
   const context = createDefaultContext({
     stdout: stdout.stream,
@@ -546,22 +500,20 @@ test("mine reports the existing wallet-control-lock error when sync preflight is
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => true,
     loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
+    openManagedBitcoindClient: async () => {
+      throw new Error("foreground_writer_should_not_open");
+    },
+    openManagedIndexerMonitor: async () => createCompletedSyncMonitor([]) as any,
     runForegroundMining: async () => {
       runCalls += 1;
     },
   });
 
-  try {
-    const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine"]), context);
-    const expected = (formatCliTextError(new Error("wallet_control_lock_busy")) ?? []).join("\n");
+  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine"]), context);
 
-    assert.notEqual(exitCode, 0);
-    assert.equal(stdout.read(), "");
-    assert.equal(runCalls, 0);
-    assert.match(stderr.read(), new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  } finally {
-    await heldLock.release();
-  }
+  assert.equal(exitCode, 0);
+  assert.equal(stdout.read(), "");
+  assert.equal(runCalls, 1);
 });
 
 test("mine interrupt during sync preflight exits before foreground mining starts", async (t) => {
@@ -581,22 +533,12 @@ test("mine interrupt during sync preflight exits before foreground mining starts
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => true,
     loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
-    openSqliteStore: async () => ({
-      async close() {},
-    }) as any,
-    openManagedBitcoindClient: async () => ({
-      async syncToTip() {
+    openManagedIndexerMonitor: async () => ({
+      async getStatus() {
         queueMicrotask(() => {
           signalSource.emit("SIGINT");
         });
         return await new Promise<never>(() => undefined);
-      },
-      async startFollowingTip() {},
-      async getNodeStatus() {
-        return {
-          indexedTip: null,
-          nodeBestHeight: null,
-        };
       },
       async close() {},
     }) as any,
@@ -610,6 +552,6 @@ test("mine interrupt during sync preflight exits before foreground mining starts
   assert.equal(exitCode, 0);
   assert.equal(stdout.read(), "");
   assert.equal(runCalls, 0);
-  assert.match(stderr.read(), /Detaching from managed Cogcoin client and resuming background indexer follow/);
-  assert.match(stderr.read(), /Detached cleanly; background indexer follow resumed\./);
+  assert.match(stderr.read(), /Stopping managed mining readiness observation/);
+  assert.match(stderr.read(), /Stopped observing managed mining readiness\./);
 });

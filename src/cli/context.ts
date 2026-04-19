@@ -19,6 +19,7 @@ import {
   resolveDefaultUpdateCheckStatePathForTesting,
 } from "../app-paths.js";
 import { openManagedBitcoindClient } from "../bitcoind/index.js";
+import { openManagedIndexerMonitor } from "../bitcoind/indexer-monitor.js";
 import { inspectPassiveClientStatus } from "../passive-status.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import {
@@ -153,6 +154,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     runGlobalClientUpdateInstall: overrides.runGlobalClientUpdateInstall ?? runGlobalClientUpdateInstall,
     openSqliteStore: overrides.openSqliteStore ?? openSqliteStore,
     openManagedBitcoindClient: overrides.openManagedBitcoindClient ?? openManagedBitcoindClient,
+    openManagedIndexerMonitor: overrides.openManagedIndexerMonitor ?? openManagedIndexerMonitor,
     inspectPassiveClientStatus: overrides.inspectPassiveClientStatus ?? inspectPassiveClientStatus,
     openWalletReadContext: overrides.openWalletReadContext ?? openWalletReadContext,
     initializeWallet: overrides.initializeWallet ?? initializeWallet,

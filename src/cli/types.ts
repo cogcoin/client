@@ -1,5 +1,6 @@
 import type { inspectPassiveClientStatus } from "../passive-status.js";
 import { openManagedBitcoindClient } from "../bitcoind/index.js";
+import type { ManagedIndexerMonitor, openManagedIndexerMonitor } from "../bitcoind/indexer-monitor.js";
 import { createRpcClient } from "../bitcoind/node.js";
 import type { ManagedBitcoindProgressEvent } from "../bitcoind/types.js";
 import {
@@ -221,6 +222,8 @@ export interface ManagedClientLike {
   close(): Promise<void>;
 }
 
+export interface ManagedIndexerMonitorLike extends ManagedIndexerMonitor {}
+
 export interface CliRunnerContext {
   stdout?: WritableLike;
   stderr?: WritableLike;
@@ -248,6 +251,7 @@ export interface CliRunnerContext {
       nextArchiveEndHeight: number;
     }) => Promise<boolean>;
   }) => Promise<ManagedClientLike>;
+  openManagedIndexerMonitor?: typeof openManagedIndexerMonitor;
   attachManagedBitcoindService?: typeof attachOrStartManagedBitcoindService;
   probeManagedBitcoindService?: typeof probeManagedBitcoindService;
   stopManagedBitcoindService?: typeof stopManagedBitcoindService;
