@@ -65,6 +65,25 @@ function writeSetupUnlockGuidance(stdout: RequiredCliRunnerContext["stdout"]): v
   }
 }
 
+function writeWelcomeArtBlock(stdout: RequiredCliRunnerContext["stdout"]): void {
+  writeLine(stdout, "");
+  writeLine(stdout, loadWelcomeArtText());
+  writeLine(stdout, "");
+}
+
+function assertInitTextPreflight(options: {
+  prompter: ReturnType<typeof createCommandPrompter>;
+  runtimePaths: ReturnType<RequiredCliRunnerContext["resolveWalletRuntimePaths"]>;
+}): void {
+  if (!options.prompter.isInteractive) {
+    throw new Error("wallet_init_requires_tty");
+  }
+
+  if (options.runtimePaths.selectedSeedName !== "main") {
+    throw new Error("wallet_init_seed_not_supported");
+  }
+}
+
 function getResetNextSteps(result: WalletResetResult): string[] {
   return result.walletAction === "deleted" || result.walletAction === "not-present"
     ? ["Run `cogcoin init` to create a new wallet."]
@@ -276,6 +295,13 @@ export async function runWalletAdminCommand(
       if (parsed.command === "init" || parsed.command === "wallet-init") {
         const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         const prompter = createCommandPrompter(parsed, context);
+        if (parsed.outputMode === "text") {
+          assertInitTextPreflight({
+            prompter,
+            runtimePaths,
+          });
+          writeWelcomeArtBlock(context.stdout);
+        }
         const interactiveProvider = withInteractiveWalletSecretProvider(provider, prompter);
         const result = await context.initializeWallet({
           dataDir,
@@ -297,9 +323,7 @@ export async function runWalletAdminCommand(
           ));
           return 0;
         }
-        writeLine(context.stdout, "");
-        writeLine(context.stdout, loadWelcomeArtText());
-        writeLine(context.stdout, "");
+        writeWelcomeArtBlock(context.stdout);
         writeLine(
           context.stdout,
           result.walletAction === "already-initialized"

@@ -10,7 +10,7 @@ import {
 import { renderFollowFrameForTesting } from "../src/bitcoind/progress/follow-scene.js";
 import type { FollowSceneRenderOptions } from "../src/bitcoind/progress/tty-renderer.js";
 import type { MiningRuntimeStatusV1 } from "../src/wallet/mining/types.js";
-import type { MiningFollowVisualizerState } from "../src/wallet/mining/visualizer.js";
+import type { MiningFollowVisualizerState, MiningSentenceBoardEntry } from "../src/wallet/mining/visualizer.js";
 
 interface FakeTimer {
   callback: () => void;
@@ -203,6 +203,20 @@ function createUiState(
   return {
     ...createEmptyMiningFollowVisualizerState(),
     ...partial,
+  };
+}
+
+function createBoardEntry(
+  rank: number,
+  domainName: string,
+  sentence: string,
+  requiredWords: readonly string[] = [],
+): MiningSentenceBoardEntry {
+  return {
+    rank,
+    domainName,
+    sentence,
+    requiredWords,
   };
 }
 
@@ -416,8 +430,8 @@ test("mining follow visualizer renders the current mined block board when settle
     balanceSats: 42n,
     settledBlockHeight: 100,
     settledBoardEntries: [
-      { rank: 1, domainName: "alpha", sentence: "alpha sentence" },
-      { rank: 2, domainName: "beta", sentence: "beta sentence" },
+      createBoardEntry(1, "alpha", "alpha sentence"),
+      createBoardEntry(2, "beta", "beta sentence"),
     ],
     provisionalRequiredWords: ["under", "tree", "monkey", "youth", "basket"],
     provisionalEntry: {
@@ -436,15 +450,110 @@ test("mining follow visualizer renders the current mined block board when settle
       "✎ Indexed Block #100 Sentences ✎",
       "",
       "1. @alpha: alpha sentence",
+      "",
       "2. @beta: beta sentence",
+      "",
       "3.",
+      "",
       "4.",
+      "",
       "5.",
+      "",
       "----------",
       "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
       "@local: local sentence",
+      "",
     ],
   });
+});
+
+test("mining follow visualizer uppercases exact required-word matches without touching partial matches", () => {
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot(), createUiState({
+    settledBlockHeight: 100,
+    settledBoardEntries: [
+      createBoardEntry(1, "alpha", "under tree trees treetop youth, basket.", ["under", "tree", "youth", "basket"]),
+    ],
+    provisionalRequiredWords: ["monkey", "under", "tree"],
+    provisionalEntry: {
+      domainName: "local",
+      sentence: "monkey under tree trees.",
+    },
+  }));
+  visualizer.close();
+
+  assert.equal(capturedOptions?.extraLines?.[2], "1. @alpha: UNDER TREE trees treetop YOUTH, BASKET.");
+  assert.equal(capturedOptions?.extraLines?.[3], "");
+  assert.equal(capturedOptions?.extraLines?.[14], "@local: MONKEY UNDER TREE trees.");
+  assert.equal(capturedOptions?.extraLines?.[15], "");
+});
+
+test("mining follow visualizer wraps and ellipsizes sentence slots to two 80-column lines", () => {
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot(), createUiState({
+    settledBlockHeight: 100,
+    settledBoardEntries: [
+      createBoardEntry(
+        1,
+        "alpha",
+        "under tree monkey youth basket raven orchard lantern window harbor candle feather velvet thunder meadow sunrise river canyon marble silver lantern window harbor candle feather velvet thunder meadow sunrise river canyon marble silver.",
+        ["under", "tree", "monkey", "youth", "basket"],
+      ),
+    ],
+  }));
+  visualizer.close();
+
+  const firstLine = capturedOptions?.extraLines?.[2] ?? "";
+  const secondLine = capturedOptions?.extraLines?.[3] ?? "";
+  const indent = " ".repeat("1. @alpha: ".length);
+
+  assert.ok(firstLine.length <= 80);
+  assert.ok(secondLine.length <= 80);
+  assert.ok(firstLine.includes("UNDER TREE MONKEY YOUTH BASKET"));
+  assert.ok(secondLine.startsWith(indent));
+  assert.ok(secondLine.endsWith("…"));
 });
 
 test("mining follow visualizer keeps the raw tip rail while labeling the older indexed sentence board explicitly", () => {
@@ -481,7 +590,7 @@ test("mining follow visualizer keeps the raw tip rail while labeling the older i
   }), createUiState({
     settledBlockHeight: 100,
     settledBoardEntries: [
-      { rank: 1, domainName: "alpha", sentence: "indexed sentence" },
+      createBoardEntry(1, "alpha", "indexed sentence"),
     ],
   }));
   visualizer.close();
@@ -490,6 +599,7 @@ test("mining follow visualizer keeps the raw tip rail while labeling the older i
   assert.equal(capturedNodeHeight, 102);
   assert.equal(capturedOptions?.extraLines?.[0], "✎ Indexed Block #100 Sentences ✎");
   assert.equal(capturedOptions?.extraLines?.[2], "1. @alpha: indexed sentence");
+  assert.equal(capturedOptions?.extraLines?.[3], "");
 });
 
 test("mining follow visualizer leaves the indexed block rows blank until settled winners are available", () => {
@@ -526,11 +636,17 @@ test("mining follow visualizer leaves the indexed block rows blank until settled
     "✎ Indexed Block #101 Sentences ✎",
     "",
     "1.",
+    "",
     "2.",
+    "",
     "3.",
+    "",
     "4.",
+    "",
     "5.",
+    "",
     "----------",
+    "",
     "",
     "",
   ]);
@@ -564,7 +680,7 @@ test("mining follow visualizer keeps a fixed-height frame across empty, unpublis
   }), createUiState({
     settledBlockHeight: 102,
     settledBoardEntries: [
-      { rank: 1, domainName: "alpha", sentence: "alpha sentence" },
+      createBoardEntry(1, "alpha", "alpha sentence"),
     ],
     provisionalRequiredWords: ["under", "tree", "monkey", "youth", "basket"],
     provisionalEntry: {
@@ -576,7 +692,7 @@ test("mining follow visualizer keeps a fixed-height frame across empty, unpublis
   }));
   visualizer.close();
 
-  const expectedFrameHeight = 26;
+  const expectedFrameHeight = 32;
   assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[2K/g), expectedFrameHeight);
   assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[1A/g), expectedFrameHeight - 1);
   assert.equal(countMatches(stream.chunks[3] ?? "", /\u001B\[2K/g), expectedFrameHeight);
@@ -626,10 +742,11 @@ test("mining follow visualizer snapshots runtime and board state for ticker redr
     coreBestHeight: 100,
     indexerTipHeight: 100,
   });
+  const indexedRequiredWords = ["under"];
   const uiState = createUiState({
     settledBlockHeight: 100,
     settledBoardEntries: [
-      { rank: 1, domainName: "alpha", sentence: "indexed sentence" },
+      createBoardEntry(1, "alpha", "under indexed sentence", indexedRequiredWords),
     ],
     provisionalRequiredWords: ["under", "tree", "monkey", "youth", "basket"],
     provisionalEntry: {
@@ -647,6 +764,7 @@ test("mining follow visualizer snapshots runtime and board state for ticker redr
   snapshot.indexerTipHeight = 101;
   uiState.settledBlockHeight = 101;
   uiState.settledBoardEntries[0]!.sentence = "mutated sentence";
+  indexedRequiredWords[0] = "mutated";
   uiState.provisionalRequiredWords = ["raise", "shove", "only", "nasty", "wrestle"];
   uiState.provisionalEntry = {
     domainName: "mutated",
@@ -663,14 +781,20 @@ test("mining follow visualizer snapshots runtime and board state for ticker redr
     extraLines: [
       "✎ Indexed Block #100 Sentences ✎",
       "",
-      "1. @alpha: indexed sentence",
+      "1. @alpha: UNDER indexed sentence",
+      "",
       "2.",
+      "",
       "3.",
+      "",
       "4.",
+      "",
       "5.",
+      "",
       "----------",
       "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
       "@local: local sentence",
+      "",
     ],
   });
 
@@ -730,10 +854,11 @@ test("mining follow visualizer snapshots queued headless redraw state", () => {
     coreBestHeight: 101,
     indexerTipHeight: 100,
   });
+  const queuedRequiredWords = ["under"];
   const queuedUiState = createUiState({
     settledBlockHeight: 100,
     settledBoardEntries: [
-      { rank: 1, domainName: "alpha", sentence: "queued sentence" },
+      createBoardEntry(1, "alpha", "under queued sentence", queuedRequiredWords),
     ],
     provisionalRequiredWords: ["under", "tree", "monkey", "youth", "basket"],
     provisionalEntry: {
@@ -748,6 +873,7 @@ test("mining follow visualizer snapshots queued headless redraw state", () => {
   queuedSnapshot.note = "Mutated queued frame.";
   queuedSnapshot.coreBestHeight = 102;
   queuedSnapshot.indexerTipHeight = 102;
+  queuedRequiredWords[0] = "mutated";
   queuedUiState.settledBlockHeight = 101;
   queuedUiState.settledBoardEntries[0]!.sentence = "mutated queued sentence";
   queuedUiState.provisionalRequiredWords = ["raise", "shove", "only", "nasty", "wrestle"];
@@ -766,14 +892,20 @@ test("mining follow visualizer snapshots queued headless redraw state", () => {
     extraLines: [
       "✎ Indexed Block #100 Sentences ✎",
       "",
-      "1. @alpha: queued sentence",
+      "1. @alpha: UNDER queued sentence",
+      "",
       "2.",
+      "",
       "3.",
+      "",
       "4.",
+      "",
       "5.",
+      "",
       "----------",
       "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
       "@local: queued local sentence",
+      "",
     ],
   });
 

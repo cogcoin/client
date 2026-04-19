@@ -117,8 +117,85 @@ function createInitAutoSyncOverrides(options: {
 }
 
 const WELCOME_ART = readFileSync(new URL("../src/art/welcome.txt", import.meta.url), "utf8");
+const WELCOME_ART_BLOCK = `\n${WELCOME_ART}\n\n`;
 
-test("init text output starts with the welcome art before the existing init content", async (t) => {
+function countOccurrences(text: string, fragment: string): number {
+  let count = 0;
+  let offset = 0;
+
+  while (true) {
+    const index = text.indexOf(fragment, offset);
+
+    if (index === -1) {
+      return count;
+    }
+
+    count += 1;
+    offset = index + fragment.length;
+  }
+}
+
+test("init text output prints welcome art before prompt text and again before the final summary", async (t) => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-cli-init-prompt-order"));
+  const paths = resolvePaths();
+  const promptLine = "Prompt: create client password.";
+  let syncCalls = 0;
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    signalSource: QUIET_SIGNAL_SOURCE,
+    forceExit(code) {
+      throw new Error(`unexpected forceExit: ${code}`);
+    },
+    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
+    createPrompter: () => ({
+      isInteractive: true,
+      writeLine(message: string) {
+        stdout.stream.write(`${message}\n`);
+      },
+      async prompt() {
+        return "";
+      },
+    }),
+    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveDefaultBitcoindDataDir: () => paths.bitcoinDataDir,
+    initializeWallet: async ({ prompter }) => {
+      prompter.writeLine(promptLine);
+      return {
+        passwordAction: "created",
+        walletAction: "initialized",
+        walletRootId: "wallet-init-root",
+        fundingAddress: "bc1qinitwelcome",
+        state: createWalletState(),
+      };
+    },
+    ...createInitAutoSyncOverrides({
+      walletRootId: "wallet-init-root",
+      onSyncStart: () => {
+        syncCalls += 1;
+      },
+    }),
+  });
+
+  const exitCode = await runWalletAdminCommand(parseCliArgs(["init"]), context);
+  const rendered = stdout.read();
+  const promptIndex = rendered.indexOf(`${promptLine}\n`);
+  const secondArtIndex = rendered.indexOf(WELCOME_ART_BLOCK, WELCOME_ART_BLOCK.length);
+  const summaryIndex = rendered.indexOf("Wallet initialized.\n");
+
+  assert.equal(exitCode, 0);
+  assert.equal(stderr.read(), "");
+  assert.equal(syncCalls, 1);
+  assert.ok(rendered.startsWith(WELCOME_ART_BLOCK));
+  assert.ok(promptIndex >= WELCOME_ART_BLOCK.length);
+  assert.ok(secondArtIndex > promptIndex);
+  assert.ok(summaryIndex > secondArtIndex);
+  assert.equal(countOccurrences(rendered, WELCOME_ART_BLOCK), 2);
+});
+
+test("init text output keeps the welcome art before the initialized summary", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
   const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-cli-init-welcome-output"));
@@ -162,7 +239,8 @@ test("init text output starts with the welcome art before the existing init cont
   assert.equal(exitCode, 0);
   assert.equal(stderr.read(), "");
   assert.equal(syncCalls, 1);
-  assert.ok(rendered.startsWith(`\n${WELCOME_ART}\n\nWallet initialized.\n`));
+  assert.ok(rendered.startsWith(`${WELCOME_ART_BLOCK}${WELCOME_ART_BLOCK}Wallet initialized.\n`));
+  assert.equal(countOccurrences(rendered, WELCOME_ART_BLOCK), 2);
   assert.match(rendered, /Client password: created/);
   assert.match(rendered, /Wallet root: wallet-init-root/);
   assert.match(rendered, /Funding address: bc1qinitwelcome/);
@@ -213,7 +291,8 @@ test("init text output describes the 24-hour client unlock window after setup mi
 
   assert.equal(exitCode, 0);
   assert.equal(stderr.read(), "");
-  assert.ok(rendered.startsWith(`\n${WELCOME_ART}\n\nWallet already initialized.\n`));
+  assert.ok(rendered.startsWith(`${WELCOME_ART_BLOCK}${WELCOME_ART_BLOCK}Wallet already initialized.\n`));
+  assert.equal(countOccurrences(rendered, WELCOME_ART_BLOCK), 2);
   assert.match(rendered, /Wallet already initialized\./);
   assert.match(rendered, /\nWallet\n✓ Client password: migrated\n✓ Wallet root: wallet-test-root\n✓ Funding address: bc1qinitoutput\n/);
   assert.match(rendered, /Client unlock: active for 86400 seconds\./);
@@ -264,7 +343,8 @@ test("init text output shows a checkmarked wallet section when already configure
 
   assert.equal(exitCode, 0);
   assert.equal(stderr.read(), "");
-  assert.ok(rendered.startsWith(`\n${WELCOME_ART}\n\nWallet already initialized.\n`));
+  assert.ok(rendered.startsWith(`${WELCOME_ART_BLOCK}${WELCOME_ART_BLOCK}Wallet already initialized.\n`));
+  assert.equal(countOccurrences(rendered, WELCOME_ART_BLOCK), 2);
   assert.match(
     rendered,
     /\nWallet\n✓ Client password: already-configured\n✓ Wallet root: wallet-0123456789abcdef0123456789abcdef\n✓ Funding address: bc1qsamplewallet0000000000000000000000000\n/,
@@ -274,6 +354,68 @@ test("init text output shows a checkmarked wallet section when already configure
   assert.doesNotMatch(rendered, /cogcoin client lock/);
   assert.match(rendered, /bc1qsamplewallet0000000000000000000000000\n\nQuickstart: /);
   assert.doesNotMatch(rendered, /Next step:/);
+});
+
+test("init text output fails before printing welcome art when no interactive prompter is available", async () => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  let initializeCalls = 0;
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    signalSource: QUIET_SIGNAL_SOURCE,
+    forceExit(code) {
+      throw new Error(`unexpected forceExit: ${code}`);
+    },
+    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
+    createPrompter: () => ({
+      isInteractive: false,
+      writeLine() {},
+      async prompt() {
+        return "";
+      },
+    }),
+    initializeWallet: async () => {
+      initializeCalls += 1;
+      throw new Error("initialize_wallet_should_not_run");
+    },
+  });
+
+  const exitCode = await runWalletAdminCommand(parseCliArgs(["init"]), context);
+
+  assert.notEqual(exitCode, 0);
+  assert.equal(initializeCalls, 0);
+  assert.equal(stdout.read(), "");
+  assert.doesNotMatch(stderr.read(), new RegExp(WELCOME_ART.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("init json output stays art-free", async () => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    signalSource: QUIET_SIGNAL_SOURCE,
+    forceExit(code) {
+      throw new Error(`unexpected forceExit: ${code}`);
+    },
+    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
+    initializeWallet: async () => ({
+      passwordAction: "created",
+      walletAction: "initialized",
+      walletRootId: "wallet-json-root",
+      fundingAddress: "bc1qjsoninit",
+      state: createWalletState(),
+    }),
+  });
+
+  const exitCode = await runWalletAdminCommand(parseCliArgs(["init", "--output", "json"]), context);
+  const rendered = stdout.read();
+
+  assert.equal(exitCode, 0);
+  assert.equal(stderr.read(), "");
+  assert.ok(rendered.startsWith("{"));
+  assert.ok(!rendered.includes(WELCOME_ART));
 });
 
 test("restore text output describes the 24-hour client unlock window after password setup", async (t) => {

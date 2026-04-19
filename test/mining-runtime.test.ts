@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english.js";
 
 import {
   clearMiningPublishState,
@@ -45,7 +46,30 @@ import {
 } from "./current-model-helpers.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 
+function resolveWordIndices(words: readonly string[]): number[] {
+  return words.map((word) => {
+    const index = englishWordlist.indexOf(word);
+    assert.notEqual(index, -1, `missing bip39 word: ${word}`);
+    return index;
+  });
+}
+
+function createSettledBoardEntry(
+  rank: number,
+  domainName: string,
+  sentence: string,
+  requiredWords: readonly string[] = [],
+) {
+  return {
+    rank,
+    domainName,
+    sentence,
+    requiredWords,
+  };
+}
+
 function createTestMiningCandidate(overrides: Record<string, unknown> = {}) {
+  const bip39Words = ["under", "tree", "monkey", "youth", "basket"] as const;
   return {
     domainId: 7,
     domainName: "cogdemo",
@@ -57,8 +81,8 @@ function createTestMiningCandidate(overrides: Record<string, unknown> = {}) {
     },
     sentence: "Under the trees, a monkey helped the youth place a basket on the bike for the hamster.",
     encodedSentenceBytes: Buffer.from("candidate", "utf8"),
-    bip39WordIndices: [1, 2, 3, 4, 5],
-    bip39Words: ["under", "tree", "monkey", "youth", "basket"],
+    bip39WordIndices: resolveWordIndices(bip39Words),
+    bip39Words,
     canonicalBlend: 1000n,
     referencedBlockHashDisplay: "11".repeat(32),
     referencedBlockHashInternal: Buffer.from("22".repeat(32), "hex"),
@@ -332,6 +356,7 @@ test("mining board resolves the latest mined block winners and falls back when d
             canonicalBlend: 1000n,
             sentenceHex: "",
             sentenceText: "Under the trees, a monkey helped.",
+            bip39WordIndices: resolveWordIndices(["under", "tree", "monkey", "youth", "basket"]),
             txIndex: 0,
             txidHex: "aa".repeat(32),
           },
@@ -344,6 +369,7 @@ test("mining board resolves the latest mined block winners and falls back when d
             canonicalBlend: 999n,
             sentenceHex: "",
             sentenceText: "Youth carried the basket home.",
+            bip39WordIndices: resolveWordIndices(["under", "tree", "monkey", "youth", "basket"]),
             txIndex: 1,
             txidHex: "bb".repeat(32),
           },
@@ -361,8 +387,8 @@ test("mining board resolves the latest mined block winners and falls back when d
 
   assert.equal(settled.settledBlockHeight, 100);
   assert.deepEqual(settled.settledBoardEntries, [
-    { rank: 1, domainName: "cogdemo", sentence: "Under the trees, a monkey helped." },
-    { rank: 2, domainName: "domain-8", sentence: "Youth carried the basket home." },
+    createSettledBoardEntry(1, "cogdemo", "Under the trees, a monkey helped.", ["under", "tree", "monkey", "youth", "basket"]),
+    createSettledBoardEntry(2, "domain-8", "Youth carried the basket home.", ["under", "tree", "monkey", "youth", "basket"]),
   ]);
 });
 
@@ -390,6 +416,7 @@ test("mining board stays pinned to the indexed snapshot block until the snapshot
           canonicalBlend: 1000n,
           sentenceHex: "",
           sentenceText: "Settled prior block sentence.",
+          bip39WordIndices: resolveWordIndices(["under", "tree", "monkey", "youth", "basket"]),
           txIndex: 0,
           txidHex: "aa".repeat(32),
         }]],
@@ -406,7 +433,7 @@ test("mining board stays pinned to the indexed snapshot block until the snapshot
 
   assert.equal(settled.settledBlockHeight, 100);
   assert.deepEqual(settled.settledBoardEntries, [
-    { rank: 1, domainName: "cogdemo", sentence: "Settled prior block sentence." },
+    createSettledBoardEntry(1, "cogdemo", "Settled prior block sentence.", ["under", "tree", "monkey", "youth", "basket"]),
   ]);
 });
 
@@ -434,6 +461,7 @@ test("mining board falls back to the snapshot tip height when the node best heig
           canonicalBlend: 1000n,
           sentenceHex: "",
           sentenceText: "Snapshot tip sentence.",
+          bip39WordIndices: resolveWordIndices(["under", "tree", "monkey", "youth", "basket"]),
           txIndex: 0,
           txidHex: "aa".repeat(32),
         }]],
@@ -450,7 +478,7 @@ test("mining board falls back to the snapshot tip height when the node best heig
 
   assert.equal(settled.settledBlockHeight, 100);
   assert.deepEqual(settled.settledBoardEntries, [
-    { rank: 1, domainName: "cogdemo", sentence: "Snapshot tip sentence." },
+    createSettledBoardEntry(1, "cogdemo", "Snapshot tip sentence.", ["under", "tree", "monkey", "youth", "basket"]),
   ]);
 });
 
@@ -468,7 +496,7 @@ test("performMiningCycle keeps the mining board pinned to the indexed snapshot w
   loopState.currentTipKey = `${previousTipHash}:101`;
   loopState.ui.settledBlockHeight = 100;
   loopState.ui.settledBoardEntries = [
-    { rank: 1, domainName: "cogdemo", sentence: "Prior settled sentence." },
+    createSettledBoardEntry(1, "cogdemo", "Prior settled sentence."),
   ];
   loopState.ui.provisionalRequiredWords = ["under", "tree", "monkey", "youth", "basket"];
   loopState.ui.provisionalEntry = {
@@ -562,6 +590,7 @@ test("performMiningCycle keeps the mining board pinned to the indexed snapshot w
                 canonicalBlend: 1000n,
                 sentenceHex: "",
                 sentenceText: "Prior settled sentence.",
+                bip39WordIndices: resolveWordIndices(["under", "tree", "monkey", "youth", "basket"]),
                 txIndex: 0,
                 txidHex: "aa".repeat(32),
               }]],
@@ -617,7 +646,7 @@ test("performMiningCycle keeps the mining board pinned to the indexed snapshot w
   assert.equal(waitingSnapshot?.currentPhase, "waiting-indexer");
   assert.equal(loopState.ui.settledBlockHeight, 100);
   assert.deepEqual(loopState.ui.settledBoardEntries, [
-    { rank: 1, domainName: "cogdemo", sentence: "Prior settled sentence." },
+    createSettledBoardEntry(1, "cogdemo", "Prior settled sentence.", ["under", "tree", "monkey", "youth", "basket"]),
   ]);
   assert.deepEqual(loopState.ui.provisionalRequiredWords, []);
   assert.deepEqual(loopState.ui.provisionalEntry, {
@@ -662,6 +691,7 @@ test("performMiningCycle keeps the mining board pinned to the indexed snapshot w
                 canonicalBlend: 1001n,
                 sentenceHex: "",
                 sentenceText: "Caught-up settled sentence.",
+                bip39WordIndices: resolveWordIndices(["under", "tree", "monkey", "youth", "basket"]),
                 txIndex: 0,
                 txidHex: "bb".repeat(32),
               }]],
@@ -715,7 +745,7 @@ test("performMiningCycle keeps the mining board pinned to the indexed snapshot w
 
   assert.equal(loopState.ui.settledBlockHeight, 101);
   assert.deepEqual(loopState.ui.settledBoardEntries, [
-    { rank: 1, domainName: "cogdemo", sentence: "Caught-up settled sentence." },
+    createSettledBoardEntry(1, "cogdemo", "Caught-up settled sentence.", ["under", "tree", "monkey", "youth", "basket"]),
   ]);
 });
 
@@ -1171,7 +1201,12 @@ test("resume refresh passes a freshly indexed board state to the visualizer", as
   });
   const provider = createMemoryWalletSecretProviderForTesting();
   const snapshotTipHash = "11".repeat(32);
-  let capturedUiState: { settledBlockHeight: number | null; settledBoardEntries: Array<{ rank: number; domainName: string; sentence: string }> } | null = null;
+  let capturedUiState:
+    | {
+      settledBlockHeight: number | null;
+      settledBoardEntries: Array<{ rank: number; domainName: string; sentence: string; requiredWords: readonly string[] }>;
+    }
+    | null = null;
 
   await handleDetectedMiningRuntimeResumeForTesting({
     dataDir: homeDirectory,
@@ -1218,6 +1253,7 @@ test("resume refresh passes a freshly indexed board state to the visualizer", as
                   canonicalBlend: 1000n,
                   sentenceHex: "",
                   sentenceText: "Indexed settled sentence.",
+                  bip39WordIndices: resolveWordIndices(["under", "tree", "monkey", "youth", "basket"]),
                   txIndex: 0,
                   txidHex: "aa".repeat(32),
                 }]],
@@ -1276,7 +1312,7 @@ test("resume refresh passes a freshly indexed board state to the visualizer", as
   assert.deepEqual(capturedUiState, {
     settledBlockHeight: 100,
     settledBoardEntries: [
-      { rank: 1, domainName: "cogdemo", sentence: "Indexed settled sentence." },
+      createSettledBoardEntry(1, "cogdemo", "Indexed settled sentence.", ["under", "tree", "monkey", "youth", "basket"]),
     ],
   });
 });

@@ -1,5 +1,6 @@
 import type { BootstrapProgress, ProgressOutputMode } from "../../bitcoind/types.js";
 import { createBootstrapProgress } from "../../bitcoind/progress/formatting.js";
+import { normalizeInlineText, truncateLine } from "../../bitcoind/progress/formatting.js";
 import {
   advanceFollowSceneState,
   createFollowSceneState,
@@ -30,11 +31,13 @@ interface VisualizerRendererLike {
 
 const MINING_ARTWORK_COG_WIDTH = 22;
 const MINING_SENTENCE_BOARD_SIZE = 5;
+const MINING_SENTENCE_BOARD_WRAP_WIDTH = 80;
 
 export interface MiningSentenceBoardEntry {
   rank: number;
   domainName: string;
   sentence: string;
+  requiredWords: readonly string[];
 }
 
 export interface MiningProvisionalSentenceEntry {
@@ -126,8 +129,81 @@ function formatRewardCogAmount(value: bigint): string {
   })} COG`;
 }
 
-function formatSentenceRow(rank: number, domainName: string, sentence: string): string {
-  return `${rank}. @${domainName}: ${sentence}`;
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function consumeWrappedLine(
+  text: string,
+  capacity: number,
+): { line: string; remaining: string } {
+  const remaining = text.trimStart();
+
+  if (remaining.length <= capacity) {
+    return {
+      line: remaining,
+      remaining: "",
+    };
+  }
+
+  const candidate = remaining.slice(0, capacity + 1);
+  const breakIndex = candidate.lastIndexOf(" ");
+
+  if (breakIndex > 0) {
+    return {
+      line: remaining.slice(0, breakIndex).trimEnd(),
+      remaining: remaining.slice(breakIndex + 1).trimStart(),
+    };
+  }
+
+  return {
+    line: remaining.slice(0, capacity),
+    remaining: remaining.slice(capacity).trimStart(),
+  };
+}
+
+function highlightRequiredWords(sentence: string, requiredWords: readonly string[]): string {
+  const uniqueWords = [...new Set(
+    requiredWords
+      .map((word) => word.trim().toLowerCase())
+      .filter((word) => word.length > 0),
+  )].sort((left, right) => right.length - left.length);
+
+  if (uniqueWords.length === 0) {
+    return sentence;
+  }
+
+  const pattern = new RegExp(`\\b(?:${uniqueWords.map(escapeRegExp).join("|")})\\b`, "gi");
+  return sentence.replace(pattern, (match) => match.toUpperCase());
+}
+
+function formatSentenceSlot(
+  prefix: string,
+  sentence: string | null,
+  requiredWords: readonly string[],
+): [string, string] {
+  if (sentence === null) {
+    return [prefix.trimEnd(), ""];
+  }
+
+  const normalizedSentence = highlightRequiredWords(normalizeInlineText(sentence), requiredWords);
+  const firstLineCapacity = Math.max(0, MINING_SENTENCE_BOARD_WRAP_WIDTH - prefix.length);
+  const firstWrapped = consumeWrappedLine(normalizedSentence, firstLineCapacity);
+  const continuationPrefix = " ".repeat(prefix.length);
+  const secondLineCapacity = Math.max(0, MINING_SENTENCE_BOARD_WRAP_WIDTH - continuationPrefix.length);
+  const secondWrapped = consumeWrappedLine(firstWrapped.remaining, secondLineCapacity);
+  const secondLineContent = secondWrapped.remaining.length === 0
+    ? secondWrapped.line
+    : truncateLine(`${secondWrapped.line}\u2026`, secondLineCapacity);
+
+  return [
+    `${prefix}${firstWrapped.line}`,
+    secondLineContent.length === 0 ? "" : `${continuationPrefix}${secondLineContent}`,
+  ];
+}
+
+function formatSentenceRow(entry: MiningSentenceBoardEntry): [string, string] {
+  return formatSentenceSlot(`${entry.rank}. @${entry.domainName}: `, entry.sentence, entry.requiredWords);
 }
 
 function formatRequiredWordsLine(words: readonly string[]): string {
@@ -138,12 +214,15 @@ function formatRequiredWordsLine(words: readonly string[]): string {
   return `Required words: ${words.map((word) => word.toUpperCase()).join(", ")}`;
 }
 
-function formatProvisionalSentenceRow(entry: MiningProvisionalSentenceEntry): string {
+function formatProvisionalSentenceRow(
+  entry: MiningProvisionalSentenceEntry,
+  requiredWords: readonly string[],
+): [string, string] {
   if (entry.domainName === null || entry.sentence === null) {
-    return "";
+    return ["", ""];
   }
 
-  return `@${entry.domainName}: ${entry.sentence}`;
+  return formatSentenceSlot(`@${entry.domainName}: `, entry.sentence, requiredWords);
 }
 
 export function createEmptyMiningFollowVisualizerState(): MiningFollowVisualizerState {
@@ -178,6 +257,7 @@ function cloneMiningFollowVisualizerState(
     visibleBlockTimesByHeight: { ...state.visibleBlockTimesByHeight },
     settledBoardEntries: state.settledBoardEntries.map((entry) => ({
       ...entry,
+      requiredWords: [...entry.requiredWords],
     })),
     provisionalRequiredWords: [...state.provisionalRequiredWords],
     provisionalEntry: {
@@ -429,12 +509,12 @@ export class MiningFollowVisualizer {
           ...Array.from({ length: MINING_SENTENCE_BOARD_SIZE }, (_value, index) => {
             const entry = uiState.settledBoardEntries[index];
             return entry === undefined
-              ? `${index + 1}.`
-              : formatSentenceRow(entry.rank, entry.domainName, entry.sentence);
-          }),
+              ? [`${index + 1}.`, ""]
+              : formatSentenceRow(entry);
+          }).flat(),
           "----------",
           formatRequiredWordsLine(uiState.provisionalRequiredWords),
-          formatProvisionalSentenceRow(uiState.provisionalEntry),
+          ...formatProvisionalSentenceRow(uiState.provisionalEntry, uiState.provisionalRequiredWords),
         ],
       },
     );

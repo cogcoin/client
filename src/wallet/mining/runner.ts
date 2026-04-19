@@ -17,6 +17,7 @@ import {
   getWords,
   settleBlock,
 } from "@cogcoin/scoring";
+import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english.js";
 
 import { probeIndexerDaemon } from "../../bitcoind/indexer-daemon.js";
 import { isRetryableManagedRpcError } from "../../bitcoind/retryable-rpc.js";
@@ -321,6 +322,23 @@ interface MiningCompetitivenessCacheRecord {
   txids: string[];
   txContexts: Map<string, CachedMempoolTxContext>;
   decision: CompetitivenessDecision;
+}
+
+function resolveBip39WordsFromIndices(indices: readonly number[] | null | undefined): readonly string[] {
+  if (indices === null || indices === undefined) {
+    return [];
+  }
+
+  const words: string[] = [];
+  for (const index of indices) {
+    if (!Number.isInteger(index) || index < 0 || index >= englishWordlist.length) {
+      continue;
+    }
+
+    words.push(englishWordlist[index]!);
+  }
+
+  return words;
 }
 
 interface RankedMiningSentenceEntry {
@@ -1053,6 +1071,9 @@ function resolveCurrentMinedBlockBoard(options: {
       rank: winner.rank,
       domainName: lookupDomainById(options.snapshotState!, winner.domainId)?.name ?? fallbackSettledWinnerDomainName(winner.domainId),
       sentence: winner.sentenceText ?? "[unavailable]",
+      requiredWords: resolveBip39WordsFromIndices(
+        (winner as typeof winner & { bip39WordIndices?: number[] }).bip39WordIndices,
+      ),
     }));
 
   return {
@@ -2805,12 +2826,13 @@ function rankMiningSentenceEntries(
 }
 
 function toSentenceBoardEntries(
-  entries: Array<{ rank: number; domainName: string; sentence: string }>,
+  entries: Array<{ rank: number; domainName: string; sentence: string; bip39WordIndices?: readonly number[] }>,
 ): MiningSentenceBoardEntry[] {
   return entries.slice(0, 5).map((entry) => ({
     rank: entry.rank,
     domainName: entry.domainName,
     sentence: entry.sentence,
+    requiredWords: resolveBip39WordsFromIndices(entry.bip39WordIndices),
   }));
 }
 
