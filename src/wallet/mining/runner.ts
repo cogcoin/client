@@ -1156,6 +1156,36 @@ export function resetMiningUiForTipForTesting(loopState: MiningLoopState, target
   resetMiningUiForTip(loopState, targetBlockHeight);
 }
 
+function resolveProvisionalBroadcastTxidForCandidate(options: {
+  candidate: MiningCandidate;
+  liveState: MiningStateRecord | null | undefined;
+}): string | null {
+  if (options.liveState === null || options.liveState === undefined) {
+    return null;
+  }
+
+  const liveState = normalizeMiningStateRecord(options.liveState);
+  if (
+    liveState.currentTxid === null
+    || liveState.currentPublishState !== "in-mempool"
+    || liveState.livePublishInMempool !== true
+  ) {
+    return null;
+  }
+
+  if (
+    liveState.currentDomain !== options.candidate.domainName
+    || liveState.currentDomainId !== options.candidate.domainId
+    || liveState.currentSentence !== options.candidate.sentence
+    || liveState.currentBlockTargetHeight !== options.candidate.targetBlockHeight
+    || liveState.currentReferencedBlockHashDisplay !== options.candidate.referencedBlockHashDisplay
+  ) {
+    return null;
+  }
+
+  return liveState.currentTxid;
+}
+
 function fallbackSettledWinnerDomainName(domainId: number): string {
   return `domain-${domainId}`;
 }
@@ -1283,6 +1313,7 @@ function syncMiningUiForCurrentTip(options: {
 function setMiningUiCandidate(
   loopState: MiningLoopState,
   candidate: MiningCandidate,
+  liveState?: MiningStateRecord | null,
 ): void {
   loopState.ui.latestSentence = candidate.sentence;
   loopState.ui.provisionalRequiredWords = [...candidate.bip39Words];
@@ -1290,6 +1321,10 @@ function setMiningUiCandidate(
     domainName: candidate.domainName,
     sentence: candidate.sentence,
   };
+  loopState.ui.provisionalBroadcastTxid = resolveProvisionalBroadcastTxidForCandidate({
+    candidate,
+    liveState,
+  });
 }
 
 function getSelectedCandidateForTip(loopState: MiningLoopState, tipKey: string | null): MiningCandidate | null {
@@ -1311,18 +1346,20 @@ function cacheSelectedCandidateForTip(
   loopState: MiningLoopState,
   tipKey: string | null,
   candidate: MiningCandidate,
+  liveState?: MiningStateRecord | null,
 ): void {
   loopState.selectedCandidateTipKey = tipKey;
   loopState.selectedCandidate = candidate;
-  setMiningUiCandidate(loopState, candidate);
+  setMiningUiCandidate(loopState, candidate, liveState);
 }
 
 export function cacheSelectedCandidateForTipForTesting(
   loopState: MiningLoopState,
   tipKey: string | null,
   candidate: MiningCandidate,
+  liveState?: MiningStateRecord | null,
 ): void {
-  cacheSelectedCandidateForTip(loopState, tipKey, candidate);
+  cacheSelectedCandidateForTip(loopState, tipKey, candidate, liveState);
 }
 
 function clearSelectedCandidate(loopState: MiningLoopState): void {
@@ -1336,6 +1373,7 @@ function clearMiningUiTransientCandidate(loopState: MiningLoopState): void {
     domainName: null,
     sentence: null,
   };
+  loopState.ui.provisionalBroadcastTxid = null;
   loopState.ui.latestSentence = null;
 }
 
@@ -4446,7 +4484,12 @@ async function performMiningCycle(options: {
       }
 
       options.loopState.ui.recentWin = null;
-      cacheSelectedCandidateForTip(options.loopState, tipKey, best);
+      cacheSelectedCandidateForTip(
+        options.loopState,
+        tipKey,
+        best,
+        effectiveReadContext.localState.state.miningState,
+      );
       selectedCandidate = best;
       await appendEvent(options.paths, createEvent(
         "candidate-selected",
@@ -4483,7 +4526,11 @@ async function performMiningCycle(options: {
           options.loopState.attemptedTipKey = tipKey;
         }
         clearSelectedCandidate(options.loopState);
-        setMiningUiCandidate(options.loopState, best);
+        setMiningUiCandidate(
+          options.loopState,
+          best,
+          effectiveReadContext.localState.state.miningState,
+        );
         options.loopState.waitingNote = gate.decision === "suppressed-same-domain-mempool"
           ? "Best local sentence found, but a same-domain mempool competitor already matches or beats it."
           : gate.decision === "suppressed-top5-mempool"
@@ -4527,7 +4574,11 @@ async function performMiningCycle(options: {
       }
     } else {
       options.loopState.ui.recentWin = null;
-      setMiningUiCandidate(options.loopState, selectedCandidate);
+      setMiningUiCandidate(
+        options.loopState,
+        selectedCandidate,
+        effectiveReadContext.localState.state.miningState,
+      );
     }
 
     if (!await ensureCurrentIndexerTruthOrRestart()) {
@@ -4569,7 +4620,12 @@ async function performMiningCycle(options: {
         options.loopState.attemptedTipKey = tipKey;
       }
       if (published.retryable === true) {
-        cacheSelectedCandidateForTip(options.loopState, tipKey, published.candidate);
+        cacheSelectedCandidateForTip(
+          options.loopState,
+          tipKey,
+          published.candidate,
+          published.state.miningState,
+        );
         options.loopState.waitingNote = published.note;
         await saveCycleStatus({
           ...effectiveReadContext,
@@ -4595,7 +4651,11 @@ async function performMiningCycle(options: {
       }
       if (published.skipped === true) {
         clearSelectedCandidate(options.loopState);
-        setMiningUiCandidate(options.loopState, selectedCandidate);
+        setMiningUiCandidate(
+          options.loopState,
+          selectedCandidate,
+          published.state.miningState,
+        );
         options.loopState.waitingNote = published.note;
         const lastError = published.decision === "publish-paused-insufficient-funds"
           ? published.lastError ?? createInsufficientFundsMiningPublishErrorMessage()
@@ -4627,7 +4687,11 @@ async function performMiningCycle(options: {
       if (published.txid !== null) {
         options.loopState.ui.latestTxid = published.txid;
       }
-      setMiningUiCandidate(options.loopState, published.candidate);
+      setMiningUiCandidate(
+        options.loopState,
+        published.candidate,
+        published.state.miningState,
+      );
       options.loopState.waitingNote = published.decision === "kept-live-publish"
         ? "Existing live mining publish already covers this block attempt. Waiting for the next block."
         : published.txid === null

@@ -505,6 +505,7 @@ test("mining follow visualizer renders the current mined block board when settle
       domainName: "local",
       sentence: "local sentence",
     },
+    provisionalBroadcastTxid: "ab".repeat(32),
     latestSentence: "local sentence",
     latestTxid: "ab".repeat(32),
   }));
@@ -527,6 +528,7 @@ test("mining follow visualizer renders the current mined block board when settle
       "5.",
       "",
       "----------",
+      `View at: https://mempool.space/tx/${"ab".repeat(32)}`,
       "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
       "@local: local sentence",
       "",
@@ -576,9 +578,9 @@ test("mining follow visualizer uppercases each settled row with its own required
   assert.equal(capturedOptions?.extraLines?.[3], "");
   assert.equal(capturedOptions?.extraLines?.[4], "2. @beta: CANDY VANISH YEAR TOAST toasty under.");
   assert.equal(capturedOptions?.extraLines?.[5], "");
-  assert.equal(capturedOptions?.extraLines?.[14], "@local: MONKEY UNDER TREE trees.");
-  assert.equal(capturedOptions?.extraLines?.[15], "");
+  assert.equal(capturedOptions?.extraLines?.[15], "@local: MONKEY UNDER TREE trees.");
   assert.equal(capturedOptions?.extraLines?.[16], "");
+  assert.equal(capturedOptions?.extraLines?.[17], "");
 });
 
 test("mining follow visualizer wraps and ellipsizes sentence slots to two 80-column lines", () => {
@@ -661,9 +663,9 @@ test("mining follow visualizer wraps and ellipsizes the provisional sentence slo
   }));
   visualizer.close();
 
-  const firstLine = capturedOptions?.extraLines?.[14] ?? "";
-  const secondLine = capturedOptions?.extraLines?.[15] ?? "";
-  const thirdLine = capturedOptions?.extraLines?.[16] ?? "";
+  const firstLine = capturedOptions?.extraLines?.[15] ?? "";
+  const secondLine = capturedOptions?.extraLines?.[16] ?? "";
+  const thirdLine = capturedOptions?.extraLines?.[17] ?? "";
   const indent = " ".repeat("@local: ".length);
 
   assert.ok(firstLine.length <= 80);
@@ -769,6 +771,7 @@ test("mining follow visualizer leaves the indexed block rows blank until settled
     "",
     "",
     "",
+    "",
   ]);
 });
 
@@ -812,7 +815,7 @@ test("mining follow visualizer keeps a fixed-height frame across empty, unpublis
   }));
   visualizer.close();
 
-  const expectedFrameHeight = 33;
+  const expectedFrameHeight = 34;
   assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[2K/g), expectedFrameHeight);
   assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[1A/g), expectedFrameHeight - 1);
   assert.equal(countMatches(stream.chunks[3] ?? "", /\u001B\[2K/g), expectedFrameHeight);
@@ -912,6 +915,7 @@ test("mining follow visualizer snapshots runtime and board state for ticker redr
       "5.",
       "",
       "----------",
+      "",
       "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
       "@local: local sentence",
       "",
@@ -1024,6 +1028,7 @@ test("mining follow visualizer snapshots queued headless redraw state", () => {
       "5.",
       "",
       "----------",
+      "",
       "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
       "@local: queued local sentence",
       "",

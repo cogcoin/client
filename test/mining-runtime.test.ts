@@ -1670,20 +1670,54 @@ test("selected mining candidates stay scoped to their tip and clear on tip reset
   const loopState = createMiningLoopStateForTesting();
   const candidate = createTestMiningCandidate();
   loopState.ui.latestTxid = "cc".repeat(32);
+  loopState.ui.provisionalBroadcastTxid = "aa".repeat(32);
 
   cacheSelectedCandidateForTipForTesting(loopState, "tip-1", candidate);
 
   assert.equal(getSelectedCandidateForTipForTesting(loopState, "tip-1"), candidate);
   assert.equal(getSelectedCandidateForTipForTesting(loopState, "tip-2"), null);
+  assert.equal(loopState.ui.provisionalBroadcastTxid, null);
 
   resetMiningUiForTipForTesting(loopState, 102);
 
   assert.equal(getSelectedCandidateForTipForTesting(loopState, "tip-1"), null);
   assert.equal(loopState.ui.latestTxid, "cc".repeat(32));
+  assert.equal(loopState.ui.provisionalBroadcastTxid, null);
 
   cacheSelectedCandidateForTipForTesting(loopState, "tip-2", candidate);
 
   assert.equal(loopState.ui.latestTxid, "cc".repeat(32));
+  assert.equal(loopState.ui.provisionalBroadcastTxid, null);
+});
+
+test("displayed mining candidates only retain a tx link when they match the live publish", () => {
+  const loopState = createMiningLoopStateForTesting();
+  const candidate = createTestMiningCandidate();
+  const matchingLiveState = createMiningState({
+    currentPublishState: "in-mempool",
+    livePublishInMempool: true,
+    currentDomain: candidate.domainName,
+    currentDomainId: candidate.domainId,
+    currentSentence: candidate.sentence,
+    currentTxid: "44".repeat(32),
+    currentBlockTargetHeight: candidate.targetBlockHeight,
+    currentReferencedBlockHashDisplay: candidate.referencedBlockHashDisplay,
+  });
+
+  cacheSelectedCandidateForTipForTesting(loopState, "tip-1", candidate, matchingLiveState);
+
+  assert.equal(loopState.ui.provisionalBroadcastTxid, "44".repeat(32));
+
+  cacheSelectedCandidateForTipForTesting(
+    loopState,
+    "tip-1",
+    createTestMiningCandidate({
+      sentence: "A different sentence for the same domain and tip.",
+    }),
+    matchingLiveState,
+  );
+
+  assert.equal(loopState.ui.provisionalBroadcastTxid, null);
 });
 
 test("shared mining conflict inputs are reused only for verified in-mempool live publishes", () => {

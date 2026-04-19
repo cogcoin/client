@@ -59,6 +59,7 @@ export interface MiningFollowVisualizerState {
   settledBoardEntries: MiningSentenceBoardEntry[];
   provisionalRequiredWords: readonly string[];
   provisionalEntry: MiningProvisionalSentenceEntry;
+  provisionalBroadcastTxid: string | null;
   latestSentence: string | null;
   latestTxid: string | null;
   recentWin: MiningRecentWinSummary | null;
@@ -241,6 +242,22 @@ function formatRequiredWordsLine(words: readonly string[]): string {
   return `Required words: ${words.map((word) => word.toUpperCase()).join(", ")}`;
 }
 
+function formatProvisionalTxLinkLine(
+  entry: MiningProvisionalSentenceEntry,
+  txid: string | null,
+): string {
+  if (entry.domainName === null || entry.sentence === null || txid === null) {
+    return "";
+  }
+
+  const normalizedTxid = normalizeInlineText(txid);
+  if (normalizedTxid.length === 0) {
+    return "";
+  }
+
+  return `View at: https://mempool.space/tx/${normalizedTxid}`;
+}
+
 function formatProvisionalSentenceRow(
   entry: MiningProvisionalSentenceEntry,
   requiredWords: readonly string[],
@@ -264,6 +281,7 @@ export function createEmptyMiningFollowVisualizerState(): MiningFollowVisualizer
       domainName: null,
       sentence: null,
     },
+    provisionalBroadcastTxid: null,
     latestSentence: null,
     latestTxid: null,
     recentWin: null,
@@ -290,6 +308,7 @@ function cloneMiningFollowVisualizerState(
     provisionalEntry: {
       ...state.provisionalEntry,
     },
+    provisionalBroadcastTxid: state.provisionalBroadcastTxid,
     recentWin: state.recentWin === null
       ? null
       : {
@@ -541,6 +560,7 @@ export class MiningFollowVisualizer {
             : formatSentenceRow(entry);
         }).flat(),
         "----------",
+        formatProvisionalTxLinkLine(uiState.provisionalEntry, uiState.provisionalBroadcastTxid),
         formatRequiredWordsLine(uiState.provisionalRequiredWords),
         ...formatProvisionalSentenceRow(uiState.provisionalEntry, uiState.provisionalRequiredWords),
       ],
