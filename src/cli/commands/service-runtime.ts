@@ -5,7 +5,10 @@ import { loadBundledGenesisParameters } from "@cogcoin/indexer";
 import { resolveCogcoinProcessingStartHeight } from "../../bitcoind/processing-start-height.js";
 import type { ManagedBitcoindServiceCompatibility } from "../../bitcoind/service.js";
 import { UNINITIALIZED_WALLET_ROOT_ID, resolveManagedServicePaths } from "../../bitcoind/service-paths.js";
-import type { IndexerDaemonCompatibility } from "../../bitcoind/indexer-daemon.js";
+import {
+  INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED,
+  type IndexerDaemonCompatibility,
+} from "../../bitcoind/indexer-daemon.js";
 import type {
   ManagedBitcoindObservedStatus,
   ManagedIndexerDaemonObservedStatus,
@@ -210,7 +213,14 @@ async function inspectManagedIndexerStatus(
       } finally {
         await daemonClient.close().catch(() => undefined);
       }
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof Error
+        && error.message === INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED
+      ) {
+        throw error;
+      }
+
       // Preserve the status-file fallback when the refresh path fails.
     }
   }

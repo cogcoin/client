@@ -1,6 +1,7 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english.js";
+import { displayToInternalBlockhash, getWords } from "@cogcoin/scoring";
 
 import {
   clearMiningPublishState,
@@ -52,6 +53,10 @@ function resolveWordIndices(words: readonly string[]): number[] {
     assert.notEqual(index, -1, `missing bip39 word: ${word}`);
     return index;
   });
+}
+
+function resolveDerivedWords(previousHashDisplay: string, domainId: number): string[] {
+  return [...getWords(domainId, Buffer.from(displayToInternalBlockhash(previousHashDisplay), "hex"))];
 }
 
 function createSettledBoardEntry(
@@ -332,6 +337,8 @@ test("same-tip live publishes are kept but stale-tip publishes are replaceable",
 });
 
 test("mining board resolves the latest mined block winners and falls back when domain metadata is missing", () => {
+  const rank1Words = ["under", "tree", "monkey", "youth", "basket"] as const;
+  const rank2Words = englishWordlist.slice(20, 25);
   const snapshotState = {
     consensus: {
       domainsById: new Map([
@@ -356,7 +363,7 @@ test("mining board resolves the latest mined block winners and falls back when d
             canonicalBlend: 1000n,
             sentenceHex: "",
             sentenceText: "Under the trees, a monkey helped.",
-            bip39WordIndices: resolveWordIndices(["under", "tree", "monkey", "youth", "basket"]),
+            bip39WordIndices: resolveWordIndices(rank1Words),
             txIndex: 0,
             txidHex: "aa".repeat(32),
           },
@@ -369,7 +376,7 @@ test("mining board resolves the latest mined block winners and falls back when d
             canonicalBlend: 999n,
             sentenceHex: "",
             sentenceText: "Youth carried the basket home.",
-            bip39WordIndices: resolveWordIndices(["under", "tree", "monkey", "youth", "basket"]),
+            bip39WordIndices: resolveWordIndices(rank2Words),
             txIndex: 1,
             txidHex: "bb".repeat(32),
           },
@@ -387,9 +394,80 @@ test("mining board resolves the latest mined block winners and falls back when d
 
   assert.equal(settled.settledBlockHeight, 100);
   assert.deepEqual(settled.settledBoardEntries, [
-    createSettledBoardEntry(1, "cogdemo", "Under the trees, a monkey helped.", ["under", "tree", "monkey", "youth", "basket"]),
-    createSettledBoardEntry(2, "domain-8", "Youth carried the basket home.", ["under", "tree", "monkey", "youth", "basket"]),
+    createSettledBoardEntry(1, "cogdemo", "Under the trees, a monkey helped.", rank1Words),
+    createSettledBoardEntry(2, "domain-8", "Youth carried the basket home.", rank2Words),
   ]);
+});
+
+test("mining board derives per-winner settled required words from the settled block previous hash when history omits them", () => {
+  const snapshotTipPreviousHashHex = "11".repeat(32);
+  const snapshotState = {
+    consensus: {
+      domainsById: new Map([
+        [7, {
+          domainId: 7,
+          name: "cogdemo",
+          anchored: true,
+          anchorHeight: 99,
+          endpoint: null,
+        }],
+        [8, {
+          domainId: 8,
+          name: "betademo",
+          anchored: true,
+          anchorHeight: 99,
+          endpoint: null,
+        }],
+      ]),
+    },
+    history: {
+      blockWinnersByHeight: new Map([
+        [100, [
+          {
+            height: 100,
+            rank: 1,
+            domainId: 7,
+            creditedScriptPubKeyHex: "0014" + "11".repeat(20),
+            rewardCogtoshi: 123_000_000n,
+            canonicalBlend: 1000n,
+            sentenceHex: "",
+            sentenceText: "First settled sentence.",
+            txIndex: 0,
+            txidHex: "aa".repeat(32),
+          },
+          {
+            height: 100,
+            rank: 2,
+            domainId: 8,
+            creditedScriptPubKeyHex: "0014" + "22".repeat(20),
+            rewardCogtoshi: 61_500_000n,
+            canonicalBlend: 999n,
+            sentenceHex: "",
+            sentenceText: "Second settled sentence.",
+            txIndex: 1,
+            txidHex: "bb".repeat(32),
+          },
+        ]],
+      ]),
+      foundingMessageByDomain: new Map(),
+    },
+  } as any;
+
+  const settled = resolveSettledBoardForTesting({
+    snapshotState,
+    snapshotTipHeight: 100,
+    snapshotTipPreviousHashHex,
+    nodeBestHeight: 100,
+  });
+
+  assert.deepEqual(settled.settledBoardEntries, [
+    createSettledBoardEntry(1, "cogdemo", "First settled sentence.", resolveDerivedWords(snapshotTipPreviousHashHex, 7)),
+    createSettledBoardEntry(2, "betademo", "Second settled sentence.", resolveDerivedWords(snapshotTipPreviousHashHex, 8)),
+  ]);
+  assert.notDeepEqual(
+    settled.settledBoardEntries[0]?.requiredWords,
+    settled.settledBoardEntries[1]?.requiredWords,
+  );
 });
 
 test("mining board stays pinned to the indexed snapshot block until the snapshot catches up", () => {

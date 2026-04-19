@@ -463,11 +463,12 @@ test("mining follow visualizer renders the current mined block board when settle
       "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
       "@local: local sentence",
       "",
+      "",
     ],
   });
 });
 
-test("mining follow visualizer uppercases exact required-word matches without touching partial matches", () => {
+test("mining follow visualizer uppercases each settled row with its own required words without cross-row bleed", () => {
   let capturedOptions: FollowSceneRenderOptions | undefined;
 
   const visualizer = new MiningFollowVisualizer({
@@ -494,6 +495,7 @@ test("mining follow visualizer uppercases exact required-word matches without to
     settledBlockHeight: 100,
     settledBoardEntries: [
       createBoardEntry(1, "alpha", "under tree trees treetop youth, basket.", ["under", "tree", "youth", "basket"]),
+      createBoardEntry(2, "beta", "candy vanish year toast toasty under.", ["candy", "vanish", "year", "toast"]),
     ],
     provisionalRequiredWords: ["monkey", "under", "tree"],
     provisionalEntry: {
@@ -505,8 +507,11 @@ test("mining follow visualizer uppercases exact required-word matches without to
 
   assert.equal(capturedOptions?.extraLines?.[2], "1. @alpha: UNDER TREE trees treetop YOUTH, BASKET.");
   assert.equal(capturedOptions?.extraLines?.[3], "");
+  assert.equal(capturedOptions?.extraLines?.[4], "2. @beta: CANDY VANISH YEAR TOAST toasty under.");
+  assert.equal(capturedOptions?.extraLines?.[5], "");
   assert.equal(capturedOptions?.extraLines?.[14], "@local: MONKEY UNDER TREE trees.");
   assert.equal(capturedOptions?.extraLines?.[15], "");
+  assert.equal(capturedOptions?.extraLines?.[16], "");
 });
 
 test("mining follow visualizer wraps and ellipsizes sentence slots to two 80-column lines", () => {
@@ -554,6 +559,53 @@ test("mining follow visualizer wraps and ellipsizes sentence slots to two 80-col
   assert.ok(firstLine.includes("UNDER TREE MONKEY YOUTH BASKET"));
   assert.ok(secondLine.startsWith(indent));
   assert.ok(secondLine.endsWith("…"));
+});
+
+test("mining follow visualizer wraps and ellipsizes the provisional sentence slot to three lines", () => {
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot(), createUiState({
+    settledBlockHeight: 100,
+    provisionalRequiredWords: ["under", "tree", "monkey", "youth", "basket"],
+    provisionalEntry: {
+      domainName: "local",
+      sentence: "under tree monkey youth basket raven orchard lantern window harbor candle feather velvet thunder meadow sunrise river canyon marble silver lantern window harbor candle feather velvet thunder meadow sunrise river canyon marble silver.",
+    },
+  }));
+  visualizer.close();
+
+  const firstLine = capturedOptions?.extraLines?.[14] ?? "";
+  const secondLine = capturedOptions?.extraLines?.[15] ?? "";
+  const thirdLine = capturedOptions?.extraLines?.[16] ?? "";
+  const indent = " ".repeat("@local: ".length);
+
+  assert.ok(firstLine.length <= 80);
+  assert.ok(secondLine.length <= 80);
+  assert.ok(thirdLine.length <= 80);
+  assert.ok(firstLine.includes("UNDER TREE MONKEY YOUTH BASKET"));
+  assert.ok(secondLine.startsWith(indent));
+  assert.ok(thirdLine.startsWith(indent));
+  assert.ok(thirdLine.endsWith("…"));
 });
 
 test("mining follow visualizer keeps the raw tip rail while labeling the older indexed sentence board explicitly", () => {
@@ -649,6 +701,7 @@ test("mining follow visualizer leaves the indexed block rows blank until settled
     "",
     "",
     "",
+    "",
   ]);
 });
 
@@ -692,7 +745,7 @@ test("mining follow visualizer keeps a fixed-height frame across empty, unpublis
   }));
   visualizer.close();
 
-  const expectedFrameHeight = 32;
+  const expectedFrameHeight = 33;
   assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[2K/g), expectedFrameHeight);
   assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[1A/g), expectedFrameHeight - 1);
   assert.equal(countMatches(stream.chunks[3] ?? "", /\u001B\[2K/g), expectedFrameHeight);
@@ -794,6 +847,7 @@ test("mining follow visualizer snapshots runtime and board state for ticker redr
       "----------",
       "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
       "@local: local sentence",
+      "",
       "",
     ],
   });
@@ -905,6 +959,7 @@ test("mining follow visualizer snapshots queued headless redraw state", () => {
       "----------",
       "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
       "@local: queued local sentence",
+      "",
       "",
     ],
   });

@@ -30,6 +30,9 @@ import type { DaemonRequest, DaemonResponse, IndexerSnapshotHandle, IndexerSnaps
 
 const SNAPSHOT_TTL_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 1_000;
+const FORCE_RESUME_ERROR_ENV = "COGCOIN_TEST_INDEXER_DAEMON_FORCE_RESUME_ERROR";
+const BACKGROUND_FOLLOW_RESUME_TIMEOUT_MS = 30_000;
+const BACKGROUND_FOLLOW_RESUME_TIMEOUT_ERROR = "indexer_daemon_background_follow_resume_timeout";
 
 interface LoadedSnapshotMaterial {
   token: string;
@@ -81,6 +84,23 @@ async function readManagedBitcoindStatus(
   paths: ReturnType<typeof resolveManagedServicePaths>,
 ): Promise<ManagedBitcoindObservedStatus | null> {
   return readJsonFile<ManagedBitcoindObservedStatus>(paths.bitcoindStatusPath);
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorCode: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(errorCode)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 async function readPackageVersionFromDisk(): Promise<string> {
@@ -231,6 +251,7 @@ async function main(): Promise<void> {
   let backgroundStore: Awaited<ReturnType<typeof openSqliteStore>> | null = null;
   let backgroundClient: ManagedBitcoindClient | null = null;
   let backgroundResumePromise: Promise<void> | null = null;
+  let backgroundFollowError: string | null = null;
   let backgroundFollowActive = false;
   let bootstrapPhase: BootstrapPhase = "paused";
   let bootstrapProgress: BootstrapProgress = createBootstrapProgress("paused", DEFAULT_SNAPSHOT_METADATA);
@@ -326,6 +347,29 @@ async function main(): Promise<void> {
     return status;
   };
 
+  const recordBackgroundFollowFailure = async (message: string): Promise<void> => {
+    const now = Date.now();
+    heartbeatAtUnixMs = now;
+    updatedAtUnixMs = now;
+    state = "failed";
+    lastError = message;
+    backgroundFollowError = message;
+    backgroundFollowActive = false;
+    bootstrapPhase = "error";
+    bootstrapProgress = {
+      ...createBootstrapProgress("error", DEFAULT_SNAPSHOT_METADATA),
+      blocks: coreBestHeight,
+      headers: coreBestHeight,
+      targetHeight: coreBestHeight,
+      message,
+      lastError: message,
+      updatedAt: now,
+    };
+    cogcoinSyncHeight = appliedTipHeight;
+    cogcoinSyncTargetHeight = coreBestHeight;
+    await writeStatus();
+  };
+
   const refreshStatus = async (): Promise<ManagedIndexerDaemonStatus> => {
     const now = Date.now();
     heartbeatAtUnixMs = now;
@@ -336,11 +380,14 @@ async function main(): Promise<void> {
       readAppliedTipStatus(databasePath),
     ]);
     const backgroundStatus = await backgroundClient?.getNodeStatus().catch(() => null) ?? null;
+    if (backgroundStatus?.following === true) {
+      backgroundFollowError = null;
+    }
     rpcReachable = coreStatus.rpcReachable;
     coreBestHeight = coreStatus.coreBestHeight;
     coreBestHash = coreStatus.coreBestHash;
     observeAppliedTip(indexedStatus.appliedTip, now);
-    backgroundFollowActive = backgroundClient !== null;
+    backgroundFollowActive = backgroundStatus?.following ?? (backgroundClient !== null);
     bootstrapPhase = backgroundStatus?.bootstrapPhase ?? (backgroundFollowActive ? "follow_tip" : "paused");
     bootstrapProgress = backgroundStatus?.bootstrapProgress ?? createBootstrapProgress(
       bootstrapPhase,
@@ -348,6 +395,25 @@ async function main(): Promise<void> {
     );
     cogcoinSyncHeight = backgroundStatus?.cogcoinSyncHeight ?? indexedStatus.appliedTip?.height ?? null;
     cogcoinSyncTargetHeight = backgroundStatus?.cogcoinSyncTargetHeight ?? coreStatus.coreBestHeight;
+
+    if (backgroundStatus === null && backgroundFollowError !== null) {
+      state = "failed";
+      lastError = backgroundFollowError;
+      backgroundFollowActive = false;
+      bootstrapPhase = "error";
+      bootstrapProgress = {
+        ...createBootstrapProgress("error", DEFAULT_SNAPSHOT_METADATA),
+        blocks: coreStatus.coreBestHeight,
+        headers: coreStatus.coreBestHeight,
+        targetHeight: coreStatus.coreBestHeight,
+        message: backgroundFollowError,
+        lastError: backgroundFollowError,
+        updatedAt: now,
+      };
+      cogcoinSyncHeight = indexedStatus.appliedTip?.height ?? null;
+      cogcoinSyncTargetHeight = coreStatus.coreBestHeight;
+      return writeStatus();
+    }
 
     if (indexedStatus.schemaMismatch) {
       state = "schema-mismatch";
@@ -417,6 +483,7 @@ async function main(): Promise<void> {
 
     await client?.close().catch(() => undefined);
     await store?.close().catch(() => undefined);
+    backgroundFollowError = null;
     backgroundFollowActive = false;
     bootstrapPhase = "paused";
     bootstrapProgress = createBootstrapProgress("paused", DEFAULT_SNAPSHOT_METADATA);
@@ -434,18 +501,25 @@ async function main(): Promise<void> {
     }
 
     backgroundResumePromise = (async () => {
-      const bitcoindStatus = await readManagedBitcoindStatus(paths);
-      const store = await openSqliteStore({ filename: databasePath });
-      const chain = bitcoindStatus?.chain ?? "main";
-      const startHeight = normalizeCogcoinProcessingStartHeight({
-        chain,
-        startHeight: bitcoindStatus?.startHeight,
-        genesisParameters,
-      });
-
+      let store: Awaited<ReturnType<typeof openSqliteStore>> | null = null;
       try {
+        const forcedResumeError = process.env[FORCE_RESUME_ERROR_ENV]?.trim();
+        if (forcedResumeError) {
+          throw new Error(forcedResumeError);
+        }
+
+        const bitcoindStatus = await readManagedBitcoindStatus(paths);
+        store = await openSqliteStore({ filename: databasePath });
+        const openedStore = store;
+        const chain = bitcoindStatus?.chain ?? "main";
+        const startHeight = normalizeCogcoinProcessingStartHeight({
+          chain,
+          startHeight: bitcoindStatus?.startHeight,
+          genesisParameters,
+        });
+
         const client = await openManagedBitcoindClientInternal({
-          store,
+          store: openedStore,
           dataDir,
           chain,
           startHeight,
@@ -453,17 +527,28 @@ async function main(): Promise<void> {
           progressOutput: "none",
         });
 
-        try {
-          await client.startFollowingTip();
-          backgroundStore = store;
-          backgroundClient = client;
-          backgroundFollowActive = true;
-        } catch (error) {
+        backgroundStore = openedStore;
+        backgroundClient = client;
+        backgroundFollowError = null;
+        backgroundFollowActive = true;
+
+        void client.startFollowingTip().catch(async (error) => {
+          if (backgroundClient !== client || backgroundStore !== openedStore) {
+            return;
+          }
+
+          backgroundClient = null;
+          backgroundStore = null;
+          backgroundFollowActive = false;
           await client.close().catch(() => undefined);
-          throw error;
-        }
+          await openedStore.close().catch(() => undefined);
+          const message = error instanceof Error ? error.message : String(error);
+          await recordBackgroundFollowFailure(message).catch(() => undefined);
+        });
       } catch (error) {
-        await store.close().catch(() => undefined);
+        await store?.close().catch(() => undefined);
+        const message = error instanceof Error ? error.message : String(error);
+        await recordBackgroundFollowFailure(message).catch(() => undefined);
         throw error;
       }
     })();
@@ -659,7 +744,21 @@ async function main(): Promise<void> {
             }
 
             if (request.method === "ResumeBackgroundFollow") {
-              await resumeBackgroundFollow();
+              try {
+                await withTimeout(
+                  resumeBackgroundFollow(),
+                  BACKGROUND_FOLLOW_RESUME_TIMEOUT_MS,
+                  BACKGROUND_FOLLOW_RESUME_TIMEOUT_ERROR,
+                );
+              } catch (error) {
+                if (
+                  error instanceof Error
+                  && error.message === BACKGROUND_FOLLOW_RESUME_TIMEOUT_ERROR
+                ) {
+                  await recordBackgroundFollowFailure(error.message).catch(() => undefined);
+                }
+                throw error;
+              }
               writeResponse({
                 id: request.id,
                 ok: true,

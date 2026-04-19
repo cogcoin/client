@@ -181,29 +181,40 @@ function formatSentenceSlot(
   prefix: string,
   sentence: string | null,
   requiredWords: readonly string[],
-): [string, string] {
+  lineCount: number,
+): string[] {
   if (sentence === null) {
-    return [prefix.trimEnd(), ""];
+    return [
+      prefix.trimEnd(),
+      ...Array.from({ length: Math.max(0, lineCount - 1) }, () => ""),
+    ];
   }
 
   const normalizedSentence = highlightRequiredWords(normalizeInlineText(sentence), requiredWords);
-  const firstLineCapacity = Math.max(0, MINING_SENTENCE_BOARD_WRAP_WIDTH - prefix.length);
-  const firstWrapped = consumeWrappedLine(normalizedSentence, firstLineCapacity);
   const continuationPrefix = " ".repeat(prefix.length);
-  const secondLineCapacity = Math.max(0, MINING_SENTENCE_BOARD_WRAP_WIDTH - continuationPrefix.length);
-  const secondWrapped = consumeWrappedLine(firstWrapped.remaining, secondLineCapacity);
-  const secondLineContent = secondWrapped.remaining.length === 0
-    ? secondWrapped.line
-    : truncateLine(`${secondWrapped.line}\u2026`, secondLineCapacity);
+  const lines: string[] = [];
+  let remaining = normalizedSentence;
 
-  return [
-    `${prefix}${firstWrapped.line}`,
-    secondLineContent.length === 0 ? "" : `${continuationPrefix}${secondLineContent}`,
-  ];
+  for (let lineIndex = 0; lineIndex < lineCount; lineIndex += 1) {
+    const linePrefix = lineIndex === 0 ? prefix : continuationPrefix;
+    const capacity = Math.max(0, MINING_SENTENCE_BOARD_WRAP_WIDTH - linePrefix.length);
+    const wrapped = consumeWrappedLine(remaining, capacity);
+    const isLastLine = lineIndex === lineCount - 1;
+    const lineContent = isLastLine && wrapped.remaining.length > 0
+      ? truncateLine(`${wrapped.line}\u2026`, capacity)
+      : wrapped.line;
+
+    lines.push(lineContent.length === 0
+      ? ""
+      : `${linePrefix}${lineContent}`);
+    remaining = wrapped.remaining;
+  }
+
+  return lines;
 }
 
 function formatSentenceRow(entry: MiningSentenceBoardEntry): [string, string] {
-  return formatSentenceSlot(`${entry.rank}. @${entry.domainName}: `, entry.sentence, entry.requiredWords);
+  return formatSentenceSlot(`${entry.rank}. @${entry.domainName}: `, entry.sentence, entry.requiredWords, 2) as [string, string];
 }
 
 function formatRequiredWordsLine(words: readonly string[]): string {
@@ -217,12 +228,12 @@ function formatRequiredWordsLine(words: readonly string[]): string {
 function formatProvisionalSentenceRow(
   entry: MiningProvisionalSentenceEntry,
   requiredWords: readonly string[],
-): [string, string] {
+): [string, string, string] {
   if (entry.domainName === null || entry.sentence === null) {
-    return ["", ""];
+    return ["", "", ""];
   }
 
-  return formatSentenceSlot(`@${entry.domainName}: `, entry.sentence, requiredWords);
+  return formatSentenceSlot(`@${entry.domainName}: `, entry.sentence, requiredWords, 3) as [string, string, string];
 }
 
 export function createEmptyMiningFollowVisualizerState(): MiningFollowVisualizerState {

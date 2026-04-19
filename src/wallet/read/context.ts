@@ -4,6 +4,7 @@ import { deserializeIndexerState, loadBundledGenesisParameters } from "@cogcoin/
 
 import {
   attachOrStartIndexerDaemon,
+  INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED,
   probeIndexerDaemon,
   readObservedIndexerDaemonStatus,
   readSnapshotWithRetry,
@@ -329,6 +330,11 @@ function mapIndexerStartupError(message: string): {
       return {
         health: "unavailable",
         message: "The live indexer daemon socket responded with an invalid or incomplete protocol exchange.",
+      };
+    case INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED:
+      return {
+        health: "failed",
+        message: "The managed indexer daemon could not recover automatic background follow.",
       };
     default:
       return {
@@ -726,6 +732,12 @@ export async function openWalletReadContext(options: {
     }
   } catch (error) {
     daemonError = error instanceof Error ? error.message : String(error);
+    if (daemonError === INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED) {
+      await daemonClient?.close().catch(() => undefined);
+      await node.handle?.stop().catch(() => undefined);
+      throw error;
+    }
+
     if (observedDaemonStatus === null) {
       observedDaemonStatus = await readObservedIndexerDaemonStatus({
         dataDir: options.dataDir,

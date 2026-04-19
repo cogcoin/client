@@ -48,6 +48,8 @@ interface RegtestFixture {
   databasePath: string;
 }
 
+const FORCE_RESUME_ERROR_ENV = "COGCOIN_TEST_INDEXER_DAEMON_FORCE_RESUME_ERROR";
+
 class MemoryStream {
   readonly chunks: string[] = [];
   isTTY?: boolean;
@@ -212,8 +214,25 @@ function createManagedIndexerDaemonStatus(
 async function startFakeIndexerDaemonServer(
   socketPath: string,
   status: ManagedIndexerDaemonStatusFixture,
+  handlers: {
+    onGetStatus?: (state: {
+      status: ManagedIndexerDaemonStatusFixture;
+      resumeCalls: number;
+    }) => ManagedIndexerDaemonStatusFixture;
+    onResumeBackgroundFollow?: (state: {
+      status: ManagedIndexerDaemonStatusFixture;
+      resumeCalls: number;
+    }) => {
+      ok?: boolean;
+      result?: unknown;
+      error?: string;
+      status?: ManagedIndexerDaemonStatusFixture;
+    };
+  } = {},
 ): Promise<net.Server> {
   await rm(socketPath, { force: true }).catch(() => undefined);
+  let currentStatus = status;
+  let resumeCalls = 0;
 
   const server = net.createServer((socket) => {
     let buffer = "";
@@ -234,11 +253,42 @@ async function startFakeIndexerDaemonServer(
         }
 
         const request = JSON.parse(line) as { id: string; method: string };
+        if (request.method === "GetStatus") {
+          currentStatus = handlers.onGetStatus?.({
+            status: currentStatus,
+            resumeCalls,
+          }) ?? currentStatus;
+          socket.write(`${JSON.stringify({
+            id: request.id,
+            ok: true,
+            result: currentStatus,
+          })}\n`);
+          continue;
+        }
+
+        if (request.method === "ResumeBackgroundFollow") {
+          resumeCalls += 1;
+          const response = handlers.onResumeBackgroundFollow?.({
+            status: currentStatus,
+            resumeCalls,
+          });
+          if (response?.status !== undefined) {
+            currentStatus = response.status;
+          }
+          const ok = response?.ok ?? false;
+          socket.write(`${JSON.stringify({
+            id: request.id,
+            ok,
+            result: ok ? (response?.result ?? null) : undefined,
+            error: ok ? undefined : (response?.error ?? "unsupported_method"),
+          })}\n`);
+          continue;
+        }
+
         socket.write(`${JSON.stringify({
           id: request.id,
-          ok: request.method === "GetStatus",
-          result: request.method === "GetStatus" ? status : undefined,
-          error: request.method === "GetStatus" ? undefined : "unsupported_method",
+          ok: false,
+          error: "unsupported_method",
         })}\n`);
       }
     });
@@ -1047,6 +1097,44 @@ test("sync CLI surfaces managed indexer observer failures without printing the b
   }
 });
 
+test("indexer status surfaces exhausted background-follow recovery instead of stale status-file fallback", async () => {
+  const fixture = createFixture("cogcoin-client-indexer-status-recovery-error");
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream();
+  let observedStatusReads = 0;
+
+  try {
+    const code = await runCli(["indexer", "status"], {
+      stdout,
+      stderr,
+      resolveDefaultClientDatabasePath: () => fixture.databasePath,
+      resolveDefaultBitcoindDataDir: () => fixture.dataDir,
+      ensureDirectory: async () => undefined,
+      probeIndexerDaemon: async () => ({
+        compatibility: "unreachable",
+        status: null,
+        client: null,
+        error: null,
+      }),
+      attachIndexerDaemon: async () => {
+        throw new Error("indexer_daemon_background_follow_recovery_failed");
+      },
+      readObservedIndexerDaemonStatus: async () => {
+        observedStatusReads += 1;
+        return createManagedIndexerDaemonStatus("wallet-root-uninitialized");
+      },
+    });
+
+    assert.notEqual(code, 0);
+    assert.equal(stdout.toString(), "");
+    assert.equal(observedStatusReads, 0);
+    assert.match(stderr.toString(), /could not recover automatic background follow/i);
+    assert.match(stderr.toString(), /cogcoin repair/i);
+  } finally {
+    await cleanupManagedFixture(fixture);
+  }
+});
+
 test("wallet read context close leaves managed services running and reuses them", async (t) => {
   await ensureBitcoinBinaries(t);
   const fixture = createFixture("cogcoin-client-read-context-persistent-close");
@@ -1284,6 +1372,232 @@ test("attachOrStartIndexerDaemon can request background follow without a foregro
       await daemon.close();
     }
   } finally {
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("attachOrStartIndexerDaemon restarts a compatible daemon when ResumeBackgroundFollow errors", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-client-indexer-resume-restart");
+  const walletRootId = "wallet-root-test";
+  const paths = resolveManagedServicePaths(fixture.dataDir, walletRootId);
+  await mkdir(paths.indexerServiceRoot, { recursive: true });
+
+  await attachOrStartManagedBitcoindService({
+    dataDir: fixture.dataDir,
+    chain: "regtest",
+    startHeight: 0,
+    walletRootId,
+  });
+
+  const server = await startFakeIndexerDaemonServer(
+    paths.indexerDaemonSocketPath,
+    createManagedIndexerDaemonStatus(walletRootId, {
+      daemonInstanceId: "daemon-broken-resume",
+      processId: 4321,
+      state: "starting",
+      backgroundFollowActive: false,
+      bootstrapPhase: "paused",
+    }),
+    {
+      onResumeBackgroundFollow: () => ({
+        ok: false,
+        error: "resume_failed",
+      }),
+    },
+  );
+
+  try {
+    const daemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      walletRootId,
+      startupTimeoutMs: 5_000,
+      ensureBackgroundFollow: true,
+    });
+
+    try {
+      await waitForCondition(async () => (await daemon.getStatus()).backgroundFollowActive === true, 10_000, 100);
+      const status = await daemon.getStatus();
+      assert.equal(status.backgroundFollowActive, true);
+      assert.notEqual(status.daemonInstanceId, "daemon-broken-resume");
+      assert.notEqual(status.processId, 4321);
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    await shutdownIndexerDaemonForTesting({ dataDir: fixture.dataDir, walletRootId }).catch(() => undefined);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("attachOrStartIndexerDaemon restarts a compatible daemon when resume leaves background follow inactive", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-client-indexer-resume-inactive");
+  const walletRootId = "wallet-root-test";
+  const paths = resolveManagedServicePaths(fixture.dataDir, walletRootId);
+  await mkdir(paths.indexerServiceRoot, { recursive: true });
+
+  await attachOrStartManagedBitcoindService({
+    dataDir: fixture.dataDir,
+    chain: "regtest",
+    startHeight: 0,
+    walletRootId,
+  });
+
+  const server = await startFakeIndexerDaemonServer(
+    paths.indexerDaemonSocketPath,
+    createManagedIndexerDaemonStatus(walletRootId, {
+      daemonInstanceId: "daemon-inactive-follow",
+      processId: 4321,
+      state: "starting",
+      backgroundFollowActive: false,
+      bootstrapPhase: "paused",
+    }),
+    {
+      onResumeBackgroundFollow: () => ({
+        ok: true,
+        result: null,
+      }),
+    },
+  );
+
+  try {
+    const daemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      walletRootId,
+      startupTimeoutMs: 5_000,
+      ensureBackgroundFollow: true,
+    });
+
+    try {
+      await waitForCondition(async () => (await daemon.getStatus()).backgroundFollowActive === true, 10_000, 100);
+      const status = await daemon.getStatus();
+      assert.equal(status.backgroundFollowActive, true);
+      assert.notEqual(status.daemonInstanceId, "daemon-inactive-follow");
+      assert.notEqual(status.processId, 4321);
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    await shutdownIndexerDaemonForTesting({ dataDir: fixture.dataDir, walletRootId }).catch(() => undefined);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("attachOrStartIndexerDaemon throws recovery_failed after one recycle when background follow still cannot start", async () => {
+  const fixture = createFixture("cogcoin-client-indexer-resume-recovery-failed");
+  const walletRootId = "wallet-root-test";
+  const previousResumeError = process.env[FORCE_RESUME_ERROR_ENV];
+  process.env[FORCE_RESUME_ERROR_ENV] = "forced resume failure";
+
+  try {
+    const daemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      walletRootId,
+      startupTimeoutMs: 5_000,
+    });
+    const initialStatus = await daemon.getStatus();
+    await daemon.close();
+
+    await assert.rejects(
+      async () => attachOrStartIndexerDaemon({
+        dataDir: fixture.dataDir,
+        databasePath: fixture.databasePath,
+        walletRootId,
+        startupTimeoutMs: 5_000,
+        ensureBackgroundFollow: true,
+      }),
+      /indexer_daemon_background_follow_recovery_failed/,
+    );
+
+    await waitForCondition(async () => {
+      const status = await readIndexerDaemonStatusForTesting({ dataDir: fixture.dataDir, walletRootId });
+      return status?.state === "failed"
+        && status.bootstrapPhase === "error"
+        && status.backgroundFollowActive === false
+        && status.lastError === "forced resume failure"
+        && status.daemonInstanceId !== initialStatus.daemonInstanceId;
+    }, 10_000, 100);
+
+    const status = await readIndexerDaemonStatusForTesting({ dataDir: fixture.dataDir, walletRootId });
+    assert.equal(status?.state, "failed");
+    assert.equal(status?.bootstrapPhase, "error");
+    assert.equal(status?.backgroundFollowActive, false);
+    assert.equal(status?.lastError, "forced resume failure");
+    assert.notEqual(status?.daemonInstanceId, initialStatus.daemonInstanceId);
+  } finally {
+    if (previousResumeError === undefined) {
+      delete process.env[FORCE_RESUME_ERROR_ENV];
+    } else {
+      process.env[FORCE_RESUME_ERROR_ENV] = previousResumeError;
+    }
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("openManagedIndexerMonitor propagates exhausted background-follow recovery", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-client-indexer-monitor-recovery-failed");
+  const walletRootId = "wallet-root-test";
+  const previousResumeError = process.env[FORCE_RESUME_ERROR_ENV];
+  process.env[FORCE_RESUME_ERROR_ENV] = "forced resume failure";
+
+  try {
+    await attachOrStartManagedBitcoindService({
+      dataDir: fixture.dataDir,
+      chain: "regtest",
+      startHeight: 0,
+      walletRootId,
+    });
+
+    await assert.rejects(
+      async () => openManagedIndexerMonitor({
+        dataDir: fixture.dataDir,
+        databasePath: fixture.databasePath,
+        walletRootId,
+        startupTimeoutMs: 5_000,
+      }),
+      /indexer_daemon_background_follow_recovery_failed/,
+    );
+  } finally {
+    if (previousResumeError === undefined) {
+      delete process.env[FORCE_RESUME_ERROR_ENV];
+    } else {
+      process.env[FORCE_RESUME_ERROR_ENV] = previousResumeError;
+    }
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("openWalletReadContext propagates exhausted background-follow recovery instead of falling back", async (t) => {
+  await ensureBitcoinBinaries(t);
+  const fixture = createFixture("cogcoin-client-read-context-recovery-failed");
+  const runtimePaths = createTempWalletPaths(join(fixture.rootDir, "wallet-home"));
+  const previousResumeError = process.env[FORCE_RESUME_ERROR_ENV];
+  process.env[FORCE_RESUME_ERROR_ENV] = "forced resume failure";
+
+  try {
+    await assert.rejects(
+      async () => openWalletReadContext({
+        dataDir: fixture.dataDir,
+        databasePath: fixture.databasePath,
+        paths: runtimePaths,
+      }),
+      /indexer_daemon_background_follow_recovery_failed/,
+    );
+  } finally {
+    if (previousResumeError === undefined) {
+      delete process.env[FORCE_RESUME_ERROR_ENV];
+    } else {
+      process.env[FORCE_RESUME_ERROR_ENV] = previousResumeError;
+    }
     await cleanupManagedFixture(fixture);
   }
 });

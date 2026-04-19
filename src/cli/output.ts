@@ -903,6 +903,14 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode === "indexer_daemon_background_follow_recovery_failed") {
+    return {
+      what: "The managed indexer daemon could not recover automatic background follow.",
+      why: "Cogcoin tried to resume or restart the compatible managed indexer daemon, but it still failed to enter background follow.",
+      next: "Run `cogcoin repair` if this persists, then retry.",
+    };
+  }
+
   if (errorCode === "indexer_daemon_service_version_mismatch") {
     return {
       what: "The live indexer daemon is running an incompatible service API version.",

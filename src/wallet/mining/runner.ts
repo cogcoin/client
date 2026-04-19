@@ -341,6 +341,34 @@ function resolveBip39WordsFromIndices(indices: readonly number[] | null | undefi
   return words;
 }
 
+function resolveSettledWinnerRequiredWords(options: {
+  domainId: number;
+  bip39WordIndices?: readonly number[] | null;
+  snapshotTipPreviousHashHex?: string | null;
+}): readonly string[] {
+  const storedWords = resolveBip39WordsFromIndices(options.bip39WordIndices);
+
+  if (storedWords.length > 0) {
+    return storedWords;
+  }
+
+  if (
+    options.snapshotTipPreviousHashHex === null
+    || options.snapshotTipPreviousHashHex === undefined
+    || !Number.isInteger(options.domainId)
+    || options.domainId <= 0
+  ) {
+    return [];
+  }
+
+  return resolveBip39WordsFromIndices(
+    deriveMiningWordIndices(
+      Buffer.from(displayToInternalBlockhash(options.snapshotTipPreviousHashHex), "hex"),
+      options.domainId,
+    ),
+  );
+}
+
 interface RankedMiningSentenceEntry {
   domainId: number;
   domainName: string;
@@ -1042,6 +1070,7 @@ function fallbackSettledWinnerDomainName(domainId: number): string {
 function resolveCurrentMinedBlockBoard(options: {
   snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"] | null | undefined;
   snapshotTipHeight: number | null;
+  snapshotTipPreviousHashHex: string | null;
   nodeBestHeight: number | null;
 }): {
   settledBlockHeight: number | null;
@@ -1071,9 +1100,11 @@ function resolveCurrentMinedBlockBoard(options: {
       rank: winner.rank,
       domainName: lookupDomainById(options.snapshotState!, winner.domainId)?.name ?? fallbackSettledWinnerDomainName(winner.domainId),
       sentence: winner.sentenceText ?? "[unavailable]",
-      requiredWords: resolveBip39WordsFromIndices(
-        (winner as typeof winner & { bip39WordIndices?: number[] }).bip39WordIndices,
-      ),
+      requiredWords: resolveSettledWinnerRequiredWords({
+        domainId: winner.domainId,
+        bip39WordIndices: (winner as typeof winner & { bip39WordIndices?: number[] }).bip39WordIndices,
+        snapshotTipPreviousHashHex: options.snapshotTipPreviousHashHex,
+      }),
     }));
 
   return {
@@ -1085,22 +1116,28 @@ function resolveCurrentMinedBlockBoard(options: {
 export function resolveSettledBoardForTesting(options: {
   snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"] | null | undefined;
   snapshotTipHeight: number | null;
+  snapshotTipPreviousHashHex?: string | null;
   nodeBestHeight: number | null;
 }): {
   settledBlockHeight: number | null;
   settledBoardEntries: MiningSentenceBoardEntry[];
 } {
-  return resolveCurrentMinedBlockBoard(options);
+  return resolveCurrentMinedBlockBoard({
+    ...options,
+    snapshotTipPreviousHashHex: options.snapshotTipPreviousHashHex ?? null,
+  });
 }
 
 function syncMiningUiSettledBoard(
   loopState: MiningLoopState,
   snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"] | null | undefined,
   snapshotTipHeight: number | null,
+  snapshotTipPreviousHashHex: string | null,
 ): void {
   const settledBoard = resolveCurrentMinedBlockBoard({
     snapshotState,
     snapshotTipHeight,
+    snapshotTipPreviousHashHex,
     nodeBestHeight: null,
   });
   loopState.ui.settledBlockHeight = settledBoard.settledBlockHeight;
@@ -1111,6 +1148,7 @@ function syncMiningUiForCurrentTip(options: {
   loopState: MiningLoopState;
   snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"] | null | undefined;
   snapshotTipHeight: number | null;
+  snapshotTipPreviousHashHex: string | null;
   nodeBestHeight: number | null;
   nodeBestHash: string | null;
   recentWin: MiningRecentWinSummary | null;
@@ -1139,6 +1177,7 @@ function syncMiningUiForCurrentTip(options: {
     options.loopState,
     options.snapshotState,
     options.snapshotTipHeight,
+    options.snapshotTipPreviousHashHex,
   );
 
   return {
@@ -1470,6 +1509,7 @@ function createIndexedMiningFollowVisualizerState(
   const settledBoard = resolveCurrentMinedBlockBoard({
     snapshotState: readContext.snapshot?.state ?? null,
     snapshotTipHeight: readContext.snapshot?.tip?.height ?? readContext.indexer.snapshotTip?.height ?? null,
+    snapshotTipPreviousHashHex: readContext.snapshot?.tip?.previousHashHex ?? readContext.indexer.snapshotTip?.previousHashHex ?? null,
     nodeBestHeight: readContext.nodeStatus?.nodeBestHeight ?? null,
   });
 
@@ -3876,6 +3916,7 @@ async function performMiningCycle(options: {
       loopState: options.loopState,
       snapshotState: effectiveReadContext.snapshot?.state ?? null,
       snapshotTipHeight: effectiveReadContext.snapshot?.tip?.height ?? effectiveReadContext.indexer.snapshotTip?.height ?? null,
+      snapshotTipPreviousHashHex: effectiveReadContext.snapshot?.tip?.previousHashHex ?? effectiveReadContext.indexer.snapshotTip?.previousHashHex ?? null,
       nodeBestHeight: effectiveReadContext.nodeStatus?.nodeBestHeight ?? null,
       nodeBestHash: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
       recentWin: reconciliation.recentWin,

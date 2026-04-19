@@ -19,6 +19,12 @@ import {
 import { resolveManagedServicePaths, UNINITIALIZED_WALLET_ROOT_ID } from "./service-paths.js";
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
+const INDEXER_DAEMON_REQUEST_TIMEOUT_MS = 15_000;
+const INDEXER_DAEMON_RESUME_BACKGROUND_FOLLOW_REQUEST_TIMEOUT_MS = 35_000;
+const INDEXER_DAEMON_BACKGROUND_FOLLOW_NOT_ACTIVE = "indexer_daemon_background_follow_not_active";
+
+export const INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED =
+  "indexer_daemon_background_follow_recovery_failed";
 
 interface DaemonRequest {
   id: string;
@@ -269,7 +275,11 @@ function createIndexerDaemonClient(
         handler();
       };
 
-      socket.setTimeout(15_000);
+      socket.setTimeout(
+        request.method === "ResumeBackgroundFollow"
+          ? INDEXER_DAEMON_RESUME_BACKGROUND_FOLLOW_REQUEST_TIMEOUT_MS
+          : INDEXER_DAEMON_REQUEST_TIMEOUT_MS,
+      );
       socket.on("connect", () => {
         socket.write(`${JSON.stringify(request)}\n`);
       });
@@ -628,13 +638,25 @@ export async function attachOrStartIndexerDaemon(options: {
   ensureBackgroundFollow?: boolean;
   expectedBinaryVersion?: string | null;
 }): Promise<IndexerDaemonClient> {
-  const requestBackgroundFollow = (client: IndexerDaemonClient): IndexerDaemonClient => {
+  const requestBackgroundFollow = async (
+    client: IndexerDaemonClient,
+    observedStatus: ManagedIndexerDaemonObservedStatus | null = null,
+  ): Promise<IndexerDaemonClient> => {
     if (options.ensureBackgroundFollow !== true) {
       return client;
     }
 
-    // The managed daemon should keep its own follow loop alive in the background.
-    void client.resumeBackgroundFollow().catch(() => undefined);
+    if (observedStatus?.backgroundFollowActive === true) {
+      return client;
+    }
+
+    await client.resumeBackgroundFollow();
+    const status = await client.getStatus();
+
+    if (status.backgroundFollowActive !== true) {
+      throw new Error(INDEXER_DAEMON_BACKGROUND_FOLLOW_NOT_ACTIVE);
+    }
+
     return client;
   };
   const walletRootId = options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
@@ -691,10 +713,14 @@ export async function attachOrStartIndexerDaemon(options: {
   const existingProbe = await probeIndexerDaemonAtSocket(paths.indexerDaemonSocketPath, walletRootId);
   if (existingProbe.compatibility === "compatible" && existingProbe.client !== null) {
     if (!isStaleIndexerDaemonVersion(existingProbe.status, expectedBinaryVersion)) {
-      return requestBackgroundFollow(existingProbe.client);
+      try {
+        return await requestBackgroundFollow(existingProbe.client, existingProbe.status);
+      } catch {
+        await existingProbe.client.close().catch(() => undefined);
+      }
+    } else {
+      await existingProbe.client.close().catch(() => undefined);
     }
-
-    await existingProbe.client.close().catch(() => undefined);
   }
 
   if (existingProbe.compatibility !== "unreachable" && existingProbe.compatibility !== "compatible") {
@@ -713,22 +739,40 @@ export async function attachOrStartIndexerDaemon(options: {
       const liveProbe = await probeIndexerDaemonAtSocket(paths.indexerDaemonSocketPath, walletRootId);
       if (liveProbe.compatibility === "compatible" && liveProbe.client !== null) {
         if (!isStaleIndexerDaemonVersion(liveProbe.status, expectedBinaryVersion)) {
-          return requestBackgroundFollow(liveProbe.client);
+          try {
+            return await requestBackgroundFollow(liveProbe.client, liveProbe.status);
+          } catch {
+            await liveProbe.client.close().catch(() => undefined);
+            await stopIndexerDaemonServiceWithLockHeld({
+              dataDir: options.dataDir,
+              walletRootId,
+              shutdownTimeoutMs: options.shutdownTimeoutMs,
+              paths,
+              processId: liveProbe.status?.processId ?? null,
+            });
+          }
+        } else {
+          await liveProbe.client.close().catch(() => undefined);
+          await stopIndexerDaemonServiceWithLockHeld({
+            dataDir: options.dataDir,
+            walletRootId,
+            shutdownTimeoutMs: options.shutdownTimeoutMs,
+            paths,
+            processId: liveProbe.status?.processId ?? null,
+          });
         }
-
-        await liveProbe.client.close().catch(() => undefined);
-        await stopIndexerDaemonServiceWithLockHeld({
-          dataDir: options.dataDir,
-          walletRootId,
-          shutdownTimeoutMs: options.shutdownTimeoutMs,
-          paths,
-          processId: liveProbe.status?.processId ?? null,
-        });
       } else if (liveProbe.compatibility !== "unreachable") {
         throw new Error(liveProbe.error ?? "indexer_daemon_protocol_error");
       }
 
-      return requestBackgroundFollow(await startDaemon());
+      const daemon = await startDaemon();
+
+      try {
+        return await requestBackgroundFollow(daemon);
+      } catch (error) {
+        await daemon.close().catch(() => undefined);
+        throw new Error(INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED, { cause: error });
+      }
     } finally {
       await lock.release();
     }
