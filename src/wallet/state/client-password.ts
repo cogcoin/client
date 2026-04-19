@@ -141,14 +141,20 @@ function resolveClientPasswordRotationJournalPath(directoryPath: string): string
   return join(directoryPath, "client-password-rotation.json");
 }
 
-function resolveAgentEndpoint(platform: NodeJS.Platform, stateRoot: string): string {
+function resolveAgentEndpoint(stateRoot: string): string {
   const hash = createHash("sha256").update(stateRoot).digest("hex").slice(0, 24);
 
-  if (platform === "win32") {
+  // Wallet provider tests simulate foreign platforms, but the local agent transport
+  // still has to follow the real host runtime.
+  if (process.platform === "win32") {
     return `\\\\.\\pipe\\cogcoin-client-password-${hash}`;
   }
 
   return join(tmpdir(), `cogcoin-client-password-${hash}.sock`);
+}
+
+function shouldRemoveAgentEndpointPath(endpoint: string): boolean {
+  return !endpoint.startsWith("\\\\.\\pipe\\");
 }
 
 function isMissingFileError(error: unknown): boolean {
@@ -560,7 +566,7 @@ async function requestAgent(
   options: ClientPasswordStorageOptions,
   request: AgentRequest,
 ): Promise<AgentResponse> {
-  const endpoint = resolveAgentEndpoint(options.platform, options.stateRoot);
+  const endpoint = resolveAgentEndpoint(options.stateRoot);
   const socket = await openAgentConnection(endpoint);
 
   return await new Promise<AgentResponse>((resolve, reject) => {
@@ -642,8 +648,10 @@ async function requestAgentOrNull(
       : "";
 
     if (code === "ENOENT" || code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EPIPE") {
-      if (options.platform !== "win32") {
-        await rm(resolveAgentEndpoint(options.platform, options.stateRoot), { force: true }).catch(() => undefined);
+      const endpoint = resolveAgentEndpoint(options.stateRoot);
+
+      if (shouldRemoveAgentEndpointPath(endpoint)) {
+        await rm(endpoint, { force: true }).catch(() => undefined);
       }
       return null;
     }
@@ -674,8 +682,10 @@ export async function lockClientPasswordSession(
   options: ClientPasswordStorageOptions,
 ): Promise<ClientPasswordSessionStatus> {
   await requestAgentOrNull(options, { command: "lock" }).catch(() => null);
-  if (options.platform !== "win32") {
-    await rm(resolveAgentEndpoint(options.platform, options.stateRoot), { force: true }).catch(() => undefined);
+  const endpoint = resolveAgentEndpoint(options.stateRoot);
+
+  if (shouldRemoveAgentEndpointPath(endpoint)) {
+    await rm(endpoint, { force: true }).catch(() => undefined);
   }
   return {
     unlocked: false,
@@ -752,7 +762,7 @@ async function startClientPasswordSessionWithExpiry(options: ClientPasswordStora
   unlockUntilUnixMs: number;
 }): Promise<ClientPasswordSessionStatus> {
   const unlockUntilUnixMs = options.unlockUntilUnixMs;
-  const endpoint = resolveAgentEndpoint(options.platform, options.stateRoot);
+  const endpoint = resolveAgentEndpoint(options.stateRoot);
 
   await lockClientPasswordSession(options).catch(() => undefined);
   await mkdir(options.runtimeRoot, { recursive: true }).catch(() => undefined);

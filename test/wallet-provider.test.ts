@@ -15,7 +15,12 @@ import {
   unlockClientPassword,
 } from "../src/wallet/state/provider.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
-import { configureTestClientPassword, createScriptedPrompter } from "./client-password-test-helpers.js";
+import {
+  cleanupLegacyClientPasswordPipeArtifactsForTesting,
+  configureTestClientPassword,
+  createScriptedPrompter,
+  listLegacyClientPasswordPipeArtifactsForTesting,
+} from "./client-password-test-helpers.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -153,6 +158,26 @@ test("Windows default secret provider stores, loads, and deletes local secret fi
 
   await provider.deleteSecret(keyId);
   await assert.rejects(() => provider.loadSecret(keyId), /wallet_secret_missing_wallet-state:wallet-root-test/);
+});
+
+test("Windows test provider does not leave legacy pipe sockets in the repo root", async (t) => {
+  await cleanupLegacyClientPasswordPipeArtifactsForTesting();
+
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-win32-agent-endpoint");
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "win32",
+    stateRoot,
+  });
+
+  t.after(async () => {
+    await lockClientPassword(provider);
+  });
+
+  await configureTestClientPassword(provider);
+  assert.deepEqual(await listLegacyClientPasswordPipeArtifactsForTesting(), []);
+
+  await lockClientPassword(provider);
+  assert.deepEqual(await listLegacyClientPasswordPipeArtifactsForTesting(), []);
 });
 
 test("Windows default secret provider reports missing secrets generically", async (t) => {

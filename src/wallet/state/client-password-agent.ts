@@ -2,6 +2,10 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import net from "node:net";
 import { rm } from "node:fs/promises";
 
+function shouldRemoveAgentEndpointPath(endpoint: string): boolean {
+  return !endpoint.startsWith("\\\\.\\pipe\\");
+}
+
 function zeroizeBuffer(buffer: Uint8Array | null | undefined): void {
   if (buffer != null) {
     buffer.fill(0);
@@ -91,7 +95,7 @@ async function main(): Promise<void> {
     zeroizeBuffer(key);
     key = Buffer.alloc(0);
 
-    if (!bootstrap.endpoint.startsWith("\\\\.\\")) {
+    if (shouldRemoveAgentEndpointPath(bootstrap.endpoint)) {
       await rm(bootstrap.endpoint, { force: true }).catch(() => undefined);
     }
 
