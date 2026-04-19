@@ -26,6 +26,10 @@ import {
   shouldKeepCurrentTipLivePublishForTesting,
   syncMiningVisualizerBlockTimesForTesting,
 } from "../src/wallet/mining/runner.js";
+import {
+  MINING_NETWORK_SETTLE_WINDOW_MS,
+  MINING_TIP_SETTLE_WINDOW_MS,
+} from "../src/wallet/mining/constants.js";
 import { loadMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
@@ -715,6 +719,103 @@ test("performMiningCycle keeps the mining board pinned to the indexed snapshot w
   ]);
 });
 
+test("performMiningCycle marks a fresh tip settle window while waiting for the indexer to catch up", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-tip-settle");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const snapshotTipHash = "11".repeat(32);
+  const currentTipHash = "12".repeat(32);
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => createReadyMiningReadContext({
+      miningState: createMiningState({
+        livePublishInMempool: false,
+      }),
+      readContextOverrides: {
+        snapshot: {
+          tip: {
+            height: 100,
+            blockHashHex: snapshotTipHash,
+            previousHashHex: null,
+            stateHashHex: null,
+          },
+          state: {
+            consensus: {
+              domainIdsByName: new Map([["cogdemo", 7]]),
+              domainsById: new Map([[7, {
+                domainId: 7,
+                name: "cogdemo",
+                anchored: true,
+                anchorHeight: 100,
+                endpoint: null,
+              }]]),
+              balances: new Map(),
+            },
+            history: {
+              foundingMessageByDomain: new Map(),
+              blockWinnersByHeight: new Map(),
+            },
+          },
+        },
+        indexer: {
+          health: "catching-up",
+          message: "Indexer daemon is still catching up to the managed Bitcoin tip.",
+          status: null,
+          source: "lease",
+          daemonInstanceId: "daemon-1",
+          snapshotSeq: "seq-100",
+          openedAtUnixMs: 1,
+          snapshotTip: {
+            height: 100,
+            blockHashHex: snapshotTipHash,
+            previousHashHex: null,
+            stateHashHex: null,
+          },
+        },
+        nodeStatus: {
+          chain: "mainnet",
+          nodeBestHeight: 101,
+          nodeBestHashHex: currentTipHash,
+          walletReplica: {
+            proofStatus: "ready",
+          },
+        },
+        model: {
+          walletScriptPubKeyHex: "0014" + "11".repeat(20),
+          domains: [],
+        },
+      },
+    }),
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+    nowImpl: () => 1_000,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-indexer");
+  assert.equal(snapshot?.tipSettledUntilUnixMs, 1_000 + MINING_TIP_SETTLE_WINDOW_MS);
+  assert.equal(snapshot?.reconnectSettledUntilUnixMs, null);
+});
+
 test("performMiningCycle waits instead of throwing on recoverable managed Bitcoin RPC failures", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-rpc-recovery");
   const paths = resolveWalletRuntimePathsForTesting({
@@ -916,6 +1017,7 @@ test("performMiningCycle immediately reattaches managed bitcoind when no live pi
   assert.equal(snapshot?.currentPhase, "waiting-bitcoin-network");
   assert.equal(attachCalls, 2);
   assert.equal(stopCalls, 0);
+  assert.equal(snapshot?.reconnectSettledUntilUnixMs, 1_000 + MINING_NETWORK_SETTLE_WINDOW_MS);
   assert.equal(getSelectedCandidateForTipForTesting(loopState, "tip-1"), null);
   assert.deepEqual(loopState.ui.provisionalRequiredWords, []);
   assert.deepEqual(loopState.ui.provisionalEntry, {
@@ -1162,8 +1264,15 @@ test("resume refresh passes a freshly indexed board state to the visualizer", as
           };
       },
     } as any,
+    loopState: createMiningLoopStateForTesting(),
   });
 
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "resuming");
+  assert.equal(
+    snapshot?.reconnectSettledUntilUnixMs,
+    1_700_000_999 + MINING_NETWORK_SETTLE_WINDOW_MS,
+  );
   assert.deepEqual(capturedUiState, {
     settledBlockHeight: 100,
     settledBoardEntries: [
@@ -1550,7 +1659,7 @@ test("publish candidate broadcasts when only safe 0-conf BTC funding is availabl
     runId: "run-1",
   });
 
-  assert.equal(attachServiceLifetime, "ephemeral");
+  assert.equal(attachServiceLifetime, null);
   assert.ok(observedListUnspentMinConfs.length >= 2);
   assert.deepEqual(new Set(observedListUnspentMinConfs), new Set([0]));
   assert.equal(fundedMinConf, 0);

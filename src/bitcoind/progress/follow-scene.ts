@@ -200,6 +200,25 @@ function highestTrackedFollowHeight(state: FollowSceneStateForTesting): number {
   );
 }
 
+function resolveLatestAuthoritativeFollowHeight(
+  indexedHeight: number | null,
+  nodeHeight: number | null,
+): number | null {
+  if (indexedHeight === null) {
+    return nodeHeight;
+  }
+
+  if (nodeHeight === null) {
+    return indexedHeight;
+  }
+
+  return Math.max(indexedHeight, nodeHeight);
+}
+
+function resolveDisplayedFollowHeight(state: FollowSceneStateForTesting): number | null {
+  return state.displayedCenterHeight ?? state.indexedHeight;
+}
+
 function resetFollowSceneState(state: FollowSceneStateForTesting): void {
   state.displayedCenterHeight = state.indexedHeight;
   state.blockTimesByHeight = {};
@@ -207,6 +226,39 @@ function resetFollowSceneState(state: FollowSceneStateForTesting): void {
   state.pendingLabel = null;
   state.pendingStaticX = null;
   state.animation = null;
+}
+
+function resyncFollowSceneToLatestHeight(
+  state: FollowSceneStateForTesting,
+  latestHeight: number | null,
+): void {
+  state.displayedCenterHeight = latestHeight;
+  state.queuedHeights = [];
+  state.pendingLabel = null;
+  state.pendingStaticX = null;
+  state.animation = null;
+}
+
+function shouldResyncAuthoritativeFollowScene(options: {
+  state: FollowSceneStateForTesting;
+  latestHeight: number | null;
+  settleLatest: boolean;
+}): boolean {
+  if (options.latestHeight === null) {
+    return false;
+  }
+
+  if (options.settleLatest) {
+    return true;
+  }
+
+  const displayedHeight = resolveDisplayedFollowHeight(options.state);
+
+  if (displayedHeight === null) {
+    return false;
+  }
+
+  return options.latestHeight - displayedHeight > 1;
 }
 
 function enqueueFollowHeights(state: FollowSceneStateForTesting, nodeHeight: number): void {
@@ -223,10 +275,14 @@ export function syncFollowSceneState(
     indexedHeight,
     nodeHeight,
     liveActivated,
+    authoritativeTip,
+    settleLatest,
   }: {
     indexedHeight?: number | null;
     nodeHeight?: number | null;
     liveActivated?: boolean;
+    authoritativeTip?: boolean;
+    settleLatest?: boolean;
   },
 ): void {
   const wasLive = state.liveActivated;
@@ -259,7 +315,22 @@ export function syncFollowSceneState(
     resetFollowSceneState(state);
   }
 
-  if (state.liveActivated && state.observedNodeHeight !== null) {
+  const latestAuthoritativeHeight = resolveLatestAuthoritativeFollowHeight(
+    state.indexedHeight,
+    state.observedNodeHeight,
+  );
+
+  if (
+    state.liveActivated
+    && authoritativeTip === true
+    && shouldResyncAuthoritativeFollowScene({
+      state,
+      latestHeight: latestAuthoritativeHeight,
+      settleLatest: settleLatest === true,
+    })
+  ) {
+    resyncFollowSceneToLatestHeight(state, latestAuthoritativeHeight);
+  } else if (state.liveActivated && state.observedNodeHeight !== null) {
     enqueueFollowHeights(state, state.observedNodeHeight);
   }
 
@@ -635,6 +706,8 @@ export function syncFollowSceneStateForTesting(
     indexedHeight?: number | null;
     nodeHeight?: number | null;
     liveActivated?: boolean;
+    authoritativeTip?: boolean;
+    settleLatest?: boolean;
   },
 ): FollowSceneStateForTesting {
   syncFollowSceneState(state, options);

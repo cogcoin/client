@@ -189,6 +189,8 @@ interface MiningRunnerStatusOverrides {
   currentAbsoluteFeeSats?: number | null;
   currentBlockFeeSpentSats?: string;
   lastSuspendDetectedAtUnixMs?: number | null;
+  reconnectSettledUntilUnixMs?: number | null;
+  tipSettledUntilUnixMs?: number | null;
   providerState?: MiningRuntimeStatusV1["providerState"];
   corePublishState?: MiningRuntimeStatusV1["corePublishState"];
   currentPublishDecision?: string | null;
@@ -345,6 +347,8 @@ interface MiningLoopState {
   bitcoinRecoveryLastRestartAttemptAtUnixMs: number | null;
   bitcoinRecoveryServiceInstanceId: string | null;
   bitcoinRecoveryProcessId: number | null;
+  reconnectSettledUntilUnixMs: number | null;
+  tipSettledUntilUnixMs: number | null;
 }
 
 interface MiningSuspendDetector {
@@ -945,11 +949,48 @@ function createMiningLoopState(): MiningLoopState {
     bitcoinRecoveryLastRestartAttemptAtUnixMs: null,
     bitcoinRecoveryServiceInstanceId: null,
     bitcoinRecoveryProcessId: null,
+    reconnectSettledUntilUnixMs: null,
+    tipSettledUntilUnixMs: null,
   };
 }
 
 export function createMiningLoopStateForTesting(): MiningLoopState {
   return createMiningLoopState();
+}
+
+function expireMiningSettleWindows(loopState: MiningLoopState, nowUnixMs: number): void {
+  if (
+    loopState.reconnectSettledUntilUnixMs !== null
+    && loopState.reconnectSettledUntilUnixMs <= nowUnixMs
+  ) {
+    loopState.reconnectSettledUntilUnixMs = null;
+  }
+
+  if (
+    loopState.tipSettledUntilUnixMs !== null
+    && loopState.tipSettledUntilUnixMs <= nowUnixMs
+  ) {
+    loopState.tipSettledUntilUnixMs = null;
+  }
+}
+
+function setMiningReconnectSettleWindow(loopState: MiningLoopState, nowUnixMs: number): void {
+  loopState.reconnectSettledUntilUnixMs = nowUnixMs + MINING_NETWORK_SETTLE_WINDOW_MS;
+}
+
+function setMiningTipSettleWindow(loopState: MiningLoopState, nowUnixMs: number): void {
+  loopState.tipSettledUntilUnixMs = nowUnixMs + MINING_TIP_SETTLE_WINDOW_MS;
+}
+
+function buildMiningSettleWindowStatusOverrides(
+  loopState: MiningLoopState,
+  nowUnixMs: number,
+): Pick<MiningRunnerStatusOverrides, "reconnectSettledUntilUnixMs" | "tipSettledUntilUnixMs"> {
+  expireMiningSettleWindows(loopState, nowUnixMs);
+  return {
+    reconnectSettledUntilUnixMs: loopState.reconnectSettledUntilUnixMs,
+    tipSettledUntilUnixMs: loopState.tipSettledUntilUnixMs,
+  };
 }
 
 function buildMiningTipKey(bestBlockHash: string | null, targetBlockHeight: number | null): string | null {
@@ -1055,13 +1096,16 @@ function syncMiningUiForCurrentTip(options: {
 }): {
   targetBlockHeight: number | null;
   tipKey: string | null;
+  tipChanged: boolean;
 } {
   const targetBlockHeight = options.nodeBestHeight === null
     ? null
     : options.nodeBestHeight + 1;
   const tipKey = buildMiningTipKey(options.nodeBestHash, targetBlockHeight);
+  const priorTipKey = options.loopState.currentTipKey;
+  const tipChanged = tipKey !== null && tipKey !== priorTipKey;
 
-  if (tipKey !== options.loopState.currentTipKey) {
+  if (tipKey !== priorTipKey) {
     options.loopState.currentTipKey = tipKey;
     resetMiningUiForTip(options.loopState, targetBlockHeight);
 
@@ -1079,6 +1123,7 @@ function syncMiningUiForCurrentTip(options: {
   return {
     targetBlockHeight,
     tipKey,
+    tipChanged,
   };
 }
 
@@ -1310,7 +1355,6 @@ async function attachManagedBitcoindForRecovery(options: {
       dataDir: options.dataDir,
       chain: "main",
       startHeight: 0,
-      serviceLifetime: "ephemeral",
       walletRootId: options.walletRootId,
     });
     const serviceStatus = await service.refreshServiceStatus?.().catch(() => null);
@@ -1860,6 +1904,14 @@ function buildStatusSnapshot(
       overrides.lastSuspendDetectedAtUnixMs,
       view.runtime.lastSuspendDetectedAtUnixMs,
     ),
+    reconnectSettledUntilUnixMs: resolveSnapshotOverride(
+      overrides.reconnectSettledUntilUnixMs,
+      view.runtime.reconnectSettledUntilUnixMs,
+    ),
+    tipSettledUntilUnixMs: resolveSnapshotOverride(
+      overrides.tipSettledUntilUnixMs,
+      view.runtime.tipSettledUntilUnixMs,
+    ),
     providerState: resolveSnapshotOverride(overrides.providerState, view.runtime.providerState),
     corePublishState: resolveSnapshotOverride(overrides.corePublishState, view.runtime.corePublishState),
     currentPublishDecision: resolveSnapshotOverride(overrides.currentPublishDecision, view.runtime.currentPublishDecision),
@@ -2050,6 +2102,7 @@ async function handleRecoverableMiningBitcoindFailure(options: {
 
   if (restartedService) {
     discardMiningLoopTransientWork(options.loopState, walletRootId);
+    setMiningReconnectSettleWindow(options.loopState, options.nowUnixMs);
   }
 
   await refreshAndSaveStatus({
@@ -2061,6 +2114,7 @@ async function handleRecoverableMiningBitcoindFailure(options: {
       currentPhase: "waiting-bitcoin-network",
       lastError: failureMessage,
       note: MINING_BITCOIN_RECOVERY_NOTE,
+      ...buildMiningSettleWindowStatusOverrides(options.loopState, options.nowUnixMs),
     },
     visualizer: options.visualizer,
     visualizerState: options.loopState.ui,
@@ -2078,6 +2132,7 @@ async function handleDetectedMiningRuntimeResume(options: {
   detectedAtUnixMs: number;
   openReadContext: typeof openWalletReadContext;
   visualizer?: MiningFollowVisualizer;
+  loopState: MiningLoopState;
 }): Promise<void> {
   const readContext = await options.openReadContext({
     dataDir: options.dataDir,
@@ -2088,6 +2143,7 @@ async function handleDetectedMiningRuntimeResume(options: {
 
   try {
     clearMiningGateCache(readContext.localState.walletRootId);
+    setMiningReconnectSettleWindow(options.loopState, options.detectedAtUnixMs);
     await refreshAndSaveStatus({
       paths: options.paths,
       provider: options.provider,
@@ -2100,6 +2156,7 @@ async function handleDetectedMiningRuntimeResume(options: {
         currentPhase: "resuming",
         lastSuspendDetectedAtUnixMs: options.detectedAtUnixMs,
         note: "Mining discarded stale in-flight work after a large local runtime gap and is rechecking health.",
+        ...buildMiningSettleWindowStatusOverrides(options.loopState, options.detectedAtUnixMs),
       },
       visualizer: options.visualizer,
       visualizerState: createIndexedMiningFollowVisualizerState(readContext),
@@ -3259,7 +3316,6 @@ async function publishCandidateOnce(options: {
     dataDir: options.dataDir,
     chain: "main",
     startHeight: 0,
-    serviceLifetime: "ephemeral",
     walletRootId: options.readContext.localState.state.walletRootId,
   });
   const rpc = options.rpcFactory(service.rpc);
@@ -3704,6 +3760,7 @@ async function performMiningCycle(options: {
       overrides: MiningRunnerStatusOverrides,
       includeVisualizer = true,
     ): Promise<MiningRuntimeStatusV1> => {
+      const statusNowUnixMs = now();
       const resolvedOverrides = clearRecoveredBitcoindError && overrides.lastError === undefined
         ? {
           ...overrides,
@@ -3715,7 +3772,10 @@ async function performMiningCycle(options: {
         paths: options.paths,
         provider: options.provider,
         readContext,
-        overrides: resolvedOverrides,
+        overrides: {
+          ...buildMiningSettleWindowStatusOverrides(options.loopState, statusNowUnixMs),
+          ...resolvedOverrides,
+        },
         visualizer: includeVisualizer ? options.visualizer : undefined,
         visualizerState: includeVisualizer ? options.loopState.ui : undefined,
       });
@@ -3742,7 +3802,6 @@ async function performMiningCycle(options: {
       dataDir: options.dataDir,
       chain: "main",
       startHeight: 0,
-      serviceLifetime: "ephemeral",
       walletRootId: readContext.localState.state.walletRootId,
     });
     checkpointMiningSuspendDetector(options.suspendDetector);
@@ -3791,7 +3850,7 @@ async function performMiningCycle(options: {
       indexedTipHashHex: indexedTip?.blockHashHex ?? null,
     }).catch(() => ({}));
     syncMiningVisualizerBlockTimes(options.loopState, visibleBlockTimes);
-    const { targetBlockHeight, tipKey } = syncMiningUiForCurrentTip({
+    const { targetBlockHeight, tipKey, tipChanged } = syncMiningUiForCurrentTip({
       loopState: options.loopState,
       snapshotState: effectiveReadContext.snapshot?.state ?? null,
       snapshotTipHeight: effectiveReadContext.snapshot?.tip?.height ?? effectiveReadContext.indexer.snapshotTip?.height ?? null,
@@ -3799,6 +3858,9 @@ async function performMiningCycle(options: {
       nodeBestHash: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
       recentWin: reconciliation.recentWin,
     });
+    if (tipChanged) {
+      setMiningTipSettleWindow(options.loopState, now());
+    }
     const displaySats = await resolveFundingDisplaySats(effectiveReadContext.localState.state, rpc).catch(() => null);
     syncMiningVisualizerBalances(options.loopState, effectiveReadContext, displaySats);
 
@@ -4409,6 +4471,7 @@ async function performMiningCycle(options: {
         detectedAtUnixMs: error.detectedAtUnixMs,
         openReadContext: options.openReadContext,
         visualizer: options.visualizer,
+        loopState: options.loopState,
       });
       return;
     }
@@ -4464,7 +4527,6 @@ async function saveStopSnapshot(options: {
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
-        serviceLifetime: "ephemeral",
         walletRootId: localState.state.walletRootId,
       }).catch(() => null);
 
@@ -4597,6 +4659,7 @@ async function runMiningLoop(options: {
         detectedAtUnixMs: error.detectedAtUnixMs,
         openReadContext: options.openReadContext,
         visualizer: options.visualizer,
+        loopState,
       });
       continue;
     }
@@ -4615,7 +4678,6 @@ async function runMiningLoop(options: {
     dataDir: options.dataDir,
     chain: "main",
     startHeight: 0,
-    serviceLifetime: "ephemeral",
     walletRootId: undefined,
   }).catch(() => null);
   if (service !== null) {
@@ -4958,8 +5020,12 @@ export async function handleDetectedMiningRuntimeResumeForTesting(options: {
   detectedAtUnixMs: number;
   openReadContext: typeof openWalletReadContext;
   visualizer?: MiningFollowVisualizer;
+  loopState?: MiningLoopState;
 }): Promise<void> {
-  await handleDetectedMiningRuntimeResume(options);
+  await handleDetectedMiningRuntimeResume({
+    ...options,
+    loopState: options.loopState ?? createMiningLoopState(),
+  });
 }
 
 export async function takeOverMiningRuntimeForTesting(options: {

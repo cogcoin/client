@@ -995,7 +995,6 @@ export async function transferDomain(options: TransferDomainOptions): Promise<Do
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
-        serviceLifetime: "ephemeral",
         walletRootId: operation.state.walletRootId,
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
@@ -1283,7 +1282,6 @@ async function runSellMutation(options: SellDomainOptions): Promise<DomainMarket
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
-        serviceLifetime: "ephemeral",
         walletRootId: operation.state.walletRootId,
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
@@ -1583,7 +1581,6 @@ export async function buyDomain(options: BuyDomainOptions): Promise<DomainMarket
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
-        serviceLifetime: "ephemeral",
         walletRootId: operation.state.walletRootId,
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);

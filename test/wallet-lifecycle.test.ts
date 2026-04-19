@@ -411,7 +411,7 @@ test("repair kills recorded background mining and clears mining control artifact
   );
   assert.equal(await pathExists(fixture.paths.miningControlLockPath), false);
   assert.equal(await pathExists(join(fixture.paths.miningRoot, "generation-request.json")), false);
-  assert.equal(attachServiceLifetime, "ephemeral");
+  assert.equal(attachServiceLifetime, null);
   const runtime = await loadMiningRuntimeStatus(fixture.paths.miningStatusPath);
   assert.equal(runtime?.runMode, "stopped");
   assert.equal(runtime?.backgroundWorkerPid, null);

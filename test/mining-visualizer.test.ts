@@ -210,6 +210,44 @@ function countMatches(value: string, pattern: RegExp): number {
   return [...value.matchAll(pattern)].length;
 }
 
+function createSceneCaptureVisualizer(options: {
+  clock: FakeClock;
+  scenes: Array<{
+    displayedCenterHeight: number | null;
+    queuedHeights: number[];
+    pendingLabel: string | null;
+    animationKind: string | null;
+    animationHeight: number | null;
+  }>;
+}): MiningFollowVisualizer {
+  return new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    clock: options.clock,
+    platform: "linux",
+    env: { DISPLAY: ":0" },
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        followScene,
+      ) {
+        options.scenes.push({
+          displayedCenterHeight: followScene.displayedCenterHeight,
+          queuedHeights: [...followScene.queuedHeights],
+          pendingLabel: followScene.pendingLabel,
+          animationKind: followScene.animation?.kind ?? null,
+          animationHeight: followScene.animation?.height ?? null,
+        });
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+}
+
 test("mining follow visualizer renders the follow scene on tty streams", () => {
   const stream = new MemoryStream({ isTTY: true, columns: 120 });
   const visualizer = new MiningFollowVisualizer({
@@ -742,6 +780,169 @@ test("mining follow visualizer snapshots queued headless redraw state", () => {
   visualizer.close();
 });
 
+test("mining follow visualizer keeps ordinary adjacent tip updates animated", () => {
+  const clock = new FakeClock(1_700_000_000_000);
+  const scenes: Array<{
+    displayedCenterHeight: number | null;
+    queuedHeights: number[];
+    pendingLabel: string | null;
+    animationKind: string | null;
+    animationHeight: number | null;
+  }> = [];
+  const visualizer = createSceneCaptureVisualizer({
+    clock,
+    scenes,
+  });
+
+  visualizer.update(createSnapshot({
+    coreBestHeight: 100,
+    indexerTipHeight: 100,
+  }), createUiState());
+  visualizer.update(createSnapshot({
+    coreBestHeight: 101,
+    indexerTipHeight: 100,
+  }), createUiState());
+  visualizer.close();
+
+  assert.deepEqual(scenes.at(-1), {
+    displayedCenterHeight: 100,
+    queuedHeights: [101],
+    pendingLabel: null,
+    animationKind: null,
+    animationHeight: null,
+  });
+});
+
+test("mining follow visualizer discards stale queued tip history and reattaches to the latest tip", () => {
+  const clock = new FakeClock(1_700_000_000_000);
+  const scenes: Array<{
+    displayedCenterHeight: number | null;
+    queuedHeights: number[];
+    pendingLabel: string | null;
+    animationKind: string | null;
+    animationHeight: number | null;
+  }> = [];
+  const visualizer = createSceneCaptureVisualizer({
+    clock,
+    scenes,
+  });
+
+  visualizer.update(createSnapshot({
+    coreBestHeight: 100,
+    indexerTipHeight: 100,
+  }), createUiState());
+  visualizer.update(createSnapshot({
+    coreBestHeight: 101,
+    indexerTipHeight: 101,
+  }), createUiState());
+  visualizer.update(createSnapshot({
+    coreBestHeight: 104,
+    indexerTipHeight: 104,
+  }), createUiState());
+  visualizer.close();
+
+  assert.deepEqual(scenes.at(-1), {
+    displayedCenterHeight: 104,
+    queuedHeights: [],
+    pendingLabel: null,
+    animationKind: null,
+    animationHeight: null,
+  });
+});
+
+test("mining follow visualizer settles immediately to the latest tip while a tip settle window is active", () => {
+  const clock = new FakeClock(1_700_000_000_000);
+  const scenes: Array<{
+    displayedCenterHeight: number | null;
+    queuedHeights: number[];
+    pendingLabel: string | null;
+    animationKind: string | null;
+    animationHeight: number | null;
+  }> = [];
+  const visualizer = createSceneCaptureVisualizer({
+    clock,
+    scenes,
+  });
+
+  visualizer.update(createSnapshot({
+    coreBestHeight: 100,
+    indexerTipHeight: 100,
+  }), createUiState());
+  visualizer.update(createSnapshot({
+    coreBestHeight: 101,
+    indexerTipHeight: 101,
+  }), createUiState());
+  visualizer.update(createSnapshot({
+    coreBestHeight: 103,
+    indexerTipHeight: 103,
+    tipSettledUntilUnixMs: clock.now() + 1_000,
+  }), createUiState());
+
+  assert.deepEqual(scenes.at(-1), {
+    displayedCenterHeight: 103,
+    queuedHeights: [],
+    pendingLabel: null,
+    animationKind: null,
+    animationHeight: null,
+  });
+
+  clock.advance(1_001);
+  visualizer.update(createSnapshot({
+    coreBestHeight: 104,
+    indexerTipHeight: 103,
+    tipSettledUntilUnixMs: null,
+  }), createUiState());
+  visualizer.close();
+
+  assert.deepEqual(scenes.at(-1), {
+    displayedCenterHeight: 103,
+    queuedHeights: [104],
+    pendingLabel: "104",
+    animationKind: "placeholder_enter",
+    animationHeight: null,
+  });
+});
+
+test("mining follow visualizer settles immediately to the latest tip while a reconnect settle window is active", () => {
+  const clock = new FakeClock(1_700_000_000_000);
+  const scenes: Array<{
+    displayedCenterHeight: number | null;
+    queuedHeights: number[];
+    pendingLabel: string | null;
+    animationKind: string | null;
+    animationHeight: number | null;
+  }> = [];
+  const visualizer = createSceneCaptureVisualizer({
+    clock,
+    scenes,
+  });
+
+  visualizer.update(createSnapshot({
+    coreBestHeight: 100,
+    indexerTipHeight: 100,
+  }), createUiState());
+  visualizer.update(createSnapshot({
+    coreBestHeight: 101,
+    indexerTipHeight: 101,
+  }), createUiState());
+  visualizer.update(createSnapshot({
+    coreBestHeight: 103,
+    indexerTipHeight: 102,
+    reconnectSettledUntilUnixMs: clock.now() + 1_000,
+  }), createUiState({
+    settledBlockHeight: 102,
+  }));
+  visualizer.close();
+
+  assert.deepEqual(scenes.at(-1), {
+    displayedCenterHeight: 103,
+    queuedHeights: [],
+    pendingLabel: null,
+    animationKind: null,
+    animationHeight: null,
+  });
+});
+
 test("mining visualizer status prefers the recent settled win banner", () => {
   const status = describeMiningVisualizerStatus(
     createSnapshot({
@@ -791,24 +992,24 @@ test("mining follow visualizer advances the follow scene without a second update
   });
 
   visualizer.update(createSnapshot({
-    coreBestHeight: 102,
+    coreBestHeight: 101,
     indexerTipHeight: 100,
     currentPhase: "waiting",
   }));
 
   assert.equal(renders.length, 1);
   assert.equal(renders[0]?.displayedCenterHeight, 100);
-  assert.deepEqual(renders[0]?.queuedHeights, [101, 102]);
+  assert.deepEqual(renders[0]?.queuedHeights, [101]);
   assert.equal(renders[0]?.animationKind, null);
 
   clock.advance(250);
 
   assert.equal(renders.length, 2);
   assert.equal(renders[1]?.displayedCenterHeight, 100);
-  assert.deepEqual(renders[1]?.queuedHeights, [101, 102]);
+  assert.deepEqual(renders[1]?.queuedHeights, [101]);
   assert.equal(renders[1]?.animationKind, "tip_approach");
 
-  clock.advance(3_000);
+  clock.advance(4_000);
 
   assert.ok(renders.length >= 3);
   assert.ok(renders.some((entry) => entry.displayedCenterHeight === 101));

@@ -869,7 +869,6 @@ export async function sendCog(options: SendCogOptions): Promise<CogMutationResul
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
-        serviceLifetime: "ephemeral",
         walletRootId: operation.state.walletRootId,
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
@@ -1069,7 +1068,6 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
-        serviceLifetime: "ephemeral",
         walletRootId: operation.state.walletRootId,
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
@@ -1258,7 +1256,6 @@ async function runClaimLikeMutation(
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
-        serviceLifetime: "ephemeral",
         walletRootId: operation.state.walletRootId,
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);

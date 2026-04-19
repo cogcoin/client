@@ -391,7 +391,6 @@ async function normalizeLoadedWalletStateIfNeeded(options: {
       dataDir: options.dataDir,
       chain: "main",
       startHeight: 0,
-      serviceLifetime: "ephemeral",
       walletRootId: state.walletRootId,
     });
 
@@ -538,7 +537,6 @@ async function recreateManagedCoreWalletReplica(
     dataDir,
     chain: "main",
     startHeight: 0,
-    serviceLifetime: "ephemeral",
     walletRootId: state.walletRootId,
     managedWalletPassphrase: state.managedCoreWallet.internalPassphrase,
   });
@@ -1231,7 +1229,6 @@ async function importDescriptorIntoManagedCoreWallet(
     dataDir,
     chain: "main",
     startHeight: 0,
-    serviceLifetime: "ephemeral",
     walletRootId: state.walletRootId,
     managedWalletPassphrase: state.managedCoreWallet.internalPassphrase,
   });
@@ -1341,7 +1338,6 @@ export async function verifyManagedCoreWalletReplica(
       dataDir,
       chain: "main",
       startHeight: 0,
-      serviceLifetime: "ephemeral",
       walletRootId: state.walletRootId,
     });
     const rpc = (dependencies.rpcFactory ?? createRpcClient)(node.rpc);
@@ -1819,7 +1815,6 @@ export async function deleteImportedWalletSeed(options: {
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
-        serviceLifetime: "ephemeral",
       });
       const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
       const walletName = sanitizeWalletName(seedRecord.walletRootId);
@@ -2010,7 +2005,6 @@ export async function repairWallet(options: {
         dataDir: options.dataDir,
         chain: "main",
         startHeight: 0,
-        serviceLifetime: "ephemeral",
         walletRootId: repairedState.walletRootId,
       });
       const bitcoindRpc = (options.rpcFactory ?? createRpcClient)(bitcoindHandle.rpc);

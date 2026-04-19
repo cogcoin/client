@@ -267,7 +267,7 @@ test("transferBitcoin succeeds without indexer state when bitcoind and wallet st
   assert.equal(result.txid, "txid-1");
   assert.equal(result.wtxid, "wtxid-1");
   assert.equal(sendRawTransactionCalls, 1);
-  assert.equal(attachServiceLifetime, "ephemeral");
+  assert.equal(attachServiceLifetime, null);
 });
 
 test("runCli routes bitcoin transfer through the wallet mutation path and renders text output", async () => {

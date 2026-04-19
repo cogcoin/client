@@ -1415,11 +1415,12 @@ test("sync CLI does not print the balance hint when auto-detach fails", async ()
   }
 });
 
-test("wallet read context close stops ephemeral managed services it started", async (t) => {
+test("wallet read context close leaves managed services running and reuses them", async (t) => {
   await ensureBitcoinBinaries(t);
-  const fixture = createFixture("cogcoin-client-read-context-ephemeral-close");
+  const fixture = createFixture("cogcoin-client-read-context-persistent-close");
   const runtimePaths = createTempWalletPaths(join(fixture.rootDir, "wallet-home"));
   let readContext: Awaited<ReturnType<typeof openWalletReadContext>> | null = null;
+  let reusedReadContext: Awaited<ReturnType<typeof openWalletReadContext>> | null = null;
 
   try {
     readContext = await openWalletReadContext({
@@ -1435,18 +1436,33 @@ test("wallet read context close stops ephemeral managed services it started", as
     await readContext.close();
     readContext = null;
 
-    assert.equal(await readManagedBitcoindServiceStatusForTesting(fixture.dataDir), null);
-    assert.equal(await readIndexerDaemonStatusForTesting({ dataDir: fixture.dataDir }), null);
+    const bitcoindStatus = await readManagedBitcoindServiceStatusForTesting(fixture.dataDir);
+    const daemonStatus = await readIndexerDaemonStatusForTesting({ dataDir: fixture.dataDir });
+
+    assert.notEqual(bitcoindStatus, null);
+    assert.notEqual(daemonStatus, null);
+    assert.equal(bitcoindStatus?.processId ?? null, bitcoindPid);
+    assert.equal(daemonStatus?.processId ?? null, daemonPid);
 
     if (bitcoindPid !== null) {
-      await waitForProcessExitForTesting(bitcoindPid);
+      process.kill(bitcoindPid, 0);
     }
 
     if (daemonPid !== null) {
-      await waitForProcessExitForTesting(daemonPid);
+      process.kill(daemonPid, 0);
     }
+
+    reusedReadContext = await openWalletReadContext({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      paths: runtimePaths,
+    });
+    assert.equal(reusedReadContext.localState.availability, "uninitialized");
+    assert.equal(reusedReadContext.nodeStatus?.pid ?? null, bitcoindPid);
+    assert.equal(reusedReadContext.indexer.status?.processId ?? null, daemonPid);
   } finally {
     await readContext?.close().catch(() => undefined);
+    await reusedReadContext?.close().catch(() => undefined);
     await cleanupManagedFixture(fixture);
   }
 });

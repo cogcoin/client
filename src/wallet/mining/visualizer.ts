@@ -191,6 +191,16 @@ function cloneMiningFollowVisualizerState(
   };
 }
 
+function miningFollowSceneShouldSettle(
+  snapshot: MiningRuntimeStatusV1,
+  nowUnixMs: number,
+): boolean {
+  return (
+    (snapshot.tipSettledUntilUnixMs ?? 0) > nowUnixMs
+    || (snapshot.reconnectSettledUntilUnixMs ?? 0) > nowUnixMs
+  );
+}
+
 const VISUALIZER_PROGRESS_SNAPSHOT = {
   url: "",
   filename: "mining-follow-visualizer",
@@ -357,10 +367,13 @@ export class MiningFollowVisualizer {
     replaceFollowBlockTimes(this.#scene, this.#latestUiState.visibleBlockTimesByHeight);
     const indexedHeight = this.#latestSnapshot.indexerTipHeight ?? this.#latestSnapshot.coreBestHeight ?? null;
     const nodeHeight = this.#latestSnapshot.coreBestHeight ?? indexedHeight;
+    const settleLatest = miningFollowSceneShouldSettle(this.#latestSnapshot, this.#clock.now());
     syncFollowSceneState(this.#scene, {
       indexedHeight,
       nodeHeight,
       liveActivated: true,
+      authoritativeTip: true,
+      settleLatest,
     });
     this.#renderThrottle.request();
   }
