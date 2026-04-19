@@ -117,6 +117,8 @@ const BEST_BLOCK_POLL_INTERVAL_MS = 500;
 const BACKGROUND_START_TIMEOUT_MS = 15_000;
 const MINING_BITCOIN_RECOVERY_GRACE_MS = 15_000;
 const MINING_BITCOIN_RECOVERY_RESTART_COOLDOWN_MS = 60_000;
+const MINING_SUSPEND_HEARTBEAT_INTERVAL_MS = 1_000;
+const MINING_MEMPOOL_COOPERATIVE_YIELD_EVERY = 25;
 const MINING_BITCOIN_RECOVERY_NOTE =
   "Mining lost contact with the local Bitcoin RPC service and is waiting for it to recover.";
 
@@ -398,13 +400,27 @@ interface MiningLoopState {
 }
 
 interface MiningSuspendDetector {
-  lastMonotonicMs: number;
+  lastHeartbeatMonotonicMs: number;
+  detectedAtUnixMs: number | null;
+  monotonicNow: () => number;
+  nowUnixMs: () => number;
+  stop(): void;
 }
 
 interface MiningBitcoindRecoveryIdentity {
   serviceInstanceId: string | null;
   processId: number | null;
 }
+
+interface MiningSuspendHeartbeatHandle {
+  clear(): void;
+}
+
+interface MiningSuspendScheduler {
+  every(intervalMs: number, callback: () => void): MiningSuspendHeartbeatHandle;
+}
+
+type MiningCooperativeYield = () => Promise<void>;
 
 function resolveSnapshotOverride<T>(override: T | undefined, fallback: T): T {
   return override === undefined ? fallback : override;
@@ -447,26 +463,101 @@ type SupportedAncestorOperation =
 
 const miningGateCache = new Map<string, MiningCompetitivenessCacheRecord>();
 
-function createMiningSuspendDetector(monotonicNow = performance.now()): MiningSuspendDetector {
-  return {
-    lastMonotonicMs: monotonicNow,
-  };
-}
+const defaultMiningSuspendScheduler: MiningSuspendScheduler = {
+  every(intervalMs: number, callback: () => void): MiningSuspendHeartbeatHandle {
+    const timer = setInterval(callback, intervalMs);
+    timer.unref?.();
+    return {
+      clear() {
+        clearInterval(timer);
+      },
+    };
+  },
+};
 
-function checkpointMiningSuspendDetector(
-  detector: MiningSuspendDetector | undefined,
-  monotonicNow = performance.now(),
-): void {
+function refreshMiningSuspendDetector(detector: MiningSuspendDetector | undefined): void {
   if (detector === undefined) {
     return;
   }
 
-  const gapMs = monotonicNow - detector.lastMonotonicMs;
-  detector.lastMonotonicMs = monotonicNow;
+  const monotonicNow = detector.monotonicNow();
+  const gapMs = monotonicNow - detector.lastHeartbeatMonotonicMs;
+  detector.lastHeartbeatMonotonicMs = monotonicNow;
 
-  if (gapMs > MINING_SUSPEND_GAP_THRESHOLD_MS) {
-    throw new MiningSuspendDetectedError(Date.now());
+  if (
+    gapMs > MINING_SUSPEND_GAP_THRESHOLD_MS
+    && detector.detectedAtUnixMs === null
+  ) {
+    detector.detectedAtUnixMs = detector.nowUnixMs();
   }
+}
+
+function createMiningSuspendDetector(options: {
+  monotonicNow?: () => number;
+  nowUnixMs?: () => number;
+  scheduler?: MiningSuspendScheduler;
+} = {}): MiningSuspendDetector {
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
+  const nowUnixMs = options.nowUnixMs ?? Date.now;
+  const scheduler = options.scheduler ?? defaultMiningSuspendScheduler;
+  let heartbeat: MiningSuspendHeartbeatHandle | null = null;
+
+  const detector: MiningSuspendDetector = {
+    lastHeartbeatMonotonicMs: monotonicNow(),
+    detectedAtUnixMs: null,
+    monotonicNow,
+    nowUnixMs,
+    stop() {
+      heartbeat?.clear();
+      heartbeat = null;
+    },
+  };
+
+  heartbeat = scheduler.every(
+    MINING_SUSPEND_HEARTBEAT_INTERVAL_MS,
+    () => {
+      refreshMiningSuspendDetector(detector);
+    },
+  );
+  return detector;
+}
+
+function throwIfMiningSuspendDetected(detector: MiningSuspendDetector | undefined): void {
+  if (detector === undefined) {
+    return;
+  }
+
+  refreshMiningSuspendDetector(detector);
+  if (detector.detectedAtUnixMs === null) {
+    return;
+  }
+
+  const detectedAtUnixMs = detector.detectedAtUnixMs;
+  detector.detectedAtUnixMs = null;
+  throw new MiningSuspendDetectedError(detectedAtUnixMs);
+}
+
+function stopMiningSuspendDetector(detector: MiningSuspendDetector | undefined): void {
+  detector?.stop();
+}
+
+function defaultMiningCooperativeYield(): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
+async function maybeYieldDuringMempoolScan(options: {
+  iteration: number;
+  cooperativeYield?: MiningCooperativeYield;
+  cooperativeYieldEvery?: number;
+}): Promise<void> {
+  const yieldEvery = options.cooperativeYieldEvery ?? MINING_MEMPOOL_COOPERATIVE_YIELD_EVERY;
+  if (yieldEvery <= 0 || options.iteration === 0 || (options.iteration % yieldEvery) !== 0) {
+    return;
+  }
+
+  await (options.cooperativeYield ?? defaultMiningCooperativeYield)();
 }
 
 function clearMiningGateCache(walletRootId: string | null | undefined): void {
@@ -1729,44 +1820,70 @@ function topologicallyOrderAncestorContexts(options: {
   txid: string;
   txContexts: Map<string, CachedMempoolTxContext>;
 }): CachedMempoolTxContext[] | null {
-  const visited = new Set<string>();
-  const visiting = new Set<string>();
+  const visited = new Map<string, "visiting" | "visited">();
   const ordered: CachedMempoolTxContext[] = [];
-
-  const visit = (txid: string): boolean => {
-    if (visited.has(txid)) {
-      return true;
-    }
-
-    if (visiting.has(txid)) {
-      return false;
-    }
-
-    const context = options.txContexts.get(txid);
-    if (context === undefined) {
-      return true;
-    }
-
-    visiting.add(txid);
-    for (const parentTxid of getAncestorTxids(context, options.txContexts)) {
-      if (!visit(parentTxid)) {
-        return false;
-      }
-    }
-    visiting.delete(txid);
-    visited.add(txid);
-    ordered.push(context);
-    return true;
-  };
-
   const root = options.txContexts.get(options.txid);
   if (root === undefined) {
     return [];
   }
 
-  for (const parentTxid of getAncestorTxids(root, options.txContexts)) {
-    if (!visit(parentTxid)) {
+  const stack = getAncestorTxids(root, options.txContexts)
+    .reverse()
+    .map((txid) => ({
+      txid,
+      expanded: false,
+    }));
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const state = visited.get(frame.txid);
+
+    if (frame.expanded) {
+      if (state !== "visiting") {
+        continue;
+      }
+
+      visited.set(frame.txid, "visited");
+      const context = options.txContexts.get(frame.txid);
+      if (context !== undefined) {
+        ordered.push(context);
+      }
+      continue;
+    }
+
+    if (state === "visited") {
+      continue;
+    }
+
+    if (state === "visiting") {
       return null;
+    }
+
+    const context = options.txContexts.get(frame.txid);
+    if (context === undefined) {
+      continue;
+    }
+
+    visited.set(frame.txid, "visiting");
+    stack.push({
+      txid: frame.txid,
+      expanded: true,
+    });
+
+    const parents = getAncestorTxids(context, options.txContexts);
+    for (let index = parents.length - 1; index >= 0; index -= 1) {
+      const parentTxid = parents[index]!;
+      const parentState = visited.get(parentTxid);
+      if (parentState === "visiting") {
+        return null;
+      }
+
+      if (parentState !== "visited") {
+        stack.push({
+          txid: parentTxid,
+          expanded: false,
+        });
+      }
     }
   }
 
@@ -2885,6 +3002,9 @@ async function runCompetitivenessGate(options: {
   };
   candidate: MiningCandidate;
   currentTxid: string | null;
+  assaySentencesImpl?: typeof assaySentences;
+  cooperativeYield?: MiningCooperativeYield;
+  cooperativeYieldEvery?: number;
 }): Promise<CompetitivenessDecision> {
   const createDecision = (overrides: Partial<CompetitivenessDecision>): CompetitivenessDecision => ({
     allowed: overrides.allowed ?? false,
@@ -2899,6 +3019,7 @@ async function runCompetitivenessGate(options: {
     candidateRank: overrides.candidateRank ?? null,
   });
   const walletRootId = options.readContext.localState.walletRootId ?? "uninitialized-wallet-root";
+  const assaySentencesImpl = options.assaySentencesImpl ?? assaySentences;
   const indexerTruthKey = getIndexerTruthKey(
     options.readContext as WalletReadContext & {
       localState: { availability: "ready"; state: WalletStateV1 };
@@ -2960,7 +3081,13 @@ async function runCompetitivenessGate(options: {
     }
   }
 
-  for (const txid of visibleTxids) {
+  for (let index = 0; index < visibleTxids.length; index += 1) {
+    await maybeYieldDuringMempoolScan({
+      iteration: index,
+      cooperativeYield: options.cooperativeYield,
+      cooperativeYieldEvery: options.cooperativeYieldEvery,
+    });
+    const txid = visibleTxids[index]!;
     if (txContexts.has(txid)) {
       continue;
     }
@@ -2989,7 +3116,13 @@ async function runCompetitivenessGate(options: {
   }
 
   const entries = new Map<string, CachedCompetitorEntry>();
-  for (const txid of visibleTxids) {
+  for (let index = 0; index < visibleTxids.length; index += 1) {
+    await maybeYieldDuringMempoolScan({
+      iteration: index,
+      cooperativeYield: options.cooperativeYield,
+      cooperativeYieldEvery: options.cooperativeYieldEvery,
+    });
+    const txid = visibleTxids[index]!;
     const context = txContexts.get(txid);
 
     if (context === undefined || context.payload === null || context.senderScriptHex === null) {
@@ -3033,7 +3166,7 @@ async function runCompetitivenessGate(options: {
       continue;
     }
 
-    const assayed = await assaySentences(
+    const assayed = await assaySentencesImpl(
       decoded.domainId,
       options.candidate.referencedBlockHashInternal,
       [Buffer.from(decoded.sentenceBytes).toString("utf8")],
@@ -3804,11 +3937,18 @@ async function performMiningCycle(options: {
   rpcFactory: (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
   stdout?: { write(chunk: string): void };
   suspendDetector?: MiningSuspendDetector;
+  generateCandidatesForDomainsImpl?: typeof generateCandidatesForDomains;
+  runCompetitivenessGateImpl?: typeof runCompetitivenessGate;
+  assaySentencesImpl?: typeof assaySentences;
+  cooperativeYieldImpl?: MiningCooperativeYield;
+  cooperativeYieldEvery?: number;
   visualizer?: MiningFollowVisualizer;
   loopState: MiningLoopState;
   nowImpl?: () => number;
 }): Promise<void> {
   const now = options.nowImpl ?? Date.now;
+  const generateCandidatesForDomainsImpl = options.generateCandidatesForDomainsImpl ?? generateCandidatesForDomains;
+  const runCompetitivenessGateImpl = options.runCompetitivenessGateImpl ?? runCompetitivenessGate;
   let readContext: WalletReadContext | null = await options.openReadContext({
     dataDir: options.dataDir,
     databasePath: options.databasePath,
@@ -3818,6 +3958,7 @@ async function performMiningCycle(options: {
   let readContextClosed = false;
 
   try {
+    throwIfMiningSuspendDetected(options.suspendDetector);
     let clearRecoveredBitcoindError = false;
     const saveCycleStatus = async (
       readContext: WalletReadContext,
@@ -3845,7 +3986,6 @@ async function performMiningCycle(options: {
       });
     };
 
-    checkpointMiningSuspendDetector(options.suspendDetector);
     await saveCycleStatus(readContext, {
       runMode: options.runMode,
       backgroundWorkerPid: options.backgroundWorkerPid,
@@ -3868,7 +4008,7 @@ async function performMiningCycle(options: {
       startHeight: 0,
       walletRootId: readContext.localState.state.walletRootId,
     });
-    checkpointMiningSuspendDetector(options.suspendDetector);
+    throwIfMiningSuspendDetected(options.suspendDetector);
     const rpc = options.rpcFactory(service.rpc);
     const reconciliation = await reconcileLiveMiningState({
       state: readContext.localState.state,
@@ -3878,7 +4018,7 @@ async function performMiningCycle(options: {
       snapshotState: readContext.snapshot?.state ?? null,
     });
     const reconciledState = reconciliation.state;
-    checkpointMiningSuspendDetector(options.suspendDetector);
+    throwIfMiningSuspendDetected(options.suspendDetector);
     let effectiveReadContext = readContext as WalletReadContext & {
       localState: { availability: "ready"; state: WalletStateV1 };
     };
@@ -3997,7 +4137,7 @@ async function performMiningCycle(options: {
       rpc.getNetworkInfo(),
       rpc.getMempoolInfo(),
     ]);
-    checkpointMiningSuspendDetector(options.suspendDetector);
+    throwIfMiningSuspendDetected(options.suspendDetector);
     const corePublishState = determineCorePublishState({
       blockchain: blockchainInfo,
       network: networkInfo,
@@ -4160,7 +4300,7 @@ async function performMiningCycle(options: {
       let candidates: MiningCandidate[];
 
       try {
-        candidates = await generateCandidatesForDomains({
+        candidates = await generateCandidatesForDomainsImpl({
           rpc,
           readContext: effectiveReadContext as WalletReadContext & {
             localState: { availability: "ready"; state: WalletStateV1 };
@@ -4174,7 +4314,7 @@ async function performMiningCycle(options: {
           runId: options.backgroundWorkerRunId,
           fetchImpl: options.fetchImpl,
         });
-        checkpointMiningSuspendDetector(options.suspendDetector);
+        throwIfMiningSuspendDetected(options.suspendDetector);
       } catch (error) {
         if (error instanceof MiningProviderRequestError) {
           if (tipKey !== null) {
@@ -4321,13 +4461,16 @@ async function performMiningCycle(options: {
         },
       ));
 
-      const gate = await runCompetitivenessGate({
+      const gate = await runCompetitivenessGateImpl({
         rpc,
         readContext: effectiveReadContext as WalletReadContext & { snapshot: NonNullable<WalletReadContext["snapshot"]> },
         candidate: best,
         currentTxid: effectiveReadContext.localState.state.miningState.currentTxid,
+        assaySentencesImpl: options.assaySentencesImpl,
+        cooperativeYield: options.cooperativeYieldImpl,
+        cooperativeYieldEvery: options.cooperativeYieldEvery,
       });
-      checkpointMiningSuspendDetector(options.suspendDetector);
+      throwIfMiningSuspendDetected(options.suspendDetector);
       gateSnapshot = {
         higherRankedCompetitorDomainCount: gate.higherRankedCompetitorDomainCount,
         dedupedCompetitorDomainCount: gate.dedupedCompetitorDomainCount,
@@ -4403,14 +4546,13 @@ async function performMiningCycle(options: {
       purpose: "wallet-mine",
       walletRootId: effectiveReadContext.localState.state.walletRootId,
     });
-    checkpointMiningSuspendDetector(options.suspendDetector);
 
     try {
       if (!await ensureCurrentIndexerTruthOrRestart()) {
         return;
       }
 
-      checkpointMiningSuspendDetector(options.suspendDetector);
+      throwIfMiningSuspendDetected(options.suspendDetector);
       const published = await publishCandidate({
         dataDir: options.dataDir,
         databasePath: options.databasePath,
@@ -4423,7 +4565,6 @@ async function performMiningCycle(options: {
         candidate: selectedCandidate,
         runId: options.backgroundWorkerRunId,
       });
-      checkpointMiningSuspendDetector(options.suspendDetector);
       if (tipKey !== null && published.retryable !== true) {
         options.loopState.attemptedTipKey = tipKey;
       }
@@ -4686,75 +4827,94 @@ async function runMiningLoop(options: {
   stopService?: typeof stopManagedBitcoindService;
   rpcFactory: (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
   stdout?: { write(chunk: string): void };
+  loopState?: MiningLoopState;
   visualizer?: MiningFollowVisualizer;
   nowImpl?: () => number;
   sleepImpl?: typeof sleep;
+  suspendMonotonicNowImpl?: () => number;
+  suspendScheduler?: MiningSuspendScheduler;
+  generateCandidatesForDomainsImpl?: typeof generateCandidatesForDomains;
+  runCompetitivenessGateImpl?: typeof runCompetitivenessGate;
+  assaySentencesImpl?: typeof assaySentences;
+  cooperativeYieldImpl?: MiningCooperativeYield;
+  cooperativeYieldEvery?: number;
 }): Promise<void> {
-  const suspendDetector = createMiningSuspendDetector();
-  const loopState = createMiningLoopState();
+  const suspendDetector = createMiningSuspendDetector({
+    monotonicNow: options.suspendMonotonicNowImpl,
+    nowUnixMs: options.nowImpl ?? Date.now,
+    scheduler: options.suspendScheduler,
+  });
+  const loopState = options.loopState ?? createMiningLoopState();
   const probeService = options.probeService ?? probeManagedBitcoindService;
   const stopService = options.stopService ?? stopManagedBitcoindService;
   const sleepImpl = options.sleepImpl ?? sleep;
 
-  await appendEvent(options.paths, createEvent(
-    "runtime-start",
-    `Started ${options.runMode} mining runtime.`,
-    {
-      runId: options.backgroundWorkerRunId,
-    },
-  ));
+  try {
+    await appendEvent(options.paths, createEvent(
+      "runtime-start",
+      `Started ${options.runMode} mining runtime.`,
+      {
+        runId: options.backgroundWorkerRunId,
+      },
+    ));
 
-  while (!options.signal?.aborted) {
-    try {
-      checkpointMiningSuspendDetector(suspendDetector);
-    } catch (error) {
-      if (!(error instanceof MiningSuspendDetectedError)) {
-        throw error;
+    while (!options.signal?.aborted) {
+      try {
+        throwIfMiningSuspendDetected(suspendDetector);
+      } catch (error) {
+        if (!(error instanceof MiningSuspendDetectedError)) {
+          throw error;
+        }
+
+        discardMiningLoopTransientWork(loopState, null);
+        await handleDetectedMiningRuntimeResume({
+          dataDir: options.dataDir,
+          databasePath: options.databasePath,
+          provider: options.provider,
+          paths: options.paths,
+          runMode: options.runMode,
+          backgroundWorkerPid: options.backgroundWorkerPid,
+          backgroundWorkerRunId: options.backgroundWorkerRunId,
+          detectedAtUnixMs: error.detectedAtUnixMs,
+          openReadContext: options.openReadContext,
+          visualizer: options.visualizer,
+          loopState,
+        });
+        continue;
       }
 
-      discardMiningLoopTransientWork(loopState, null);
-      await handleDetectedMiningRuntimeResume({
-        dataDir: options.dataDir,
-        databasePath: options.databasePath,
-        provider: options.provider,
-        paths: options.paths,
-        runMode: options.runMode,
-        backgroundWorkerPid: options.backgroundWorkerPid,
-        backgroundWorkerRunId: options.backgroundWorkerRunId,
-        detectedAtUnixMs: error.detectedAtUnixMs,
-        openReadContext: options.openReadContext,
-        visualizer: options.visualizer,
+      await performMiningCycle({
+        ...options,
+        suspendDetector,
+        assaySentencesImpl: options.assaySentencesImpl,
+        cooperativeYieldImpl: options.cooperativeYieldImpl,
+        cooperativeYieldEvery: options.cooperativeYieldEvery,
         loopState,
+        probeService,
+        stopService,
       });
-      continue;
+      await sleepImpl(Math.min(MINING_LOOP_INTERVAL_MS, MINING_STATUS_HEARTBEAT_INTERVAL_MS), options.signal);
     }
 
-    await performMiningCycle({
-      ...options,
-      suspendDetector,
-      loopState,
-      probeService,
-      stopService,
-    });
-    await sleepImpl(Math.min(MINING_LOOP_INTERVAL_MS, MINING_STATUS_HEARTBEAT_INTERVAL_MS), options.signal);
+    const service = await options.attachService({
+      dataDir: options.dataDir,
+      chain: "main",
+      startHeight: 0,
+      walletRootId: undefined,
+    }).catch(() => null);
+    if (service !== null) {
+      await attemptSaveMempool(options.rpcFactory(service.rpc), options.paths, options.backgroundWorkerRunId);
+    }
+    await appendEvent(options.paths, createEvent(
+      "runtime-stop",
+      `Stopped ${options.runMode} mining runtime.`,
+      {
+        runId: options.backgroundWorkerRunId,
+      },
+    ));
+  } finally {
+    stopMiningSuspendDetector(suspendDetector);
   }
-
-  const service = await options.attachService({
-    dataDir: options.dataDir,
-    chain: "main",
-    startHeight: 0,
-    walletRootId: undefined,
-  }).catch(() => null);
-  if (service !== null) {
-    await attemptSaveMempool(options.rpcFactory(service.rpc), options.paths, options.backgroundWorkerRunId);
-  }
-  await appendEvent(options.paths, createEvent(
-    "runtime-stop",
-    `Stopped ${options.runMode} mining runtime.`,
-    {
-      runId: options.backgroundWorkerRunId,
-    },
-  ));
 }
 
 async function waitForBackgroundHealthy(paths: WalletRuntimePaths): Promise<MiningRuntimeStatusV1 | null> {
@@ -5125,6 +5285,11 @@ export async function performMiningCycleForTesting(options: {
   stdout?: { write(chunk: string): void };
   loopState?: MiningLoopState;
   nowImpl?: () => number;
+  generateCandidatesForDomainsImpl?: typeof generateCandidatesForDomains;
+  runCompetitivenessGateImpl?: typeof runCompetitivenessGate;
+  assaySentencesImpl?: typeof assaySentences;
+  cooperativeYieldImpl?: MiningCooperativeYield;
+  cooperativeYieldEvery?: number;
 }): Promise<void> {
   await performMiningCycle({
     ...options,
@@ -5150,13 +5315,69 @@ export async function runMiningLoopForTesting(options: {
   stopService?: typeof stopManagedBitcoindService;
   rpcFactory: (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
   stdout?: { write(chunk: string): void };
+  loopState?: MiningLoopState;
   visualizer?: MiningFollowVisualizer;
   nowImpl?: () => number;
   sleepImpl?: typeof sleep;
+  suspendMonotonicNowImpl?: () => number;
+  suspendScheduler?: MiningSuspendScheduler;
+  generateCandidatesForDomainsImpl?: typeof generateCandidatesForDomains;
+  runCompetitivenessGateImpl?: typeof runCompetitivenessGate;
+  assaySentencesImpl?: typeof assaySentences;
+  cooperativeYieldImpl?: MiningCooperativeYield;
+  cooperativeYieldEvery?: number;
 }): Promise<void> {
   await runMiningLoop({
     ...options,
   });
+}
+
+export async function runCompetitivenessGateForTesting(options: {
+  rpc: MiningRpcClient;
+  readContext: WalletReadContext & {
+    snapshot: NonNullable<WalletReadContext["snapshot"]>;
+  };
+  candidate: MiningCandidate;
+  currentTxid: string | null;
+  assaySentencesImpl?: typeof assaySentences;
+  cooperativeYieldImpl?: MiningCooperativeYield;
+  cooperativeYieldEvery?: number;
+}): Promise<CompetitivenessDecision> {
+  return await runCompetitivenessGate({
+    rpc: options.rpc,
+    readContext: options.readContext,
+    candidate: options.candidate,
+    currentTxid: options.currentTxid,
+    assaySentencesImpl: options.assaySentencesImpl,
+    cooperativeYield: options.cooperativeYieldImpl,
+    cooperativeYieldEvery: options.cooperativeYieldEvery,
+  });
+}
+
+export function createMiningSuspendDetectorForTesting(options: {
+  monotonicNow?: () => number;
+  nowUnixMs?: () => number;
+  scheduler?: MiningSuspendScheduler;
+} = {}): MiningSuspendDetector {
+  return createMiningSuspendDetector(options);
+}
+
+export function throwIfMiningSuspendDetectedForTesting(detector: MiningSuspendDetector): void {
+  throwIfMiningSuspendDetected(detector);
+}
+
+export function topologicallyOrderAncestorTxidsForTesting(options: {
+  txid: string;
+  txContexts: Map<string, {
+    txid: string;
+    rawTransaction: Awaited<ReturnType<MiningRpcClient["getRawTransaction"]>>;
+  }>;
+}): string[] | null {
+  const ordered = topologicallyOrderAncestorContexts({
+    txid: options.txid,
+    txContexts: options.txContexts as Map<string, CachedMempoolTxContext>,
+  });
+  return ordered?.map((context) => context.txid) ?? null;
 }
 
 export function buildPrePublishStatusOverridesForTesting(options: {

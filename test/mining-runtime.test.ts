@@ -23,16 +23,19 @@ import {
   refreshMiningCandidateFromCurrentStateForTesting,
   resolveFundingDisplaySatsForTesting,
   resetMiningUiForTipForTesting,
+  runCompetitivenessGateForTesting,
   resolveSettledBoardForTesting,
   resolveMiningConflictOutpointForTesting,
   shouldKeepCurrentTipLivePublishForTesting,
   syncMiningVisualizerBlockTimesForTesting,
+  topologicallyOrderAncestorTxidsForTesting,
 } from "../src/wallet/mining/runner.js";
 import {
   MINING_NETWORK_SETTLE_WINDOW_MS,
   MINING_TIP_SETTLE_WINDOW_MS,
 } from "../src/wallet/mining/constants.js";
 import { loadMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
+import { serializeMine } from "../src/wallet/cogop/index.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
   createMemoryWalletSecretProviderForTesting,
@@ -94,6 +97,252 @@ function createTestMiningCandidate(overrides: Record<string, unknown> = {}) {
     targetBlockHeight: 101,
     ...overrides,
   } as any;
+}
+
+let gateWalletRootCounter = 0;
+
+function createEncodedMiningSentence(fill: string): Uint8Array {
+  assert.equal(fill.length, 1, "encoded mining sentence helper expects a single fill character");
+  return Buffer.from(fill.repeat(60), "utf8");
+}
+
+function createGateCandidate(overrides: Record<string, unknown> = {}) {
+  const sentenceFill = typeof overrides["sentenceFill"] === "string"
+    ? overrides["sentenceFill"] as string
+    : "l";
+  const bip39Words = ["abandon", "ability", "able", "about", "above"] as const;
+  const walletScriptPubKeyHex = typeof overrides["walletScriptPubKeyHex"] === "string"
+    ? overrides["walletScriptPubKeyHex"] as string
+    : "0014" + "11".repeat(20);
+
+  return createTestMiningCandidate({
+    domainId: 7,
+    domainName: "cogdemo",
+    sender: {
+      localIndex: 0,
+      scriptPubKeyHex: walletScriptPubKeyHex,
+      address: "bc1qfunding",
+    },
+    sentence: sentenceFill.repeat(60),
+    encodedSentenceBytes: createEncodedMiningSentence(sentenceFill),
+    bip39WordIndices: resolveWordIndices(bip39Words),
+    bip39Words,
+    canonicalBlend: 100n,
+    ...overrides,
+  });
+}
+
+function createMinePayloadScriptHex(
+  domainId: number,
+  referencedBlockHashInternal: Uint8Array,
+  sentenceFill: string,
+): string {
+  const payload = Buffer.from(
+    serializeMine(domainId, referencedBlockHashInternal, createEncodedMiningSentence(sentenceFill)).opReturnData,
+  );
+  return `6a${payload.length.toString(16).padStart(2, "0")}${payload.toString("hex")}`;
+}
+
+function createMineTransaction(options: {
+  txid: string;
+  domainId: number;
+  senderScriptPubKeyHex: string;
+  referencedBlockHashInternal: Uint8Array;
+  sentenceFill: string;
+  parentTxid?: string | null;
+}) {
+  return {
+    txid: options.txid,
+    vin: [{
+      txid: options.parentTxid ?? "ff".repeat(32),
+      prevout: {
+        scriptPubKey: {
+          hex: options.senderScriptPubKeyHex,
+        },
+      },
+    }],
+    vout: [{
+      n: 0,
+      value: 0,
+      scriptPubKey: {
+        hex: createMinePayloadScriptHex(
+          options.domainId,
+          options.referencedBlockHashInternal,
+          options.sentenceFill,
+        ),
+      },
+    }],
+  };
+}
+
+function createGateReadContext(options: {
+  domains: Array<{
+    domainId: number;
+    name: string;
+    ownerScriptPubKeyHex?: string;
+    anchored?: boolean;
+  }>;
+  walletScriptPubKeyHex?: string;
+}) {
+  const walletScriptPubKeyHex = options.walletScriptPubKeyHex ?? "0014" + "11".repeat(20);
+  const walletRootId = `wallet-root-gate-${gateWalletRootCounter += 1}`;
+  const state = createWalletState({
+    walletRootId,
+    funding: {
+      address: "bc1qfunding",
+      scriptPubKeyHex: walletScriptPubKeyHex,
+    },
+    managedCoreWallet: {
+      walletName: "wallet.dat",
+      internalPassphrase: "passphrase",
+      descriptorChecksum: "abcd1234",
+      walletAddress: "bc1qfunding",
+      walletScriptPubKeyHex,
+      proofStatus: "ready",
+      lastImportedAtUnixMs: null,
+      lastVerifiedAtUnixMs: null,
+    },
+    domains: options.domains.map((domain) => ({
+      name: domain.name,
+      domainId: domain.domainId,
+      currentOwnerScriptPubKeyHex: domain.ownerScriptPubKeyHex ?? walletScriptPubKeyHex,
+      canonicalChainStatus: (domain.anchored ?? true) ? "anchored" : "unanchored",
+      foundingMessageText: null,
+      birthTime: null,
+    }) as any),
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+  });
+
+  return {
+    ...createWalletReadContext({
+      localState: {
+        availability: "ready",
+        clientPasswordReadiness: "ready",
+        unlockRequired: false,
+        walletRootId,
+        state,
+        source: "primary",
+        hasPrimaryStateFile: true,
+        hasBackupStateFile: false,
+        message: null,
+      },
+      model: {
+        walletScriptPubKeyHex,
+        domains: options.domains.map((domain) => ({
+          name: domain.name,
+          anchored: domain.anchored ?? true,
+          readOnly: false,
+          localRelationship: "local",
+          domainId: domain.domainId,
+          ownerAddress: (domain.ownerScriptPubKeyHex ?? walletScriptPubKeyHex) === walletScriptPubKeyHex
+            ? state.funding.address
+            : null,
+          ownerScriptPubKeyHex: domain.ownerScriptPubKeyHex ?? walletScriptPubKeyHex,
+        })),
+      },
+      snapshot: {
+        state: {
+          consensus: {
+            nextDomainId: Math.max(...options.domains.map((domain) => domain.domainId)) + 1,
+            domainIdsByName: new Map(options.domains.map((domain) => [domain.name, domain.domainId])),
+            domainsById: new Map(options.domains.map((domain) => [domain.domainId, {
+              domainId: domain.domainId,
+              name: domain.name,
+              anchored: domain.anchored ?? true,
+              anchorHeight: 100,
+              ownerScriptPubKey: Buffer.from(domain.ownerScriptPubKeyHex ?? walletScriptPubKeyHex, "hex"),
+              endpoint: null,
+              delegate: null,
+              miner: null,
+            }])),
+            balances: new Map(),
+          },
+          history: {
+            foundingMessageByDomain: new Map(),
+            blockWinnersByHeight: new Map(),
+          },
+        },
+      },
+      indexer: {
+        health: "synced",
+        message: null,
+        status: null,
+        source: "lease",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-1",
+        openedAtUnixMs: 1,
+        snapshotTip: null,
+      },
+      nodeStatus: {
+        chain: "mainnet",
+        nodeBestHeight: 100,
+        nodeBestHashHex: "11".repeat(32),
+        walletReplica: {
+          proofStatus: "ready",
+        },
+      },
+    }),
+    close: async () => undefined,
+  } as any;
+}
+
+function createGateRpc(options: {
+  txids: string[];
+  rawTransactions: Record<string, ReturnType<typeof createMineTransaction>>;
+  mempoolEntries?: Record<string, unknown>;
+  failMempoolVerbose?: boolean;
+}) {
+  return {
+    async getRawMempoolVerbose() {
+      if (options.failMempoolVerbose) {
+        throw new Error("mempool unavailable");
+      }
+
+      return {
+        txids: options.txids,
+        mempool_sequence: "seq-1",
+      };
+    },
+    async getRawTransaction(txid: string) {
+      const tx = options.rawTransactions[txid];
+      if (tx === undefined) {
+        throw new Error(`missing raw transaction ${txid}`);
+      }
+      return tx;
+    },
+    async getMempoolEntry(txid: string) {
+      return options.mempoolEntries?.[txid] ?? {
+        vsize: 200,
+        fees: {
+          base: 0.00001,
+          ancestor: 0.00001,
+          descendant: 0.00001,
+        },
+        ancestorsize: 200,
+        descendantsize: 200,
+      };
+    },
+  };
+}
+
+function createGateAssayStub(scores: Record<string, bigint | null>) {
+  return async (_domainId: number, _referencedBlockHashInternal: Uint8Array, sentences: string[]) =>
+    sentences.map((sentence, index) => {
+      const score = Object.prototype.hasOwnProperty.call(scores, sentence)
+        ? scores[sentence]
+        : 1n;
+      return {
+        sentence,
+        rank: index + 1,
+        gatesPass: score !== null,
+        encodedSentenceBytes: score === null ? null : Buffer.from(sentence, "utf8"),
+        canonicalBlend: score,
+        bip39WordIndices: resolveWordIndices(["abandon", "ability", "able", "about", "above"]),
+        bip39Words: ["abandon", "ability", "able", "about", "above"],
+      };
+    }) as any;
 }
 
 function createReadyMiningReadContext(options: {
@@ -1420,6 +1669,7 @@ test("publish-time candidate refresh updates sender metadata from current state"
 test("selected mining candidates stay scoped to their tip and clear on tip reset", () => {
   const loopState = createMiningLoopStateForTesting();
   const candidate = createTestMiningCandidate();
+  loopState.ui.latestTxid = "cc".repeat(32);
 
   cacheSelectedCandidateForTipForTesting(loopState, "tip-1", candidate);
 
@@ -1429,6 +1679,11 @@ test("selected mining candidates stay scoped to their tip and clear on tip reset
   resetMiningUiForTipForTesting(loopState, 102);
 
   assert.equal(getSelectedCandidateForTipForTesting(loopState, "tip-1"), null);
+  assert.equal(loopState.ui.latestTxid, "cc".repeat(32));
+
+  cacheSelectedCandidateForTipForTesting(loopState, "tip-2", candidate);
+
+  assert.equal(loopState.ui.latestTxid, "cc".repeat(32));
 });
 
 test("shared mining conflict inputs are reused only for verified in-mempool live publishes", () => {
@@ -1950,4 +2205,215 @@ test("publish candidate skips the tip when the selected domain is no longer loca
   assert.equal(result.decision, "publish-skipped-stale-candidate");
   assert.equal(result.candidate, null);
   assert.match(result.note, /no longer locally mineable/i);
+});
+
+test("runCompetitivenessGate keeps same-domain mempool suppression semantics", async () => {
+  const candidate = createGateCandidate({
+    canonicalBlend: 10n,
+    sentenceFill: "l",
+  });
+  const context = createGateReadContext({
+    domains: [{
+      domainId: 7,
+      name: "cogdemo",
+    }],
+  });
+  const txid = "aa".repeat(32);
+  const sameDomainSentence = "s".repeat(60);
+
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: createGateRpc({
+      txids: [txid],
+      rawTransactions: {
+        [txid]: createMineTransaction({
+          txid,
+          domainId: 7,
+          senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+          referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+          sentenceFill: "s",
+        }),
+      },
+    }) as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      [sameDomainSentence]: 25n,
+    }) as any,
+  });
+
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.decision, "suppressed-same-domain-mempool");
+  assert.equal(decision.sameDomainCompetitorSuppressed, true);
+  assert.equal(decision.higherRankedCompetitorDomainCount, 1);
+  assert.equal(decision.dedupedCompetitorDomainCount, 0);
+  assert.equal(decision.competitivenessGateIndeterminate, false);
+});
+
+test("runCompetitivenessGate keeps top-5 mempool suppression semantics", async () => {
+  const candidate = createGateCandidate({
+    canonicalBlend: 1n,
+    sentenceFill: "l",
+  });
+  const domains = [
+    { domainId: 1, name: "alpha" },
+    { domainId: 2, name: "bravo" },
+    { domainId: 3, name: "cinder" },
+    { domainId: 4, name: "delta" },
+    { domainId: 5, name: "ember" },
+    { domainId: 6, name: "fable" },
+    { domainId: 7, name: "cogdemo" },
+  ];
+  const context = createGateReadContext({ domains });
+  const rawTransactions: Record<string, ReturnType<typeof createMineTransaction>> = {};
+  const assayScores: Record<string, bigint | null> = {};
+  const txids: string[] = [];
+
+  for (const [index, domain] of domains.slice(0, 6).entries()) {
+    const txid = `${String(index + 1).padStart(2, "0")}`.repeat(32);
+    const sentenceFill = String.fromCharCode("a".charCodeAt(0) + index);
+    const sentence = sentenceFill.repeat(60);
+    txids.push(txid);
+    rawTransactions[txid] = createMineTransaction({
+      txid,
+      domainId: domain.domainId,
+      senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+      referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+      sentenceFill,
+    });
+    assayScores[sentence] = BigInt(100 - index);
+  }
+
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: createGateRpc({
+      txids,
+      rawTransactions,
+    }) as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub(assayScores) as any,
+  });
+
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.decision, "suppressed-top5-mempool");
+  assert.equal(decision.sameDomainCompetitorSuppressed, false);
+  assert.equal(decision.higherRankedCompetitorDomainCount, 6);
+  assert.equal(decision.dedupedCompetitorDomainCount, 6);
+  assert.equal(decision.candidateRank, 7);
+});
+
+test("runCompetitivenessGate keeps indeterminate mempool semantics when mempool inspection fails", async () => {
+  const candidate = createGateCandidate();
+  const context = createGateReadContext({
+    domains: [{
+      domainId: 7,
+      name: "cogdemo",
+    }],
+  });
+
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: createGateRpc({
+      txids: [],
+      rawTransactions: {},
+      failMempoolVerbose: true,
+    }) as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+  });
+
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.decision, "indeterminate-mempool-gate");
+  assert.equal(decision.competitivenessGateIndeterminate, true);
+});
+
+test("runCompetitivenessGate keeps publish semantics and cooperatively yields during large scans", async () => {
+  const candidate = createGateCandidate({
+    canonicalBlend: 1_000n,
+    sentenceFill: "l",
+  });
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 1, name: "alpha" },
+      { domainId: 2, name: "bravo" },
+      { domainId: 3, name: "cinder" },
+      { domainId: 4, name: "delta" },
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+  const rawTransactions: Record<string, ReturnType<typeof createMineTransaction>> = {};
+  const assayScores: Record<string, bigint | null> = {};
+  const txids: string[] = [];
+
+  for (const [index, domain] of (context.model.domains as Array<{ domainId: number | null }>).filter((domain) => domain.domainId !== 7).entries()) {
+    const txid = `${String(index + 7).padStart(2, "0")}`.repeat(32);
+    const sentenceFill = String.fromCharCode("q".charCodeAt(0) + index);
+    const sentence = sentenceFill.repeat(60);
+    txids.push(txid);
+    rawTransactions[txid] = createMineTransaction({
+      txid,
+      domainId: domain.domainId!,
+      senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+      referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+      sentenceFill,
+    });
+    assayScores[sentence] = BigInt(10 - index);
+  }
+
+  let yieldCalls = 0;
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: createGateRpc({
+      txids,
+      rawTransactions,
+    }) as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub(assayScores) as any,
+    cooperativeYieldImpl: async () => {
+      yieldCalls += 1;
+    },
+    cooperativeYieldEvery: 2,
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.decision, "publish");
+  assert.equal(decision.higherRankedCompetitorDomainCount, 0);
+  assert.equal(decision.candidateRank, 1);
+  assert.equal(yieldCalls, 2);
+});
+
+test("topologicallyOrderAncestorTxidsForTesting handles deep ancestor chains without recursion", () => {
+  const depth = 12_000;
+  const txContexts = new Map<string, {
+    txid: string;
+    rawTransaction: {
+      txid: string;
+      vin: Array<{ txid?: string; prevout?: { scriptPubKey?: { hex?: string } } }>;
+      vout: Array<{ n: number; value: number | string; scriptPubKey?: { hex?: string } }>;
+    };
+  }>();
+
+  for (let index = 1; index <= depth; index += 1) {
+    txContexts.set(`tx-${index}`, {
+      txid: `tx-${index}`,
+      rawTransaction: {
+        txid: `tx-${index}`,
+        vin: [{
+          txid: index === 1 ? "external" : `tx-${index - 1}`,
+        }],
+        vout: [],
+      },
+    });
+  }
+
+  const ordered = topologicallyOrderAncestorTxidsForTesting({
+    txid: `tx-${depth}`,
+    txContexts,
+  });
+
+  assert.equal(ordered?.length, depth - 1);
+  assert.equal(ordered?.[0], "tx-1");
+  assert.equal(ordered?.at(-1), `tx-${depth - 1}`);
 });
