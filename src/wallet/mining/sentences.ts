@@ -56,10 +56,14 @@ function buildSystemPrompt(extraPrompt: string | null): string {
     "Every sentence must be a single natural-language sentence.",
     "Do not add commentary, markdown, or code fences.",
     "Do not invent domain IDs or request IDs.",
+    "Each rootDomains entry may include an extraPrompt that applies only to that domain.",
+    "If rootDomains[i].extraPrompt is present, use it only for candidates for that domainId.",
+    "If rootDomains[i].extraPrompt is null, fall back to the request-level extraPrompt when it is present.",
+    "Never apply one domain's prompt to another domain's candidates.",
   ];
 
   if (extraPrompt !== null && extraPrompt.trim().length > 0) {
-    lines.push(`Extra instruction: ${extraPrompt.trim()}`);
+    lines.push(`Request-level fallback instruction: ${extraPrompt.trim()}`);
   }
 
   return lines.join("\n");
@@ -122,7 +126,6 @@ async function requestBuiltInSentences(options: {
   provider: MiningProviderKind;
   apiKey: string;
   modelOverride: string | null;
-  extraPrompt: string | null;
   request: MiningSentenceGenerationRequest;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
@@ -150,7 +153,7 @@ async function requestBuiltInSentences(options: {
           input: [
             {
               role: "system",
-              content: buildSystemPrompt(options.extraPrompt),
+              content: buildSystemPrompt(options.request.extraPrompt),
             },
             {
               role: "user",
@@ -206,7 +209,7 @@ async function requestBuiltInSentences(options: {
       body: JSON.stringify({
         model,
         max_tokens: 1_200,
-        system: buildSystemPrompt(options.extraPrompt),
+        system: buildSystemPrompt(options.request.extraPrompt),
         messages: [
           {
             role: "user",
@@ -345,7 +348,6 @@ export async function generateMiningSentences(
       provider: builtIn.provider,
       apiKey: builtIn.apiKey,
       modelOverride: builtIn.modelOverride,
-      extraPrompt: builtIn.extraPrompt ?? request.extraPrompt,
       request,
       fetchImpl: options.fetchImpl,
       signal: options.signal,

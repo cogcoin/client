@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import {
+  buildMiningGenerationRequestForTesting,
   runForegroundMining,
   startBackgroundMining,
   takeOverMiningRuntimeForTesting,
@@ -166,6 +167,44 @@ test("runForegroundMining replaces an existing background miner in the same runt
   const runtime = await loadMiningRuntimeStatus(paths.miningStatusPath);
   assert.equal(runtime?.runMode, "stopped");
   assert.equal(runtime?.backgroundWorkerPid, null);
+});
+
+test("buildMiningGenerationRequestForTesting attaches distinct per-domain prompts", () => {
+  const request = buildMiningGenerationRequestForTesting({
+    requestId: "request-1",
+    targetBlockHeight: 101,
+    referencedBlockHashDisplay: "11".repeat(32),
+    generatedAtUnixMs: 1,
+    extraPrompt: "global fallback",
+    domainExtraPrompts: {
+      alpha: "focus alpha",
+      beta: "focus beta",
+    },
+    domains: [
+      {
+        domainId: 7,
+        domainName: "alpha",
+        requiredWords: ["under", "tree", "monkey", "youth", "basket"],
+      },
+      {
+        domainId: 8,
+        domainName: "beta",
+        requiredWords: ["able", "breeze", "cabin", "delta", "ember"],
+      },
+    ],
+  });
+
+  assert.equal(request.extraPrompt, "global fallback");
+  assert.deepEqual(
+    request.rootDomains.map((domain) => ({
+      domainName: domain.domainName,
+      extraPrompt: domain.extraPrompt,
+    })),
+    [
+      { domainName: "alpha", extraPrompt: "focus alpha" },
+      { domainName: "beta", extraPrompt: "focus beta" },
+    ],
+  );
 });
 
 test("runForegroundMining replaces an existing foreground miner in the same runtime", async (t) => {

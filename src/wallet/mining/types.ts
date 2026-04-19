@@ -29,7 +29,34 @@ export interface ClientConfigV1 {
   schemaVersion: 1;
   mining: {
     builtIn: MiningProviderConfigRecord | null;
+    domainExtraPrompts: Record<string, string>;
   };
+}
+
+export interface MiningDomainPromptEntry {
+  domain: {
+    name: string;
+    domainId: number | null;
+  };
+  mineable: boolean;
+  prompt: string | null;
+  effectivePromptSource: "domain" | "global-fallback" | "none";
+}
+
+export interface MiningDomainPromptListResult {
+  fallbackPromptConfigured: boolean;
+  prompts: MiningDomainPromptEntry[];
+}
+
+export interface MiningDomainPromptMutationResult {
+  domain: {
+    name: string;
+    domainId: number | null;
+  };
+  previousPrompt: string | null;
+  prompt: string | null;
+  status: "updated" | "cleared";
+  fallbackPromptConfigured: boolean;
 }
 
 export interface MiningEventRecord {

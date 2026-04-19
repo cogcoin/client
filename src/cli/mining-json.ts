@@ -1,5 +1,6 @@
 import type {
   MiningControlPlaneView,
+  MiningDomainPromptMutationResult,
   MiningRuntimeStatusV1,
 } from "../wallet/mining/index.js";
 import { buildStateChangeData } from "./mutation-json.js";
@@ -72,4 +73,14 @@ export function buildMineStopData(snapshot: MiningRuntimeStatusV1 | null) {
     state: after,
     after,
   });
+}
+
+export function buildMinePromptData(result: MiningDomainPromptMutationResult) {
+  return {
+    domain: result.domain,
+    previousPrompt: result.previousPrompt,
+    prompt: result.prompt,
+    status: result.status,
+    fallbackPromptConfigured: result.fallbackPromptConfigured,
+  };
 }

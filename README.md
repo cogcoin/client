@@ -135,9 +135,10 @@ The installed `cogcoin` command covers the first-party local wallet and node wor
 - sync and service commands such as `status`, `sync`, `follow`, `bitcoin start`, `bitcoin stop`, `bitcoin status`, `indexer start`, `indexer stop`, and `indexer status`
 - domain and field commands such as `register`, `anchor`, `show`, `domains`, `fields`, `buy`, `sell`, and `transfer`
 - COG and reputation commands such as `send`, `cog lock`, `claim`, `reclaim`, `rep give`, and `rep revoke`
-- mining commands such as `mine`, `mine start`, `mine stop`, `mine status`, `mine log`, and `mine setup`
+- mining commands such as `mine`, `mine start`, `mine stop`, `mine status`, `mine log`, `mine setup`, `mine prompt`, and `mine prompt list`
 
 The CLI also supports stable `--output json` and `--output preview-json` envelopes on the commands that advertise machine-readable output.
+Use `cogcoin mine prompt <domain>` to set or clear a per-domain mining prompt override for one anchored root domain, and `cogcoin mine prompt list` to inspect the current per-domain prompt state alongside the global fallback prompt.
 Interactive text invocations periodically check the npm registry for newer `@cogcoin/client` releases and print `npm install -g @cogcoin/client` when a newer version is available.
 Set `COGCOIN_DISABLE_UPDATE_CHECK=1` to disable the CLI update notice entirely.
 Ordinary `sync`, `follow`, and wallet-aware read/status flows detach from the managed Bitcoin and indexer services on exit instead of stopping them.

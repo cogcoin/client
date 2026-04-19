@@ -12,7 +12,11 @@ import type {
   WalletLockView,
   WalletReadContext,
 } from "../wallet/read/index.js";
-import type { MiningControlPlaneView, MiningEventRecord } from "../wallet/mining/index.js";
+import type {
+  MiningControlPlaneView,
+  MiningDomainPromptListResult,
+  MiningEventRecord,
+} from "../wallet/mining/index.js";
 import type { PendingMutationRecord } from "../wallet/types.js";
 import type { JsonAvailabilityEntry, JsonPage } from "./output.js";
 import {
@@ -633,6 +637,42 @@ export function buildMineLogJson(
       truncated: page.truncated,
       rotation,
       page,
+    },
+  };
+}
+
+export function buildMinePromptListJson(result: MiningDomainPromptListResult): ReadJsonResult<{
+  fallbackPromptConfigured: boolean;
+  prompts: Array<{
+    domain: {
+      name: string;
+      domainId: number | null;
+    };
+    mineable: boolean;
+    prompt: string | null;
+    effectivePromptSource: "domain" | "global-fallback" | "none";
+  }>;
+}> {
+  const explanations: string[] = [];
+  const nextSteps: string[] = [];
+
+  if (result.prompts.length === 0) {
+    explanations.push("No mineable root domains or stored per-domain mining prompts are configured.");
+    nextSteps.push("Run `cogcoin domains --mineable` to see eligible mining domains.");
+  }
+
+  return {
+    warnings: [],
+    explanations,
+    nextSteps,
+    data: {
+      fallbackPromptConfigured: result.fallbackPromptConfigured,
+      prompts: result.prompts.map((entry) => ({
+        domain: entry.domain,
+        mineable: entry.mineable,
+        prompt: entry.prompt,
+        effectivePromptSource: entry.effectivePromptSource,
+      })),
     },
   };
 }

@@ -1,4 +1,9 @@
-import type { MiningControlPlaneView, MiningEventRecord } from "../wallet/mining/index.js";
+import type {
+  MiningControlPlaneView,
+  MiningDomainPromptListResult,
+  MiningDomainPromptMutationResult,
+  MiningEventRecord,
+} from "../wallet/mining/index.js";
 
 function formatMaybeIso(unixMs: number | null): string {
   return unixMs === null ? "none" : new Date(unixMs).toISOString();
@@ -152,4 +157,42 @@ export function formatMineStatusReport(mining: MiningControlPlaneView): string {
 
 export function formatMiningEventRecord(event: MiningEventRecord): string {
   return `${new Date(event.timestampUnixMs).toISOString()}  ${event.level.toUpperCase()}  ${event.kind}  ${event.message}`;
+}
+
+export function formatMiningPromptMutationReport(result: MiningDomainPromptMutationResult): string {
+  const lines = [
+    `Domain: ${result.domain.name}`,
+    `Domain prompt: ${result.prompt ?? "none"}`,
+    `Global fallback prompt: ${result.fallbackPromptConfigured ? "configured" : "not configured"}`,
+  ];
+
+  if (result.previousPrompt !== null) {
+    lines.push(`Previous domain prompt: ${result.previousPrompt}`);
+  }
+
+  lines.push(result.status === "updated"
+    ? "Per-domain mining prompt updated."
+    : "Per-domain mining prompt cleared.");
+  return lines.join("\n");
+}
+
+export function formatMiningPromptListReport(result: MiningDomainPromptListResult): string {
+  const lines = [
+    "Mining Prompt List",
+    `Global fallback prompt: ${result.fallbackPromptConfigured ? "configured" : "not configured"}`,
+  ];
+
+  if (result.prompts.length === 0) {
+    lines.push("No mineable root domains or stored per-domain mining prompts are configured.");
+    return lines.join("\n");
+  }
+
+  for (const entry of result.prompts) {
+    lines.push(
+      `${entry.domain.name}  domainId=${entry.domain.domainId ?? "none"}  ${entry.mineable ? "mineable" : "dormant"}  source=${entry.effectivePromptSource}`,
+    );
+    lines.push(`  prompt: ${entry.prompt ?? "none"}`);
+  }
+
+  return lines.join("\n");
 }

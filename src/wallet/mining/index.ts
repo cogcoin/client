@@ -7,6 +7,11 @@ export {
   requestMiningGenerationPreemption,
 } from "./coordination.js";
 export {
+  canonicalizeMiningDomainPromptName,
+  inspectMiningDomainPromptState,
+  updateMiningDomainPrompt,
+} from "./domain-prompts.js";
+export {
   followMiningLog,
   inspectMiningControlPlane,
   readMiningLog,
@@ -41,6 +46,9 @@ export {
 export type {
   ClientConfigV1,
   MiningControlPlaneView,
+  MiningDomainPromptEntry,
+  MiningDomainPromptListResult,
+  MiningDomainPromptMutationResult,
   MiningEventRecord,
   MiningModelSelectionSource,
   MiningProviderConfigRecord,

@@ -138,6 +138,7 @@ export async function runCli(
 
     if (
       parsed.command === "mine-setup"
+      || parsed.command === "mine-prompt"
     ) {
       return runMiningAdminCommand(parsed, context);
     }
@@ -193,7 +194,8 @@ export async function runCli(
     }
 
     if (
-      parsed.command === "mine-status"
+      parsed.command === "mine-prompt-list"
+      || parsed.command === "mine-status"
       || parsed.command === "mine-log"
     ) {
       return runMiningReadCommand(parsed, context);

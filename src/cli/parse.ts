@@ -36,6 +36,12 @@ Commands:
   mine setup              Configure the built-in mining provider
   mine setup --output json
                          Emit the stable v1 machine-readable mine setup result envelope
+  mine prompt <domain>    Configure a per-domain mining prompt override
+  mine prompt <domain> --output json
+                         Emit the stable v1 machine-readable mine prompt result envelope
+  mine prompt list        Show per-domain mining prompt state
+  mine prompt list --output json
+                         Emit the stable v1 machine-readable mine prompt list envelope
   mine status             Show mining control-plane health and readiness
   mine log                Show recent mining control-plane events
   anchor <domain>         Anchor an owned unanchored domain with the wallet address
@@ -140,6 +146,7 @@ Examples:
   cogcoin field set alpha bio --text "hello"
   cogcoin rep give alpha beta 10 --review "great operator"
   cogcoin mine setup --output json
+  cogcoin mine prompt alpha
   cogcoin register alpha-child --output preview-json
   cogcoin mine status
 `;
@@ -230,6 +237,8 @@ function supportsSeedFlag(command: CommandName | null): boolean {
     case "mine-start":
     case "mine-stop":
     case "mine-setup":
+    case "mine-prompt":
+    case "mine-prompt-list":
     case "mine-status":
     case "mine-log":
     case "wallet-delete":
@@ -771,6 +780,13 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
           continue;
         }
 
+        if (subcommand === "prompt") {
+          const action = argv[index + 2] ?? null;
+          command = action === "list" ? "mine-prompt-list" : "mine-prompt";
+          index += action === "list" ? 2 : 1;
+          continue;
+        }
+
         if (subcommand === "status") {
           command = "mine-status";
           index += 1;
@@ -1065,6 +1081,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
       || command === "mine-start"
       || command === "mine-stop"
       || command === "mine-setup"
+      || command === "mine-prompt-list"
       || command === "mine-status"
       || command === "mine-log"
       || command === "wallet-address"
@@ -1091,6 +1108,10 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
       || command === "domain-anchor")
     && args.length !== 1
   ) {
+    throw new Error("cli_missing_domain_argument");
+  }
+
+  if (command === "mine-prompt" && args.length !== 1) {
     throw new Error("cli_missing_domain_argument");
   }
 

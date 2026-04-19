@@ -1,7 +1,11 @@
 import { dirname } from "node:path";
 import { stat } from "node:fs/promises";
 
-import { formatMineStatusReport, formatMiningEventRecord } from "../mining-format.js";
+import {
+  formatMineStatusReport,
+  formatMiningEventRecord,
+  formatMiningPromptListReport,
+} from "../mining-format.js";
 import { writeLine } from "../io.js";
 import {
   createErrorEnvelope,
@@ -10,7 +14,7 @@ import {
   normalizeListPage,
   writeJsonValue,
 } from "../output.js";
-import { buildMineLogJson, buildMineStatusJson } from "../read-json.js";
+import { buildMineLogJson, buildMinePromptListJson, buildMineStatusJson } from "../read-json.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
@@ -125,6 +129,45 @@ export async function runMiningReadCommand(
       return 0;
     }
 
+    if (parsed.command === "mine-prompt-list") {
+      const provider = parsed.outputMode === "text"
+        ? withInteractiveWalletSecretProvider(context.walletSecretProvider, context.createPrompter())
+        : context.walletSecretProvider;
+      const readContext = await context.openWalletReadContext({
+        dataDir,
+        databasePath: dbPath,
+        secretProvider: provider,
+        paths: runtimePaths,
+      });
+
+      try {
+        const result = buildMinePromptListJson(await context.inspectMiningDomainPromptState({
+          paths: runtimePaths,
+          provider,
+          readContext,
+        }));
+
+        if (parsed.outputMode === "json") {
+          writeJsonValue(context.stdout, createSuccessEnvelope(
+            "cogcoin/mine-prompt-list/v1",
+            describeCanonicalCommand(parsed),
+            result.data,
+            {
+              warnings: result.warnings,
+              explanations: result.explanations,
+              nextSteps: result.nextSteps,
+            },
+          ));
+          return 0;
+        }
+
+        writeLine(context.stdout, formatMiningPromptListReport(result.data));
+        return 0;
+      } finally {
+        await readContext.close();
+      }
+    }
+
       const provider = parsed.outputMode === "text"
         ? withInteractiveWalletSecretProvider(context.walletSecretProvider, context.createPrompter())
         : context.walletSecretProvider;
@@ -170,6 +213,8 @@ export async function runMiningReadCommand(
       writeJsonValue(context.stdout, createErrorEnvelope(
         parsed.command === "mine-log"
           ? "cogcoin/mine-log/v1"
+          : parsed.command === "mine-prompt-list"
+            ? "cogcoin/mine-prompt-list/v1"
           : "cogcoin/mine-status/v1",
         describeCanonicalCommand(parsed),
         message,

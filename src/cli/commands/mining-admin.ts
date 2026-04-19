@@ -1,7 +1,11 @@
+import { dirname } from "node:path";
+
 import {
+  buildMinePromptData,
   buildMineSetupData,
 } from "../mining-json.js";
 import { buildMineSetupPreviewData } from "../preview-json.js";
+import { formatMiningPromptMutationReport } from "../mining-format.js";
 import { writeLine } from "../io.js";
 import { createTerminalPrompter } from "../prompt.js";
 import {
@@ -13,10 +17,7 @@ import {
   writeHandledCliError,
   writeJsonValue,
 } from "../output.js";
-import {
-  formatNextStepLines,
-  getMineSetupNextSteps,
-} from "../workflow-hints.js";
+import { formatNextStepLines, getMineSetupNextSteps } from "../workflow-hints.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
@@ -35,6 +36,8 @@ export async function runMiningAdminCommand(
 ): Promise<number> {
   try {
     const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
+    const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
+    const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
 
     if (parsed.command === "mine-setup") {
       const prompter = createCommandPrompter(parsed, context);
@@ -84,6 +87,66 @@ export async function runMiningAdminCommand(
         writeLine(context.stdout, line);
       }
       return 0;
+    }
+
+    if (parsed.command === "mine-prompt") {
+      const prompter = createCommandPrompter(parsed, context);
+      if (!prompter.isInteractive) {
+        throw new Error("mine_prompt_requires_tty");
+      }
+
+      const provider = withInteractiveWalletSecretProvider(context.walletSecretProvider, prompter);
+      await context.ensureDirectory(dirname(dbPath));
+      const readContext = await context.openWalletReadContext({
+        dataDir,
+        databasePath: dbPath,
+        secretProvider: provider,
+        paths: runtimePaths,
+      });
+
+      try {
+        const targetDomain = parsed.args[0]!.trim().toLowerCase();
+        const promptState = await context.inspectMiningDomainPromptState({
+          paths: runtimePaths,
+          provider,
+          readContext,
+        });
+        const currentEntry = promptState.prompts.find((entry) => entry.domain.name === targetDomain);
+
+        if (currentEntry === undefined) {
+          throw new Error("mine_prompt_domain_not_mineable");
+        }
+
+        if (parsed.outputMode === "text") {
+          writeLine(context.stdout, `Domain: ${currentEntry.domain.name}`);
+          writeLine(context.stdout, `Current domain prompt: ${currentEntry.prompt ?? "none"}`);
+          writeLine(context.stdout, `Global fallback prompt: ${promptState.fallbackPromptConfigured ? "configured" : "not configured"}`);
+        }
+
+        const nextPrompt = await prompter.prompt("Domain prompt (blank to clear and use the global fallback): ");
+        const result = await context.updateMiningDomainPrompt({
+          paths: runtimePaths,
+          provider,
+          readContext,
+          domainName: targetDomain,
+          prompt: nextPrompt,
+        });
+
+        if (parsed.outputMode === "json") {
+          writeJsonValue(context.stdout, createMutationSuccessEnvelope(
+            resolveStableMiningControlJsonSchema(parsed)!,
+            describeCanonicalCommand(parsed),
+            result.status,
+            buildMinePromptData(result),
+          ));
+          return 0;
+        }
+
+        writeLine(context.stdout, formatMiningPromptMutationReport(result));
+        return 0;
+      } finally {
+        await readContext.close();
+      }
     }
 
     writeLine(context.stderr, `mining admin command not implemented: ${parsed.command}`);

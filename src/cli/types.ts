@@ -33,11 +33,13 @@ import type {
   ensureBuiltInMiningSetupIfNeeded,
   followMiningLog,
   inspectMiningControlPlane,
+  inspectMiningDomainPromptState,
   readMiningLog,
   runForegroundMining,
   setupBuiltInMining,
   startBackgroundMining,
   stopBackgroundMining,
+  updateMiningDomainPrompt,
 } from "../wallet/mining/index.js";
 import type {
   anchorDomain,
@@ -124,6 +126,8 @@ export type CommandName =
   | "mine-start"
   | "mine-stop"
   | "mine-setup"
+  | "mine-prompt"
+  | "mine-prompt-list"
   | "mine-status"
   | "mine-log"
   | "wallet-init"
@@ -284,11 +288,13 @@ export interface CliRunnerContext {
   giveReputation?: typeof giveReputation;
   revokeReputation?: typeof revokeReputation;
   inspectMiningControlPlane?: typeof inspectMiningControlPlane;
+  inspectMiningDomainPromptState?: typeof inspectMiningDomainPromptState;
   ensureBuiltInMiningSetupIfNeeded?: typeof ensureBuiltInMiningSetupIfNeeded;
   runForegroundMining?: typeof runForegroundMining;
   startBackgroundMining?: typeof startBackgroundMining;
   stopBackgroundMining?: typeof stopBackgroundMining;
   setupBuiltInMining?: typeof setupBuiltInMining;
+  updateMiningDomainPrompt?: typeof updateMiningDomainPrompt;
   readMiningLog?: typeof readMiningLog;
   followMiningLog?: typeof followMiningLog;
   repairWallet?: typeof repairWallet;

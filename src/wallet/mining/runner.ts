@@ -2119,6 +2119,56 @@ function createInsufficientFundsMiningPublishErrorMessage(): string {
   return "Bitcoin Core could not fund the next mining publish with confirmed safe BTC.";
 }
 
+function buildMiningGenerationRequest(options: {
+  targetBlockHeight: number;
+  referencedBlockHashDisplay: string;
+  generatedAtUnixMs?: number;
+  requestId?: string;
+  domains: Array<{
+    domainId: number;
+    domainName: string;
+    requiredWords: [string, string, string, string, string];
+  }>;
+  domainExtraPrompts: Record<string, string>;
+  extraPrompt: string | null;
+}): MiningSentenceGenerationRequest {
+  return {
+    schemaVersion: 1,
+    requestId: options.requestId ?? `mining-${options.targetBlockHeight}-${randomBytes(8).toString("hex")}`,
+    targetBlockHeight: options.targetBlockHeight,
+    referencedBlockHashDisplay: options.referencedBlockHashDisplay,
+    generatedAtUnixMs: options.generatedAtUnixMs ?? Date.now(),
+    extraPrompt: options.extraPrompt,
+    limits: createMiningSentenceRequestLimits(),
+    rootDomains: options.domains.map((domain) => ({
+      domainId: domain.domainId,
+      domainName: domain.domainName,
+      requiredWords: domain.requiredWords,
+      extraPrompt: options.domainExtraPrompts[domain.domainName.toLowerCase()] ?? null,
+    })),
+  };
+}
+
+export function buildMiningGenerationRequestForTesting(options: {
+  targetBlockHeight: number;
+  referencedBlockHashDisplay: string;
+  generatedAtUnixMs?: number;
+  requestId?: string;
+  domains: Array<{
+    domainId: number;
+    domainName: string;
+    requiredWords: [string, string, string, string, string];
+  }>;
+  domainExtraPrompts?: Record<string, string>;
+  extraPrompt?: string | null;
+}): MiningSentenceGenerationRequest {
+  return buildMiningGenerationRequest({
+    ...options,
+    domainExtraPrompts: options.domainExtraPrompts ?? {},
+    extraPrompt: options.extraPrompt ?? null,
+  });
+}
+
 async function generateCandidatesForDomains(options: {
   rpc: MiningRpcClient;
   readContext: WalletReadContext & {
@@ -2145,6 +2195,10 @@ async function generateCandidatesForDomains(options: {
     ...domain,
     requiredWords: getWords(domain.domainId, referencedBlockHashInternal) as [string, string, string, string, string],
   }));
+  const clientConfig = await loadClientConfig({
+    path: options.paths.clientConfigPath,
+    provider: options.provider,
+  }).catch(() => null);
   const abortController = new AbortController();
   let stale = false;
   let staleIndexerTruth = false;
@@ -2186,20 +2240,13 @@ async function generateCandidatesForDomains(options: {
       runId: options.runId ?? null,
       pid: process.pid ?? null,
     });
-    const generationRequest: MiningSentenceGenerationRequest = {
-      schemaVersion: 1,
-      requestId: `mining-${targetBlockHeight}-${randomBytes(8).toString("hex")}`,
+    const generationRequest = buildMiningGenerationRequest({
       targetBlockHeight,
       referencedBlockHashDisplay: bestBlockHash,
-      generatedAtUnixMs: Date.now(),
-      extraPrompt: null,
-      limits: createMiningSentenceRequestLimits(),
-      rootDomains: rootDomains.map((domain) => ({
-        domainId: domain.domainId,
-        domainName: domain.domainName,
-        requiredWords: domain.requiredWords,
-      })),
-    };
+      domains: rootDomains,
+      domainExtraPrompts: clientConfig?.mining.domainExtraPrompts ?? {},
+      extraPrompt: clientConfig?.mining.builtIn?.extraPrompt ?? null,
+    });
     let generated;
 
     try {

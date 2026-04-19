@@ -417,6 +417,8 @@ function isBlockedError(message: string): boolean {
     || message === "indexer_daemon_wallet_root_mismatch"
     || message === "indexer_daemon_schema_mismatch"
     || message === "mine_setup_requires_tty"
+    || message === "mine_prompt_requires_tty"
+    || message === "mine_prompt_domain_not_mineable"
     || message === "mining_preemption_timeout"
     || message === "wallet_client_password_setup_required"
     || message === "wallet_client_password_migration_required"
@@ -813,6 +815,14 @@ export function createCliErrorPresentation(
       what: "Mining setup was canceled.",
       why: "The interactive mining-model selection was canceled before any provider configuration was saved.",
       next: "Rerun `cogcoin mine setup` when you are ready to choose a provider model.",
+    };
+  }
+
+  if (errorCode === "mine_prompt_domain_not_mineable") {
+    return {
+      what: "A new mining prompt override can only target a mineable anchored root domain.",
+      why: "Cogcoin only creates new domain prompt overrides for locally controlled anchored root domains that are currently mineable. Existing stored prompt entries can still be edited or cleared by name even when they are dormant.",
+      next: "Run `cogcoin domains --mineable` to see eligible domains, or rerun `cogcoin mine prompt <domain>` for an existing stored prompt entry.",
     };
   }
 
@@ -1391,6 +1401,10 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
       return "cogcoin wallet status";
     case "mine-setup":
       return "cogcoin mine setup";
+    case "mine-prompt":
+      return `cogcoin mine prompt ${args[0] ?? "<domain>"}`;
+    case "mine-prompt-list":
+      return "cogcoin mine prompt list";
     case "mine-start":
       return "cogcoin mine start";
     case "mine-stop":
@@ -1467,6 +1481,8 @@ export function resolveStableJsonSchema(parsed: ParsedCliArgs): string | null {
       return "cogcoin/mine-status/v1";
     case "mine-log":
       return "cogcoin/mine-log/v1";
+    case "mine-prompt-list":
+      return "cogcoin/mine-prompt-list/v1";
     case "balance":
     case "cog-balance":
       return "cogcoin/balance/v1";
@@ -1576,6 +1592,8 @@ export function resolveStableMiningControlJsonSchema(parsed: ParsedCliArgs): str
   switch (parsed.command) {
     case "mine-setup":
       return "cogcoin/mine-setup/v1";
+    case "mine-prompt":
+      return "cogcoin/mine-prompt/v1";
     case "mine-start":
       return "cogcoin/mine-start/v1";
     case "mine-stop":

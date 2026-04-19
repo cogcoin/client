@@ -23,6 +23,7 @@ export interface MiningSentenceGenerationRequestV1 {
     domainId: number;
     domainName: string;
     requiredWords: [string, string, string, string, string];
+    extraPrompt: string | null;
   }>;
 }
 

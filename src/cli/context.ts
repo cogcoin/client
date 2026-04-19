@@ -37,11 +37,13 @@ import {
   ensureBuiltInMiningSetupIfNeeded,
   followMiningLog,
   inspectMiningControlPlane,
+  inspectMiningDomainPromptState,
   readMiningLog,
   runForegroundMining,
   setupBuiltInMining,
   startBackgroundMining,
   stopBackgroundMining,
+  updateMiningDomainPrompt,
 } from "../wallet/mining/index.js";
 import { createLazyDefaultWalletSecretProvider } from "../wallet/state/provider.js";
 import {
@@ -181,11 +183,13 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     giveReputation: overrides.giveReputation ?? giveReputation,
     revokeReputation: overrides.revokeReputation ?? revokeReputation,
     inspectMiningControlPlane: overrides.inspectMiningControlPlane ?? inspectMiningControlPlane,
+    inspectMiningDomainPromptState: overrides.inspectMiningDomainPromptState ?? inspectMiningDomainPromptState,
     ensureBuiltInMiningSetupIfNeeded: overrides.ensureBuiltInMiningSetupIfNeeded ?? ensureBuiltInMiningSetupIfNeeded,
     runForegroundMining: overrides.runForegroundMining ?? runForegroundMining,
     startBackgroundMining: overrides.startBackgroundMining ?? startBackgroundMining,
     stopBackgroundMining: overrides.stopBackgroundMining ?? stopBackgroundMining,
     setupBuiltInMining: overrides.setupBuiltInMining ?? setupBuiltInMining,
+    updateMiningDomainPrompt: overrides.updateMiningDomainPrompt ?? updateMiningDomainPrompt,
     readMiningLog: overrides.readMiningLog ?? readMiningLog,
     followMiningLog: overrides.followMiningLog ?? followMiningLog,
     repairWallet: overrides.repairWallet ?? repairWallet,

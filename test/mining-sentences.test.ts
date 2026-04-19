@@ -24,6 +24,7 @@ function createMiningSentenceRequest() {
       domainId: 7,
       domainName: "cogdemo",
       requiredWords: ["under", "tree", "monkey", "youth", "basket"] as [string, string, string, string, string],
+      extraPrompt: null,
     }],
   };
 }
@@ -109,4 +110,67 @@ test("Anthropic 404 with the default model becomes a not-found provider error", 
       return true;
     },
   );
+});
+
+test("OpenAI requests include per-domain prompts and the fallback prompt semantics", async (t) => {
+  const fixture = await createSentenceGenerationFixture(t, {
+    provider: "openai",
+    modelOverride: "gpt-5.4-mini",
+  });
+  const request = {
+    ...createMiningSentenceRequest(),
+    extraPrompt: "global fallback",
+    rootDomains: [
+      {
+        domainId: 7,
+        domainName: "cogdemo",
+        requiredWords: ["under", "tree", "monkey", "youth", "basket"] as [string, string, string, string, string],
+        extraPrompt: "focus on cogdemo only",
+      },
+      {
+        domainId: 8,
+        domainName: "betademo",
+        requiredWords: ["able", "breeze", "cabin", "delta", "ember"] as [string, string, string, string, string],
+        extraPrompt: null,
+      },
+    ],
+  };
+  let capturedBody: {
+    input?: Array<{
+      content?: string;
+    }>;
+  } | null = null;
+
+  const result = await generateMiningSentences(request, {
+    paths: fixture.paths,
+    provider: fixture.provider,
+    fetchImpl: (async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        output_text: JSON.stringify({
+          schemaVersion: 1,
+          requestId: request.requestId,
+          candidates: [],
+        }),
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      });
+    }) as typeof fetch,
+  });
+
+  assert.deepEqual(result.candidates, []);
+  assert.ok(capturedBody);
+  const body = capturedBody as {
+    input?: Array<{
+      content?: string;
+    }>;
+  };
+  const [systemInput, userInput] = body.input ?? [];
+  assert.match(String(systemInput?.content), /Never apply one domain's prompt to another domain's candidates\./);
+  assert.match(String(systemInput?.content), /Request-level fallback instruction: global fallback/);
+  assert.match(String(userInput?.content), /"extraPrompt": "focus on cogdemo only"/);
+  assert.match(String(userInput?.content), /"extraPrompt": null/);
 });
