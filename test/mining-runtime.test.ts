@@ -10,30 +10,44 @@ import {
   normalizeMiningStateRecord,
 } from "../src/wallet/mining/state.js";
 import {
-  buildPrePublishStatusOverridesForTesting,
-  buildStatusSnapshotForTesting,
-  cacheSelectedCandidateForTipForTesting,
-  createMiningPlanForTesting,
-  createMiningLoopStateForTesting,
-  handleDetectedMiningRuntimeResumeForTesting,
-  getSelectedCandidateForTipForTesting,
-  loadMiningVisibleFollowBlockTimesForTesting,
   performMiningCycleForTesting,
-  publishCandidateForTesting,
-  refreshMiningCandidateFromCurrentStateForTesting,
-  resolveFundingDisplaySatsForTesting,
-  resetMiningUiForTipForTesting,
-  runCompetitivenessGateForTesting,
-  resolveSettledBoardForTesting,
-  resolveMiningConflictOutpointForTesting,
-  shouldKeepCurrentTipLivePublishForTesting,
-  syncMiningVisualizerBlockTimesForTesting,
-  topologicallyOrderAncestorTxidsForTesting,
 } from "../src/wallet/mining/runner.js";
 import {
   MINING_NETWORK_SETTLE_WINDOW_MS,
   MINING_TIP_SETTLE_WINDOW_MS,
 } from "../src/wallet/mining/constants.js";
+import {
+  cacheSelectedCandidateForTip as cacheSelectedCandidateForTipForTesting,
+  createMiningRuntimeLoopState as createMiningLoopStateForTesting,
+  getSelectedCandidateForTip as getSelectedCandidateForTipForTesting,
+  resetMiningUiForTip as resetMiningUiForTipForTesting,
+  livePublishTargetsCandidateTip,
+} from "../src/wallet/mining/engine-state.js";
+import {
+  handleDetectedMiningRuntimeResume as handleDetectedMiningRuntimeResumeForTesting,
+} from "../src/wallet/mining/lifecycle.js";
+import {
+  createMiningPlan as createMiningPlanForTesting,
+  publishCandidate as publishCandidateForTesting,
+  resolveMiningConflictOutpoint as resolveMiningConflictOutpointForTesting,
+} from "../src/wallet/mining/publish.js";
+import {
+  applyMiningRuntimeStatusOverrides,
+  buildPrePublishStatusOverrides as buildPrePublishStatusOverridesForTesting,
+} from "../src/wallet/mining/projection.js";
+import {
+  refreshMiningCandidateFromCurrentState as refreshMiningCandidateFromCurrentStateForTesting,
+} from "../src/wallet/mining/candidate.js";
+import {
+  runCompetitivenessGate,
+  topologicallyOrderAncestorTxidsForTesting,
+} from "../src/wallet/mining/competitiveness.js";
+import {
+  loadMiningVisibleFollowBlockTimes as loadMiningVisibleFollowBlockTimesForTesting,
+  resolveFundingDisplaySats as resolveFundingDisplaySatsForTesting,
+  resolveSettledBoard as resolveSettledBoardForTesting,
+  syncMiningVisualizerBlockTimes as syncMiningVisualizerBlockTimesForTesting,
+} from "../src/wallet/mining/visualizer-sync.js";
 import { loadMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
 import { serializeMine } from "../src/wallet/cogop/index.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
@@ -51,6 +65,54 @@ import {
 } from "./current-model-helpers.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createHealthyMiningRpc } from "./mining-rpc-test-helpers.js";
+
+function buildStatusSnapshotForTesting(
+  view: any,
+  overrides: Parameters<typeof applyMiningRuntimeStatusOverrides>[0]["overrides"] = {},
+) {
+  return applyMiningRuntimeStatusOverrides({
+    runtime: view.runtime,
+    provider: view.provider,
+    overrides,
+  });
+}
+
+function shouldKeepCurrentTipLivePublishForTesting(options: {
+  liveState: Parameters<typeof livePublishTargetsCandidateTip>[0]["liveState"];
+  candidate: {
+    domainId: number;
+    sender: {
+      localIndex: number;
+      scriptPubKeyHex: string;
+      address: string;
+    };
+    encodedSentenceBytes: Uint8Array;
+    referencedBlockHashDisplay: string;
+    targetBlockHeight: number;
+  };
+}): boolean {
+  return livePublishTargetsCandidateTip(options as Parameters<typeof livePublishTargetsCandidateTip>[0]);
+}
+
+async function runCompetitivenessGateForTesting(options: {
+  rpc: Parameters<typeof runCompetitivenessGate>[0]["rpc"];
+  readContext: Parameters<typeof runCompetitivenessGate>[0]["readContext"];
+  candidate: Parameters<typeof runCompetitivenessGate>[0]["candidate"];
+  currentTxid: string | null;
+  assaySentencesImpl?: Parameters<typeof runCompetitivenessGate>[0]["assaySentencesImpl"];
+  cooperativeYieldImpl?: Parameters<typeof runCompetitivenessGate>[0]["cooperativeYield"];
+  cooperativeYieldEvery?: Parameters<typeof runCompetitivenessGate>[0]["cooperativeYieldEvery"];
+}) {
+  return await runCompetitivenessGate({
+    rpc: options.rpc,
+    readContext: options.readContext,
+    candidate: options.candidate,
+    currentTxid: options.currentTxid,
+    assaySentencesImpl: options.assaySentencesImpl,
+    cooperativeYield: options.cooperativeYieldImpl,
+    cooperativeYieldEvery: options.cooperativeYieldEvery,
+  });
+}
 
 function resolveWordIndices(words: readonly string[]): number[] {
   return words.map((word) => {
@@ -2495,6 +2557,7 @@ test("publish candidate broadcasts when only safe 0-conf BTC funding is availabl
       },
     }) as any,
     runId: "run-1",
+    appendEventFn: async () => {},
   });
 
   assert.equal(attachServiceLifetime, null);

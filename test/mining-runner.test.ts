@@ -7,7 +7,6 @@ import test, { type TestContext } from "node:test";
 import { INDEXER_DAEMON_SCHEMA_VERSION, INDEXER_DAEMON_SERVICE_API_VERSION } from "../src/bitcoind/types.js";
 import { resolveManagedServicePaths } from "../src/bitcoind/service-paths.js";
 import {
-  buildMiningGenerationRequestForTesting,
   createMiningSuspendDetectorForTesting,
   runForegroundMining,
   runMiningLoopForTesting,
@@ -15,6 +14,7 @@ import {
   takeOverMiningRuntimeForTesting,
   throwIfMiningSuspendDetectedForTesting,
 } from "../src/wallet/mining/runner.js";
+import { buildMiningGenerationRequest as buildMiningGenerationRequestForTesting } from "../src/wallet/mining/candidate.js";
 import { loadMiningRuntimeStatus, readMiningEvents, saveMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";

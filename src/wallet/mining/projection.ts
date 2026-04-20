@@ -4,6 +4,9 @@ import type {
   WalletLocalStateStatus,
   WalletNodeStatus,
 } from "../read/types.js";
+import type { WalletStateV1 } from "../types.js";
+import type { MiningCandidate } from "./engine-types.js";
+import { livePublishTargetsCandidateTip } from "./engine-state.js";
 import { normalizeMiningPublishState, normalizeMiningStateRecord } from "./state.js";
 import {
   MINING_WORKER_API_VERSION,
@@ -45,6 +48,42 @@ export interface MiningRuntimeStatusOverrides {
   lastError?: string | null;
   note?: string | null;
   livePublishInMempool?: boolean | null;
+}
+
+export function buildPrePublishStatusOverrides(options: {
+  state: WalletStateV1;
+  candidate: MiningCandidate;
+}): MiningRuntimeStatusOverrides {
+  const replacing = options.state.miningState.currentTxid !== null;
+  const replacingAcrossTips = replacing && !livePublishTargetsCandidateTip({
+    liveState: options.state.miningState,
+    candidate: options.candidate,
+  });
+
+  return {
+    currentPhase: replacing ? "replacing" : "publishing",
+    currentPublishDecision: replacing ? "replacing" : "publishing",
+    targetBlockHeight: options.candidate.targetBlockHeight,
+    referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+    currentDomainId: options.candidate.domainId,
+    currentDomainName: options.candidate.domainName,
+    currentSentenceDisplay: options.candidate.sentence,
+    currentCanonicalBlend: options.candidate.canonicalBlend.toString(),
+    note: replacing
+      ? "Replacing the live mining transaction for the current tip."
+      : "Broadcasting the best mining candidate for the current tip.",
+    ...(replacingAcrossTips
+      ? {
+        currentPublishState: "none" as const,
+        currentTxid: null,
+        currentWtxid: null,
+        livePublishInMempool: false,
+        currentFeeRateSatVb: null,
+        currentAbsoluteFeeSats: null,
+        currentBlockFeeSpentSats: "0",
+      }
+      : {}),
+  };
 }
 
 function resolveSnapshotOverride<T>(override: T | undefined, fallback: T): T {

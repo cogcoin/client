@@ -322,6 +322,20 @@ function topologicallyOrderAncestorContexts(options: {
   return ordered;
 }
 
+export function topologicallyOrderAncestorTxidsForTesting(options: {
+  txid: string;
+  txContexts: Map<string, {
+    txid: string;
+    rawTransaction: Awaited<ReturnType<MiningRpcClient["getRawTransaction"]>>;
+  }>;
+}): string[] | null {
+  const ordered = topologicallyOrderAncestorContexts({
+    txid: options.txid,
+    txContexts: options.txContexts as Map<string, CachedMempoolTxContext>,
+  });
+  return ordered?.map((context) => context.txid) ?? null;
+}
+
 function cloneOverlayDomainFromConfirmed(
   readContext: WalletReadContext & { snapshot: NonNullable<WalletReadContext["snapshot"]> },
   domainId: number,

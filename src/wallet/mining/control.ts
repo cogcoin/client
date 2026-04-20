@@ -42,25 +42,9 @@ import {
   MINING_MODEL_DAILY_COST_ESTIMATE_ASSUMPTION,
   resolveBuiltInProviderSelection,
 } from "./provider-model.js";
+import { createMiningEventRecord } from "./events.js";
 
 const KEEP_CURRENT_MODEL_SELECTION = "__keep_current__";
-
-function createMiningEvent(
-  kind: string,
-  message: string,
-  options: {
-    level?: MiningEventRecord["level"];
-    timestampUnixMs?: number;
-  } = {},
-): MiningEventRecord {
-  return {
-    schemaVersion: 1,
-    timestampUnixMs: options.timestampUnixMs ?? Date.now(),
-    level: options.level ?? "info",
-    kind,
-    message,
-  };
-}
 
 function buildProviderInspection(options: {
   config: MiningProviderConfigRecord | null;
@@ -575,7 +559,7 @@ export async function setupBuiltInMining(options: {
 
       await appendMiningEvent(
         paths.miningEventsPath,
-        createMiningEvent(
+        createMiningEventRecord(
           "mine-setup-started",
           "Started built-in mining provider setup.",
           { timestampUnixMs: nowUnixMs },
@@ -596,7 +580,7 @@ export async function setupBuiltInMining(options: {
         });
         await appendMiningEvent(
           paths.miningEventsPath,
-          createMiningEvent(
+          createMiningEventRecord(
             "mine-setup-completed",
             `Configured the built-in ${config.provider} mining provider with model ${config.modelOverride} (${describeModelSelectionSource(config.modelSelectionSource)}).`,
             { timestampUnixMs: nowUnixMs },
@@ -630,7 +614,7 @@ export async function setupBuiltInMining(options: {
         if (error instanceof Error && error.message === "mining_setup_canceled") {
           await appendMiningEvent(
             paths.miningEventsPath,
-            createMiningEvent(
+            createMiningEventRecord(
               "mine-setup-canceled",
               "Canceled built-in mining provider setup.",
               {
@@ -643,7 +627,7 @@ export async function setupBuiltInMining(options: {
         }
         await appendMiningEvent(
           paths.miningEventsPath,
-          createMiningEvent(
+          createMiningEventRecord(
             "mine-setup-failed",
             error instanceof Error ? error.message : String(error),
             {

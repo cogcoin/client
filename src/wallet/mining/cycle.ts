@@ -3,8 +3,6 @@ import { acquireFileLock } from "../fs/lock.js";
 import { openWalletReadContext, type WalletReadContext } from "../read/index.js";
 import type { WalletRuntimePaths } from "../runtime.js";
 import type { WalletSecretProvider } from "../state/provider.js";
-import type { WalletStateV1 } from "../types.js";
-import { MINING_PROVIDER_BACKOFF_BASE_MS, MINING_PROVIDER_BACKOFF_MAX_MS } from "./constants.js";
 import { createMiningEventRecord } from "./events.js";
 import type {
   CompetitivenessDecision,
@@ -15,10 +13,7 @@ import type {
   MiningRpcClient,
   ReadyMiningReadContext,
 } from "./engine-types.js";
-import { livePublishTargetsCandidateTip } from "./engine-state.js";
-import type { MiningRuntimeStatusOverrides } from "./projection.js";
 import type { MiningEventRecord, MiningRuntimeStatusV1 } from "./types.js";
-import type { MiningFollowVisualizerState } from "./visualizer.js";
 import {
   ensureIndexerTruthIsCurrent,
   generateCandidatesForDomains,
@@ -33,188 +28,34 @@ import {
   publishCandidate,
   probeMiningFundingAvailability,
 } from "./publish.js";
+import {
+  cacheSelectedCandidateForTip,
+  clearMiningProviderWait,
+  clearSelectedCandidate,
+  getSelectedCandidateForTip,
+  isTransientMiningProviderError,
+  recordTerminalMiningProviderWait,
+  recordTransientMiningProviderWait,
+  setMiningUiCandidate,
+  type MiningRuntimeLoopState,
+} from "./engine-state.js";
 import { MiningProviderRequestError } from "./sentences.js";
 import { isInsufficientFundsError } from "../tx/common.js";
 import { attachOrStartManagedBitcoindService } from "../../bitcoind/service.js";
 import { createRpcClient } from "../../bitcoind/node.js";
-import type { MiningStateRecord } from "../types.js";
-
-export interface MiningPhaseMachineLoopState {
-  attemptedTipKey: string | null;
-  selectedCandidateTipKey: string | null;
-  selectedCandidate: MiningCandidate | null;
-  ui: MiningFollowVisualizerState;
-  waitingNote: string | null;
-  providerWaitState: "backoff" | "rate-limited" | "auth-error" | "not-found" | null;
-  providerWaitLastError: string | null;
-  providerWaitNextRetryAtUnixMs: number | null;
-  providerTransientFailureCount: number;
-}
+import {
+  buildPrePublishStatusOverrides,
+  type MiningRuntimeStatusOverrides,
+} from "./projection.js";
 
 interface RuntimeMiningCycleState extends MiningCycleState {
   generatedCandidates: MiningCandidate[] | null;
 }
 
-function resolveMiningProviderBackoffDelayMs(consecutiveFailureCount: number): number {
-  const exponent = Math.max(consecutiveFailureCount - 1, 0);
-  return Math.min(MINING_PROVIDER_BACKOFF_BASE_MS * (2 ** exponent), MINING_PROVIDER_BACKOFF_MAX_MS);
-}
-
-function clearMiningProviderWait(
-  loopState: MiningPhaseMachineLoopState,
-  resetTransientFailureCount = true,
-): void {
-  loopState.providerWaitState = null;
-  loopState.providerWaitLastError = null;
-  loopState.providerWaitNextRetryAtUnixMs = null;
-  if (resetTransientFailureCount) {
-    loopState.providerTransientFailureCount = 0;
-  }
-}
-
-function recordTransientMiningProviderWait(options: {
-  loopState: MiningPhaseMachineLoopState;
-  error: MiningProviderRequestError;
-  nowUnixMs: number;
-}): void {
-  options.loopState.providerTransientFailureCount += 1;
-  options.loopState.providerWaitState = options.error.providerState === "rate-limited"
-    ? "rate-limited"
-    : "backoff";
-  options.loopState.providerWaitLastError = options.error.message;
-  options.loopState.providerWaitNextRetryAtUnixMs = options.nowUnixMs
-    + resolveMiningProviderBackoffDelayMs(options.loopState.providerTransientFailureCount);
-}
-
-function recordTerminalMiningProviderWait(options: {
-  loopState: MiningPhaseMachineLoopState;
-  error: MiningProviderRequestError;
-}): void {
-  clearMiningProviderWait(options.loopState);
-  if (options.error.providerState !== "auth-error" && options.error.providerState !== "not-found") {
-    throw new Error("mining_provider_wait_state_invalid");
-  }
-  options.loopState.providerWaitState = options.error.providerState;
-  options.loopState.providerWaitLastError = options.error.message;
-}
-
-function isTransientMiningProviderError(error: MiningProviderRequestError): boolean {
-  return error.providerState === "unavailable" || error.providerState === "rate-limited";
-}
-
-function resolveProvisionalBroadcastTxidForCandidate(options: {
-  candidate: MiningCandidate;
-  liveState: MiningStateRecord | null | undefined;
-}): string | null {
-  if (options.liveState === null || options.liveState === undefined) {
-    return null;
-  }
-
-  if (
-    options.liveState.currentTxid === null
-    || options.liveState.currentPublishState !== "in-mempool"
-    || options.liveState.livePublishInMempool !== true
-  ) {
-    return null;
-  }
-
-  if (
-    options.liveState.currentDomain !== options.candidate.domainName
-    || options.liveState.currentDomainId !== options.candidate.domainId
-    || options.liveState.currentSentence !== options.candidate.sentence
-    || options.liveState.currentBlockTargetHeight !== options.candidate.targetBlockHeight
-    || options.liveState.currentReferencedBlockHashDisplay !== options.candidate.referencedBlockHashDisplay
-  ) {
-    return null;
-  }
-
-  return options.liveState.currentTxid;
-}
-
-function setMiningUiCandidate(
-  loopState: MiningPhaseMachineLoopState,
-  candidate: MiningCandidate,
-  liveState?: MiningStateRecord | null,
-): void {
-  loopState.ui.latestSentence = candidate.sentence;
-  loopState.ui.provisionalRequiredWords = [...candidate.bip39Words];
-  loopState.ui.provisionalEntry = {
-    domainName: candidate.domainName,
-    sentence: candidate.sentence,
-  };
-  loopState.ui.provisionalBroadcastTxid = resolveProvisionalBroadcastTxidForCandidate({
-    candidate,
-    liveState,
-  });
-}
-
-function getSelectedCandidateForTip(
-  loopState: MiningPhaseMachineLoopState,
-  tipKey: string | null,
-): MiningCandidate | null {
-  if (tipKey === null || loopState.selectedCandidateTipKey !== tipKey) {
-    return null;
-  }
-
-  return loopState.selectedCandidate;
-}
-
-function cacheSelectedCandidateForTip(
-  loopState: MiningPhaseMachineLoopState,
-  tipKey: string | null,
-  candidate: MiningCandidate,
-  liveState?: MiningStateRecord | null,
-): void {
-  loopState.selectedCandidateTipKey = tipKey;
-  loopState.selectedCandidate = candidate;
-  setMiningUiCandidate(loopState, candidate, liveState);
-}
-
-function clearSelectedCandidate(loopState: MiningPhaseMachineLoopState): void {
-  loopState.selectedCandidateTipKey = null;
-  loopState.selectedCandidate = null;
-}
-
-function buildPrePublishStatusOverrides(options: {
-  state: WalletStateV1;
-  candidate: MiningCandidate;
-}): MiningRuntimeStatusOverrides {
-  const replacing = options.state.miningState.currentTxid !== null;
-  const replacingAcrossTips = replacing && !livePublishTargetsCandidateTip({
-    liveState: options.state.miningState,
-    candidate: options.candidate,
-  });
-
-  return {
-    currentPhase: replacing ? "replacing" : "publishing",
-    currentPublishDecision: replacing ? "replacing" : "publishing",
-    targetBlockHeight: options.candidate.targetBlockHeight,
-    referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
-    currentDomainId: options.candidate.domainId,
-    currentDomainName: options.candidate.domainName,
-    currentSentenceDisplay: options.candidate.sentence,
-    currentCanonicalBlend: options.candidate.canonicalBlend.toString(),
-    note: replacing
-      ? "Replacing the live mining transaction for the current tip."
-      : "Broadcasting the best mining candidate for the current tip.",
-    ...(replacingAcrossTips
-      ? {
-        currentPublishState: "none" as const,
-        currentTxid: null,
-        currentWtxid: null,
-        livePublishInMempool: false,
-        currentFeeRateSatVb: null,
-        currentAbsoluteFeeSats: null,
-        currentBlockFeeSpentSats: "0",
-      }
-      : {}),
-  };
-}
-
 function createInitialState(options: {
   targetBlockHeight: number | null;
   tipKey: string | null;
-  loopState: MiningPhaseMachineLoopState;
+  loopState: MiningRuntimeLoopState;
 }): RuntimeMiningCycleState {
   return {
     phase: "idle",
@@ -243,7 +84,7 @@ export async function runMiningPhaseMachine(options: {
   targetBlockHeight: number | null;
   tipKey: string | null;
   corePublishState: MiningRuntimeStatusV1["corePublishState"];
-  loopState: MiningPhaseMachineLoopState;
+  loopState: MiningRuntimeLoopState;
   openReadContext: typeof openWalletReadContext;
   attachService: typeof attachOrStartManagedBitcoindService;
   rpcFactory: (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
