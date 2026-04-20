@@ -73,112 +73,34 @@ export async function runCli(
   await maybeNotifyAboutCliUpdate(parsed, context);
 
   try {
-    if (parsed.command === "update") {
-      return runUpdateCommand(parsed, context);
+    switch (parsed.commandFamily) {
+      case "update":
+        return runUpdateCommand(parsed, context);
+      case "sync":
+        return runSyncCommand(parsed, context);
+      case "follow":
+        return runFollowCommand(parsed, context);
+      case "status":
+        return runStatusCommand(parsed, context);
+      case "client-admin":
+        return runClientAdminCommand(parsed, context);
+      case "service-runtime":
+        return runServiceRuntimeCommand(parsed, context);
+      case "wallet-admin":
+        return runWalletAdminCommand(parsed, context);
+      case "wallet-mutation":
+        return runWalletMutationCommand(parsed, context);
+      case "wallet-read":
+        return runWalletReadCommand(parsed, context);
+      case "mining-admin":
+        return runMiningAdminCommand(parsed, context);
+      case "mining-runtime":
+        return runMiningRuntimeCommand(parsed, context);
+      case "mining-read":
+        return runMiningReadCommand(parsed, context);
+      default:
+        return runWalletReadCommand(parsed, context);
     }
-
-    if (parsed.command === "sync") {
-      return runSyncCommand(parsed, context);
-    }
-
-    if (parsed.command === "follow") {
-      return runFollowCommand(parsed, context);
-    }
-
-    if (parsed.command === "status") {
-      return runStatusCommand(parsed, context);
-    }
-
-    if (
-      parsed.command === "client-lock"
-      || parsed.command === "client-unlock"
-      || parsed.command === "client-change-password"
-    ) {
-      return runClientAdminCommand(parsed, context);
-    }
-
-    if (
-      parsed.command === "bitcoin-start"
-      || parsed.command === "bitcoin-stop"
-      || parsed.command === "bitcoin-status"
-      || parsed.command === "indexer-start"
-      || parsed.command === "indexer-stop"
-      || parsed.command === "indexer-status"
-    ) {
-      return runServiceRuntimeCommand(parsed, context);
-    }
-
-    if (
-      parsed.command === "mine"
-      || parsed.command === "mine-start"
-      || parsed.command === "mine-stop"
-    ) {
-      return runMiningRuntimeCommand(parsed, context);
-    }
-
-    if (
-      parsed.command === "mine-setup"
-      || parsed.command === "mine-prompt"
-    ) {
-      return runMiningAdminCommand(parsed, context);
-    }
-
-    if (
-      parsed.command === "init"
-      || parsed.command === "reset"
-      || parsed.command === "repair"
-      || parsed.command === "wallet-init"
-      || parsed.command === "wallet-show-mnemonic"
-    ) {
-      return runWalletAdminCommand(parsed, context);
-    }
-
-    if (
-      parsed.command === "anchor"
-      || parsed.command === "domain-anchor"
-      || parsed.command === "register"
-      || parsed.command === "domain-register"
-      || parsed.command === "transfer"
-      || parsed.command === "domain-transfer"
-      || parsed.command === "sell"
-      || parsed.command === "domain-sell"
-      || parsed.command === "unsell"
-      || parsed.command === "domain-unsell"
-      || parsed.command === "buy"
-      || parsed.command === "domain-buy"
-      || parsed.command === "domain-endpoint-set"
-      || parsed.command === "domain-endpoint-clear"
-      || parsed.command === "domain-delegate-set"
-      || parsed.command === "domain-delegate-clear"
-      || parsed.command === "domain-miner-set"
-      || parsed.command === "domain-miner-clear"
-      || parsed.command === "domain-canonical"
-      || parsed.command === "field-create"
-      || parsed.command === "field-set"
-      || parsed.command === "field-clear"
-      || parsed.command === "bitcoin-transfer"
-      || parsed.command === "send"
-      || parsed.command === "claim"
-      || parsed.command === "reclaim"
-      || parsed.command === "cog-send"
-      || parsed.command === "cog-claim"
-      || parsed.command === "cog-reclaim"
-      || parsed.command === "cog-lock"
-      || parsed.command === "rep-give"
-      || parsed.command === "rep-revoke"
-    ) {
-      return runWalletMutationCommand(parsed, context);
-    }
-
-    if (
-      parsed.command === "mine-prompt-list"
-      || parsed.command === "mine-status"
-      || parsed.command === "mine-log"
-    ) {
-      return runMiningReadCommand(parsed, context);
-    }
-
-    return runWalletReadCommand(parsed, context);
   } catch (error) {
     const classified = classifyCliError(error);
     if (isStructuredOutputMode(parsed.outputMode)) {

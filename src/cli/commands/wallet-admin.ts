@@ -284,7 +284,7 @@ export async function runWalletAdminCommand(
     const outcome = await waitForCompletionOrStop((async () => {
       const provider = context.walletSecretProvider;
 
-      if (parsed.command === "init" || parsed.command === "wallet-init") {
+      if (parsed.command === "init") {
         const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
         const prompter = createCommandPrompter(parsed, context);
         if (parsed.outputMode === "text") {

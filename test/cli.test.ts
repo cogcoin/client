@@ -67,6 +67,38 @@ test("parser accepts client lock, unlock, and change-password", () => {
   assert.equal(parseCliArgs(["client", "change-password"]).command, "client-change-password");
 });
 
+test("parser canonicalizes representative aliases and preserves invoked path metadata", () => {
+  const walletInit = parseCliArgs(["wallet", "init"]);
+  assert.equal(walletInit.command, "init");
+  assert.equal(walletInit.commandFamily, "wallet-admin");
+  assert.deepEqual(walletInit.invokedCommandTokens, ["wallet", "init"]);
+  assert.equal(walletInit.invokedCommandPath, "wallet init");
+
+  const walletAddress = parseCliArgs(["wallet", "address"]);
+  assert.equal(walletAddress.command, "address");
+  assert.equal(walletAddress.commandFamily, "wallet-read");
+  assert.deepEqual(walletAddress.invokedCommandTokens, ["wallet", "address"]);
+  assert.equal(walletAddress.invokedCommandPath, "wallet address");
+
+  const domainShow = parseCliArgs(["domain", "show", "alpha"]);
+  assert.equal(domainShow.command, "show");
+  assert.equal(domainShow.commandFamily, "wallet-read");
+  assert.deepEqual(domainShow.invokedCommandTokens, ["domain", "show"]);
+  assert.equal(domainShow.invokedCommandPath, "domain show");
+
+  const cogSend = parseCliArgs(["cog", "send", "10", "--to", "bc1qrecipient"]);
+  assert.equal(cogSend.command, "send");
+  assert.equal(cogSend.commandFamily, "wallet-mutation");
+  assert.deepEqual(cogSend.invokedCommandTokens, ["cog", "send"]);
+  assert.equal(cogSend.invokedCommandPath, "cog send");
+
+  const fieldShow = parseCliArgs(["field", "show", "alpha", "bio"]);
+  assert.equal(fieldShow.command, "field");
+  assert.equal(fieldShow.commandFamily, "wallet-read");
+  assert.deepEqual(fieldShow.invokedCommandTokens, ["field", "show"]);
+  assert.equal(fieldShow.invokedCommandPath, "field show");
+});
+
 test("parser accepts update with --yes", () => {
   const parsed = parseCliArgs(["update", "--yes"]);
 
@@ -79,6 +111,13 @@ test("parser accepts mine prompt and mine prompt list", () => {
   assert.equal(parseCliArgs(["mine", "prompt", "--output", "json"]).command, "mine-prompt-list");
   assert.equal(parseCliArgs(["mine", "prompt", "alpha"]).command, "mine-prompt");
   assert.equal(parseCliArgs(["mine", "prompt", "list", "--output", "json"]).command, "mine-prompt-list");
+});
+
+test("parser still routes bare field to the canonical field command before arity validation", () => {
+  assert.throws(
+    () => parseCliArgs(["field"]),
+    /cli_missing_field_arguments/,
+  );
 });
 
 test("parser accepts bitcoin transfer with --yes", () => {

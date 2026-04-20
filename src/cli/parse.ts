@@ -1,197 +1,22 @@
 import type { CommandName, OutputMode, ParsedCliArgs, ProgressOutput } from "./types.js";
-import { isWalletMutationCommand } from "./mutation-command-groups.js";
 import {
-  isJsonOutputSupportedCommand,
-  isPreviewJsonOutputSupportedCommand,
-} from "./output.js";
+  commandSupportsSatvb,
+  commandSupportsYesFlag,
+  getCommandHandlerFamily,
+  isJsonOutputSupportedForCommand,
+  isPreviewJsonOutputSupportedForCommand,
+  renderHelpText,
+  resolveCommandMatch,
+  resolveUnknownCommandError,
+} from "./command-registry.js";
 
-export const HELP_TEXT = `Usage: cogcoin <command> [options]
-
-Commands:
-  status                  Show wallet-aware local service and chain status
-  status --output json    Emit the stable v1 machine-readable status envelope
-  update                  Show the current and latest client versions and install updates
-  update --output json    Emit the stable v1 machine-readable update result envelope
-  client unlock           Unlock password-protected local wallet secrets for a limited time
-  client lock             Flush the cached client password unlock session
-  client change-password  Rotate the client password that protects local wallet secrets
-  bitcoin start           Start the managed Bitcoin daemon
-  bitcoin stop            Stop the managed Bitcoin daemon and paired indexer
-  bitcoin status          Show managed Bitcoin daemon status without starting it
-  bitcoin transfer <sats> --to <address>
-                         Send plain BTC from the wallet address
-  indexer start           Start the managed Cogcoin indexer (and bitcoind if needed)
-  indexer stop            Stop the managed Cogcoin indexer only
-  indexer status          Show managed Cogcoin indexer status without starting it
-  init                    Initialize a new wallet or restore an existing wallet
-  init --output json      Emit the stable v1 machine-readable init result envelope
-  reset                   Factory-reset local Cogcoin state with interactive retention prompts
-  repair                  Recover bounded wallet/indexer/runtime state
-  wallet address          Alias for address
-  wallet ids              Alias for ids
-  mine                    Run the miner in the foreground
-  mine start              Start the miner as a background worker
-  mine stop               Stop the active background miner
-  mine setup              Configure the built-in mining provider
-  mine setup --output json
-                         Emit the stable v1 machine-readable mine setup result envelope
-  mine prompt             Show per-domain mining prompt state
-  mine prompt --output json
-                         Emit the stable v1 machine-readable mine prompt list envelope
-  mine prompt <domain>    Configure a per-domain mining prompt override
-  mine prompt <domain> --output json
-                         Emit the stable v1 machine-readable mine prompt result envelope
-  mine prompt list        Alias for mine prompt
-  mine status             Show mining control-plane health and readiness
-  mine log                Show recent mining control-plane events
-  anchor <domain>         Anchor an owned unanchored domain with the wallet address
-  register <domain>
-                         Register a root domain or subdomain
-  transfer <domain> --to <btc-target>
-                          Transfer an unanchored domain to another BTC address or script
-  sell <domain> <price>   List an unanchored domain for sale in COG
-  unsell <domain>         Clear an active domain listing
-  buy <domain>
-                         Buy an unanchored listed domain in COG
-  send <amount> --to <btc-target>
-                         Send COG from the wallet address to another BTC target
-  claim <lock-id> --preimage <32-byte-hex>
-                         Claim an active COG lock before timeout
-  reclaim <lock-id>      Reclaim an expired COG lock as the original locker
-  cog lock <amount> --to-domain <domain> (--for <blocks-or-duration> | --until-height <height>) --condition <sha256hex>
-                         Lock COG to an anchored recipient domain
-  wallet status           Show detailed wallet-local status and service health
-  wallet init             Alias for init
-  wallet show-mnemonic    Reveal the initialized wallet recovery phrase after typed confirmation
-  address                 Show the BTC wallet address for this wallet
-  ids                     Show the local wallet address
-  balance                 Show local wallet COG balances
-  locks                   Show locally related active COG locks
-  domain list             Alias for domains
-  domain show <domain>    Alias for show <domain>
-  domains [--anchored] [--listed] [--mineable]
-                         Show locally related domains
-  show <domain>           Show one domain and its local-wallet relationship
-  fields <domain>         List current fields on a domain
-  field <domain> <field>  Show one current field value
-  field create <domain> <field>
-                         Create a new empty anchored field
-  field set <domain> <field>
-                         Update an existing anchored field value
-  field clear <domain> <field>
-                         Clear an existing anchored field value
-  rep give <source-domain> <target-domain> <amount>
-                         Burn COG as anchored-domain reputation support
-  rep revoke <source-domain> <target-domain> <amount>
-                         Revoke visible support without refunding burned COG
-
-Options:
-  --db <path>       Override the SQLite database path
-  --data-dir <path> Override the managed bitcoin datadir
-  --for <duration>  Relative timeout for cog lock, like 15m, 2h, or 1d
-  --message <text>  Founding message text for anchor
-  --to <btc-target> Transfer or send target as an address or spk:<hex>
-  --to-domain <domain>
-                    Recipient domain for cog lock
-  --condition <sha256hex>
-                    32-byte lock condition hash
-  --until-height <height>
-                    Absolute timeout height for cog lock
-  --preimage <32-byte-hex>
-                    Claim preimage for an active lock
-  --review <text>   Optional public review text for reputation operations
-  --satvb <n>       Override the mutation fee rate in sat/vB
-  --text <utf8>     UTF-8 payload text for endpoint or field writes
-  --json <json>     UTF-8 payload JSON text for endpoint or field writes
-  --bytes <spec>    Payload bytes as hex:<hex> or @<path>
-  --permanent       Create the field as permanent
-  --format <spec>   Advanced field format as raw:<u8>
-  --value <spec>    Advanced field value as hex:<hex>, @<path>, or utf8:<text>
-  --claimable      Show only currently claimable locks
-  --reclaimable    Show only currently reclaimable locks
-  --anchored       Show only anchored domains
-  --listed         Show only currently listed domains
-  --mineable       Show only locally mineable root domains
-  --limit <n>      Limit list rows (1..1000)
-  --all            Show all rows for list commands
-  --follow         Follow mining log output
-  --output <mode>  Output mode: text, json, or preview-json
-  --progress <mode> Progress output mode: auto, tty, or none
-  --force          Reserved for future use
-  --force-race      Allow a visible root registration race
-  --yes             Approve eligible plain yes/no mutation confirmations non-interactively
-  --help            Show help
-  --version         Show package version
-
-Quickstart:
-  1. Run \`cogcoin init\` to create or restore a wallet.
-  2. Run \`cogcoin sync\` to bootstrap assumeutxo and the managed Bitcoin/indexer state.
-  3. Run \`cogcoin address\`, then fund the wallet with about 0.0015 BTC so you can buy a 6+ character domain to start mining and still keep BTC available for mining transaction fees.
-
-Examples:
-  cogcoin status --output json
-  cogcoin bitcoin status
-  cogcoin indexer status
-  cogcoin init --output json
-  cogcoin wallet address
-  cogcoin domain list --mineable
-  cogcoin register alpha-child
-  cogcoin anchor alpha
-  cogcoin register alpha --satvb 12.5
-  cogcoin buy alpha
-  cogcoin field set alpha bio --text "hello"
-  cogcoin rep give alpha beta 10 --review "great operator"
-  cogcoin mine setup --output json
-  cogcoin mine prompt
-  cogcoin mine prompt alpha
-  cogcoin register alpha-child --output preview-json
-  cogcoin mine status
-`;
-
-function supportsYesFlag(command: CommandName | null): boolean {
-  switch (command) {
-    case "update":
-    case "sync":
-    case "follow":
-    case "bitcoin-transfer":
-    case "repair":
-    case "register":
-    case "domain-register":
-    case "transfer":
-    case "domain-transfer":
-    case "sell":
-    case "domain-sell":
-    case "unsell":
-    case "domain-unsell":
-    case "buy":
-    case "domain-buy":
-    case "send":
-    case "cog-send":
-    case "claim":
-    case "cog-claim":
-    case "reclaim":
-    case "cog-reclaim":
-    case "cog-lock":
-    case "field-create":
-    case "field-set":
-    case "field-clear":
-    case "domain-endpoint-set":
-    case "domain-endpoint-clear":
-    case "domain-delegate-set":
-    case "domain-delegate-clear":
-    case "domain-miner-set":
-    case "domain-miner-clear":
-    case "domain-canonical":
-    case "rep-give":
-    case "rep-revoke":
-      return true;
-    default:
-      return false;
-  }
-}
+export const HELP_TEXT = renderHelpText();
 
 export function parseCliArgs(argv: string[]): ParsedCliArgs {
   let command: CommandName | null = null;
+  let commandFamily: ParsedCliArgs["commandFamily"] = null;
+  let invokedCommandTokens: readonly string[] | null = null;
+  let invokedCommandPath: string | null = null;
   const args: string[] = [];
   let help = false;
   let version = false;
@@ -530,440 +355,18 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     }
 
     if (command === null) {
-      if (token === "wallet") {
-        const subcommand = argv[index + 1] ?? null;
+      const match = resolveCommandMatch(argv, index);
 
-        if (subcommand === "status") {
-          command = "wallet-status";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "address") {
-          command = "wallet-address";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "ids") {
-          command = "wallet-ids";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "init") {
-          command = "wallet-init";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "delete") {
-          throw new Error("cli_wallet_delete_removed");
-        }
-
-        if (subcommand === "restore") {
-          throw new Error("cli_wallet_restore_removed");
-        }
-
-        if (subcommand === "show-mnemonic") {
-          command = "wallet-show-mnemonic";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "export") {
-          throw new Error("cli_wallet_export_removed");
-        }
-
-        if (subcommand === "import") {
-          throw new Error("cli_wallet_import_removed");
-        }
-
-        throw new Error(`cli_unknown_command_wallet${subcommand === null ? "" : `_${subcommand}`}`);
+      if (match === null) {
+        throw new Error(resolveUnknownCommandError(argv, index));
       }
 
-      if (token === "bitcoin") {
-        const subcommand = argv[index + 1] ?? null;
-
-        if (subcommand === "start") {
-          command = "bitcoin-start";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "stop") {
-          command = "bitcoin-stop";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "status") {
-          command = "bitcoin-status";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "transfer") {
-          command = "bitcoin-transfer";
-          index += 1;
-          continue;
-        }
-
-        throw new Error(`cli_unknown_command_bitcoin${subcommand === null ? "" : `_${subcommand}`}`);
-      }
-
-      if (token === "client") {
-        const subcommand = argv[index + 1] ?? null;
-
-        if (subcommand === "unlock") {
-          command = "client-unlock";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "lock") {
-          command = "client-lock";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "change-password") {
-          command = "client-change-password";
-          index += 1;
-          continue;
-        }
-
-        throw new Error(`cli_unknown_command_client${subcommand === null ? "" : `_${subcommand}`}`);
-      }
-
-      if (token === "indexer") {
-        const subcommand = argv[index + 1] ?? null;
-
-        if (subcommand === "start") {
-          command = "indexer-start";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "stop") {
-          command = "indexer-stop";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "status") {
-          command = "indexer-status";
-          index += 1;
-          continue;
-        }
-
-        throw new Error(`cli_unknown_command_indexer${subcommand === null ? "" : `_${subcommand}`}`);
-      }
-
-      if (token === "mine") {
-        const subcommand = argv[index + 1] ?? null;
-
-        if (subcommand === null || subcommand.startsWith("--")) {
-          command = "mine";
-          continue;
-        }
-
-        if (subcommand === "start") {
-          command = "mine-start";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "stop") {
-          command = "mine-stop";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "setup") {
-          command = "mine-setup";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "prompt") {
-          const action = argv[index + 2] ?? null;
-          command = action === null || action.startsWith("--") || action === "list"
-            ? "mine-prompt-list"
-            : "mine-prompt";
-          index += action === "list" ? 2 : 1;
-          continue;
-        }
-
-        if (subcommand === "status") {
-          command = "mine-status";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "log") {
-          command = "mine-log";
-          index += 1;
-          continue;
-        }
-
-        throw new Error(`cli_unknown_command_mine${subcommand === null ? "" : `_${subcommand}`}`);
-      }
-
-      if (token === "domain") {
-        const subcommand = argv[index + 1] ?? null;
-
-        if (subcommand === "register") {
-          command = "domain-register";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "list") {
-          command = "domain-list";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "show") {
-          command = "domain-show";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "anchor") {
-          const action = argv[index + 2] ?? null;
-
-          if (action === "clear") {
-            throw new Error("cli_anchor_clear_removed");
-          }
-
-          command = "domain-anchor";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "transfer") {
-          command = "domain-transfer";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "sell") {
-          command = "domain-sell";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "unsell") {
-          command = "domain-unsell";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "buy") {
-          command = "domain-buy";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "endpoint") {
-          const action = argv[index + 2] ?? null;
-
-          if (action === "set") {
-            command = "domain-endpoint-set";
-            index += 2;
-            continue;
-          }
-
-          if (action === "clear") {
-            command = "domain-endpoint-clear";
-            index += 2;
-            continue;
-          }
-
-          throw new Error(`cli_unknown_command_domain_endpoint${action === null ? "" : `_${action}`}`);
-        }
-
-        if (subcommand === "delegate") {
-          const action = argv[index + 2] ?? null;
-
-          if (action === "set") {
-            command = "domain-delegate-set";
-            index += 2;
-            continue;
-          }
-
-          if (action === "clear") {
-            command = "domain-delegate-clear";
-            index += 2;
-            continue;
-          }
-
-          throw new Error(`cli_unknown_command_domain_delegate${action === null ? "" : `_${action}`}`);
-        }
-
-        if (subcommand === "miner") {
-          const action = argv[index + 2] ?? null;
-
-          if (action === "set") {
-            command = "domain-miner-set";
-            index += 2;
-            continue;
-          }
-
-          if (action === "clear") {
-            command = "domain-miner-clear";
-            index += 2;
-            continue;
-          }
-
-          throw new Error(`cli_unknown_command_domain_miner${action === null ? "" : `_${action}`}`);
-        }
-
-        if (subcommand === "canonical") {
-          command = "domain-canonical";
-          index += 1;
-          continue;
-        }
-
-        throw new Error(`cli_unknown_command_domain${subcommand === null ? "" : `_${subcommand}`}`);
-      }
-
-      if (token === "cog") {
-        const subcommand = argv[index + 1] ?? null;
-
-        if (subcommand === "send") {
-          command = "cog-send";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "claim") {
-          command = "cog-claim";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "reclaim") {
-          command = "cog-reclaim";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "lock") {
-          command = "cog-lock";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "balance") {
-          command = "cog-balance";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "locks") {
-          command = "cog-locks";
-          index += 1;
-          continue;
-        }
-
-        throw new Error(`cli_unknown_command_cog${subcommand === null ? "" : `_${subcommand}`}`);
-      }
-
-      if (token === "rep") {
-        const subcommand = argv[index + 1] ?? null;
-
-        if (subcommand === "give") {
-          command = "rep-give";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "revoke") {
-          command = "rep-revoke";
-          index += 1;
-          continue;
-        }
-
-        throw new Error(`cli_unknown_command_rep${subcommand === null ? "" : `_${subcommand}`}`);
-      }
-
-      if (token === "field") {
-        const subcommand = argv[index + 1] ?? null;
-
-        if (subcommand === "list") {
-          command = "field-list";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "show") {
-          command = "field-show";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "create") {
-          command = "field-create";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "set") {
-          command = "field-set";
-          index += 1;
-          continue;
-        }
-
-        if (subcommand === "clear") {
-          command = "field-clear";
-          index += 1;
-          continue;
-        }
-
-        command = "field";
-        continue;
-      }
-
-      if (
-        token === "init"
-        || token === "reset"
-        || token === "repair"
-        || token === "update"
-        || token === "sync"
-        || token === "status"
-        || token === "follow"
-        || token === "anchor"
-        || token === "register"
-        || token === "transfer"
-        || token === "sell"
-        || token === "unsell"
-        || token === "buy"
-        || token === "send"
-        || token === "claim"
-        || token === "reclaim"
-        || token === "address"
-        || token === "ids"
-        || token === "balance"
-        || token === "locks"
-        || token === "domains"
-        || token === "show"
-        || token === "fields"
-      ) {
-        if (token === "anchor" && argv[index + 1] === "clear") {
-          throw new Error("cli_anchor_clear_removed");
-        }
-        command = token as CommandName;
-        continue;
-      }
-
-      if (token === "restore") {
-        throw new Error("cli_restore_removed");
-      }
-
-      throw new Error(`cli_unknown_command_${token}`);
+      command = match.command;
+      commandFamily = getCommandHandlerFamily(match.command);
+      invokedCommandTokens = [...match.invokedTokens];
+      invokedCommandPath = match.invokedTokens.join(" ");
+      index += match.consumedTokens - 1;
+      continue;
     }
 
     args.push(token);
@@ -980,7 +383,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
       || command === "indexer-status"
       || command === "init"
       || command === "reset"
-      || command === "wallet-init"
       || command === "wallet-status"
       || command === "repair"
       || command === "sync"
@@ -992,30 +394,21 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
       || command === "mine-prompt-list"
       || command === "mine-status"
       || command === "mine-log"
-      || command === "wallet-address"
-      || command === "wallet-ids"
       || command === "address"
       || command === "ids"
       || command === "balance"
-      || command === "cog-balance"
       || command === "locks"
-      || command === "cog-locks"
-      || command === "domain-list"
       || command === "domains")
     && args.length !== 0
   ) {
     throw new Error(`cli_unexpected_argument_${args[0]}`);
   }
 
-  if ((command === "register" || command === "domain-register") && args.length !== 1) {
+  if (command === "register" && args.length !== 1) {
     throw new Error("cli_missing_domain_argument");
   }
 
-  if (
-    (command === "anchor"
-      || command === "domain-anchor")
-    && args.length !== 1
-  ) {
+  if (command === "anchor" && args.length !== 1) {
     throw new Error("cli_missing_domain_argument");
   }
 
@@ -1042,23 +435,23 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_missing_miner_arguments");
   }
 
-  if ((command === "transfer" || command === "domain-transfer") && args.length !== 1) {
+  if (command === "transfer" && args.length !== 1) {
     throw new Error("cli_missing_domain_argument");
   }
 
-  if ((command === "sell" || command === "domain-sell") && args.length !== 2) {
+  if (command === "sell" && args.length !== 2) {
     throw new Error("cli_missing_sell_arguments");
   }
 
-  if ((command === "unsell" || command === "domain-unsell" || command === "buy" || command === "domain-buy") && args.length !== 1) {
+  if ((command === "unsell" || command === "buy") && args.length !== 1) {
     throw new Error("cli_missing_domain_argument");
   }
 
-  if ((command === "send" || command === "cog-send" || command === "cog-lock" || command === "bitcoin-transfer") && args.length !== 1) {
+  if ((command === "send" || command === "cog-lock" || command === "bitcoin-transfer") && args.length !== 1) {
     throw new Error("cli_missing_amount_argument");
   }
 
-  if ((command === "claim" || command === "cog-claim" || command === "reclaim" || command === "cog-reclaim") && args.length !== 1) {
+  if ((command === "claim" || command === "reclaim") && args.length !== 1) {
     throw new Error("cli_missing_lock_argument");
   }
 
@@ -1066,15 +459,11 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_missing_reputation_arguments");
   }
 
-  if ((command === "show" || command === "domain-show" || command === "fields") && args.length !== 1) {
+  if ((command === "show" || command === "fields") && args.length !== 1) {
     throw new Error(command === "show" ? "cli_missing_domain_argument" : "cli_missing_domain_argument");
   }
 
-  if (command === "field-list" && args.length !== 1) {
-    throw new Error("cli_missing_domain_argument");
-  }
-
-  if ((command === "field" || command === "field-show" || command === "field-create" || command === "field-set" || command === "field-clear") && args.length !== 2) {
+  if ((command === "field" || command === "field-create" || command === "field-set" || command === "field-clear") && args.length !== 2) {
     throw new Error("cli_missing_field_arguments");
   }
 
@@ -1085,11 +474,11 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_unlock_duration_not_supported_for_command");
   }
 
-  if (assumeYes && !supportsYesFlag(command)) {
+  if (assumeYes && !commandSupportsYesFlag(command)) {
     throw new Error("cli_yes_not_supported_for_command");
   }
 
-  if (forceRace && command !== "register" && command !== "domain-register") {
+  if (forceRace && command !== "register") {
     throw new Error("cli_force_race_not_supported_for_command");
   }
 
@@ -1097,7 +486,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_force_not_supported_for_command");
   }
 
-  if (anchorMessage !== null && command !== "anchor" && command !== "domain-anchor") {
+  if (anchorMessage !== null && command !== "anchor") {
     throw new Error("cli_message_not_supported_for_command");
   }
 
@@ -1147,23 +536,19 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_field_set_requires_value");
   }
 
-  if ((command === "field-clear" || command === "field" || command === "field-show" || command === "field-list")
+  if ((command === "field-clear" || command === "field" || command === "fields")
     && (namedPayloadFlagCount > 0 || hasRawPayloadFlags || fieldPermanent)) {
     throw new Error("cli_field_flags_not_supported_for_command");
   }
 
-  if (transferTarget !== null && command !== "transfer" && command !== "domain-transfer") {
-    if (command !== "send" && command !== "cog-send" && command !== "bitcoin-transfer") {
+  if (transferTarget !== null && command !== "transfer") {
+    if (command !== "send" && command !== "bitcoin-transfer") {
       throw new Error("cli_to_not_supported_for_command");
     }
   }
 
   if (
-    (command === "transfer"
-      || command === "domain-transfer"
-      || command === "send"
-      || command === "cog-send"
-      || command === "bitcoin-transfer")
+    (command === "transfer" || command === "send" || command === "bitcoin-transfer")
     && transferTarget === null
   ) {
     throw new Error("cli_missing_transfer_target");
@@ -1181,7 +566,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_until_height_not_supported_for_command");
   }
 
-  if (preimageHex !== null && command !== "claim" && command !== "cog-claim") {
+  if (preimageHex !== null && command !== "claim") {
     throw new Error("cli_preimage_not_supported_for_command");
   }
 
@@ -1189,13 +574,12 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_review_not_supported_for_command");
   }
 
-  if (satvb !== null && !isWalletMutationCommand(command)) {
+  if (satvb !== null && !commandSupportsSatvb(command)) {
     throw new Error("cli_satvb_not_supported_for_command");
   }
 
   if ((locksClaimableOnly || locksReclaimableOnly)
-    && command !== "locks"
-    && command !== "cog-locks") {
+    && command !== "locks") {
     throw new Error("cli_lock_filters_not_supported_for_command");
   }
 
@@ -1204,20 +588,15 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   }
 
   if ((domainsAnchoredOnly || domainsListedOnly || domainsMineableOnly)
-    && command !== "domain-list"
     && command !== "domains") {
     throw new Error("cli_domain_filters_not_supported_for_command");
   }
 
   if ((listLimit !== null || listAll)
     && command !== "locks"
-    && command !== "cog-locks"
-    && command !== "wallet-ids"
     && command !== "ids"
-    && command !== "domain-list"
     && command !== "domains"
     && command !== "fields"
-    && command !== "field-list"
     && command !== "mine-log") {
     throw new Error("cli_lock_filters_not_supported_for_command");
   }
@@ -1238,11 +617,11 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_follow_limit_not_supported");
   }
 
-  if (outputMode === "json" && !isJsonOutputSupportedCommand(command)) {
+  if (outputMode === "json" && !isJsonOutputSupportedForCommand(command)) {
     throw new Error("cli_output_not_supported_for_command");
   }
 
-  if (outputMode === "preview-json" && !isPreviewJsonOutputSupportedCommand(command)) {
+  if (outputMode === "preview-json" && !isPreviewJsonOutputSupportedForCommand(command)) {
     throw new Error("cli_output_not_supported_for_command");
   }
 
@@ -1258,12 +637,15 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     }
   }
 
-  if ((command === "claim" || command === "cog-claim") && preimageHex === null) {
+  if (command === "claim" && preimageHex === null) {
     throw new Error("cli_missing_claim_preimage");
   }
 
   return {
     command,
+    commandFamily,
+    invokedCommandTokens,
+    invokedCommandPath,
     args,
     help,
     version,

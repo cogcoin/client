@@ -2,17 +2,11 @@ import type { CommandName } from "./types.js";
 
 export const walletMutationCommands = [
   "anchor",
-  "domain-anchor",
   "register",
-  "domain-register",
   "transfer",
-  "domain-transfer",
   "sell",
-  "domain-sell",
   "unsell",
-  "domain-unsell",
   "buy",
-  "domain-buy",
   "domain-endpoint-set",
   "domain-endpoint-clear",
   "domain-delegate-set",
@@ -24,11 +18,8 @@ export const walletMutationCommands = [
   "field-set",
   "field-clear",
   "send",
-  "cog-send",
   "claim",
-  "cog-claim",
   "reclaim",
-  "cog-reclaim",
   "cog-lock",
   "rep-give",
   "rep-revoke",
@@ -49,62 +40,62 @@ export function isWalletMutationCommand(
 
 export function isAnchorMutationCommand(
   command: CommandName | null,
-): command is "anchor" | "domain-anchor" {
-  return command === "anchor" || command === "domain-anchor";
+): command is "anchor" {
+  return command === "anchor";
 }
 
 export function isRegisterMutationCommand(
   command: CommandName | null,
-): command is "register" | "domain-register" {
-  return command === "register" || command === "domain-register";
+): command is "register" {
+  return command === "register";
 }
 
 export function isTransferMutationCommand(
   command: CommandName | null,
-): command is "transfer" | "domain-transfer" {
-  return command === "transfer" || command === "domain-transfer";
+): command is "transfer" {
+  return command === "transfer";
 }
 
 export function isSellMutationCommand(
   command: CommandName | null,
-): command is "sell" | "domain-sell" {
-  return command === "sell" || command === "domain-sell";
+): command is "sell" {
+  return command === "sell";
 }
 
 export function isUnsellMutationCommand(
   command: CommandName | null,
-): command is "unsell" | "domain-unsell" {
-  return command === "unsell" || command === "domain-unsell";
+): command is "unsell" {
+  return command === "unsell";
 }
 
 export function isSellOrUnsellMutationCommand(
   command: CommandName | null,
-): command is "sell" | "domain-sell" | "unsell" | "domain-unsell" {
+): command is "sell" | "unsell" {
   return isSellMutationCommand(command) || isUnsellMutationCommand(command);
 }
 
 export function isBuyMutationCommand(
   command: CommandName | null,
-): command is "buy" | "domain-buy" {
-  return command === "buy" || command === "domain-buy";
+): command is "buy" {
+  return command === "buy";
 }
 
 export function isSendMutationCommand(
   command: CommandName | null,
-): command is "send" | "cog-send" {
-  return command === "send" || command === "cog-send";
+): command is "send" {
+  return command === "send";
 }
 
 export function isClaimMutationCommand(
   command: CommandName | null,
-): command is "claim" | "cog-claim" {
-  return command === "claim" || command === "cog-claim";
+): command is "claim" {
+  return command === "claim";
 }
 
 export function isReclaimMutationCommand(
   command: CommandName | null,
-): command is "reclaim" | "cog-reclaim" {
-  return command === "reclaim" || command === "cog-reclaim";
+): command is "reclaim" {
+  return command === "reclaim";
 }
 
 export function isReputationMutationCommand(

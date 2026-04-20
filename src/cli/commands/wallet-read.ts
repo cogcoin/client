@@ -126,7 +126,6 @@ export async function runWalletReadCommand(
         }
         writeLine(context.stdout, formatDetailedWalletStatusReport(readContext));
         return 0;
-      case "wallet-address":
       case "address":
         if (parsed.outputMode === "json") {
           return emitJson(context, parsed, "cogcoin/address/v1", buildAddressJson(readContext));
@@ -141,7 +140,6 @@ export async function runWalletReadCommand(
           writeLine(context.stdout, line);
         }
         return 0;
-      case "wallet-ids":
       case "ids": {
         const defaultLimit = 100;
         if (parsed.outputMode === "json") {
@@ -169,14 +167,13 @@ export async function runWalletReadCommand(
         return 0;
       }
       case "balance":
-      case "cog-balance":
         if (parsed.outputMode === "json") {
           return emitJson(context, parsed, "cogcoin/balance/v1", buildBalanceJson(readContext));
         }
         writeLine(context.stdout, formatBalanceReport(readContext));
         return 0;
       case "locks":
-      case "cog-locks": {
+      {
         const defaultLimit = 100;
         if (parsed.outputMode === "json") {
           const locks = listLocksForJson(readContext, {
@@ -221,7 +218,6 @@ export async function runWalletReadCommand(
         }
         return 0;
       }
-      case "domain-list":
       case "domains": {
         const defaultLimit = 100;
         const filters = activeDomainFilters(parsed);
@@ -255,7 +251,6 @@ export async function runWalletReadCommand(
         }));
         return 0;
       }
-      case "domain-show":
       case "show": {
         const domainName = parsed.args[0]!;
         const domain = findWalletDomain(readContext, domainName);
@@ -279,8 +274,7 @@ export async function runWalletReadCommand(
         writeLine(context.stdout, formatDomainReport(readContext, parsed.args[0]!));
         return 0;
       }
-      case "fields":
-      case "field-list": {
+      case "fields": {
         const defaultLimit = 100;
         const domainName = parsed.args[0]!;
         const fields = listFieldsForJson(readContext, domainName);
@@ -325,8 +319,7 @@ export async function runWalletReadCommand(
         }));
         return 0;
       }
-      case "field":
-      case "field-show": {
+      case "field": {
         const domainName = parsed.args[0]!;
         const fieldName = parsed.args[1]!;
         const domainFields = listDomainFields(readContext, domainName);

@@ -1,5 +1,14 @@
 import { FileLockBusyError } from "../wallet/fs/lock.js";
 import type { CommandName, OutputMode, ParsedCliArgs, WritableLike } from "./types.js";
+import {
+  describeCanonicalCommandFromArgs,
+  isJsonOutputSupportedForCommand,
+  isPreviewJsonOutputSupportedForCommand,
+  resolvePreviewJsonSchemaForCommand,
+  resolveStableJsonSchemaForCommand,
+  resolveStableMiningControlJsonSchemaForCommand,
+  resolveStableMutationJsonSchemaForCommand,
+} from "./command-registry.js";
 
 export interface JsonAvailabilityEntry {
   available: boolean;
@@ -1343,126 +1352,9 @@ function classifiedAsBlockedMessage(errorCode: string): boolean {
 }
 
 export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
-  const args = parsed.args;
-
-  switch (parsed.command) {
-    case "init":
-    case "wallet-init":
-      return "cogcoin init";
-    case "wallet-show-mnemonic":
-      return "cogcoin wallet show-mnemonic";
-    case "client-unlock":
-      return "cogcoin client unlock";
-    case "client-lock":
-      return "cogcoin client lock";
-    case "client-change-password":
-      return "cogcoin client change-password";
-    case "bitcoin-transfer":
-      return `cogcoin bitcoin transfer ${args[0] ?? "<sats>"}`;
-    case "reset":
-      return "cogcoin reset";
-    case "repair":
-      return "cogcoin repair";
-    case "update":
-      return "cogcoin update";
-    case "anchor":
-    case "domain-anchor":
-      return `cogcoin anchor ${args[0] ?? "<domain>"}`;
-    case "register":
-    case "domain-register":
-      return `cogcoin register ${args[0] ?? "<domain>"}`;
-    case "transfer":
-    case "domain-transfer":
-      return `cogcoin transfer ${args[0] ?? "<domain>"}`;
-    case "sell":
-    case "domain-sell":
-      return `cogcoin sell ${args[0] ?? "<domain>"} ${args[1] ?? "<price>"}`;
-    case "unsell":
-    case "domain-unsell":
-      return `cogcoin unsell ${args[0] ?? "<domain>"}`;
-    case "buy":
-    case "domain-buy":
-      return `cogcoin buy ${args[0] ?? "<domain>"}`;
-    case "send":
-    case "cog-send":
-      return `cogcoin send ${args[0] ?? "<amount>"}`;
-    case "claim":
-    case "cog-claim":
-      return `cogcoin claim ${args[0] ?? "<lock-id>"}`;
-    case "reclaim":
-    case "cog-reclaim":
-      return `cogcoin reclaim ${args[0] ?? "<lock-id>"}`;
-    case "cog-lock":
-      return `cogcoin cog lock ${args[0] ?? "<amount>"}`;
-    case "domain-endpoint-set":
-      return `cogcoin domain endpoint set ${args[0] ?? "<domain>"}`;
-    case "domain-endpoint-clear":
-      return `cogcoin domain endpoint clear ${args[0] ?? "<domain>"}`;
-    case "domain-delegate-set":
-      return `cogcoin domain delegate set ${args[0] ?? "<domain>"} ${args[1] ?? "<btc-target>"}`;
-    case "domain-delegate-clear":
-      return `cogcoin domain delegate clear ${args[0] ?? "<domain>"}`;
-    case "domain-miner-set":
-      return `cogcoin domain miner set ${args[0] ?? "<domain>"} ${args[1] ?? "<btc-target>"}`;
-    case "domain-miner-clear":
-      return `cogcoin domain miner clear ${args[0] ?? "<domain>"}`;
-    case "domain-canonical":
-      return `cogcoin domain canonical ${args[0] ?? "<domain>"}`;
-    case "field-create":
-      return `cogcoin field create ${args[0] ?? "<domain>"} ${args[1] ?? "<field>"}`;
-    case "field-set":
-      return `cogcoin field set ${args[0] ?? "<domain>"} ${args[1] ?? "<field>"}`;
-    case "field-clear":
-      return `cogcoin field clear ${args[0] ?? "<domain>"} ${args[1] ?? "<field>"}`;
-    case "rep-give":
-      return `cogcoin rep give ${args[0] ?? "<source-domain>"} ${args[1] ?? "<target-domain>"} ${args[2] ?? "<amount>"}`;
-    case "rep-revoke":
-      return `cogcoin rep revoke ${args[0] ?? "<source-domain>"} ${args[1] ?? "<target-domain>"} ${args[2] ?? "<amount>"}`;
-    case "wallet-address":
-    case "address":
-      return "cogcoin address";
-    case "wallet-ids":
-    case "ids":
-      return "cogcoin ids";
-    case "wallet-status":
-      return "cogcoin wallet status";
-    case "mine-setup":
-      return "cogcoin mine setup";
-    case "mine-prompt":
-      return `cogcoin mine prompt ${args[0] ?? "<domain>"}`;
-    case "mine-prompt-list":
-      return "cogcoin mine prompt";
-    case "mine-start":
-      return "cogcoin mine start";
-    case "mine-stop":
-      return "cogcoin mine stop";
-    case "mine-status":
-      return "cogcoin mine status";
-    case "mine-log":
-      return `cogcoin mine log${parsed.follow ? " --follow" : ""}`;
-    case "cog-balance":
-    case "balance":
-      return "cogcoin balance";
-    case "cog-locks":
-    case "locks":
-      return "cogcoin locks";
-    case "field-list":
-    case "fields":
-      return `cogcoin fields ${args[0] ?? "<domain>"}`;
-    case "field-show":
-    case "field":
-      return `cogcoin field ${args[0] ?? "<domain>"} ${args[1] ?? "<field>"}`;
-    case "domain-show":
-    case "show":
-      return `cogcoin show ${args[0] ?? "<domain>"}`;
-    case "status":
-      return "cogcoin status";
-    case "domain-list":
-    case "domains":
-      return "cogcoin domains";
-    default:
-      return parsed.command === null ? "cogcoin" : `cogcoin ${parsed.command.replaceAll("-", " ")}`;
-  }
+  return describeCanonicalCommandFromArgs(parsed.command, parsed.args, {
+    follow: parsed.follow,
+  });
 }
 
 export function inferOutputMode(argv: readonly string[]): OutputMode {
@@ -1481,266 +1373,27 @@ export function inferOutputMode(argv: readonly string[]): OutputMode {
 }
 
 export function resolveStableJsonSchema(parsed: ParsedCliArgs): string | null {
-  switch (parsed.command) {
-    case "status":
-      return "cogcoin/status/v1";
-    case "bitcoin-start":
-      return "cogcoin/bitcoin-start/v1";
-    case "bitcoin-stop":
-      return "cogcoin/bitcoin-stop/v1";
-    case "bitcoin-status":
-      return "cogcoin/bitcoin-status/v1";
-    case "indexer-start":
-      return "cogcoin/indexer-start/v1";
-    case "indexer-stop":
-      return "cogcoin/indexer-stop/v1";
-    case "indexer-status":
-      return "cogcoin/indexer-status/v1";
-    case "wallet-address":
-    case "address":
-      return "cogcoin/address/v1";
-    case "wallet-ids":
-    case "ids":
-      return "cogcoin/ids/v1";
-    case "wallet-status":
-      return "cogcoin/wallet-status/v1";
-    case "mine-status":
-      return "cogcoin/mine-status/v1";
-    case "mine-log":
-      return "cogcoin/mine-log/v1";
-    case "mine-prompt-list":
-      return "cogcoin/mine-prompt-list/v1";
-    case "balance":
-    case "cog-balance":
-      return "cogcoin/balance/v1";
-    case "locks":
-    case "cog-locks":
-      return "cogcoin/locks/v1";
-    case "domain-list":
-    case "domains":
-      return "cogcoin/domains/v1";
-    case "domain-show":
-    case "show":
-      return "cogcoin/show/v1";
-    case "fields":
-    case "field-list":
-      return "cogcoin/fields/v1";
-    case "field":
-    case "field-show":
-      return "cogcoin/field/v1";
-    default:
-      return null;
-  }
+  return resolveStableJsonSchemaForCommand(parsed.command);
 }
 
 export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string | null {
-  switch (parsed.command) {
-    case "init":
-    case "wallet-init":
-      return "cogcoin/init/v1";
-    case "client-unlock":
-      return "cogcoin/client-unlock/v1";
-    case "client-lock":
-      return "cogcoin/client-lock/v1";
-    case "client-change-password":
-      return "cogcoin/client-change-password/v1";
-    case "bitcoin-transfer":
-      return "cogcoin/bitcoin-transfer/v1";
-    case "reset":
-      return "cogcoin/reset/v1";
-    case "repair":
-      return "cogcoin/repair/v1";
-    case "update":
-      return "cogcoin/update/v1";
-    case "anchor":
-    case "domain-anchor":
-      return "cogcoin/anchor/v1";
-    case "register":
-    case "domain-register":
-      return "cogcoin/register/v1";
-    case "transfer":
-    case "domain-transfer":
-      return "cogcoin/transfer/v1";
-    case "sell":
-    case "domain-sell":
-      return "cogcoin/sell/v1";
-    case "unsell":
-    case "domain-unsell":
-      return "cogcoin/unsell/v1";
-    case "buy":
-    case "domain-buy":
-      return "cogcoin/buy/v1";
-    case "send":
-    case "cog-send":
-      return "cogcoin/send/v1";
-    case "claim":
-    case "cog-claim":
-      return "cogcoin/claim/v1";
-    case "reclaim":
-    case "cog-reclaim":
-      return "cogcoin/reclaim/v1";
-    case "cog-lock":
-      return "cogcoin/cog-lock/v1";
-    case "domain-endpoint-set":
-      return "cogcoin/domain-endpoint-set/v1";
-    case "domain-endpoint-clear":
-      return "cogcoin/domain-endpoint-clear/v1";
-    case "domain-delegate-set":
-      return "cogcoin/domain-delegate-set/v1";
-    case "domain-delegate-clear":
-      return "cogcoin/domain-delegate-clear/v1";
-    case "domain-miner-set":
-      return "cogcoin/domain-miner-set/v1";
-    case "domain-miner-clear":
-      return "cogcoin/domain-miner-clear/v1";
-    case "domain-canonical":
-      return "cogcoin/domain-canonical/v1";
-    case "field-create":
-      return "cogcoin/field-create/v1";
-    case "field-set":
-      return "cogcoin/field-set/v1";
-    case "field-clear":
-      return "cogcoin/field-clear/v1";
-    case "rep-give":
-      return "cogcoin/rep-give/v1";
-    case "rep-revoke":
-      return "cogcoin/rep-revoke/v1";
-    default:
-      return null;
-  }
+  return resolveStableMutationJsonSchemaForCommand(parsed.command);
 }
 
 export function resolveStableMiningControlJsonSchema(parsed: ParsedCliArgs): string | null {
-  switch (parsed.command) {
-    case "mine-setup":
-      return "cogcoin/mine-setup/v1";
-    case "mine-prompt":
-      return "cogcoin/mine-prompt/v1";
-    case "mine-start":
-      return "cogcoin/mine-start/v1";
-    case "mine-stop":
-      return "cogcoin/mine-stop/v1";
-    default:
-      return null;
-  }
+  return resolveStableMiningControlJsonSchemaForCommand(parsed.command);
 }
 
 export function resolvePreviewJsonSchema(parsed: ParsedCliArgs): string | null {
-  const stableMutationSchema = resolveStableMutationJsonSchema(parsed);
-  const stableMiningControlSchema = resolveStableMiningControlJsonSchema(parsed);
-
-  switch (parsed.command) {
-    case "reset":
-    case "repair":
-    case "anchor":
-    case "domain-anchor":
-    case "register":
-    case "domain-register":
-    case "transfer":
-    case "domain-transfer":
-    case "sell":
-    case "domain-sell":
-    case "unsell":
-    case "domain-unsell":
-    case "buy":
-    case "domain-buy":
-    case "send":
-    case "cog-send":
-    case "claim":
-    case "cog-claim":
-    case "reclaim":
-    case "cog-reclaim":
-    case "cog-lock":
-    case "domain-endpoint-set":
-    case "domain-endpoint-clear":
-    case "domain-delegate-set":
-    case "domain-delegate-clear":
-    case "domain-miner-set":
-    case "domain-miner-clear":
-    case "domain-canonical":
-    case "field-create":
-    case "field-set":
-    case "field-clear":
-    case "rep-give":
-    case "rep-revoke":
-      return stableMutationSchema === null
-        ? null
-        : stableMutationSchema.replace(/^cogcoin\//, "cogcoin-preview/");
-    case "mine-setup":
-    case "mine-start":
-    case "mine-stop":
-      return stableMiningControlSchema === null
-        ? null
-        : stableMiningControlSchema.replace(/^cogcoin\//, "cogcoin-preview/");
-    default:
-      return null;
-  }
-}
-
-function createSchemaProbe(command: CommandName | null): ParsedCliArgs {
-  return {
-    command,
-    args: [],
-    help: false,
-    version: false,
-    outputMode: "json",
-    dbPath: null,
-    dataDir: null,
-    progressOutput: "auto",
-    unlockFor: null,
-    assumeYes: false,
-    force: false,
-    forceRace: false,
-    anchorMessage: null,
-    transferTarget: null,
-    endpointText: null,
-    endpointJson: null,
-    endpointBytes: null,
-    fieldPermanent: false,
-    fieldFormat: null,
-    fieldValue: null,
-    lockRecipientDomain: null,
-    conditionHex: null,
-    untilHeight: null,
-    preimageHex: null,
-    reviewText: null,
-    satvb: null,
-    locksClaimableOnly: false,
-    locksReclaimableOnly: false,
-    domainsAnchoredOnly: false,
-    domainsListedOnly: false,
-    domainsMineableOnly: false,
-    listLimit: null,
-    listAll: false,
-    follow: false,
-  };
-}
-
-function isStableJsonCommand(command: CommandName | null): boolean {
-  return resolveStableJsonSchema(createSchemaProbe(command)) !== null;
-}
-
-function isStableMutationJsonCommand(command: CommandName | null): boolean {
-  return resolveStableMutationJsonSchema(createSchemaProbe(command)) !== null;
-}
-
-function isStableMiningControlJsonCommand(command: CommandName | null): boolean {
-  return resolveStableMiningControlJsonSchema(createSchemaProbe(command)) !== null;
-}
-
-function isPreviewJsonCommand(command: CommandName | null): boolean {
-  return resolvePreviewJsonSchema(createSchemaProbe(command)) !== null;
+  return resolvePreviewJsonSchemaForCommand(parsed.command);
 }
 
 export function isJsonOutputSupportedCommand(command: CommandName | null): boolean {
-  return isStableJsonCommand(command)
-    || isStableMutationJsonCommand(command)
-    || isStableMiningControlJsonCommand(command)
-    || isPreviewJsonCommand(command);
+  return isJsonOutputSupportedForCommand(command);
 }
 
 export function isPreviewJsonOutputSupportedCommand(command: CommandName | null): boolean {
-  return isPreviewJsonCommand(command);
+  return isPreviewJsonOutputSupportedForCommand(command);
 }
 
 export function createCommandJsonErrorEnvelope(

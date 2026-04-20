@@ -64,85 +64,12 @@ import type {
   sellDomain,
   transferDomain,
 } from "../wallet/tx/index.js";
+import type { CommandHandlerFamily, CommandName } from "./command-registry.js";
+
+export type { CommandHandlerFamily, CommandName } from "./command-registry.js";
 
 export type ProgressOutput = "auto" | "tty" | "none";
 export type OutputMode = "text" | "json" | "preview-json";
-export type CommandName =
-  | "init"
-  | "reset"
-  | "repair"
-  | "update"
-  | "sync"
-  | "status"
-  | "client-lock"
-  | "client-change-password"
-  | "client-unlock"
-  | "follow"
-  | "bitcoin-start"
-  | "bitcoin-stop"
-  | "bitcoin-status"
-  | "bitcoin-transfer"
-  | "indexer-start"
-  | "indexer-stop"
-  | "indexer-status"
-  | "anchor"
-  | "domain-anchor"
-  | "register"
-  | "domain-register"
-  | "transfer"
-  | "domain-transfer"
-  | "sell"
-  | "domain-sell"
-  | "unsell"
-  | "domain-unsell"
-  | "buy"
-  | "domain-buy"
-  | "domain-endpoint-set"
-  | "domain-endpoint-clear"
-  | "domain-delegate-set"
-  | "domain-delegate-clear"
-  | "domain-miner-set"
-  | "domain-miner-clear"
-  | "domain-canonical"
-  | "field-list"
-  | "field-show"
-  | "field-create"
-  | "field-set"
-  | "field-clear"
-  | "send"
-  | "claim"
-  | "reclaim"
-  | "cog-send"
-  | "cog-claim"
-  | "cog-reclaim"
-  | "cog-lock"
-  | "rep-give"
-  | "rep-revoke"
-  | "cog-balance"
-  | "cog-locks"
-  | "mine"
-  | "mine-start"
-  | "mine-stop"
-  | "mine-setup"
-  | "mine-prompt"
-  | "mine-prompt-list"
-  | "mine-status"
-  | "mine-log"
-  | "wallet-init"
-  | "wallet-show-mnemonic"
-  | "wallet-status"
-  | "wallet-address"
-  | "wallet-ids"
-  | "address"
-  | "ids"
-  | "balance"
-  | "locks"
-  | "domain-list"
-  | "domains"
-  | "domain-show"
-  | "show"
-  | "fields"
-  | "field";
 
 export interface WritableLike {
   isTTY?: boolean;
@@ -160,6 +87,9 @@ export interface SignalSource {
 
 export interface ParsedCliArgs {
   command: CommandName | null;
+  commandFamily: CommandHandlerFamily | null;
+  invokedCommandTokens: readonly string[] | null;
+  invokedCommandPath: string | null;
   args: string[];
   help: boolean;
   version: boolean;
