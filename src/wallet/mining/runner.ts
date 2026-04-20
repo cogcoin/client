@@ -17,7 +17,6 @@ import {
   getWords,
   settleBlock,
 } from "@cogcoin/scoring";
-import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english.js";
 
 import { probeIndexerDaemon } from "../../bitcoind/indexer-daemon.js";
 import { isRetryableManagedRpcError } from "../../bitcoind/retryable-rpc.js";
@@ -88,6 +87,55 @@ import {
 } from "./constants.js";
 import { inspectMiningControlPlane, setupBuiltInMining } from "./control.js";
 import {
+  applyMiningRuntimeStatusOverrides,
+  type MiningRuntimeStatusOverrides,
+} from "./projection.js";
+import {
+  buildMiningGenerationRequest as buildMiningGenerationRequestModule,
+  chooseBestLocalCandidate as chooseBestLocalCandidateModule,
+  determineCorePublishState as determineCorePublishStateModule,
+  ensureIndexerTruthIsCurrent as ensureIndexerTruthIsCurrentModule,
+  generateCandidatesForDomains as generateCandidatesForDomainsModule,
+  getIndexerTruthKey as getIndexerTruthKeyModule,
+  refreshMiningCandidateFromCurrentState as refreshMiningCandidateFromCurrentStateModule,
+  resolveEligibleAnchoredRoots as resolveEligibleAnchoredRootsModule,
+} from "./candidate.js";
+import {
+  clearMiningGateCache as clearMiningGateCacheModule,
+  runCompetitivenessGate as runCompetitivenessGateModule,
+} from "./competitiveness.js";
+import { createMiningEventRecord } from "./events.js";
+import { livePublishTargetsCandidateTip as livePublishTargetsCandidateTipModule } from "./engine-state.js";
+import {
+  createInsufficientFundsMiningPublishErrorMessage as createInsufficientFundsMiningPublishErrorMessageModule,
+  createInsufficientFundsMiningPublishWaitingNote as createInsufficientFundsMiningPublishWaitingNoteModule,
+  createMiningPlan as createMiningPlanModule,
+  publishCandidate as publishCandidateModule,
+  probeMiningFundingAvailability as probeMiningFundingAvailabilityModule,
+  publishCandidateOnce as publishCandidateOnceModule,
+  reconcileLiveMiningState as reconcileLiveMiningStateModule,
+  resolveMiningConflictOutpoint as resolveMiningConflictOutpointModule,
+  validateMiningDraft as validateMiningDraftModule,
+} from "./publish.js";
+import { runMiningPhaseMachine } from "./cycle.js";
+import {
+  compareLexicographically,
+  deriveMiningWordIndices,
+  getBlockRewardCogtoshi,
+  numberToSats,
+  resolveBip39WordsFromIndices,
+  rootDomain,
+  tieBreakHash,
+} from "./engine-utils.js";
+import type {
+  CompetitivenessDecision,
+  MiningCandidate,
+  MiningCooperativeYield,
+  MiningPublishOutcome,
+  MiningRpcClient,
+  ReadyMiningReadContext,
+} from "./engine-types.js";
+import {
   isMiningGenerationAbortRequested,
   markMiningGenerationActive,
   markMiningGenerationInactive,
@@ -123,157 +171,7 @@ const MINING_MEMPOOL_COOPERATIVE_YIELD_EVERY = 25;
 const MINING_BITCOIN_RECOVERY_NOTE =
   "Mining lost contact with the local Bitcoin RPC service and is waiting for it to recover.";
 
-type MiningRpcClient = WalletMutationRpcClient & {
-  getBlockchainInfo(): Promise<{
-    blocks: number;
-    bestblockhash: string;
-    initialblockdownload?: boolean;
-  }>;
-  getNetworkInfo(): Promise<{
-    networkactive: boolean;
-    connections_out?: number;
-  }>;
-  getBlockHash(height: number): Promise<string>;
-  getBlock(hashHex: string): Promise<{
-    hash: string;
-    previousblockhash?: string;
-    height: number;
-    time?: number;
-  }>;
-  getMempoolInfo(): Promise<{
-    loaded: boolean;
-  }>;
-  getRawMempool(): Promise<string[]>;
-  getRawMempoolVerbose(): Promise<{
-    txids: string[];
-    mempool_sequence: string | number;
-  }>;
-  getMempoolEntry(txid: string): Promise<{
-    vsize: number;
-    fees: {
-      base: number;
-      ancestor: number;
-      descendant: number;
-    };
-    ancestorsize?: number;
-    descendantsize?: number;
-  }>;
-  getRawTransaction(txid: string, verbose?: boolean): Promise<{
-    txid: string;
-    hash?: string;
-    vin: Array<{ txid?: string; prevout?: { scriptPubKey?: { hex?: string } } }>;
-    vout: Array<{ n: number; value: number | string; scriptPubKey?: { hex?: string } }>;
-  }>;
-  getTransaction(walletName: string, txid: string): Promise<{
-    txid: string;
-    confirmations: number;
-    blockhash?: string;
-    walletconflicts?: string[];
-  }>;
-  sendRawTransaction(hex: string): Promise<string>;
-  saveMempool?(): Promise<null>;
-};
-
-interface MiningRunnerStatusOverrides {
-  runMode?: MiningRuntimeStatusV1["runMode"];
-  backgroundWorkerPid?: number | null;
-  backgroundWorkerRunId?: string | null;
-  backgroundWorkerHeartbeatAtUnixMs?: number | null;
-  currentPhase?: MiningRuntimeStatusV1["currentPhase"];
-  currentPublishState?: MiningRuntimeStatusV1["currentPublishState"];
-  targetBlockHeight?: number | null;
-  referencedBlockHashDisplay?: string | null;
-  currentDomainId?: number | null;
-  currentDomainName?: string | null;
-  currentSentenceDisplay?: string | null;
-  currentCanonicalBlend?: string | null;
-  currentTxid?: string | null;
-  currentWtxid?: string | null;
-  currentFeeRateSatVb?: number | null;
-  currentAbsoluteFeeSats?: number | null;
-  currentBlockFeeSpentSats?: string;
-  lastSuspendDetectedAtUnixMs?: number | null;
-  reconnectSettledUntilUnixMs?: number | null;
-  tipSettledUntilUnixMs?: number | null;
-  providerState?: MiningRuntimeStatusV1["providerState"];
-  corePublishState?: MiningRuntimeStatusV1["corePublishState"];
-  currentPublishDecision?: string | null;
-  sameDomainCompetitorSuppressed?: boolean | null;
-  higherRankedCompetitorDomainCount?: number | null;
-  dedupedCompetitorDomainCount?: number | null;
-  competitivenessGateIndeterminate?: boolean | null;
-  mempoolSequenceCacheStatus?: MiningRuntimeStatusV1["mempoolSequenceCacheStatus"];
-  lastMempoolSequence?: string | null;
-  lastCompetitivenessGateAtUnixMs?: number | null;
-  lastError?: string | null;
-  note?: string | null;
-  livePublishInMempool?: boolean | null;
-}
-
-interface MiningCandidate {
-  domainId: number;
-  domainName: string;
-  localIndex: number;
-  sender: MutationSender;
-  sentence: string;
-  encodedSentenceBytes: Uint8Array;
-  bip39WordIndices: number[];
-  bip39Words: readonly string[];
-  canonicalBlend: bigint;
-  referencedBlockHashDisplay: string;
-  referencedBlockHashInternal: Uint8Array;
-  targetBlockHeight: number;
-}
-
-type ReadyMiningReadContext = WalletReadContext & {
-  localState: { availability: "ready"; state: WalletStateV1 };
-  snapshot: NonNullable<WalletReadContext["snapshot"]>;
-  model: NonNullable<WalletReadContext["model"]>;
-};
-
-interface MiningPublishSkipResult {
-  state: WalletStateV1;
-  txid: null;
-  decision: "publish-skipped-stale-candidate" | "publish-paused-insufficient-funds";
-  note: string;
-  lastError?: string | null;
-  skipped: true;
-  retryable?: false;
-  candidate: null;
-}
-
-interface MiningPublishRetryResult {
-  state: WalletStateV1;
-  txid: null;
-  decision: "publish-retry-pending";
-  note: string;
-  skipped?: false;
-  retryable: true;
-  candidate: MiningCandidate;
-}
-
-type MiningPublishOutcome =
-  | ({
-    skipped?: false;
-    retryable?: false;
-    note?: null;
-    candidate: MiningCandidate;
-  } & Awaited<ReturnType<typeof publishCandidateOnce>>)
-  | MiningPublishSkipResult
-  | MiningPublishRetryResult;
-
-interface CompetitivenessDecision {
-  allowed: boolean;
-  decision: string;
-  sameDomainCompetitorSuppressed: boolean;
-  higherRankedCompetitorDomainCount: number;
-  dedupedCompetitorDomainCount: number;
-  competitivenessGateIndeterminate: boolean;
-  mempoolSequenceCacheStatus: MiningRuntimeStatusV1["mempoolSequenceCacheStatus"];
-  lastMempoolSequence: string | null;
-  visibleBoardEntries: MiningSentenceBoardEntry[];
-  candidateRank: number | null;
-}
+type MiningRunnerStatusOverrides = MiningRuntimeStatusOverrides;
 
 interface RunnerDependencies {
   openReadContext?: typeof openWalletReadContext;
@@ -325,23 +223,6 @@ interface MiningCompetitivenessCacheRecord {
   txids: string[];
   txContexts: Map<string, CachedMempoolTxContext>;
   decision: CompetitivenessDecision;
-}
-
-function resolveBip39WordsFromIndices(indices: readonly number[] | null | undefined): readonly string[] {
-  if (indices === null || indices === undefined) {
-    return [];
-  }
-
-  const words: string[] = [];
-  for (const index of indices) {
-    if (!Number.isInteger(index) || index < 0 || index >= englishWordlist.length) {
-      continue;
-    }
-
-    words.push(englishWordlist[index]!);
-  }
-
-  return words;
 }
 
 function resolveSettledWinnerRequiredWords(options: {
@@ -423,12 +304,6 @@ interface MiningSuspendHeartbeatHandle {
 
 interface MiningSuspendScheduler {
   every(intervalMs: number, callback: () => void): MiningSuspendHeartbeatHandle;
-}
-
-type MiningCooperativeYield = () => Promise<void>;
-
-function resolveSnapshotOverride<T>(override: T | undefined, fallback: T): T {
-  return override === undefined ? fallback : override;
 }
 
 function resolveMiningProviderBackoffDelayMs(consecutiveFailureCount: number): number {
@@ -613,12 +488,7 @@ async function maybeYieldDuringMempoolScan(options: {
 }
 
 function clearMiningGateCache(walletRootId: string | null | undefined): void {
-  if (walletRootId === null || walletRootId === undefined) {
-    miningGateCache.clear();
-    return;
-  }
-
-  miningGateCache.delete(walletRootId);
+  clearMiningGateCacheModule(walletRootId);
 }
 
 export interface RunForegroundMiningOptions extends RunnerDependencies {
@@ -1002,23 +872,7 @@ function createEvent(
   message: string,
   options: Partial<MiningEventRecord> = {},
 ): MiningEventRecord {
-  return {
-    schemaVersion: 1,
-    timestampUnixMs: options.timestampUnixMs ?? Date.now(),
-    level: options.level ?? "info",
-    kind,
-    message,
-    targetBlockHeight: options.targetBlockHeight ?? null,
-    referencedBlockHashDisplay: options.referencedBlockHashDisplay ?? null,
-    domainId: options.domainId ?? null,
-    domainName: options.domainName ?? null,
-    txid: options.txid ?? null,
-    feeRateSatVb: options.feeRateSatVb ?? null,
-    feeSats: options.feeSats ?? null,
-    score: options.score ?? null,
-    reason: options.reason ?? null,
-    runId: options.runId ?? null,
-  };
+  return createMiningEventRecord(kind, message, options);
 }
 
 function cloneMiningState(state: MiningStateRecord): MiningStateRecord {
@@ -1042,90 +896,12 @@ function hasBlockingMutation(state: WalletStateV1): boolean {
   );
 }
 
-function rootDomain(name: string): boolean {
-  return !name.includes("-");
-}
-
-function uint32BigEndian(value: number): Buffer {
-  const buffer = Buffer.alloc(4);
-  buffer.writeUInt32BE(value >>> 0, 0);
-  return buffer;
-}
-
-function getBlockRewardCogtoshi(height: number): bigint {
-  const halvingEra = Math.floor(height / 210_000);
-
-  if (halvingEra >= 33) {
-    return 0n;
-  }
-
-  return 5_000_000_000n >> BigInt(halvingEra);
-}
-
-function deriveMiningWordIndices(referencedBlockhash: Uint8Array, miningDomainId: number): number[] {
-  const seed = createHash("sha256")
-    .update(Buffer.from(referencedBlockhash))
-    .update(uint32BigEndian(miningDomainId))
-    .digest();
-  const indices: number[] = [];
-
-  for (let index = 0; index < 5; index += 1) {
-    const chunkOffset = index * 4;
-    let wordIndex = seed.readUInt32BE(chunkOffset) % 2048;
-
-    while (indices.includes(wordIndex)) {
-      wordIndex = (wordIndex + 1) % 2048;
-    }
-
-    indices.push(wordIndex);
-  }
-
-  return indices;
-}
-
 function outpointKey(outpoint: OutpointRecord | null): string | null {
   return outpoint === null ? null : `${outpoint.txid}:${outpoint.vout}`;
 }
 
-function numberToSats(value: number | string): bigint {
-  const text = typeof value === "number" ? value.toFixed(8) : value;
-  const match = /^(-?)(\d+)(?:\.(\d{0,8}))?$/.exec(text.trim());
-
-  if (match == null) {
-    throw new Error(`mining_invalid_amount_${text}`);
-  }
-
-  const sign = match[1] === "-" ? -1n : 1n;
-  const whole = BigInt(match[2] ?? "0");
-  const fraction = BigInt((match[3] ?? "").padEnd(8, "0"));
-  return sign * ((whole * 100_000_000n) + fraction);
-}
-
 function satsToBtc(value: bigint): number {
   return Number(value) / 100_000_000;
-}
-
-function compareLexicographically(left: Uint8Array, right: Uint8Array): number {
-  const length = Math.min(left.length, right.length);
-
-  for (let index = 0; index < length; index += 1) {
-    if (left[index] !== right[index]) {
-      return left[index]! < right[index]! ? -1 : 1;
-    }
-  }
-
-  if (left.length === right.length) {
-    return 0;
-  }
-
-  return left.length < right.length ? -1 : 1;
-}
-
-function tieBreakHash(blendSeed: Uint8Array, miningDomainId: number): Uint8Array {
-  return createHash("sha256")
-    .update(Buffer.from(blendSeed))
-    .update(uint32BigEndian(miningDomainId))
-    .digest();
 }
 
 function createMiningLoopState(): MiningLoopState {
@@ -2145,104 +1921,11 @@ function buildStatusSnapshot(
   view: MiningControlPlaneView,
   overrides: MiningRunnerStatusOverrides = {},
 ): MiningRuntimeStatusV1 {
-  const resolvedCurrentPhase = resolveSnapshotOverride(overrides.currentPhase, view.runtime.currentPhase);
-  const clearProviderWaitCarryover = overrides.currentPhase !== undefined
-    && overrides.currentPhase !== "waiting-provider"
-    && view.runtime.currentPhase === "waiting-provider";
-
-  return {
-    ...view.runtime,
-    runMode: resolveSnapshotOverride(overrides.runMode, view.runtime.runMode),
-    backgroundWorkerPid: resolveSnapshotOverride(overrides.backgroundWorkerPid, view.runtime.backgroundWorkerPid),
-    backgroundWorkerRunId: resolveSnapshotOverride(overrides.backgroundWorkerRunId, view.runtime.backgroundWorkerRunId),
-    backgroundWorkerHeartbeatAtUnixMs: resolveSnapshotOverride(
-      overrides.backgroundWorkerHeartbeatAtUnixMs,
-      view.runtime.backgroundWorkerHeartbeatAtUnixMs,
-    ),
-    currentPhase: resolvedCurrentPhase,
-    currentPublishState: resolveSnapshotOverride(overrides.currentPublishState, view.runtime.currentPublishState),
-    targetBlockHeight: resolveSnapshotOverride(overrides.targetBlockHeight, view.runtime.targetBlockHeight),
-    referencedBlockHashDisplay: resolveSnapshotOverride(
-      overrides.referencedBlockHashDisplay,
-      view.runtime.referencedBlockHashDisplay,
-    ),
-    currentDomainId: resolveSnapshotOverride(overrides.currentDomainId, view.runtime.currentDomainId),
-    currentDomainName: resolveSnapshotOverride(overrides.currentDomainName, view.runtime.currentDomainName),
-    currentSentenceDisplay: resolveSnapshotOverride(
-      overrides.currentSentenceDisplay,
-      view.runtime.currentSentenceDisplay,
-    ),
-    currentCanonicalBlend: resolveSnapshotOverride(
-      overrides.currentCanonicalBlend,
-      view.runtime.currentCanonicalBlend,
-    ),
-    currentTxid: resolveSnapshotOverride(overrides.currentTxid, view.runtime.currentTxid),
-    currentWtxid: resolveSnapshotOverride(overrides.currentWtxid, view.runtime.currentWtxid),
-    currentFeeRateSatVb: resolveSnapshotOverride(overrides.currentFeeRateSatVb, view.runtime.currentFeeRateSatVb),
-    currentAbsoluteFeeSats: resolveSnapshotOverride(
-      overrides.currentAbsoluteFeeSats,
-      view.runtime.currentAbsoluteFeeSats,
-    ),
-    currentBlockFeeSpentSats: resolveSnapshotOverride(
-      overrides.currentBlockFeeSpentSats,
-      view.runtime.currentBlockFeeSpentSats,
-    ),
-    lastSuspendDetectedAtUnixMs: resolveSnapshotOverride(
-      overrides.lastSuspendDetectedAtUnixMs,
-      view.runtime.lastSuspendDetectedAtUnixMs,
-    ),
-    reconnectSettledUntilUnixMs: resolveSnapshotOverride(
-      overrides.reconnectSettledUntilUnixMs,
-      view.runtime.reconnectSettledUntilUnixMs,
-    ),
-    tipSettledUntilUnixMs: resolveSnapshotOverride(
-      overrides.tipSettledUntilUnixMs,
-      view.runtime.tipSettledUntilUnixMs,
-    ),
-    providerState: resolveSnapshotOverride(
-      overrides.providerState,
-      clearProviderWaitCarryover
-        ? (view.provider.status === "ready" ? "ready" : "unavailable")
-        : view.runtime.providerState,
-    ),
-    corePublishState: resolveSnapshotOverride(overrides.corePublishState, view.runtime.corePublishState),
-    currentPublishDecision: resolveSnapshotOverride(overrides.currentPublishDecision, view.runtime.currentPublishDecision),
-    sameDomainCompetitorSuppressed: resolveSnapshotOverride(
-      overrides.sameDomainCompetitorSuppressed,
-      view.runtime.sameDomainCompetitorSuppressed,
-    ),
-    higherRankedCompetitorDomainCount: resolveSnapshotOverride(
-      overrides.higherRankedCompetitorDomainCount,
-      view.runtime.higherRankedCompetitorDomainCount,
-    ),
-    dedupedCompetitorDomainCount: resolveSnapshotOverride(
-      overrides.dedupedCompetitorDomainCount,
-      view.runtime.dedupedCompetitorDomainCount,
-    ),
-    competitivenessGateIndeterminate: resolveSnapshotOverride(
-      overrides.competitivenessGateIndeterminate,
-      view.runtime.competitivenessGateIndeterminate,
-    ),
-    mempoolSequenceCacheStatus: resolveSnapshotOverride(
-      overrides.mempoolSequenceCacheStatus,
-      view.runtime.mempoolSequenceCacheStatus,
-    ),
-    lastMempoolSequence: resolveSnapshotOverride(overrides.lastMempoolSequence, view.runtime.lastMempoolSequence),
-    lastCompetitivenessGateAtUnixMs: resolveSnapshotOverride(
-      overrides.lastCompetitivenessGateAtUnixMs,
-      view.runtime.lastCompetitivenessGateAtUnixMs,
-    ),
-    lastError: resolveSnapshotOverride(
-      overrides.lastError,
-      clearProviderWaitCarryover ? null : view.runtime.lastError,
-    ),
-    note: resolveSnapshotOverride(
-      overrides.note,
-      clearProviderWaitCarryover ? null : view.runtime.note,
-    ),
-    livePublishInMempool: resolveSnapshotOverride(overrides.livePublishInMempool, view.runtime.livePublishInMempool),
-    updatedAtUnixMs: Date.now(),
-  };
+  return applyMiningRuntimeStatusOverrides({
+    runtime: view.runtime,
+    provider: view.provider,
+    overrides,
+  });
 }
 
 function buildPrePublishStatusOverrides(options: {
@@ -2480,51 +2163,14 @@ function getIndexerTruthKey(
     snapshot: NonNullable<WalletReadContext["snapshot"]>;
   },
 ): IndexerTruthKey | null {
-  if (
-    readContext.snapshot.daemonInstanceId == null
-    || readContext.snapshot.snapshotSeq == null
-  ) {
-    return null;
-  }
-
-  return {
-    walletRootId: readContext.localState.state.walletRootId,
-    daemonInstanceId: readContext.snapshot.daemonInstanceId,
-    snapshotSeq: readContext.snapshot.snapshotSeq,
-  };
-}
-
-async function indexerTruthIsCurrent(options: {
-  dataDir: string;
-  truthKey: IndexerTruthKey | null;
-}): Promise<boolean> {
-  if (options.truthKey === null) {
-    return false;
-  }
-
-  const probe = await probeIndexerDaemon({
-    dataDir: options.dataDir,
-    walletRootId: options.truthKey.walletRootId,
-  });
-
-  try {
-    return probe.compatibility === "compatible"
-      && probe.status !== null
-      && probe.status.state === "synced"
-      && probe.status.daemonInstanceId === options.truthKey.daemonInstanceId
-      && probe.status.snapshotSeq === options.truthKey.snapshotSeq;
-  } finally {
-    await probe.client?.close().catch(() => undefined);
-  }
+  return getIndexerTruthKeyModule(readContext);
 }
 
 async function ensureIndexerTruthIsCurrent(options: {
   dataDir: string;
   truthKey: IndexerTruthKey | null;
 }): Promise<void> {
-  if (!await indexerTruthIsCurrent(options)) {
-    throw new Error("mining_generation_stale_indexer_truth");
-  }
+  await ensureIndexerTruthIsCurrentModule(options);
 }
 
 function determineCorePublishState(info: {
@@ -2532,385 +2178,77 @@ function determineCorePublishState(info: {
   network: Awaited<ReturnType<MiningRpcClient["getNetworkInfo"]>>;
   mempool: Awaited<ReturnType<MiningRpcClient["getMempoolInfo"]>>;
 }): MiningRuntimeStatusV1["corePublishState"] {
-  if (info.network.networkactive === false) {
-    return "network-inactive";
-  }
-
-  if ((info.network.connections_out ?? 0) <= 0) {
-    return "no-outbound-peers";
-  }
-
-  if (info.blockchain.initialblockdownload === true) {
-    return "ibd";
-  }
-
-  if (info.mempool.loaded === false) {
-    return "mempool-loading";
-  }
-
-  return "healthy";
+  return determineCorePublishStateModule(info);
 }
 
-function createMiningPlan(options: {
-  state: WalletStateV1;
-  candidate: MiningCandidate;
-  conflictOutpoint: OutpointRecord | null;
-  allUtxos: Awaited<ReturnType<MiningRpcClient["listUnspent"]>>;
-  feeRateSatVb: number;
-}): {
-  sender: MutationSender;
-  fixedInputs: FixedWalletInput[];
-  outputs: unknown[];
-  changeAddress: string;
-  changePosition: number;
-  expectedOpReturnScriptHex: string;
-  allowedFundingScriptPubKeyHex: string;
-  eligibleFundingOutpointKeys: Set<string>;
-  expectedConflictOutpoint: OutpointRecord | null;
-  feeRateSatVb: number;
-} {
-  const fundingUtxos = options.allUtxos.filter((entry) =>
-    entry.scriptPubKey === options.state.funding.scriptPubKeyHex
-    && entry.confirmations >= MINING_FUNDING_MIN_CONF
-    && entry.spendable !== false
-    && entry.safe !== false
-    && !(
-      options.conflictOutpoint !== null
-      && entry.txid === options.conflictOutpoint.txid
-      && entry.vout === options.conflictOutpoint.vout
-    )
-  );
-  const opReturnData = serializeMine(
-    options.candidate.domainId,
-    options.candidate.referencedBlockHashInternal,
-    options.candidate.encodedSentenceBytes,
-  ).opReturnData;
-  const expectedOpReturnScriptHex = Buffer.concat([
-    Buffer.from([0x6a, opReturnData.length]),
-    Buffer.from(opReturnData),
-  ]).toString("hex");
+function createMiningPlan(options: Parameters<typeof createMiningPlanModule>[0]) {
+  return createMiningPlanModule(options);
+}
 
-  return {
-    sender: options.candidate.sender,
-    fixedInputs: options.conflictOutpoint === null ? [] : [options.conflictOutpoint],
-    outputs: [{ data: Buffer.from(opReturnData).toString("hex") }],
-    changeAddress: options.state.funding.address,
-    changePosition: 1,
-    expectedOpReturnScriptHex,
-    allowedFundingScriptPubKeyHex: options.state.funding.scriptPubKeyHex,
-    eligibleFundingOutpointKeys: new Set(fundingUtxos.map((entry) => walletMutationOutpointKey({ txid: entry.txid, vout: entry.vout }))),
-    expectedConflictOutpoint: options.conflictOutpoint,
-    feeRateSatVb: options.feeRateSatVb,
-  };
+export function createMiningPlanForTesting(options: Parameters<typeof createMiningPlanModule>[0]) {
+  return createMiningPlanModule(options);
 }
 
 function validateMiningDraft(
-  decoded: Awaited<ReturnType<MiningRpcClient["decodePsbt"]>>,
-  funded: Awaited<ReturnType<MiningRpcClient["walletCreateFundedPsbt"]>>,
-  plan: ReturnType<typeof createMiningPlan>,
+  decoded: Parameters<typeof validateMiningDraftModule>[0],
+  funded: Parameters<typeof validateMiningDraftModule>[1],
+  plan: Parameters<typeof validateMiningDraftModule>[2],
 ): void {
-  const inputs = decoded.tx.vin;
-  const outputs = decoded.tx.vout;
-
-  if (inputs.length === 0) {
-    throw new Error("wallet_mining_missing_inputs");
-  }
-
-  assertFixedInputPrefixMatches(inputs, plan.fixedInputs, "wallet_mining_missing_inputs");
-
-  if (
-    plan.expectedConflictOutpoint !== null
-    && (
-      inputs[0]?.txid !== plan.expectedConflictOutpoint.txid
-      || inputs[0]?.vout !== plan.expectedConflictOutpoint.vout
-    )
-  ) {
-    throw new Error("wallet_mining_conflict_input_mismatch");
-  }
-
-  if (outputs[0]?.scriptPubKey?.hex !== plan.expectedOpReturnScriptHex) {
-    throw new Error("wallet_mining_opreturn_mismatch");
-  }
-
-  if (funded.changepos !== -1 && (funded.changepos !== plan.changePosition || outputs[funded.changepos]?.scriptPubKey?.hex !== plan.allowedFundingScriptPubKeyHex)) {
-    throw new Error("wallet_mining_change_output_mismatch");
-  }
-}
-
-async function buildMiningTransaction(options: {
-  rpc: MiningRpcClient;
-  walletName: string;
-  state: WalletStateV1;
-  plan: ReturnType<typeof createMiningPlan>;
-}) {
-  return buildWalletMutationTransaction({
-    rpc: options.rpc,
-    walletName: options.walletName,
-    state: options.state,
-    plan: options.plan,
-    validateFundedDraft: validateMiningDraft,
-    finalizeErrorCode: "wallet_mining_finalize_failed",
-    mempoolRejectPrefix: "wallet_mining_mempool_rejected",
-    feeRate: options.plan.feeRateSatVb,
-    availableFundingMinConf: MINING_FUNDING_MIN_CONF,
-  });
-}
-
-export function createMiningPlanForTesting(options: {
-  state: WalletStateV1;
-  candidate: {
-    domainId: number;
-    domainName: string;
-    localIndex: number;
-    sender: MutationSender;
-    sentence: string;
-    encodedSentenceBytes: Uint8Array;
-    bip39WordIndices: number[];
-    bip39Words: readonly string[];
-    canonicalBlend: bigint;
-    referencedBlockHashDisplay: string;
-    referencedBlockHashInternal: Uint8Array;
-    targetBlockHeight: number;
-  };
-  conflictOutpoint: OutpointRecord | null;
-  allUtxos: Awaited<ReturnType<MiningRpcClient["listUnspent"]>>;
-  feeRateSatVb: number;
-}) {
-  return createMiningPlan(options);
+  validateMiningDraftModule(decoded, funded, plan);
 }
 
 export function validateMiningDraftForTesting(
-  decoded: Awaited<ReturnType<MiningRpcClient["decodePsbt"]>>,
-  funded: Awaited<ReturnType<MiningRpcClient["walletCreateFundedPsbt"]>>,
-  plan: ReturnType<typeof createMiningPlan>,
+  decoded: Parameters<typeof validateMiningDraftModule>[0],
+  funded: Parameters<typeof validateMiningDraftModule>[1],
+  plan: Parameters<typeof validateMiningDraftModule>[2],
 ): void {
-  validateMiningDraft(decoded, funded, plan);
+  validateMiningDraftModule(decoded, funded, plan);
 }
 
-function resolveEligibleAnchoredRoots(context: WalletReadContext): Array<{
-  domainId: number;
-  domainName: string;
-  localIndex: number;
-  sender: MutationSender;
-}> {
-  const state = context.localState.state;
-  const model = context.model;
-  const snapshot = context.snapshot;
-
-  if (state === null || model === null || snapshot === null) {
-    return [];
-  }
-
-  const domains: Array<{
-    domainId: number;
-    domainName: string;
-    localIndex: number;
-    sender: MutationSender;
-  }> = [];
-
-  for (const domain of model.domains) {
-    if (!isMineableWalletDomain(context, domain)) {
-      continue;
-    }
-
-    const domainId = domain.domainId;
-
-    if (
-      domainId === null
-      || domainId === undefined
-      || domain.ownerAddress == null
-      || domain.ownerScriptPubKeyHex !== model.walletScriptPubKeyHex
-    ) {
-      continue;
-    }
-
-    const chainDomain = lookupDomain(snapshot.state, domain.name);
-    if (chainDomain === null || !chainDomain.anchored) {
-      continue;
-    }
-
-    domains.push({
-      domainId,
-      domainName: domain.name,
-      localIndex: 0,
-      sender: {
-        localIndex: 0,
-        scriptPubKeyHex: model.walletScriptPubKeyHex,
-        address: domain.ownerAddress,
-      },
-    });
-  }
-
-  return domains.sort((left, right) => left.domainId - right.domainId || left.domainName.localeCompare(right.domainName));
+function resolveEligibleAnchoredRoots(context: WalletReadContext) {
+  return resolveEligibleAnchoredRootsModule(context);
 }
 
 function refreshMiningCandidateFromCurrentState(
   context: ReadyMiningReadContext,
   candidate: MiningCandidate,
 ): MiningCandidate | null {
-  const refreshed = resolveEligibleAnchoredRoots(context).find((domain) => domain.domainId === candidate.domainId);
-  if (refreshed === undefined) {
-    return null;
-  }
-
-  return {
-    ...candidate,
-    domainName: refreshed.domainName,
-    localIndex: refreshed.localIndex,
-    sender: refreshed.sender,
-  };
+  return refreshMiningCandidateFromCurrentStateModule(context, candidate);
 }
 
 export function refreshMiningCandidateFromCurrentStateForTesting(
   context: ReadyMiningReadContext,
   candidate: MiningCandidate,
 ): MiningCandidate | null {
-  return refreshMiningCandidateFromCurrentState(context, candidate);
+  return refreshMiningCandidateFromCurrentStateModule(context, candidate);
 }
 
-function resolveMiningConflictOutpoint(options: {
-  state: WalletStateV1;
-  allUtxos: Awaited<ReturnType<MiningRpcClient["listUnspent"]>>;
-}): OutpointRecord | null {
-  const normalizedMiningState = normalizeMiningStateRecord(options.state.miningState);
-  if (miningPublishIsInMempool(normalizedMiningState) && normalizedMiningState.sharedMiningConflictOutpoint !== null) {
-    return { ...normalizedMiningState.sharedMiningConflictOutpoint };
-  }
-
-  void options.allUtxos;
-  return null;
+function resolveMiningConflictOutpoint(options: Parameters<typeof resolveMiningConflictOutpointModule>[0]): OutpointRecord | null {
+  return resolveMiningConflictOutpointModule(options);
 }
 
-export function resolveMiningConflictOutpointForTesting(options: {
-  state: WalletStateV1;
-  allUtxos: Awaited<ReturnType<MiningRpcClient["listUnspent"]>>;
-}): OutpointRecord | null {
-  return resolveMiningConflictOutpoint(options);
+export function resolveMiningConflictOutpointForTesting(
+  options: Parameters<typeof resolveMiningConflictOutpointModule>[0],
+): OutpointRecord | null {
+  return resolveMiningConflictOutpointModule(options);
 }
-
-function createStaleMiningCandidateWaitingNote(): string {
-  return "Mining candidate changed before broadcast: the selected root domain is no longer locally mineable. Skipping this tip and waiting for the next block.";
-}
-
-function createRetryableMiningPublishWaitingNote(): string {
-  return "Selected mining candidate did not reach mempool and will be retried on the current tip with refreshed wallet state.";
-}
-
-const MINING_FUNDING_MIN_CONF = 0;
-const MINING_FUNDING_PROBE_PLACEHOLDER_SENTENCE = "m".repeat(60);
 
 function createInsufficientFundsMiningPublishWaitingNote(): string {
-  return "Insufficient BTC to mine.";
+  return createInsufficientFundsMiningPublishWaitingNoteModule();
 }
 
 function createInsufficientFundsMiningPublishErrorMessage(): string {
-  return "Bitcoin Core could not fund the next mining publish with safe BTC.";
+  return createInsufficientFundsMiningPublishErrorMessageModule();
 }
 
-function createMiningFundingProbeCandidate(options: {
-  domain: ReturnType<typeof resolveEligibleAnchoredRoots>[number];
-  referencedBlockHashDisplay: string;
-  targetBlockHeight: number;
-}): MiningCandidate {
-  const referencedBlockHashInternal = Buffer.from(
-    displayToInternalBlockhash(options.referencedBlockHashDisplay),
-    "hex",
-  );
-  const bip39WordIndices = deriveMiningWordIndices(
-    referencedBlockHashInternal,
-    options.domain.domainId,
-  );
-
-  return {
-    domainId: options.domain.domainId,
-    domainName: options.domain.domainName,
-    localIndex: options.domain.localIndex,
-    sender: options.domain.sender,
-    sentence: MINING_FUNDING_PROBE_PLACEHOLDER_SENTENCE,
-    encodedSentenceBytes: Buffer.from(MINING_FUNDING_PROBE_PLACEHOLDER_SENTENCE, "utf8"),
-    bip39WordIndices,
-    bip39Words: resolveBip39WordsFromIndices(bip39WordIndices),
-    canonicalBlend: 0n,
-    referencedBlockHashDisplay: options.referencedBlockHashDisplay,
-    referencedBlockHashInternal,
-    targetBlockHeight: options.targetBlockHeight,
-  };
+async function probeMiningFundingAvailability(
+  options: Parameters<typeof probeMiningFundingAvailabilityModule>[0],
+): Promise<void> {
+  await probeMiningFundingAvailabilityModule(options);
 }
 
-async function probeMiningFundingAvailability(options: {
-  rpc: MiningRpcClient;
-  walletName: string;
-  state: WalletStateV1;
-  domains: ReturnType<typeof resolveEligibleAnchoredRoots>;
-  referencedBlockHashDisplay: string;
-  targetBlockHeight: number;
-}): Promise<void> {
-  const templateDomain = options.domains[0];
-  if (templateDomain === undefined) {
-    return;
-  }
-
-  const allUtxos = await options.rpc.listUnspent(
-    options.walletName,
-    MINING_FUNDING_MIN_CONF,
-  );
-  const conflictOutpoint = resolveMiningConflictOutpoint({
-    state: options.state,
-    allUtxos,
-  });
-  const feeSelection = await resolveWalletMutationFeeSelection({
-    rpc: options.rpc,
-  });
-  const plan = createMiningPlan({
-    state: options.state,
-    candidate: createMiningFundingProbeCandidate({
-      domain: templateDomain,
-      referencedBlockHashDisplay: options.referencedBlockHashDisplay,
-      targetBlockHeight: options.targetBlockHeight,
-    }),
-    conflictOutpoint,
-    allUtxos,
-    feeRateSatVb: feeSelection.feeRateSatVb,
-  });
-
-  await fundAndValidateWalletMutationDraft({
-    rpc: options.rpc,
-    walletName: options.walletName,
-    plan,
-    validateFundedDraft: validateMiningDraft,
-    feeRate: plan.feeRateSatVb,
-    availableFundingMinConf: MINING_FUNDING_MIN_CONF,
-  });
-}
-
-function buildMiningGenerationRequest(options: {
-  targetBlockHeight: number;
-  referencedBlockHashDisplay: string;
-  generatedAtUnixMs?: number;
-  requestId?: string;
-  domains: Array<{
-    domainId: number;
-    domainName: string;
-    requiredWords: [string, string, string, string, string];
-  }>;
-  domainExtraPrompts: Record<string, string>;
-  extraPrompt: string | null;
-}): MiningSentenceGenerationRequest {
-  return {
-    schemaVersion: 1,
-    requestId: options.requestId ?? `mining-${options.targetBlockHeight}-${randomBytes(8).toString("hex")}`,
-    targetBlockHeight: options.targetBlockHeight,
-    referencedBlockHashDisplay: options.referencedBlockHashDisplay,
-    generatedAtUnixMs: options.generatedAtUnixMs ?? Date.now(),
-    extraPrompt: options.extraPrompt,
-    limits: createMiningSentenceRequestLimits(),
-    rootDomains: options.domains.map((domain) => ({
-      domainId: domain.domainId,
-      domainName: domain.domainName,
-      requiredWords: domain.requiredWords,
-      extraPrompt: options.domainExtraPrompts[domain.domainName.toLowerCase()] ?? null,
-    })),
-  };
+function buildMiningGenerationRequest(options: Parameters<typeof buildMiningGenerationRequestModule>[0]): MiningSentenceGenerationRequest {
+  return buildMiningGenerationRequestModule(options);
 }
 
 export function buildMiningGenerationRequestForTesting(options: {
@@ -2926,1004 +2264,47 @@ export function buildMiningGenerationRequestForTesting(options: {
   domainExtraPrompts?: Record<string, string>;
   extraPrompt?: string | null;
 }): MiningSentenceGenerationRequest {
-  return buildMiningGenerationRequest({
+  return buildMiningGenerationRequestModule({
     ...options,
     domainExtraPrompts: options.domainExtraPrompts ?? {},
     extraPrompt: options.extraPrompt ?? null,
   });
 }
 
-async function generateCandidatesForDomains(options: {
-  rpc: MiningRpcClient;
-  readContext: WalletReadContext & {
-    localState: { availability: "ready"; state: WalletStateV1 };
-    snapshot: NonNullable<WalletReadContext["snapshot"]>;
-    model: NonNullable<WalletReadContext["model"]>;
-  };
-  domains: ReturnType<typeof resolveEligibleAnchoredRoots>;
-  provider: WalletSecretProvider;
-  paths: WalletRuntimePaths;
-  indexerTruthKey: IndexerTruthKey | null;
-  runId?: string | null;
-  fetchImpl?: typeof fetch;
-}): Promise<MiningCandidate[]> {
-  const bestBlockHash = options.readContext.nodeStatus?.nodeBestHashHex;
-
-  if (bestBlockHash === null || bestBlockHash === undefined) {
-    return [];
-  }
-
-  const targetBlockHeight = (options.readContext.nodeStatus?.nodeBestHeight ?? 0) + 1;
-  const referencedBlockHashInternal = Buffer.from(displayToInternalBlockhash(bestBlockHash), "hex");
-  const rootDomains = options.domains.map((domain) => ({
-    ...domain,
-    requiredWords: getWords(domain.domainId, referencedBlockHashInternal) as [string, string, string, string, string],
-  }));
-  const clientConfig = await loadClientConfig({
-    path: options.paths.clientConfigPath,
-    provider: options.provider,
-  }).catch(() => null);
-  const abortController = new AbortController();
-  let stale = false;
-  let staleIndexerTruth = false;
-  let preempted = false;
-  const timer = setInterval(async () => {
-    try {
-      const [current, truthCurrent] = await Promise.all([
-        options.rpc.getBlockchainInfo(),
-        indexerTruthIsCurrent({
-          dataDir: options.readContext.dataDir,
-          truthKey: options.indexerTruthKey,
-        }),
-      ]);
-
-      if (current.bestblockhash !== bestBlockHash) {
-        stale = true;
-        abortController.abort();
-        return;
-      }
-
-      if (!truthCurrent) {
-        staleIndexerTruth = true;
-        abortController.abort();
-        return;
-      }
-
-      if (await isMiningGenerationAbortRequested(options.paths)) {
-        preempted = true;
-        abortController.abort();
-      }
-    } catch {
-      // Ignore transient polling failures and let the main cycle degrade on the next tick.
-    }
-  }, BEST_BLOCK_POLL_INTERVAL_MS);
-
-  try {
-    await markMiningGenerationActive({
-      paths: options.paths,
-      runId: options.runId ?? null,
-      pid: process.pid ?? null,
-    });
-    const generationRequest = buildMiningGenerationRequest({
-      targetBlockHeight,
-      referencedBlockHashDisplay: bestBlockHash,
-      domains: rootDomains,
-      domainExtraPrompts: clientConfig?.mining.domainExtraPrompts ?? {},
-      extraPrompt: clientConfig?.mining.builtIn?.extraPrompt ?? null,
-    });
-    let generated;
-
-    try {
-      generated = await generateMiningSentences(generationRequest, {
-        paths: options.paths,
-        provider: options.provider,
-        signal: abortController.signal,
-        fetchImpl: options.fetchImpl,
-      });
-    } catch (error) {
-      if (stale) {
-        throw new Error("mining_generation_stale_tip");
-      }
-
-      if (staleIndexerTruth) {
-        throw new Error("mining_generation_stale_indexer_truth");
-      }
-
-      if (preempted) {
-        throw new Error("mining_generation_preempted");
-      }
-
-      throw error;
-    }
-
-    if (stale) {
-      throw new Error("mining_generation_stale_tip");
-    }
-
-    if (staleIndexerTruth) {
-      throw new Error("mining_generation_stale_indexer_truth");
-    }
-
-    if (preempted) {
-      throw new Error("mining_generation_preempted");
-    }
-
-    await ensureIndexerTruthIsCurrent({
-      dataDir: options.readContext.dataDir,
-      truthKey: options.indexerTruthKey,
-    });
-
-    const sentencesByDomain = new Map<number, string[]>();
-    for (const candidate of generated.candidates) {
-      const existing = sentencesByDomain.get(candidate.domainId) ?? [];
-      existing.push(candidate.sentence);
-      sentencesByDomain.set(candidate.domainId, existing);
-    }
-
-    const candidates: MiningCandidate[] = [];
-
-    for (const domain of rootDomains) {
-      const domainSentences = sentencesByDomain.get(domain.domainId) ?? [];
-
-      if (domainSentences.length === 0) {
-        continue;
-      }
-
-      const assayed = await assaySentences(domain.domainId, referencedBlockHashInternal, domainSentences);
-      const best = assayed.find((entry) => entry.gatesPass && entry.encodedSentenceBytes !== null && entry.rank === 1);
-
-      if (best === undefined || best.encodedSentenceBytes === null || best.canonicalBlend === null) {
-        continue;
-      }
-
-      candidates.push({
-        domainId: domain.domainId,
-        domainName: domain.domainName,
-        localIndex: domain.localIndex,
-        sender: domain.sender,
-        sentence: best.sentence,
-        encodedSentenceBytes: best.encodedSentenceBytes,
-        bip39WordIndices: [...best.bip39WordIndices],
-        bip39Words: best.bip39Words,
-        canonicalBlend: best.canonicalBlend,
-        referencedBlockHashDisplay: bestBlockHash,
-        referencedBlockHashInternal,
-        targetBlockHeight,
-      });
-    }
-
-    return candidates;
-  } finally {
-    clearInterval(timer);
-    await markMiningGenerationInactive({
-      paths: options.paths,
-      runId: options.runId ?? null,
-      pid: process.pid ?? null,
-    }).catch(() => undefined);
-  }
+async function generateCandidatesForDomains(options: Parameters<typeof generateCandidatesForDomainsModule>[0]): Promise<MiningCandidate[]> {
+  return await generateCandidatesForDomainsModule(options);
 }
 
 async function chooseBestLocalCandidate(candidates: MiningCandidate[]): Promise<MiningCandidate | null> {
-  if (candidates.length === 0) {
-    return null;
-  }
-
-  if (candidates.length === 1) {
-    return candidates[0]!;
-  }
-
-  const blendSeed = deriveBlendSeed(candidates[0]!.referencedBlockHashInternal);
-  const winners = await settleBlock({
-    blendSeed,
-    blockRewardCogtoshi: 100n,
-    submissions: candidates
-      .slice()
-      .sort((left, right) => left.domainId - right.domainId || left.domainName.localeCompare(right.domainName))
-      .map((candidate, index) => ({
-        miningDomainId: candidate.domainId,
-        rawSentenceBytes: candidate.encodedSentenceBytes,
-        recipientScriptPubKey: Buffer.from(candidate.sender.scriptPubKeyHex, "hex"),
-        bip39WordIndices: candidate.bip39WordIndices,
-        txIndex: index,
-      })),
-  });
-  const winner = winners[0];
-
-  if (winner === undefined) {
-    return null;
-  }
-
-  return candidates.find((candidate) => candidate.domainId === winner.miningDomainId) ?? null;
+  return await chooseBestLocalCandidateModule(candidates);
 }
 
-function isBetterVisibleCompetitor(candidate: CachedCompetitorEntry, current: CachedCompetitorEntry | undefined): boolean {
-  if (current === undefined) {
-    return true;
-  }
-
-  if (candidate.canonicalBlend !== current.canonicalBlend) {
-    return candidate.canonicalBlend > current.canonicalBlend;
-  }
-
-  if (candidate.effectiveFeeRate !== current.effectiveFeeRate) {
-    return candidate.effectiveFeeRate > current.effectiveFeeRate;
-  }
-
-  return candidate.txid.localeCompare(current.txid) < 0;
-}
-
-function rankMiningSentenceEntries(
-  entries: RankedMiningSentenceEntry[],
-  blendSeed: Uint8Array,
-): Array<RankedMiningSentenceEntry & { rank: number; tieBreak: Uint8Array }> {
-  return entries
-    .map((entry) => ({
-      ...entry,
-      tieBreak: tieBreakHash(blendSeed, entry.domainId),
-    }))
-    .sort((left, right) => {
-      if (left.canonicalBlend !== right.canonicalBlend) {
-        return left.canonicalBlend > right.canonicalBlend ? -1 : 1;
-      }
-
-      const tieBreakOrder = compareLexicographically(left.tieBreak, right.tieBreak);
-      if (tieBreakOrder !== 0) {
-        return tieBreakOrder;
-      }
-
-      return left.txIndex - right.txIndex;
-    })
-    .map((entry, index) => ({
-      ...entry,
-      rank: index + 1,
-    }));
-}
-
-function toSentenceBoardEntries(
-  entries: Array<{ rank: number; domainName: string; sentence: string; bip39WordIndices?: readonly number[] }>,
-): MiningSentenceBoardEntry[] {
-  return entries.slice(0, 5).map((entry) => ({
-    rank: entry.rank,
-    domainName: entry.domainName,
-    sentence: entry.sentence,
-    requiredWords: resolveBip39WordsFromIndices(entry.bip39WordIndices),
-  }));
-}
-
-async function runCompetitivenessGate(options: {
-  rpc: MiningRpcClient;
-  readContext: WalletReadContext & {
-    snapshot: NonNullable<WalletReadContext["snapshot"]>;
-  };
-  candidate: MiningCandidate;
-  currentTxid: string | null;
-  assaySentencesImpl?: typeof assaySentences;
-  cooperativeYield?: MiningCooperativeYield;
-  cooperativeYieldEvery?: number;
-}): Promise<CompetitivenessDecision> {
-  const createDecision = (overrides: Partial<CompetitivenessDecision>): CompetitivenessDecision => ({
-    allowed: overrides.allowed ?? false,
-    decision: overrides.decision ?? "indeterminate-mempool-gate",
-    sameDomainCompetitorSuppressed: overrides.sameDomainCompetitorSuppressed ?? false,
-    higherRankedCompetitorDomainCount: overrides.higherRankedCompetitorDomainCount ?? 0,
-    dedupedCompetitorDomainCount: overrides.dedupedCompetitorDomainCount ?? 0,
-    competitivenessGateIndeterminate: overrides.competitivenessGateIndeterminate ?? false,
-    mempoolSequenceCacheStatus: overrides.mempoolSequenceCacheStatus ?? null,
-    lastMempoolSequence: overrides.lastMempoolSequence ?? null,
-    visibleBoardEntries: overrides.visibleBoardEntries ?? [],
-    candidateRank: overrides.candidateRank ?? null,
-  });
-  const walletRootId = options.readContext.localState.walletRootId ?? "uninitialized-wallet-root";
-  const assaySentencesImpl = options.assaySentencesImpl ?? assaySentences;
-  const indexerTruthKey = getIndexerTruthKey(
-    options.readContext as WalletReadContext & {
-      localState: { availability: "ready"; state: WalletStateV1 };
-      snapshot: NonNullable<WalletReadContext["snapshot"]>;
-    },
-  );
-  const excludedTxids = [options.currentTxid].filter((value): value is string => value !== null).sort();
-  const localAssayTupleKey = [
-    options.candidate.domainId,
-    Buffer.from(options.candidate.encodedSentenceBytes).toString("hex"),
-    options.candidate.canonicalBlend.toString(),
-    options.candidate.sender.scriptPubKeyHex,
-  ].join(":");
-
-  let mempoolVerbose: Awaited<ReturnType<MiningRpcClient["getRawMempoolVerbose"]>>;
-  try {
-    mempoolVerbose = await options.rpc.getRawMempoolVerbose();
-  } catch {
-    return createDecision({
-      competitivenessGateIndeterminate: true,
-    });
-  }
-
-  const mempoolSequence = String(mempoolVerbose.mempool_sequence);
-  const cached = miningGateCache.get(walletRootId);
-  const cachedTruthMatches = cached !== undefined
-    && indexerTruthKey !== null
-    && cached.indexerDaemonInstanceId === indexerTruthKey.daemonInstanceId
-    && cached.indexerSnapshotSeq === indexerTruthKey.snapshotSeq;
-  const cachedReferencedBlockMatches = cached !== undefined
-    && cached.referencedBlockHashDisplay === options.candidate.referencedBlockHashDisplay;
-
-  if (cached !== undefined && (!cachedTruthMatches || !cachedReferencedBlockMatches)) {
-    clearMiningGateCache(walletRootId);
-  }
-
-  if (
-    cached !== undefined
-    && cachedTruthMatches
-    && cachedReferencedBlockMatches
-    && cached.localAssayTupleKey === localAssayTupleKey
-    && cached.excludedTxidsKey === excludedTxids.join(",")
-    && cached.mempoolSequence === mempoolSequence
-  ) {
-    return {
-      ...cached.decision,
-      mempoolSequenceCacheStatus: "reused",
-    };
-  }
-
-  const referencedPrefix = Buffer.from(options.candidate.referencedBlockHashInternal.subarray(0, 4)).toString("hex");
-  const visibleTxids = mempoolVerbose.txids.filter((txid) => !excludedTxids.includes(txid));
-  const txContexts = cachedTruthMatches && cachedReferencedBlockMatches
-    ? (cached?.txContexts ?? new Map<string, CachedMempoolTxContext>())
-    : new Map<string, CachedMempoolTxContext>();
-  for (const txid of [...txContexts.keys()]) {
-    if (!visibleTxids.includes(txid)) {
-      txContexts.delete(txid);
-    }
-  }
-
-  for (let index = 0; index < visibleTxids.length; index += 1) {
-    await maybeYieldDuringMempoolScan({
-      iteration: index,
-      cooperativeYield: options.cooperativeYield,
-      cooperativeYieldEvery: options.cooperativeYieldEvery,
-    });
-    const txid = visibleTxids[index]!;
-    if (txContexts.has(txid)) {
-      continue;
-    }
-
-    const [tx, mempoolEntry] = await Promise.all([
-      options.rpc.getRawTransaction(txid, true).catch(() => null),
-      options.rpc.getMempoolEntry(txid).catch(() => null),
-    ]);
-    if (tx === null || mempoolEntry === null) {
-      continue;
-    }
-
-    const effectiveFeeRate = Number([
-      mempoolEntry.vsize > 0 ? (numberToSats(mempoolEntry.fees.base) / BigInt(mempoolEntry.vsize)) : 0n,
-      (mempoolEntry.ancestorsize ?? 0) > 0 ? (numberToSats(mempoolEntry.fees.ancestor) / BigInt(mempoolEntry.ancestorsize ?? 1)) : 0n,
-      (mempoolEntry.descendantsize ?? 0) > 0 ? (numberToSats(mempoolEntry.fees.descendant) / BigInt(mempoolEntry.descendantsize ?? 1)) : 0n,
-    ].reduce((best, candidate) => (candidate > best ? candidate : best), 0n));
-    const payloadHex = tx.vout.find((entry) => entry.scriptPubKey?.hex?.startsWith("6a") === true)?.scriptPubKey?.hex;
-    txContexts.set(txid, {
-      txid,
-      effectiveFeeRate,
-      senderScriptHex: tx.vin[0]?.prevout?.scriptPubKey?.hex ?? null,
-      rawTransaction: tx,
-      payload: payloadHex === undefined ? null : extractOpReturnPayloadFromScriptHex(payloadHex),
-    });
-  }
-
-  const entries = new Map<string, CachedCompetitorEntry>();
-  for (let index = 0; index < visibleTxids.length; index += 1) {
-    await maybeYieldDuringMempoolScan({
-      iteration: index,
-      cooperativeYield: options.cooperativeYield,
-      cooperativeYieldEvery: options.cooperativeYieldEvery,
-    });
-    const txid = visibleTxids[index]!;
-    const context = txContexts.get(txid);
-
-    if (context === undefined || context.payload === null || context.senderScriptHex === null) {
-      continue;
-    }
-
-    const decoded = decodeMinePayload(context.payload);
-    if (decoded === null || decoded.referencedBlockPrefixHex !== referencedPrefix) {
-      continue;
-    }
-
-    const overlayDomain = await resolveOverlayAuthorizedMiningDomain({
-      readContext: options.readContext,
-      txid,
-      txContexts,
-      domainId: decoded.domainId,
-      senderScriptHex: context.senderScriptHex,
-    });
-    if (overlayDomain === "indeterminate") {
-      const decision = createDecision({
-        competitivenessGateIndeterminate: true,
-        decision: "indeterminate-mempool-gate",
-        mempoolSequenceCacheStatus: "refreshed",
-        lastMempoolSequence: mempoolSequence,
-      });
-      miningGateCache.set(walletRootId, {
-        indexerDaemonInstanceId: indexerTruthKey?.daemonInstanceId ?? "none",
-        indexerSnapshotSeq: indexerTruthKey?.snapshotSeq ?? "none",
-        referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
-        localAssayTupleKey,
-        excludedTxidsKey: excludedTxids.join(","),
-        mempoolSequence,
-        txids: [...visibleTxids],
-        txContexts,
-        decision,
-      });
-      return decision;
-    }
-
-    if (overlayDomain === null || overlayDomain.name === null || !rootDomain(overlayDomain.name)) {
-      continue;
-    }
-
-    const assayed = await assaySentencesImpl(
-      decoded.domainId,
-      options.candidate.referencedBlockHashInternal,
-      [Buffer.from(decoded.sentenceBytes).toString("utf8")],
-    ).catch(() => []);
-    const scored = assayed[0];
-    if (scored === undefined || !scored.gatesPass || scored.encodedSentenceBytes === null || scored.canonicalBlend === null) {
-      continue;
-    }
-
-    entries.set(txid, {
-      txid,
-      effectiveFeeRate: context.effectiveFeeRate,
-      domainId: decoded.domainId,
-      domainName: overlayDomain.name,
-      sentence: Buffer.from(decoded.sentenceBytes).toString("utf8"),
-      senderScriptHex: context.senderScriptHex,
-      encodedSentenceBytesHex: Buffer.from(scored.encodedSentenceBytes).toString("hex"),
-      bip39WordIndices: [...scored.bip39WordIndices],
-      canonicalBlend: scored.canonicalBlend,
-    });
-  }
-
-  const blendSeed = deriveBlendSeed(options.candidate.referencedBlockHashInternal);
-  const visibleBestByDomain = new Map<number, CachedCompetitorEntry>();
-  for (const entry of entries.values()) {
-    const current = visibleBestByDomain.get(entry.domainId);
-
-    if (isBetterVisibleCompetitor(entry, current)) {
-      visibleBestByDomain.set(entry.domainId, entry);
-    }
-  }
-
-  const visibleRankedEntries = rankMiningSentenceEntries(
-    [...visibleBestByDomain.values()]
-      .sort((left, right) => left.domainId - right.domainId || left.txid.localeCompare(right.txid))
-      .map((entry, index) => ({
-        domainId: entry.domainId,
-        domainName: entry.domainName,
-        sentence: entry.sentence,
-        canonicalBlend: entry.canonicalBlend,
-        senderScriptHex: entry.senderScriptHex,
-        encodedSentenceBytesHex: entry.encodedSentenceBytesHex,
-        bip39WordIndices: entry.bip39WordIndices,
-        txid: entry.txid,
-        txIndex: index,
-      })),
-    blendSeed,
-  );
-  const sameDomainCompetitors = [...visibleBestByDomain.values()].filter((entry) => entry.domainId === options.candidate.domainId);
-  const sameDomainCompetitorSuppressed = sameDomainCompetitors.some((competitor) =>
-    competitor.canonicalBlend > options.candidate.canonicalBlend
-    || competitor.canonicalBlend === options.candidate.canonicalBlend,
-  );
-
-  let decision: CompetitivenessDecision;
-  const otherDomainBest = new Map<number, CachedCompetitorEntry>();
-  for (const entry of visibleBestByDomain.values()) {
-    if (entry.domainId === options.candidate.domainId) {
-      continue;
-    }
-
-    const best = otherDomainBest.get(entry.domainId);
-    if (isBetterVisibleCompetitor(entry, best)) {
-      otherDomainBest.set(entry.domainId, entry);
-    }
-  }
-
-  if (sameDomainCompetitorSuppressed) {
-    decision = createDecision({
-      allowed: false,
-      decision: "suppressed-same-domain-mempool",
-      sameDomainCompetitorSuppressed: true,
-      higherRankedCompetitorDomainCount: 1,
-      dedupedCompetitorDomainCount: otherDomainBest.size,
-      competitivenessGateIndeterminate: false,
-      mempoolSequenceCacheStatus: "refreshed",
-      lastMempoolSequence: mempoolSequence,
-      visibleBoardEntries: toSentenceBoardEntries(visibleRankedEntries),
-    });
-  } else {
-    try {
-      const candidateRankedEntries = rankMiningSentenceEntries([
-        {
-          domainId: options.candidate.domainId,
-          domainName: options.candidate.domainName,
-          sentence: options.candidate.sentence,
-          canonicalBlend: options.candidate.canonicalBlend,
-          senderScriptHex: options.candidate.sender.scriptPubKeyHex,
-          encodedSentenceBytesHex: Buffer.from(options.candidate.encodedSentenceBytes).toString("hex"),
-          bip39WordIndices: options.candidate.bip39WordIndices,
-          txid: null,
-          txIndex: 0,
-        },
-        ...[...otherDomainBest.values()]
-          .sort((left, right) => left.domainId - right.domainId || left.txid.localeCompare(right.txid))
-          .map((entry, index) => ({
-            domainId: entry.domainId,
-            domainName: entry.domainName,
-            sentence: entry.sentence,
-            canonicalBlend: entry.canonicalBlend,
-            senderScriptHex: entry.senderScriptHex,
-            encodedSentenceBytesHex: entry.encodedSentenceBytesHex,
-            bip39WordIndices: entry.bip39WordIndices,
-            txid: entry.txid,
-            txIndex: index + 1,
-          })),
-      ], blendSeed);
-      const localEntry = candidateRankedEntries.find((entry) => entry.txid === null) ?? null;
-      const candidateRank = localEntry?.rank ?? null;
-      const higherRankedCompetitorDomainCount = candidateRank === null ? 0 : Math.max(0, candidateRank - 1);
-
-      if (candidateRank !== null && candidateRank > 5) {
-        decision = createDecision({
-          allowed: false,
-          decision: "suppressed-top5-mempool",
-          sameDomainCompetitorSuppressed: false,
-          higherRankedCompetitorDomainCount,
-          dedupedCompetitorDomainCount: otherDomainBest.size,
-          competitivenessGateIndeterminate: false,
-          mempoolSequenceCacheStatus: "refreshed",
-          lastMempoolSequence: mempoolSequence,
-          visibleBoardEntries: toSentenceBoardEntries(visibleRankedEntries),
-          candidateRank,
-        });
-      } else {
-        decision = createDecision({
-          allowed: candidateRank !== null,
-          decision: "publish",
-          sameDomainCompetitorSuppressed: false,
-          higherRankedCompetitorDomainCount,
-          dedupedCompetitorDomainCount: otherDomainBest.size,
-          competitivenessGateIndeterminate: false,
-          mempoolSequenceCacheStatus: "refreshed",
-          lastMempoolSequence: mempoolSequence,
-          visibleBoardEntries: toSentenceBoardEntries(visibleRankedEntries),
-          candidateRank,
-        });
-      }
-    } catch {
-      decision = createDecision({
-        allowed: false,
-        decision: "indeterminate-mempool-gate",
-        sameDomainCompetitorSuppressed: false,
-        higherRankedCompetitorDomainCount: 0,
-        dedupedCompetitorDomainCount: otherDomainBest.size,
-        competitivenessGateIndeterminate: true,
-        mempoolSequenceCacheStatus: "refreshed",
-        lastMempoolSequence: mempoolSequence,
-        visibleBoardEntries: toSentenceBoardEntries(visibleRankedEntries),
-      });
-    }
-  }
-
-  miningGateCache.set(walletRootId, {
-    indexerDaemonInstanceId: indexerTruthKey?.daemonInstanceId ?? "none",
-    indexerSnapshotSeq: indexerTruthKey?.snapshotSeq ?? "none",
-    referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
-    localAssayTupleKey,
-    excludedTxidsKey: excludedTxids.join(","),
-    mempoolSequence,
-    txids: [...visibleTxids],
-    txContexts,
-    decision,
-  });
-
-  return decision;
+async function runCompetitivenessGate(options: Parameters<typeof runCompetitivenessGateModule>[0]): Promise<CompetitivenessDecision> {
+  return await runCompetitivenessGateModule(options);
 }
 
 function livePublishTargetsCandidateTip(options: {
   liveState: MiningStateRecord;
   candidate: MiningCandidate;
 }): boolean {
-  const liveState = normalizeMiningStateRecord(options.liveState);
-  return liveState.currentTxid !== null
-    && liveState.currentPublishState === "in-mempool"
-    && liveState.livePublishInMempool === true
-    && liveState.currentReferencedBlockHashDisplay === options.candidate.referencedBlockHashDisplay
-    && liveState.currentBlockTargetHeight === options.candidate.targetBlockHeight;
+  return livePublishTargetsCandidateTipModule(options);
 }
 
-function miningCandidateIsCurrent(options: {
-  state: MiningStateRecord;
-  nodeBestHash: string | null;
-  nodeBestHeight: number | null;
-}): boolean {
-  return options.state.currentReferencedBlockHashDisplay !== null
-    && options.nodeBestHash !== null
-    && options.state.currentReferencedBlockHashDisplay === options.nodeBestHash
-    && options.state.currentBlockTargetHeight !== null
-    && options.nodeBestHeight !== null
-    && options.state.currentBlockTargetHeight === (options.nodeBestHeight + 1);
+async function reconcileLiveMiningState(
+  options: Parameters<typeof reconcileLiveMiningStateModule>[0],
+): Promise<{ state: WalletStateV1; recentWin: MiningRecentWinSummary | null }> {
+  return await reconcileLiveMiningStateModule(options);
 }
 
-async function reconcileLiveMiningState(options: {
+async function publishCandidateOnce(options: Parameters<typeof publishCandidateOnceModule>[0]): Promise<{
   state: WalletStateV1;
-  rpc: MiningRpcClient;
-  nodeBestHash: string | null;
-  nodeBestHeight: number | null;
-  snapshotState?: NonNullable<WalletReadContext["snapshot"]>["state"] | null;
-}): Promise<{ state: WalletStateV1; recentWin: MiningRecentWinSummary | null }> {
-  let state = {
-    ...options.state,
-    miningState: normalizeMiningStateRecord(options.state.miningState),
-  };
-  const currentTxid = state.miningState.currentTxid;
-
-  if (currentTxid === null || !miningPublishMayStillExist(state.miningState)) {
-    await reconcilePersistentPolicyLocks({
-      rpc: options.rpc,
-      walletName: state.managedCoreWallet.walletName,
-      state,
-      fixedInputs: [],
-    });
-    return {
-      state,
-      recentWin: null,
-    };
-  }
-
-  const walletName = state.managedCoreWallet.walletName;
-  const [mempoolVerbose, walletTx] = await Promise.all([
-    options.rpc.getRawMempoolVerbose().catch((): { txids: string[]; mempool_sequence: string } => ({
-      txids: [],
-      mempool_sequence: "unknown",
-    })),
-    options.rpc.getTransaction(walletName, currentTxid).catch(() => null),
-  ]);
-  const inMempool = mempoolVerbose.txids.includes(currentTxid);
-
-  if (walletTx !== null && walletTx.confirmations > 0) {
-    const recentWin = findRecentMiningWin(
-      options.snapshotState ?? null,
-      currentTxid,
-      state.miningState.currentBlockTargetHeight,
-    );
-    state = {
-      ...state,
-      miningState: {
-        ...clearMiningPublishState(state.miningState),
-        currentPublishDecision: "tx-confirmed-while-down",
-      },
-    };
-    await reconcilePersistentPolicyLocks({
-      rpc: options.rpc,
-      walletName: state.managedCoreWallet.walletName,
-      state,
-      fixedInputs: [],
-    });
-    return {
-      state,
-      recentWin,
-    };
-  }
-
-  if (inMempool) {
-    const stale = !miningCandidateIsCurrent({
-      state: state.miningState,
-      nodeBestHash: options.nodeBestHash,
-      nodeBestHeight: options.nodeBestHeight,
-    });
-    state = defaultMiningStatePatch(state, {
-      livePublishInMempool: true,
-      currentPublishState: "in-mempool",
-      state: stale
-        ? "paused-stale"
-        : state.miningState.runMode === "stopped"
-          ? "paused"
-          : "live",
-      pauseReason: stale
-        ? "stale-block-context"
-        : state.miningState.runMode === "stopped"
-          ? "user-stopped"
-          : null,
-      currentPublishDecision: stale ? "paused-stale-mempool" : "restored-live-publish",
-    });
-    await reconcilePersistentPolicyLocks({
-      rpc: options.rpc,
-      walletName: state.managedCoreWallet.walletName,
-      state,
-      fixedInputs: [],
-    });
-    return {
-      state,
-      recentWin: null,
-    };
-  }
-
-  if ((walletTx?.walletconflicts?.length ?? 0) > 0) {
-    state = defaultMiningStatePatch(state, {
-      state: "repair-required",
-      pauseReason: state.miningState.currentPublishState === "broadcast-unknown"
-        ? "broadcast-unknown-conflict"
-        : "wallet-conflict-observed",
-      livePublishInMempool: false,
-      currentPublishDecision: state.miningState.currentPublishState === "broadcast-unknown"
-        ? "repair-required-broadcast-conflict"
-        : "repair-required-wallet-conflict",
-    });
-    await reconcilePersistentPolicyLocks({
-      rpc: options.rpc,
-      walletName: state.managedCoreWallet.walletName,
-      state,
-      fixedInputs: [],
-    });
-    return {
-      state,
-      recentWin: null,
-    };
-  }
-
-  state = defaultMiningStatePatch(state, {
-    ...clearMiningPublishState(state.miningState),
-    currentPublishDecision: state.miningState.currentPublishState === "broadcast-unknown"
-      ? "broadcast-unknown-not-seen"
-      : "live-publish-not-seen",
+  txid: string | null;
+  decision: string;
+}> {
+  return await publishCandidateOnceModule({
+    ...options,
+    appendEventFn: appendEvent,
   });
-  await reconcilePersistentPolicyLocks({
-    rpc: options.rpc,
-    walletName: state.managedCoreWallet.walletName,
-    state,
-    fixedInputs: [],
-  });
-  return {
-    state,
-    recentWin: null,
-  };
-}
-
-async function publishCandidateOnce(options: {
-  readContext: WalletReadContext & {
-    localState: { availability: "ready"; state: WalletStateV1 };
-    snapshot: NonNullable<WalletReadContext["snapshot"]>;
-    model: NonNullable<WalletReadContext["model"]>;
-  };
-  candidate: MiningCandidate;
-  dataDir: string;
-  provider: WalletSecretProvider;
-  paths: WalletRuntimePaths;
-  attachService: typeof attachOrStartManagedBitcoindService;
-  rpcFactory: (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
-  runId: string | null;
-}): Promise<{ state: WalletStateV1; txid: string | null; decision: string }> {
-  const service = await options.attachService({
-    dataDir: options.dataDir,
-    chain: "main",
-    startHeight: 0,
-    walletRootId: options.readContext.localState.state.walletRootId,
-  });
-  const rpc = options.rpcFactory(service.rpc);
-  let state = (await reconcileLiveMiningState({
-    state: options.readContext.localState.state,
-    rpc,
-    nodeBestHash: options.readContext.nodeStatus?.nodeBestHashHex ?? null,
-    nodeBestHeight: options.readContext.nodeStatus?.nodeBestHeight ?? null,
-    snapshotState: options.readContext.snapshot.state,
-  })).state;
-  const allUtxos = await rpc.listUnspent(state.managedCoreWallet.walletName, MINING_FUNDING_MIN_CONF);
-  const conflictOutpoint = resolveMiningConflictOutpoint({
-    state,
-    allUtxos,
-  });
-  const priorMiningState = cloneMiningState(state.miningState);
-
-  if (
-    livePublishTargetsCandidateTip({
-      liveState: state.miningState,
-      candidate: options.candidate,
-    })
-  ) {
-    return {
-      state: defaultMiningStatePatch(state, {
-        currentPublishDecision: "kept-live-publish",
-      }),
-      txid: state.miningState.currentTxid,
-      decision: "kept-live-publish",
-    };
-  }
-
-  const feeSelection = await resolveWalletMutationFeeSelection({
-    rpc,
-  });
-  const nextFeeRate = feeSelection.feeRateSatVb;
-
-  const plan = createMiningPlan({
-    state,
-    candidate: options.candidate,
-    conflictOutpoint,
-    allUtxos,
-    feeRateSatVb: nextFeeRate,
-  });
-  const built = await buildMiningTransaction({
-    rpc,
-    walletName: state.managedCoreWallet.walletName,
-    state,
-    plan,
-  });
-  const intentFingerprintHex = computeIntentFingerprint(state, options.candidate);
-  state = defaultMiningStatePatch(state, {
-    state: "live",
-    currentPublishState: "broadcasting",
-    currentDomain: options.candidate.domainName,
-    currentDomainId: options.candidate.domainId,
-    currentDomainIndex: options.candidate.localIndex,
-    currentSenderScriptPubKeyHex: options.candidate.sender.scriptPubKeyHex,
-    currentTxid: built.txid,
-    currentWtxid: built.wtxid,
-    currentFeeRateSatVb: nextFeeRate,
-    currentAbsoluteFeeSats: numberToSats(built.funded.fee).toString() === "0" ? 0 : Number(numberToSats(built.funded.fee)),
-    currentScore: options.candidate.canonicalBlend.toString(),
-    currentSentence: options.candidate.sentence,
-    currentEncodedSentenceBytesHex: Buffer.from(options.candidate.encodedSentenceBytes).toString("hex"),
-    currentBip39WordIndices: [...options.candidate.bip39WordIndices],
-    currentBlendSeedHex: Buffer.from(deriveBlendSeed(options.candidate.referencedBlockHashInternal)).toString("hex"),
-    currentBlockTargetHeight: options.candidate.targetBlockHeight,
-    currentReferencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
-    currentIntentFingerprintHex: intentFingerprintHex,
-    sharedMiningConflictOutpoint: conflictOutpoint,
-    livePublishInMempool: null,
-    currentPublishDecision: priorMiningState.currentTxid === null
-      ? "publishing"
-      : "replacing",
-  });
-  await saveWalletStatePreservingUnlock({
-    state,
-    provider: options.provider,
-    paths: options.paths,
-  });
-
-  try {
-    await rpc.sendRawTransaction(built.rawHex);
-  } catch (error) {
-    if (isAlreadyAcceptedError(error)) {
-      state = defaultMiningStatePatch(state, {
-        currentPublishState: "in-mempool",
-        livePublishInMempool: true,
-      });
-      await saveWalletStatePreservingUnlock({
-        state,
-        provider: options.provider,
-        paths: options.paths,
-      });
-      await appendEvent(options.paths, createEvent(
-        state.miningState.currentPublishDecision === "replacing" ? "tx-replaced" : "tx-broadcast",
-        `Mining transaction ${built.txid} is already accepted by the local node.`,
-        {
-          runId: options.runId,
-          targetBlockHeight: options.candidate.targetBlockHeight,
-          referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
-          domainId: options.candidate.domainId,
-          domainName: options.candidate.domainName,
-          txid: built.txid,
-          feeRateSatVb: nextFeeRate,
-          feeSats: numberToSats(built.funded.fee).toString(),
-          score: options.candidate.canonicalBlend.toString(),
-        },
-      ));
-      return {
-        state,
-        txid: built.txid,
-        decision: state.miningState.currentPublishDecision === "replacing"
-          ? "replaced"
-          : "broadcast",
-      };
-    }
-
-    if (isBroadcastUnknownError(error)) {
-      state = defaultMiningStatePatch(state, {
-        currentPublishState: "broadcast-unknown",
-        currentPublishDecision: "broadcast-unknown",
-      });
-      await saveWalletStatePreservingUnlock({
-        state,
-        provider: options.provider,
-        paths: options.paths,
-      });
-      await appendEvent(options.paths, createEvent(
-        "error",
-        `Mining broadcast became uncertain for ${built.txid}.`,
-        {
-          level: "warn",
-          runId: options.runId,
-          targetBlockHeight: options.candidate.targetBlockHeight,
-          referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
-          domainId: options.candidate.domainId,
-          domainName: options.candidate.domainName,
-          txid: built.txid,
-          feeRateSatVb: nextFeeRate,
-          feeSats: numberToSats(built.funded.fee).toString(),
-          score: options.candidate.canonicalBlend.toString(),
-          reason: "broadcast-unknown",
-        },
-      ));
-      return {
-        state,
-        txid: built.txid,
-        decision: "broadcast-unknown",
-      };
-    }
-
-    state = {
-      ...state,
-      miningState: cloneMiningState(priorMiningState),
-    };
-    await saveWalletStatePreservingUnlock({
-      state,
-      provider: options.provider,
-      paths: options.paths,
-    });
-    throw new MiningPublishRejectedError(
-      error instanceof Error ? error.message : String(error),
-      state,
-    );
-  }
-
-  const absoluteFeeSats = numberToSats(built.funded.fee);
-  const replacementCount = priorMiningState.currentTxid === null
-    ? priorMiningState.replacementCount
-    : priorMiningState.replacementCount + 1;
-  state = defaultMiningStatePatch(state, {
-    currentPublishState: "in-mempool",
-    livePublishInMempool: true,
-    currentPublishDecision: state.miningState.currentPublishDecision === "replacing"
-      ? "replaced"
-      : "broadcast",
-    replacementCount,
-    currentAbsoluteFeeSats: Number(absoluteFeeSats),
-    currentBlockFeeSpentSats: (BigInt(state.miningState.currentBlockFeeSpentSats) + absoluteFeeSats).toString(),
-    sessionFeeSpentSats: (BigInt(state.miningState.sessionFeeSpentSats) + absoluteFeeSats).toString(),
-    lifetimeFeeSpentSats: (BigInt(state.miningState.lifetimeFeeSpentSats) + absoluteFeeSats).toString(),
-  });
-  await saveWalletStatePreservingUnlock({
-    state,
-    provider: options.provider,
-    paths: options.paths,
-  });
-  await appendEvent(options.paths, createEvent(
-    state.miningState.currentPublishDecision === "replaced"
-      ? "tx-replaced"
-      : "tx-broadcast",
-    `${state.miningState.currentPublishDecision === "replaced"
-      ? "Replaced"
-      : "Broadcast"} mining transaction ${built.txid}.`,
-    {
-      runId: options.runId,
-      targetBlockHeight: options.candidate.targetBlockHeight,
-      referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
-      domainId: options.candidate.domainId,
-      domainName: options.candidate.domainName,
-      txid: built.txid,
-      feeRateSatVb: nextFeeRate,
-      feeSats: absoluteFeeSats.toString(),
-      score: options.candidate.canonicalBlend.toString(),
-    },
-  ));
-
-  return {
-    state,
-    txid: built.txid,
-    decision: state.miningState.currentPublishDecision === "replaced"
-      ? "replaced"
-      : "broadcast",
-  };
 }
 
 async function publishCandidate(options: {
@@ -3940,136 +2321,10 @@ async function publishCandidate(options: {
   publishAttempt?: typeof publishCandidateOnce;
   appendEventFn?: typeof appendEvent;
 }): Promise<MiningPublishOutcome> {
-  const publishAttempt = options.publishAttempt ?? publishCandidateOnce;
-  const appendEventFn = options.appendEventFn ?? appendEvent;
-
-  const createStaleCandidateSkipResult = async (state: WalletStateV1): Promise<MiningPublishSkipResult> => {
-    const note = createStaleMiningCandidateWaitingNote();
-    await appendEventFn(options.paths, createEvent(
-      "publish-skipped-stale-candidate",
-      "Skipped mining publish for the current tip because the selected root domain is no longer locally mineable.",
-      {
-        level: "warn",
-        runId: options.runId,
-        targetBlockHeight: options.candidate.targetBlockHeight,
-        referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
-        domainId: options.candidate.domainId,
-        domainName: options.candidate.domainName,
-        score: options.candidate.canonicalBlend.toString(),
-        reason: "candidate-unavailable",
-      },
-    ));
-    return {
-      state,
-      txid: null,
-      decision: "publish-skipped-stale-candidate",
-      note,
-      skipped: true,
-      candidate: null,
-    };
-  };
-  const lockedReadContext = await options.openReadContext({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
-    secretProvider: options.provider,
-    walletControlLockHeld: true,
-    paths: options.paths,
+  return await publishCandidateModule({
+    ...options,
+    appendEventFn: options.appendEventFn ?? appendEvent,
   });
-
-  try {
-    if (
-      lockedReadContext.localState.availability !== "ready"
-      || lockedReadContext.localState.state === null
-      || lockedReadContext.snapshot === null
-      || lockedReadContext.model === null
-    ) {
-      return await createStaleCandidateSkipResult(options.fallbackState);
-    }
-
-    const readyReadContext = lockedReadContext as ReadyMiningReadContext;
-    const refreshedCandidate = refreshMiningCandidateFromCurrentState(readyReadContext, options.candidate);
-    if (refreshedCandidate === null) {
-      return await createStaleCandidateSkipResult(readyReadContext.localState.state);
-    }
-
-    try {
-      const published = await publishAttempt({
-        readContext: readyReadContext,
-        candidate: refreshedCandidate,
-        dataDir: options.dataDir,
-        provider: options.provider,
-        paths: options.paths,
-        attachService: options.attachService,
-        rpcFactory: options.rpcFactory,
-        runId: options.runId,
-      });
-      return {
-        ...published,
-        candidate: refreshedCandidate,
-      };
-    } catch (error) {
-      if (error instanceof Error && error.message === "wallet_mining_mempool_rejected_missing-inputs") {
-        const note = createRetryableMiningPublishWaitingNote();
-        const revertedState = error instanceof MiningPublishRejectedError
-          ? error.revertedState
-          : readyReadContext.localState.state;
-        await appendEventFn(options.paths, createEvent(
-          "publish-retry-pending",
-          "Selected mining candidate did not reach mempool and will be retried on the current tip with refreshed wallet state.",
-          {
-            level: "warn",
-            runId: options.runId,
-            targetBlockHeight: refreshedCandidate.targetBlockHeight,
-            referencedBlockHashDisplay: refreshedCandidate.referencedBlockHashDisplay,
-            domainId: refreshedCandidate.domainId,
-            domainName: refreshedCandidate.domainName,
-            score: refreshedCandidate.canonicalBlend.toString(),
-            reason: "missing-inputs",
-          },
-        ));
-        return {
-          state: revertedState,
-          txid: null,
-          decision: "publish-retry-pending",
-          note,
-          retryable: true,
-          candidate: refreshedCandidate,
-        };
-      }
-
-      if (isInsufficientFundsError(error)) {
-        const note = createInsufficientFundsMiningPublishWaitingNote();
-        const lastError = createInsufficientFundsMiningPublishErrorMessage();
-        await appendEventFn(options.paths, createEvent(
-          "publish-paused-insufficient-funds",
-          "Paused mining publish because Bitcoin Core could not fund the next mining transaction with safe BTC.",
-          {
-            level: "warn",
-            runId: options.runId,
-            targetBlockHeight: refreshedCandidate.targetBlockHeight,
-            referencedBlockHashDisplay: refreshedCandidate.referencedBlockHashDisplay,
-            domainId: refreshedCandidate.domainId,
-            domainName: refreshedCandidate.domainName,
-            score: refreshedCandidate.canonicalBlend.toString(),
-            reason: "insufficient-funds",
-          },
-        ));
-        return {
-          state: readyReadContext.localState.state,
-          txid: null,
-          decision: "publish-paused-insufficient-funds",
-          note,
-          lastError,
-          skipped: true,
-          candidate: null,
-        };
-      }
-
-      throw error;
-    }
-  } finally {
-    await lockedReadContext.close();
-  }
 }
 
 export async function publishCandidateForTesting(options: {
@@ -4086,7 +2341,10 @@ export async function publishCandidateForTesting(options: {
   publishAttempt?: typeof publishCandidateOnce;
   appendEventFn?: typeof appendEvent;
 }): Promise<MiningPublishOutcome> {
-  return await publishCandidate(options);
+  return await publishCandidate({
+    ...options,
+    appendEventFn: options.appendEventFn ?? appendEvent,
+  });
 }
 
 export async function ensureBuiltInMiningSetupIfNeeded(options: {
@@ -4354,42 +2612,7 @@ async function performMiningCycle(options: {
       effectiveReadContext.nodeStatus?.serviceStatus ?? { pid: service.pid },
     );
 
-    if (corePublishState !== "healthy") {
-      clearMiningProviderWait(options.loopState);
-      await saveCycleStatus(effectiveReadContext, {
-        runMode: options.runMode,
-        currentPhase: "waiting-bitcoin-network",
-        corePublishState,
-        note: "Mining is waiting for the local Bitcoin node to become publishable.",
-      });
-      return;
-    }
-
-    if (effectiveReadContext.indexer.health !== "synced" || effectiveReadContext.nodeHealth !== "synced") {
-      clearMiningProviderWait(options.loopState);
-      await saveCycleStatus(effectiveReadContext, {
-        runMode: options.runMode,
-        currentPhase: effectiveReadContext.indexer.health !== "synced"
-          ? "waiting-indexer"
-          : "waiting-bitcoin-network",
-        note: effectiveReadContext.indexer.health !== "synced"
-          ? "Mining is waiting for Bitcoin Core and the indexer to align."
-          : "Mining is waiting for the local Bitcoin node to become publishable.",
-      });
-      return;
-    }
-
-    if (targetBlockHeight === null) {
-      clearMiningProviderWait(options.loopState);
-      await saveCycleStatus(effectiveReadContext, {
-        runMode: options.runMode,
-        currentPhase: "waiting-bitcoin-network",
-        note: "Mining is waiting for the local Bitcoin node to become publishable.",
-      });
-      return;
-    }
-
-    if (getBlockRewardCogtoshi(targetBlockHeight) === 0n) {
+    if (targetBlockHeight !== null && getBlockRewardCogtoshi(targetBlockHeight) === 0n) {
       clearMiningProviderWait(options.loopState);
       const nextState = defaultMiningStatePatch(effectiveReadContext.localState.state, {
         state: "paused",
@@ -4425,581 +2648,35 @@ async function performMiningCycle(options: {
       return;
     }
 
-    let eligibleDomains: ReturnType<typeof resolveEligibleAnchoredRoots> | null = null;
-    if (getSelectedCandidateForTip(options.loopState, tipKey) === null) {
-      eligibleDomains = resolveEligibleAnchoredRoots(effectiveReadContext);
-      if (eligibleDomains.length === 0) {
-        clearMiningProviderWait(options.loopState);
-        await saveCycleStatus(effectiveReadContext, {
-          runMode: options.runMode,
-          currentPhase: "idle",
-          currentPublishDecision: null,
-          lastError: null,
-          note: "No locally controlled anchored root domains are currently eligible to mine.",
-        });
-        return;
-      }
-
-      try {
-        await probeMiningFundingAvailability({
-          rpc,
-          walletName: effectiveReadContext.localState.state.managedCoreWallet.walletName,
-          state: effectiveReadContext.localState.state,
-          domains: eligibleDomains,
-          referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? "00".repeat(32),
-          targetBlockHeight,
-        });
-      } catch (error) {
-        if (isInsufficientFundsError(error)) {
-          clearMiningProviderWait(options.loopState);
-          clearSelectedCandidate(options.loopState);
-          options.loopState.waitingNote = createInsufficientFundsMiningPublishWaitingNote();
-          await saveCycleStatus(effectiveReadContext, {
-            runMode: options.runMode,
-            currentPhase: "waiting",
-            currentPublishDecision: "publish-paused-insufficient-funds",
-            lastError: createInsufficientFundsMiningPublishErrorMessage(),
-            note: createInsufficientFundsMiningPublishWaitingNote(),
-          });
-          return;
-        }
-
-        throw error;
-      }
-    }
-
-    if (
-      options.loopState.providerWaitState !== null
-      && options.loopState.providerWaitLastError !== null
-    ) {
-      if (
-        options.loopState.providerWaitNextRetryAtUnixMs !== null
-        && now() < options.loopState.providerWaitNextRetryAtUnixMs
-      ) {
-        await saveCycleStatus(effectiveReadContext, {
-          runMode: options.runMode,
-          currentPhase: "waiting-provider",
-          currentPublishDecision: null,
-          providerState: options.loopState.providerWaitState,
-          lastError: options.loopState.providerWaitLastError,
-          note: "Mining is waiting for the sentence provider to recover.",
-        });
-        return;
-      }
-
-      if (
-        options.loopState.providerWaitNextRetryAtUnixMs === null
-        && tipKey !== null
-        && options.loopState.attemptedTipKey === tipKey
-      ) {
-        await saveCycleStatus(effectiveReadContext, {
-          runMode: options.runMode,
-          currentPhase: "waiting-provider",
-          currentPublishDecision: null,
-          providerState: options.loopState.providerWaitState,
-          lastError: options.loopState.providerWaitLastError,
-          note: "Mining is waiting for the sentence provider to recover.",
-        });
-        return;
-      }
-
-      clearMiningProviderWait(
-        options.loopState,
-        options.loopState.providerWaitNextRetryAtUnixMs === null,
-      );
-    }
-
-    if (tipKey !== null && options.loopState.attemptedTipKey === tipKey) {
-      await saveCycleStatus(effectiveReadContext, {
-        runMode: options.runMode,
-        currentPhase: "waiting",
-        lastError: null,
-        note: options.loopState.waitingNote ?? "Waiting for the next block after the last mining attempt on this tip.",
-      });
-      return;
-    }
-
-    const indexerTruthKey = getIndexerTruthKey(
-      effectiveReadContext as WalletReadContext & {
-        localState: { availability: "ready"; state: WalletStateV1 };
-        snapshot: NonNullable<WalletReadContext["snapshot"]>;
-      },
-    );
-    const walletRootId = effectiveReadContext.localState.walletRootId;
-    const ensureCurrentIndexerTruthOrRestart = async (): Promise<boolean> => {
-      try {
-        await ensureIndexerTruthIsCurrent({
-          dataDir: effectiveReadContext.dataDir,
-          truthKey: indexerTruthKey,
-        });
-        return true;
-      } catch (error) {
-        if (!(error instanceof Error) || error.message !== "mining_generation_stale_indexer_truth") {
-          throw error;
-        }
-
-        clearMiningGateCache(walletRootId);
-        await appendEvent(options.paths, createEvent(
-          "generation-restarted-indexer-truth",
-          "Detected updated coherent indexer truth during mining; restarting on the next tick.",
-          {
-            level: "warn",
-            targetBlockHeight,
-            referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-            runId: options.backgroundWorkerRunId,
-          },
-        ));
-        return false;
-      }
-    };
-
-    let selectedCandidate = getSelectedCandidateForTip(options.loopState, tipKey);
-    let gateSnapshot: Pick<
-      CompetitivenessDecision,
-      "higherRankedCompetitorDomainCount"
-      | "dedupedCompetitorDomainCount"
-      | "mempoolSequenceCacheStatus"
-      | "lastMempoolSequence"
-    > = {
-        higherRankedCompetitorDomainCount: 0,
-        dedupedCompetitorDomainCount: 0,
-        mempoolSequenceCacheStatus: null,
-        lastMempoolSequence: null,
-      };
-
-    if (selectedCandidate === null) {
-      const domains = eligibleDomains ?? resolveEligibleAnchoredRoots(effectiveReadContext);
-
-      await saveCycleStatus(effectiveReadContext, {
-        runMode: options.runMode,
-        currentPhase: "generating",
-        currentPublishDecision: null,
-        lastError: null,
-        note: "Generating mining sentences for eligible root domains.",
-      });
-
-      await appendEvent(options.paths, createEvent(
-        "sentence-generation-start",
-        "Started mining sentence generation.",
-        {
-          targetBlockHeight,
-          referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-          runId: options.backgroundWorkerRunId,
-        },
-      ));
-      let candidates: MiningCandidate[];
-
-      try {
-        candidates = await generateCandidatesForDomainsImpl({
-          rpc,
-          readContext: effectiveReadContext as WalletReadContext & {
-            localState: { availability: "ready"; state: WalletStateV1 };
-            snapshot: NonNullable<WalletReadContext["snapshot"]>;
-            model: NonNullable<WalletReadContext["model"]>;
-          },
-          domains,
-          provider: options.provider,
-          paths: options.paths,
-          indexerTruthKey,
-          runId: options.backgroundWorkerRunId,
-          fetchImpl: options.fetchImpl,
-        });
-        throwIfMiningSuspendDetected(options.suspendDetector);
-      } catch (error) {
-        if (error instanceof MiningProviderRequestError) {
-          if (isTransientMiningProviderError(error)) {
-            recordTransientMiningProviderWait({
-              loopState: options.loopState,
-              error,
-              nowUnixMs: now(),
-            });
-          } else {
-            recordTerminalMiningProviderWait({
-              loopState: options.loopState,
-              error,
-            });
-          }
-
-          if (!isTransientMiningProviderError(error) && tipKey !== null) {
-            options.loopState.attemptedTipKey = tipKey;
-          }
-
-          await saveCycleStatus(effectiveReadContext, {
-            runMode: options.runMode,
-            currentPhase: "waiting-provider",
-            currentPublishDecision: null,
-            providerState: options.loopState.providerWaitState ?? error.providerState,
-            lastError: error.message,
-            note: "Mining is waiting for the sentence provider to recover.",
-          });
-          await appendEvent(options.paths, createEvent(
-            "publish-paused-provider",
-            error.message,
-            {
-              level: "warn",
-              targetBlockHeight,
-              referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-              runId: options.backgroundWorkerRunId,
-            },
-          ));
-          return;
-        }
-
-        if (error instanceof Error && error.message === "mining_generation_stale_tip") {
-          await appendEvent(options.paths, createEvent(
-            "generation-restarted-new-tip",
-            "Detected a new best tip during sentence generation; restarting on the next tick.",
-            {
-              level: "warn",
-              targetBlockHeight,
-              referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-              runId: options.backgroundWorkerRunId,
-            },
-          ));
-          return;
-        }
-
-        if (error instanceof Error && error.message === "mining_generation_stale_indexer_truth") {
-          clearMiningProviderWait(options.loopState);
-          clearMiningGateCache(walletRootId);
-          await appendEvent(options.paths, createEvent(
-            "generation-restarted-indexer-truth",
-            "Detected updated coherent indexer truth during mining; restarting on the next tick.",
-            {
-              level: "warn",
-              targetBlockHeight,
-              referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-              runId: options.backgroundWorkerRunId,
-            },
-          ));
-          return;
-        }
-
-        if (error instanceof Error && error.message === "mining_generation_preempted") {
-          clearMiningProviderWait(options.loopState);
-          await appendEvent(options.paths, createEvent(
-            "generation-paused-preempted",
-            "Stopped sentence generation because another wallet command requested mining preemption.",
-            {
-              level: "warn",
-              targetBlockHeight,
-              referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-              runId: options.backgroundWorkerRunId,
-            },
-          ));
-          return;
-        }
-
-        clearMiningProviderWait(options.loopState);
-        const failureMessage = error instanceof Error ? error.message : String(error);
-        if (tipKey !== null) {
-          options.loopState.attemptedTipKey = tipKey;
-          options.loopState.waitingNote = "Mining sentence generation failed for the current tip.";
-        }
-
-        await saveCycleStatus(effectiveReadContext, {
-          runMode: options.runMode,
-          currentPhase: "waiting-provider",
-          currentPublishDecision: null,
-          providerState: "unavailable",
-          lastError: failureMessage,
-          note: "Mining sentence generation failed for the current tip.",
-        });
-        await appendEvent(options.paths, createEvent(
-          "sentence-generation-failed",
-          failureMessage,
-          {
-            level: "error",
-            targetBlockHeight,
-            referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-            runId: options.backgroundWorkerRunId,
-          },
-        ));
-        return;
-      }
-
-      clearMiningProviderWait(options.loopState);
-      await saveCycleStatus(effectiveReadContext, {
-        runMode: options.runMode,
-        currentPhase: "scoring",
-        currentPublishDecision: null,
-        lastError: null,
-        note: "Scoring mining candidates for the current tip.",
-      });
-
-      const best = await chooseBestLocalCandidate(candidates);
-      if (best === null) {
-        if (tipKey !== null) {
-          options.loopState.attemptedTipKey = tipKey;
-          options.loopState.waitingNote = "No publishable mining candidate passed scoring gates for the current tip.";
-        }
-        clearSelectedCandidate(options.loopState);
-        await saveCycleStatus(effectiveReadContext, {
-          runMode: options.runMode,
-          currentPhase: "idle",
-          currentPublishDecision: "publish-skipped-no-candidate",
-          note: "No publishable mining candidate passed scoring gates for the current tip.",
-        });
-        await appendEvent(options.paths, createEvent(
-          "publish-skipped-no-candidate",
-          "No publishable mining candidate passed scoring gates.",
-          {
-            targetBlockHeight,
-            referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
-            runId: options.backgroundWorkerRunId,
-          },
-        ));
-        return;
-      }
-
-      if (!await ensureCurrentIndexerTruthOrRestart()) {
-        return;
-      }
-
-      options.loopState.ui.recentWin = null;
-      cacheSelectedCandidateForTip(
-        options.loopState,
-        tipKey,
-        best,
-        effectiveReadContext.localState.state.miningState,
-      );
-      selectedCandidate = best;
-      await appendEvent(options.paths, createEvent(
-        "candidate-selected",
-        `Selected ${best.domainName} with score ${best.canonicalBlend.toString()}.`,
-        {
-          targetBlockHeight: best.targetBlockHeight,
-          referencedBlockHashDisplay: best.referencedBlockHashDisplay,
-          domainId: best.domainId,
-          domainName: best.domainName,
-          score: best.canonicalBlend.toString(),
-          runId: options.backgroundWorkerRunId,
-        },
-      ));
-
-      const gate = await runCompetitivenessGateImpl({
-        rpc,
-        readContext: effectiveReadContext as WalletReadContext & { snapshot: NonNullable<WalletReadContext["snapshot"]> },
-        candidate: best,
-        currentTxid: effectiveReadContext.localState.state.miningState.currentTxid,
-        assaySentencesImpl: options.assaySentencesImpl,
-        cooperativeYield: options.cooperativeYieldImpl,
-        cooperativeYieldEvery: options.cooperativeYieldEvery,
-      });
-      throwIfMiningSuspendDetected(options.suspendDetector);
-      gateSnapshot = {
-        higherRankedCompetitorDomainCount: gate.higherRankedCompetitorDomainCount,
-        dedupedCompetitorDomainCount: gate.dedupedCompetitorDomainCount,
-        mempoolSequenceCacheStatus: gate.mempoolSequenceCacheStatus,
-        lastMempoolSequence: gate.lastMempoolSequence,
-      };
-
-      if (!gate.allowed) {
-        if (tipKey !== null) {
-          options.loopState.attemptedTipKey = tipKey;
-        }
-        clearSelectedCandidate(options.loopState);
-        setMiningUiCandidate(
-          options.loopState,
-          best,
-          effectiveReadContext.localState.state.miningState,
-        );
-        options.loopState.waitingNote = gate.decision === "suppressed-same-domain-mempool"
-          ? "Best local sentence found, but a same-domain mempool competitor already matches or beats it."
-          : gate.decision === "suppressed-top5-mempool"
-            ? `Best local sentence found, but ${gate.higherRankedCompetitorDomainCount} stronger competitor root domains are already in mempool.`
-            : "Mining skipped this tick because the mempool competitiveness gate could not be verified safely.";
-        await saveCycleStatus(effectiveReadContext, {
-          runMode: options.runMode,
-          currentPhase: "waiting",
-          currentPublishDecision: gate.decision,
-          sameDomainCompetitorSuppressed: gate.sameDomainCompetitorSuppressed,
-          higherRankedCompetitorDomainCount: gate.higherRankedCompetitorDomainCount,
-          dedupedCompetitorDomainCount: gate.dedupedCompetitorDomainCount,
-          competitivenessGateIndeterminate: gate.competitivenessGateIndeterminate,
-          mempoolSequenceCacheStatus: gate.mempoolSequenceCacheStatus,
-          lastMempoolSequence: gate.lastMempoolSequence,
-          lastCompetitivenessGateAtUnixMs: now(),
-          note: options.loopState.waitingNote,
-        });
-        await appendEvent(options.paths, createEvent(
-          gate.decision === "suppressed-same-domain-mempool"
-            ? "publish-skipped-same-domain-mempool"
-            : gate.decision === "suppressed-top5-mempool"
-              ? "publish-skipped-top5-mempool"
-              : "publish-skipped-gate-indeterminate",
-          gate.decision === "suppressed-same-domain-mempool"
-            ? "Skipped publish because a same-domain mempool competitor already outranks the local candidate."
-            : gate.decision === "suppressed-top5-mempool"
-              ? `Skipped publish because ${gate.higherRankedCompetitorDomainCount} stronger competitor root domains are already in mempool.`
-              : "Skipped publish because the competitiveness gate could not be evaluated safely.",
-          {
-            targetBlockHeight: best.targetBlockHeight,
-            referencedBlockHashDisplay: best.referencedBlockHashDisplay,
-            domainId: best.domainId,
-            domainName: best.domainName,
-            score: best.canonicalBlend.toString(),
-            runId: options.backgroundWorkerRunId,
-            reason: gate.decision,
-          },
-        ));
-        return;
-      }
-    } else {
-      options.loopState.ui.recentWin = null;
-      setMiningUiCandidate(
-        options.loopState,
-        selectedCandidate,
-        effectiveReadContext.localState.state.miningState,
-      );
-    }
-
-    if (!await ensureCurrentIndexerTruthOrRestart()) {
-      return;
-    }
-
-    await saveCycleStatus(effectiveReadContext, {
+    await runMiningPhaseMachine({
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      provider: options.provider,
+      paths: options.paths,
       runMode: options.runMode,
-      ...buildPrePublishStatusOverrides({
-        state: effectiveReadContext.localState.state,
-        candidate: selectedCandidate,
-      }),
+      backgroundWorkerRunId: options.backgroundWorkerRunId,
+      readContext: effectiveReadContext as ReadyMiningReadContext,
+      rpc,
+      targetBlockHeight,
+      tipKey,
+      corePublishState,
+      loopState: options.loopState,
+      openReadContext: options.openReadContext,
+      attachService: options.attachService,
+      rpcFactory: options.rpcFactory,
+      fetchImpl: options.fetchImpl,
+      generateCandidatesForDomainsImpl,
+      runCompetitivenessGateImpl,
+      assaySentencesImpl: options.assaySentencesImpl,
+      cooperativeYieldImpl: options.cooperativeYieldImpl,
+      cooperativeYieldEvery: options.cooperativeYieldEvery,
+      nowImpl: now,
+      saveCycleStatus: async (context, overrides) => await saveCycleStatus(context, overrides),
+      appendEvent: async (event) => await appendEvent(options.paths, event),
+      throwIfSuspendDetected: () => {
+        throwIfMiningSuspendDetected(options.suspendDetector);
+      },
     });
-
-    const publishLock = await acquireFileLock(options.paths.walletControlLockPath, {
-      purpose: "wallet-mine",
-      walletRootId: effectiveReadContext.localState.state.walletRootId,
-    });
-
-    try {
-      if (!await ensureCurrentIndexerTruthOrRestart()) {
-        return;
-      }
-
-      throwIfMiningSuspendDetected(options.suspendDetector);
-      const published = await publishCandidate({
-        dataDir: options.dataDir,
-        databasePath: options.databasePath,
-        provider: options.provider,
-        paths: options.paths,
-        fallbackState: effectiveReadContext.localState.state,
-        openReadContext: options.openReadContext,
-        attachService: options.attachService,
-        rpcFactory: options.rpcFactory,
-        candidate: selectedCandidate,
-        runId: options.backgroundWorkerRunId,
-      });
-      if (
-        tipKey !== null
-        && published.retryable !== true
-        && published.decision !== "publish-paused-insufficient-funds"
-      ) {
-        options.loopState.attemptedTipKey = tipKey;
-      }
-      if (published.retryable === true) {
-        cacheSelectedCandidateForTip(
-          options.loopState,
-          tipKey,
-          published.candidate,
-          published.state.miningState,
-        );
-        options.loopState.waitingNote = published.note;
-        await saveCycleStatus({
-          ...effectiveReadContext,
-          localState: {
-            ...effectiveReadContext.localState,
-            state: published.state,
-          },
-        }, {
-          runMode: options.runMode,
-          currentPhase: "waiting",
-          currentPublishDecision: published.decision,
-          sameDomainCompetitorSuppressed: false,
-          higherRankedCompetitorDomainCount: gateSnapshot.higherRankedCompetitorDomainCount,
-          dedupedCompetitorDomainCount: gateSnapshot.dedupedCompetitorDomainCount,
-          competitivenessGateIndeterminate: false,
-          mempoolSequenceCacheStatus: gateSnapshot.mempoolSequenceCacheStatus,
-          lastMempoolSequence: gateSnapshot.lastMempoolSequence,
-          lastCompetitivenessGateAtUnixMs: now(),
-          note: published.note,
-          livePublishInMempool: published.state.miningState.livePublishInMempool,
-        });
-        return;
-      }
-      if (published.skipped === true) {
-        clearSelectedCandidate(options.loopState);
-        setMiningUiCandidate(
-          options.loopState,
-          selectedCandidate,
-          published.state.miningState,
-        );
-        options.loopState.waitingNote = published.note;
-        const lastError = published.decision === "publish-paused-insufficient-funds"
-          ? published.lastError ?? createInsufficientFundsMiningPublishErrorMessage()
-          : undefined;
-        await saveCycleStatus({
-          ...effectiveReadContext,
-          localState: {
-            ...effectiveReadContext.localState,
-            state: published.state,
-          },
-        }, {
-          runMode: options.runMode,
-          currentPhase: "waiting",
-          currentPublishDecision: published.decision,
-          sameDomainCompetitorSuppressed: false,
-          higherRankedCompetitorDomainCount: gateSnapshot.higherRankedCompetitorDomainCount,
-          dedupedCompetitorDomainCount: gateSnapshot.dedupedCompetitorDomainCount,
-          competitivenessGateIndeterminate: false,
-          mempoolSequenceCacheStatus: gateSnapshot.mempoolSequenceCacheStatus,
-          lastMempoolSequence: gateSnapshot.lastMempoolSequence,
-          lastCompetitivenessGateAtUnixMs: now(),
-          lastError,
-          note: published.note,
-          livePublishInMempool: published.state.miningState.livePublishInMempool,
-        });
-        return;
-      }
-      clearSelectedCandidate(options.loopState);
-      if (published.txid !== null) {
-        options.loopState.ui.latestTxid = published.txid;
-      }
-      setMiningUiCandidate(
-        options.loopState,
-        published.candidate,
-        published.state.miningState,
-      );
-      options.loopState.waitingNote = published.decision === "kept-live-publish"
-        ? "Existing live mining publish already covers this block attempt. Waiting for the next block."
-        : published.txid === null
-          ? "Mining candidate was evaluated but the existing live publish stayed in place."
-        : `Mining candidate ${published.decision === "replaced"
-          ? "replaced"
-          : "broadcast"} as ${published.txid}. Waiting for the next block.`;
-
-      await saveCycleStatus({
-        ...effectiveReadContext,
-        localState: {
-          ...effectiveReadContext.localState,
-          state: published.state,
-        },
-      }, {
-        runMode: options.runMode,
-        currentPhase: "waiting",
-        currentPublishDecision: published.decision,
-        sameDomainCompetitorSuppressed: false,
-        higherRankedCompetitorDomainCount: gateSnapshot.higherRankedCompetitorDomainCount,
-        dedupedCompetitorDomainCount: gateSnapshot.dedupedCompetitorDomainCount,
-        competitivenessGateIndeterminate: false,
-        mempoolSequenceCacheStatus: gateSnapshot.mempoolSequenceCacheStatus,
-        lastMempoolSequence: gateSnapshot.lastMempoolSequence,
-        lastCompetitivenessGateAtUnixMs: now(),
-        note: options.loopState.waitingNote,
-        livePublishInMempool: published.state.miningState.livePublishInMempool,
-      });
-    } finally {
-      await publishLock.release();
-    }
   } catch (error) {
     if (error instanceof MiningSuspendDetectedError) {
       discardMiningLoopTransientWork(options.loopState, readContext?.localState.walletRootId ?? undefined);
