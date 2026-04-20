@@ -2,7 +2,6 @@ import { randomBytes } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { access, constants, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { totalmem } from "node:os";
 import { promisify } from "node:util";
 import net from "node:net";
 
@@ -24,44 +23,26 @@ import type {
   ManagedBitcoindNodeHandle,
   ManagedCoreWalletReplicaStatus,
 } from "./types.js";
-import { MANAGED_BITCOIND_SERVICE_API_VERSION as MANAGED_BITCOIND_SERVICE_API_VERSION_VALUE } from "./types.js";
+import {
+  DEFAULT_MANAGED_BITCOIND_FOLLOW_POLL_INTERVAL_MS,
+  MANAGED_BITCOIND_SERVICE_API_VERSION as MANAGED_BITCOIND_SERVICE_API_VERSION_VALUE,
+} from "./types.js";
 
 const execFileAsync = promisify(execFile);
 const LOCAL_HOST = "127.0.0.1";
 const SUPPORTED_BITCOIND_VERSION = "30.2.0";
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15_000;
-const DEFAULT_DBCACHE_MIB = 450;
+const DEFAULT_DBCACHE_MIB = 4096;
 const claimedUninitializedRuntimeKeys = new Set<string>();
 
-const GIB = 1024 ** 3;
-
 export function resolveManagedBitcoindDbcacheMiB(totalRamBytes: number): number {
-  if (!Number.isFinite(totalRamBytes) || totalRamBytes <= 0) {
-    return DEFAULT_DBCACHE_MIB;
-  }
-
-  if (totalRamBytes < 8 * GIB) {
-    return 450;
-  }
-
-  if (totalRamBytes < 16 * GIB) {
-    return 768;
-  }
-
-  if (totalRamBytes < 32 * GIB) {
-    return 1024;
-  }
-
-  return 2048;
+  void totalRamBytes;
+  return DEFAULT_DBCACHE_MIB;
 }
 
 function detectManagedBitcoindDbcacheMiB(): number {
-  try {
-    return resolveManagedBitcoindDbcacheMiB(totalmem());
-  } catch {
-    return DEFAULT_DBCACHE_MIB;
-  }
+  return DEFAULT_DBCACHE_MIB;
 }
 
 interface ManagedWalletReplicaRpc {
@@ -1169,7 +1150,7 @@ export async function attachOrStartManagedBitcoindService(
             endpoint: `tcp://${LOCAL_HOST}:${runtimeConfig.zmqPort}`,
             topic: "hashblock",
             port: runtimeConfig.zmqPort,
-            pollIntervalMs: startOptions.pollIntervalMs ?? 15_000,
+            pollIntervalMs: startOptions.pollIntervalMs ?? DEFAULT_MANAGED_BITCOIND_FOLLOW_POLL_INTERVAL_MS,
           };
           const spawnOptions = startOptions.serviceLifetime === "ephemeral"
             ? {

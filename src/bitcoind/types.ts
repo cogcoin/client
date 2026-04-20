@@ -112,6 +112,7 @@ export interface ManagedBitcoindRuntimeConfig {
   getblockArchiveSha256?: string | null;
 }
 
+export const DEFAULT_MANAGED_BITCOIND_FOLLOW_POLL_INTERVAL_MS = 2_000;
 export const MANAGED_BITCOIND_SERVICE_API_VERSION = "cogcoin/bitcoind-service/v1";
 
 export type ManagedBitcoindServiceState =

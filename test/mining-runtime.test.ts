@@ -1547,6 +1547,141 @@ test("performMiningCycle clears transient recovery errors once Bitcoin RPC recov
   assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
 });
 
+test("performMiningCycle does not downgrade a tolerated 2-block header lead into waiting-bitcoin-network", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-header-lead-tolerated");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting() as any;
+  loopState.providerWaitState = "backoff";
+  loopState.providerWaitLastError = "provider temporarily unavailable";
+  loopState.providerWaitNextRetryAtUnixMs = 31_000;
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => createRecoveryReadContext({
+      nodeHealth: "synced",
+      nodeMessage: "Bitcoin headers can briefly lead validated blocks; a short 1-2 block lead is normal and is being tolerated.",
+      nodeStatus: {
+        chain: "mainnet",
+        nodeBestHeight: 100,
+        nodeBestHashHex: "11".repeat(32),
+        nodeHeaderHeight: 102,
+        walletReplica: {
+          proofStatus: "ready",
+        },
+        serviceStatus: {
+          serviceInstanceId: "svc-1",
+          processId: 9_001,
+        },
+      },
+    }),
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    probeService: async () => ({
+      compatibility: "compatible",
+      status: {
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      },
+      error: null,
+    }) as any,
+    stopService: async () => ({
+      status: "not-running",
+      walletRootId: "wallet-root",
+    }) as any,
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+    nowImpl: () => 1_000,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-provider");
+  assert.equal(snapshot?.providerState, "backoff");
+  assert.equal(snapshot?.note, "Mining is waiting for the sentence provider to recover.");
+});
+
+test("performMiningCycle still blocks mining on a 3-block header lead", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-header-lead-catching-up");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting() as any;
+  loopState.providerWaitState = "backoff";
+  loopState.providerWaitLastError = "provider temporarily unavailable";
+  loopState.providerWaitNextRetryAtUnixMs = 31_000;
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => createRecoveryReadContext({
+      nodeHealth: "catching-up",
+      nodeMessage: "Bitcoin Core is still catching up to headers.",
+      nodeStatus: {
+        chain: "mainnet",
+        nodeBestHeight: 100,
+        nodeBestHashHex: "11".repeat(32),
+        nodeHeaderHeight: 103,
+        walletReplica: {
+          proofStatus: "ready",
+        },
+        serviceStatus: {
+          serviceInstanceId: "svc-1",
+          processId: 9_001,
+        },
+      },
+    }),
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    probeService: async () => ({
+      compatibility: "compatible",
+      status: {
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      },
+      error: null,
+    }) as any,
+    stopService: async () => ({
+      status: "not-running",
+      walletRootId: "wallet-root",
+    }) as any,
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+    nowImpl: () => 1_000,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-bitcoin-network");
+  assert.equal(snapshot?.note, "Mining is waiting for the local Bitcoin node to become publishable.");
+});
+
 test("performMiningCycle backs off transient provider failures and retries without marking the tip attempted", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-provider-backoff");
   const paths = resolveWalletRuntimePathsForTesting({

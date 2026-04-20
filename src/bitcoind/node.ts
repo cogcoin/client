@@ -7,6 +7,7 @@ import net from "node:net";
 import { getBitcoindPath } from "@cogcoin/bitcoin";
 
 import { resolveDefaultBitcoindDataDirForTesting } from "../app-paths.js";
+import { DEFAULT_MANAGED_BITCOIND_FOLLOW_POLL_INTERVAL_MS } from "./types.js";
 import { BitcoinRpcClient } from "./rpc.js";
 import type {
   BitcoindRpcConfig,
@@ -219,7 +220,7 @@ export async function launchManagedBitcoindNode(
     endpoint: zmqEndpoint,
     topic: "hashblock",
     port: zmqPort,
-    pollIntervalMs: options.pollIntervalMs ?? 15_000,
+    pollIntervalMs: options.pollIntervalMs ?? DEFAULT_MANAGED_BITCOIND_FOLLOW_POLL_INTERVAL_MS,
   };
   const child = spawn(bitcoindPath, buildBitcoindArgsForTesting(resolvedOptions, rpcPort, zmqPort, p2pPort), {
     stdio: ["ignore", "pipe", "pipe"],

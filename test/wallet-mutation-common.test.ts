@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  assertWalletBitcoinTransferContextReady,
+  assertWalletMutationContextReady,
   buildWalletMutationTransaction,
   createFundingMutationSender,
   getDecodedInputScriptPubKeyHex,
@@ -9,7 +11,7 @@ import {
   resolvePendingMutationReuseDecision,
   resolveWalletMutationFeeSelection,
 } from "../src/wallet/tx/common.js";
-import { createWalletState } from "./current-model-helpers.js";
+import { createWalletReadContext, createWalletState } from "./current-model-helpers.js";
 
 test("funding mutation sender always resolves to the wallet address", () => {
   const state = createWalletState();
@@ -201,6 +203,109 @@ test("wallet mutation builder forwards availableFundingMinConf to PSBT funding a
 
   assert.equal(built.txid, "bb".repeat(32));
   assert.equal(built.wtxid, "cc".repeat(32));
+});
+
+test("wallet mutation readiness tolerates a 1-2 block header lead when nodeHealth stays synced", () => {
+  const context = createWalletReadContext({
+    localState: {
+      availability: "ready",
+      clientPasswordReadiness: "ready",
+      unlockRequired: false,
+      walletRootId: "wallet-root",
+      state: createWalletState(),
+      source: "primary",
+      hasPrimaryStateFile: true,
+      hasBackupStateFile: false,
+      message: null,
+    },
+    bitcoind: {
+      health: "ready",
+      message: null,
+      status: null,
+    },
+    nodeHealth: "synced",
+    nodeMessage: "Bitcoin headers can briefly lead validated blocks; a short 1-2 block lead is normal and is being tolerated.",
+    nodeStatus: {
+      chain: "mainnet",
+      nodeBestHeight: 100,
+      nodeBestHashHex: "11".repeat(32),
+      nodeHeaderHeight: 102,
+      walletReplica: {
+        proofStatus: "ready",
+      },
+    },
+    snapshot: {
+      state: {
+        consensus: {
+          domainIdsByName: new Map(),
+          domainsById: new Map(),
+          balances: new Map(),
+        },
+        history: {
+          foundingMessageByDomain: new Map(),
+          blockWinnersByHeight: new Map(),
+        },
+      },
+      tip: {
+        height: 100,
+        blockHashHex: "11".repeat(32),
+        previousHashHex: "22".repeat(32),
+        stateHashHex: "33".repeat(32),
+      },
+    },
+    model: {
+      walletRootId: "wallet-root",
+      walletAddress: "bc1qfunding",
+      walletScriptPubKeyHex: "0014" + "11".repeat(20),
+      domains: [],
+    },
+  });
+
+  assert.doesNotThrow(() => {
+    assertWalletMutationContextReady(context as any, "wallet_register");
+    assertWalletBitcoinTransferContextReady(context as any, "wallet_bitcoin_transfer");
+  });
+});
+
+test("wallet mutation readiness still rejects a 3-block header lead", () => {
+  const context = createWalletReadContext({
+    localState: {
+      availability: "ready",
+      clientPasswordReadiness: "ready",
+      unlockRequired: false,
+      walletRootId: "wallet-root",
+      state: createWalletState(),
+      source: "primary",
+      hasPrimaryStateFile: true,
+      hasBackupStateFile: false,
+      message: null,
+    },
+    bitcoind: {
+      health: "ready",
+      message: null,
+      status: null,
+    },
+    nodeHealth: "catching-up",
+    nodeMessage: "Bitcoin Core is still catching up to headers.",
+    nodeStatus: {
+      chain: "mainnet",
+      nodeBestHeight: 100,
+      nodeBestHashHex: "11".repeat(32),
+      nodeHeaderHeight: 103,
+      walletReplica: {
+        proofStatus: "ready",
+      },
+    },
+  });
+
+  assert.throws(
+    () => assertWalletMutationContextReady(context as any, "wallet_register"),
+    /wallet_register_node_catching_up/,
+  );
+  assert.throws(
+    () => assertWalletBitcoinTransferContextReady(context as any, "wallet_bitcoin_transfer"),
+    /wallet_bitcoin_transfer_node_catching_up/,
+  );
 });
 
 test("pending mutation reuse switches to replacement when the new fee rate is higher", async () => {

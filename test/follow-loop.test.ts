@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { closeFollowLoopResources, startFollowingTipLoop } from "../src/bitcoind/client/follow-loop.js";
+import { DEFAULT_MANAGED_BITCOIND_FOLLOW_POLL_INTERVAL_MS } from "../src/bitcoind/types.js";
 import type {
   FollowLoopSubscriber,
   StartFollowingTipLoopDependencies,
@@ -62,7 +63,7 @@ function createDependencies(
       zmq: {
         endpoint: "tcp://127.0.0.1:28332",
         topic: "hashblock",
-        pollIntervalMs: 50,
+        pollIntervalMs: DEFAULT_MANAGED_BITCOIND_FOLLOW_POLL_INTERVAL_MS,
       },
     } as StartFollowingTipLoopDependencies["node"],
     async syncToTip() {
@@ -78,6 +79,10 @@ function createDependencies(
     ...overrides,
   };
 }
+
+test("managed follow polling defaults to the shared 2-second backstop", () => {
+  assert.equal(DEFAULT_MANAGED_BITCOIND_FOLLOW_POLL_INTERVAL_MS, 2_000);
+});
 
 test("startFollowingTipLoop loads zeromq lazily before wiring follow mode", async () => {
   const createdSubscriber = { current: null as FakeSubscriber | null };
@@ -157,4 +162,36 @@ test("startFollowingTipLoop adds context when zeromq initialization fails", asyn
   );
 
   assert.equal(syncCalls, 0);
+});
+
+test("startFollowingTipLoop schedules syncs from polling when ZMQ stays quiet", async () => {
+  let scheduleCalls = 0;
+
+  const resources = await startFollowingTipLoop(createDependencies({
+    node: {
+      zmq: {
+        endpoint: "tcp://127.0.0.1:28332",
+        topic: "hashblock",
+        pollIntervalMs: 20,
+      },
+    } as StartFollowingTipLoopDependencies["node"],
+    shouldContinue() {
+      return true;
+    },
+    scheduleSync() {
+      scheduleCalls += 1;
+    },
+    async loadZeroMq(): Promise<ZeroMqModuleLike> {
+      return {
+        Subscriber: FakeSubscriber,
+      };
+    },
+  }));
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 55));
+    assert.ok(scheduleCalls >= 1);
+  } finally {
+    await closeFollowLoopResources(resources);
+  }
 });

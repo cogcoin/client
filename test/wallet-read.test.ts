@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { buildAddressJson, buildIdsJson } from "../src/cli/read-json.js";
+import { buildAddressJson, buildIdsJson, buildStatusJson } from "../src/cli/read-json.js";
+import { formatWalletOverviewReport } from "../src/cli/wallet-format.js";
+import { deriveNodeHealthForTesting } from "../src/wallet/read/context.js";
 import { normalizeListPage } from "../src/cli/output.js";
 import { inspectWalletLocalState } from "../src/wallet/read/index.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
@@ -34,6 +36,94 @@ test("ids JSON exposes a single wallet-address entry", () => {
   assert.equal(result.data.addresses?.length, 1);
   assert.equal(result.data.addresses?.[0]?.address, "bc1qfunding");
   assert.deepEqual(result.data.addresses?.[0]?.localDomains, []);
+});
+
+test("deriveNodeHealth tolerates a short header lead without degrading publishability", () => {
+  const readyStatus = {
+    ready: true,
+    chain: "mainnet",
+    pid: 1234,
+    walletRootId: "wallet-root",
+    nodeBestHeight: 100,
+    nodeBestHashHex: "11".repeat(32),
+    nodeHeaderHeight: 100,
+    serviceUpdatedAtUnixMs: 1,
+    serviceStatus: null,
+    walletReplica: {
+      proofStatus: "ready",
+    },
+  } as const;
+
+  assert.deepEqual(
+    deriveNodeHealthForTesting(readyStatus as any, "ready"),
+    {
+      health: "synced",
+      message: null,
+    },
+  );
+  assert.deepEqual(
+    deriveNodeHealthForTesting({
+      ...readyStatus,
+      nodeHeaderHeight: 101,
+    } as any, "ready"),
+    {
+      health: "synced",
+      message: "Bitcoin headers can briefly lead validated blocks; a short 1-2 block lead is normal and is being tolerated.",
+    },
+  );
+  assert.deepEqual(
+    deriveNodeHealthForTesting({
+      ...readyStatus,
+      nodeHeaderHeight: 102,
+    } as any, "ready"),
+    {
+      health: "synced",
+      message: "Bitcoin headers can briefly lead validated blocks; a short 1-2 block lead is normal and is being tolerated.",
+    },
+  );
+  assert.deepEqual(
+    deriveNodeHealthForTesting({
+      ...readyStatus,
+      nodeHeaderHeight: 103,
+    } as any, "ready"),
+    {
+      health: "catching-up",
+      message: "Bitcoin Core is still catching up to headers.",
+    },
+  );
+});
+
+test("status output keeps a tolerated header lead synced while surfacing the explanatory note", () => {
+  const context = createWalletReadContext({
+    nodeHealth: "synced",
+    nodeMessage: "Bitcoin headers can briefly lead validated blocks; a short 1-2 block lead is normal and is being tolerated.",
+    nodeStatus: {
+      chain: "mainnet",
+      nodeBestHeight: 100,
+      nodeBestHashHex: "11".repeat(32),
+      nodeHeaderHeight: 102,
+      walletReplica: {
+        proofStatus: "ready",
+      },
+    },
+  });
+  const json = buildStatusJson(context);
+  const report = formatWalletOverviewReport(context, "1.1.4");
+
+  assert.deepEqual(json.warnings, []);
+  assert.equal(json.data.btc.bestHeight, 100);
+  assert.equal(json.data.btc.headerHeight, 102);
+  assert.match(
+    json.explanations.join("\n"),
+    /Bitcoin headers can briefly lead validated blocks/i,
+  );
+  assert.match(report, /Bitcoin service: Synced/i);
+  assert.match(report, /Bitcoin best height: 100/);
+  assert.match(report, /Bitcoin headers: 102/);
+  assert.match(
+    report,
+    /Bitcoin note: Bitcoin headers can briefly lead validated blocks; a short 1-2 block lead is normal and is being tolerated\./,
+  );
 });
 
 test("wallet read status recommends init when client password setup is still missing", async (t) => {

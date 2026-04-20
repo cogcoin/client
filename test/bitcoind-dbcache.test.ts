@@ -30,10 +30,11 @@ function createRuntimeConfig(dbcacheMiB: number): ManagedBitcoindRuntimeConfig {
 test("resolveManagedBitcoindDbcacheMiB uses the requested RAM tiers", () => {
   const GiB = 1024 ** 3;
 
-  assert.equal(resolveManagedBitcoindDbcacheMiB(8 * GiB - 1), 450);
-  assert.equal(resolveManagedBitcoindDbcacheMiB(8 * GiB), 768);
-  assert.equal(resolveManagedBitcoindDbcacheMiB(16 * GiB), 1024);
-  assert.equal(resolveManagedBitcoindDbcacheMiB(32 * GiB), 2048);
+  assert.equal(resolveManagedBitcoindDbcacheMiB(0), 4096);
+  assert.equal(resolveManagedBitcoindDbcacheMiB(8 * GiB - 1), 4096);
+  assert.equal(resolveManagedBitcoindDbcacheMiB(8 * GiB), 4096);
+  assert.equal(resolveManagedBitcoindDbcacheMiB(16 * GiB), 4096);
+  assert.equal(resolveManagedBitcoindDbcacheMiB(32 * GiB), 4096);
 });
 
 test("writeBitcoinConfForTesting writes dbcache into managed bitcoin.conf", async () => {
@@ -45,10 +46,11 @@ test("writeBitcoinConfForTesting writes dbcache into managed bitcoin.conf", asyn
       dataDir: root,
       chain: "main",
       startHeight: 937_337,
-    }, createRuntimeConfig(1024));
+    }, createRuntimeConfig(4096));
 
     const text = await readFile(filePath, "utf8");
-    assert.match(text, /^dbcache=1024$/m);
+    assert.match(text, /^listen=0$/m);
+    assert.match(text, /^dbcache=4096$/m);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -59,9 +61,10 @@ test("buildManagedServiceArgsForTesting includes dbcache in the managed bitcoind
     dataDir: "/tmp/cogcoin-bitcoind",
     chain: "main",
     startHeight: 937_337,
-  }, createRuntimeConfig(768));
+  }, createRuntimeConfig(4096));
 
-  assert.ok(args.includes("-dbcache=768"));
+  assert.ok(args.includes("-listen=0"));
+  assert.ok(args.includes("-dbcache=4096"));
 });
 
 test("buildManagedServiceArgsForTesting includes loadblock when a getblock archive is ready", () => {
@@ -73,7 +76,7 @@ test("buildManagedServiceArgsForTesting includes loadblock when a getblock archi
     getblockArchiveEndHeight: 945_188,
     getblockArchiveSha256: "ab".repeat(32),
   }, {
-    ...createRuntimeConfig(768),
+    ...createRuntimeConfig(4096),
     getblockArchiveEndHeight: 945_188,
     getblockArchiveSha256: "ab".repeat(32),
   });

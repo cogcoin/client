@@ -66,6 +66,10 @@ import type { WalletRuntimePaths } from "../runtime.js";
 
 const DEFAULT_SERVICE_START_TIMEOUT_MS = 10_000;
 const STALE_HEARTBEAT_THRESHOLD_MS = 15_000;
+const TOLERATED_NODE_HEADER_LEAD_BLOCKS = 2;
+const TOLERATED_NODE_HEADER_LEAD_MESSAGE =
+  "Bitcoin headers can briefly lead validated blocks; a short 1-2 block lead is normal and is being tolerated.";
+const NODE_CATCHING_UP_MESSAGE = "Bitcoin Core is still catching up to headers.";
 
 function btcAmountToSats(value: number): bigint {
   return BigInt(Math.round(value * 100_000_000));
@@ -453,15 +457,26 @@ function deriveNodeHealth(status: WalletNodeStatus | null, bitcoindHealth: Walle
 } {
   if (bitcoindHealth !== "ready" || status === null || !status.ready) {
     return {
-      health: "unavailable",
-      message: "Bitcoin service is unavailable.",
+      health: "catching-up",
+      message: NODE_CATCHING_UP_MESSAGE,
     };
   }
 
-  if (status.nodeBestHeight !== null && status.nodeHeaderHeight !== null && status.nodeBestHeight < status.nodeHeaderHeight) {
+  const headerLead = status.nodeBestHeight !== null && status.nodeHeaderHeight !== null
+    ? status.nodeHeaderHeight - status.nodeBestHeight
+    : null;
+
+  if (headerLead !== null && headerLead > 0) {
+    if (headerLead <= TOLERATED_NODE_HEADER_LEAD_BLOCKS) {
+      return {
+        health: "synced",
+        message: TOLERATED_NODE_HEADER_LEAD_MESSAGE,
+      };
+    }
+
     return {
       health: "catching-up",
-      message: "Bitcoin Core is still catching up to headers.",
+      message: NODE_CATCHING_UP_MESSAGE,
     };
   }
 
@@ -469,6 +484,16 @@ function deriveNodeHealth(status: WalletNodeStatus | null, bitcoindHealth: Walle
     health: "synced",
     message: null,
   };
+}
+
+export function deriveNodeHealthForTesting(
+  status: WalletNodeStatus | null,
+  bitcoindHealth: WalletBitcoindStatus["health"],
+): {
+  health: WalletServiceHealth;
+  message: string | null;
+} {
+  return deriveNodeHealth(status, bitcoindHealth);
 }
 
 function deriveIndexerHealth(options: {
