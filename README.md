@@ -131,7 +131,7 @@ Managed node subpath:
 The installed `cogcoin` command covers the first-party local wallet and node workflow:
 
 - update commands such as `update` to compare the current CLI version with the latest npm release and install it
-- wallet lifecycle commands such as `init`, `restore`, `wallet delete`, `wallet show-mnemonic`, and `repair`
+- wallet lifecycle commands such as `init`, `reset`, `wallet show-mnemonic`, and `repair`
 - sync and service commands such as `status`, `sync`, `follow`, `bitcoin start`, `bitcoin stop`, `bitcoin status`, `indexer start`, `indexer stop`, and `indexer status`
 - domain and field commands such as `register`, `anchor`, `show`, `domains`, `fields`, `buy`, `sell`, and `transfer`
 - COG and reputation commands such as `send`, `cog lock`, `claim`, `reclaim`, `rep give`, and `rep revoke`
@@ -144,8 +144,8 @@ Set `COGCOIN_DISABLE_UPDATE_CHECK=1` to disable the CLI update notice entirely.
 Ordinary `sync`, `follow`, and wallet-aware read/status flows detach from the managed Bitcoin and indexer services on exit instead of stopping them.
 Use the explicit `bitcoin ...` and `indexer ...` commands when you want direct service inspection or start/stop control.
 For provider-backed local wallets, normal reads, mutations, and mining setup flows load local wallet state on demand whenever the local secret provider is available.
-`cogcoin restore` and `cogcoin wallet restore` rebuild a fresh local wallet from a 24-word English BIP39 mnemonic and recreate the managed Core wallet replica.
-Run `cogcoin sync` afterward to bootstrap the managed Bitcoin/indexer state.
+When no wallet exists yet, `cogcoin init` interactively lets you either create a new wallet or restore an existing one from a 24-word English BIP39 mnemonic, then continues into sync.
+To replace an existing wallet with a different mnemonic, run `cogcoin reset`, choose `clear wallet entropy`, and then rerun `cogcoin init`.
 
 ## SQLite Store
 

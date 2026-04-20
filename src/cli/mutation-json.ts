@@ -11,10 +11,8 @@ import type {
 } from "../wallet/tx/index.js";
 import type {
   WalletInitializationResult,
-  WalletDeleteResult,
   WalletRepairResult,
   WalletResetResult,
-  WalletRestoreResult,
 } from "../wallet/lifecycle.js";
 import {
   buildCogResolvedJson,
@@ -250,22 +248,6 @@ export function buildResetMutationData(result: WalletResetResult) {
   });
 }
 
-export function buildWalletDeleteMutationData(result: WalletDeleteResult) {
-  return buildOperationData({
-    kind: "wallet-delete",
-    state: {
-      seedName: result.seedName,
-      walletRootId: result.walletRootId,
-      deleted: result.deleted,
-    },
-    operation: {
-      seedName: result.seedName,
-      walletRootId: result.walletRootId,
-      deleted: result.deleted,
-    },
-  });
-}
-
 export function buildDomainAdminMutationData(
   result: DomainAdminMutationResult,
   options: {
@@ -345,7 +327,7 @@ export function buildReputationMutationData(result: ReputationMutationResult) {
 
 export function buildInitMutationData(result: WalletInitializationResult) {
   const after = {
-    seedName: "main",
+    setupMode: result.setupMode,
     passwordAction: result.passwordAction,
     walletAction: result.walletAction,
     walletRootId: result.walletRootId,
@@ -356,20 +338,6 @@ export function buildInitMutationData(result: WalletInitializationResult) {
     kind: "init",
     state: after,
     before: null,
-    after,
-  });
-}
-
-export function buildRestoreMutationData(result: WalletRestoreResult) {
-  const after = {
-    seedName: result.seedName ?? null,
-    walletRootId: result.walletRootId,
-    fundingAddress: result.fundingAddress,
-  };
-
-  return buildStateChangeData({
-    kind: "restore",
-    state: after,
     after,
   });
 }

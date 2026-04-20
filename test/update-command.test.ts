@@ -70,10 +70,9 @@ function createVersionFetch(
 }
 
 function createTestRuntimePaths(homeDirectory: string) {
-  return (seedName: string | null = null) => resolveWalletRuntimePathsForTesting({
+  return () => resolveWalletRuntimePathsForTesting({
     platform: "linux",
     homeDirectory,
-    seedName,
     env: {
       ...process.env,
       XDG_DATA_HOME: join(homeDirectory, "data-home"),
@@ -379,7 +378,7 @@ test("passive update notifications still run for ordinary commands", async (t) =
     fetchImpl: createVersionFetch(NEXT_VERSION, fetchCalls),
     readPackageVersion: async () => CURRENT_VERSION,
     resolveUpdateCheckStatePath: () => join(homeDirectory, "update-check.json"),
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureDirectory: async () => undefined,

@@ -33,10 +33,9 @@ const QUIET_SIGNAL_SOURCE = {
 };
 
 function createTestRuntimePaths(homeDirectory: string) {
-  return (seedName: string | null = null) => resolveWalletRuntimePathsForTesting({
+  return () => resolveWalletRuntimePathsForTesting({
     platform: "linux",
     homeDirectory,
-    seedName,
     env: {
       ...process.env,
       XDG_DATA_HOME: join(homeDirectory, "data-home"),
@@ -71,7 +70,7 @@ test("status text output immediately renders the balance report after the overvi
       },
     }),
     readPackageVersion: async () => version,
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureDirectory: async () => undefined,

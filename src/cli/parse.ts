@@ -23,9 +23,8 @@ Commands:
   indexer start           Start the managed Cogcoin indexer (and bitcoind if needed)
   indexer stop            Stop the managed Cogcoin indexer only
   indexer status          Show managed Cogcoin indexer status without starting it
-  init                    Initialize a new local wallet root
+  init                    Initialize a new wallet or restore an existing wallet
   init --output json      Emit the stable v1 machine-readable init result envelope
-  restore                 Restore an imported named seed from a 24-word mnemonic; run sync afterward
   reset                   Factory-reset local Cogcoin state with interactive retention prompts
   repair                  Recover bounded wallet/indexer/runtime state
   wallet address          Alias for address
@@ -62,9 +61,7 @@ Commands:
   cog lock <amount> --to-domain <domain> (--for <blocks-or-duration> | --until-height <height>) --condition <sha256hex>
                          Lock COG to an anchored recipient domain
   wallet status           Show detailed wallet-local status and service health
-  wallet init             Initialize a new local wallet root
-  wallet restore          Restore an imported named seed from a 24-word mnemonic; run sync afterward
-  wallet delete           Delete one imported named seed without affecting main
+  wallet init             Alias for init
   wallet show-mnemonic    Reveal the initialized wallet recovery phrase after typed confirmation
   address                 Show the BTC wallet address for this wallet
   ids                     Show the local wallet address
@@ -120,7 +117,6 @@ Options:
   --follow         Follow mining log output
   --output <mode>  Output mode: text, json, or preview-json
   --progress <mode> Progress output mode: auto, tty, or none
-  --seed <name>    Select an imported wallet seed for wallet-aware commands
   --force          Reserved for future use
   --force-race      Allow a visible root registration race
   --yes             Approve eligible plain yes/no mutation confirmations non-interactively
@@ -128,7 +124,7 @@ Options:
   --version         Show package version
 
 Quickstart:
-  1. Run \`cogcoin init\` to create the wallet.
+  1. Run \`cogcoin init\` to create or restore a wallet.
   2. Run \`cogcoin sync\` to bootstrap assumeutxo and the managed Bitcoin/indexer state.
   3. Run \`cogcoin address\`, then fund the wallet with about 0.0015 BTC so you can buy a 6+ character domain to start mining and still keep BTC available for mining transaction fees.
 
@@ -137,7 +133,6 @@ Examples:
   cogcoin bitcoin status
   cogcoin indexer status
   cogcoin init --output json
-  cogcoin restore --seed trading
   cogcoin wallet address
   cogcoin domain list --mineable
   cogcoin register alpha-child
@@ -160,7 +155,6 @@ function supportsYesFlag(command: CommandName | null): boolean {
     case "follow":
     case "bitcoin-transfer":
     case "repair":
-    case "wallet-delete":
     case "register":
     case "domain-register":
     case "transfer":
@@ -194,80 +188,6 @@ function supportsYesFlag(command: CommandName | null): boolean {
     default:
       return false;
   }
-}
-
-function supportsSeedFlag(command: CommandName | null): boolean {
-  switch (command) {
-    case "status":
-    case "bitcoin-transfer":
-    case "anchor":
-    case "domain-anchor":
-    case "register":
-    case "domain-register":
-    case "transfer":
-    case "domain-transfer":
-    case "sell":
-    case "domain-sell":
-    case "unsell":
-    case "domain-unsell":
-    case "buy":
-    case "domain-buy":
-    case "domain-endpoint-set":
-    case "domain-endpoint-clear":
-    case "domain-delegate-set":
-    case "domain-delegate-clear":
-    case "domain-miner-set":
-    case "domain-miner-clear":
-    case "domain-canonical":
-    case "field-list":
-    case "field-show":
-    case "field-create":
-    case "field-set":
-    case "field-clear":
-    case "send":
-    case "claim":
-    case "reclaim":
-    case "cog-send":
-    case "cog-claim":
-    case "cog-reclaim":
-    case "cog-lock":
-    case "rep-give":
-    case "rep-revoke":
-    case "cog-balance":
-    case "cog-locks":
-    case "mine":
-    case "mine-start":
-    case "mine-stop":
-    case "mine-setup":
-    case "mine-prompt":
-    case "mine-prompt-list":
-    case "mine-status":
-    case "mine-log":
-    case "wallet-delete":
-    case "wallet-restore":
-    case "restore":
-    case "wallet-show-mnemonic":
-    case "wallet-status":
-    case "wallet-address":
-    case "wallet-ids":
-    case "address":
-    case "ids":
-    case "balance":
-    case "locks":
-    case "domain-list":
-    case "domains":
-    case "domain-show":
-    case "show":
-    case "fields":
-    case "field":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function requiresSeedFlag(command: CommandName | null): boolean {
-  return command === "restore" || command === "wallet-restore" || command === "wallet-delete";
 }
 
 export function parseCliArgs(argv: string[]): ParsedCliArgs {
@@ -279,7 +199,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   let dbPath: string | null = null;
   let dataDir: string | null = null;
   let progressOutput: ProgressOutput = "auto";
-  let seedName: string | null = null;
   let unlockFor: string | null = null;
   let assumeYes = false;
   let force = false;
@@ -344,18 +263,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     }
 
     if (token === "--seed") {
-      index += 1;
-      seedName = argv[index] ?? null;
-
-      if (seedName === null) {
-        throw new Error("cli_missing_seed_name");
-      }
-
-      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(seedName)) {
-        throw new Error("cli_invalid_seed_name");
-      }
-
-      continue;
+      throw new Error("cli_seed_removed");
     }
 
     if (token === "--data-dir") {
@@ -649,16 +557,12 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
           continue;
         }
 
-        if (subcommand === "restore") {
-          command = "wallet-restore";
-          index += 1;
-          continue;
+        if (subcommand === "delete") {
+          throw new Error("cli_wallet_delete_removed");
         }
 
-        if (subcommand === "delete") {
-          command = "wallet-delete";
-          index += 1;
-          continue;
+        if (subcommand === "restore") {
+          throw new Error("cli_wallet_restore_removed");
         }
 
         if (subcommand === "show-mnemonic") {
@@ -1025,7 +929,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
       if (
         token === "init"
-        || token === "restore"
         || token === "reset"
         || token === "repair"
         || token === "update"
@@ -1056,6 +959,10 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
         continue;
       }
 
+      if (token === "restore") {
+        throw new Error("cli_restore_removed");
+      }
+
       throw new Error(`cli_unknown_command_${token}`);
     }
 
@@ -1072,11 +979,8 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
       || command === "indexer-stop"
       || command === "indexer-status"
       || command === "init"
-      || command === "restore"
       || command === "reset"
       || command === "wallet-init"
-      || command === "wallet-delete"
-      || command === "wallet-restore"
       || command === "wallet-status"
       || command === "repair"
       || command === "sync"
@@ -1183,14 +1087,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
   if (assumeYes && !supportsYesFlag(command)) {
     throw new Error("cli_yes_not_supported_for_command");
-  }
-
-  if (seedName !== null && !supportsSeedFlag(command)) {
-    throw new Error("cli_seed_not_supported_for_command");
-  }
-
-  if (requiresSeedFlag(command) && seedName === null) {
-    throw new Error("cli_missing_seed_name");
   }
 
   if (forceRace && command !== "register" && command !== "domain-register") {
@@ -1375,7 +1271,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     dbPath,
     dataDir,
     progressOutput,
-    seedName,
     unlockFor,
     assumeYes,
     force,

@@ -509,7 +509,7 @@ export function createCliErrorPresentation(
   if (errorCode === "reset_wallet_choice_invalid") {
     return {
       what: "Wallet reset choice is invalid.",
-      why: "This reset path accepts only Enter for the default entropy-retaining reset, \"skip\", or \"delete wallet\".",
+      why: "This reset path accepts only Enter for the default entropy-retaining reset, \"skip\", or \"clear wallet entropy\".",
       next: "Rerun `cogcoin reset` and enter one of the accepted wallet reset choices.",
     };
   }
@@ -518,7 +518,7 @@ export function createCliErrorPresentation(
     return {
       what: "Entropy-retaining wallet reset is unavailable.",
       why: "Cogcoin found wallet state, but it could not safely load and reconstruct it into a fresh wallet while preserving only the mnemonic-derived continuity data.",
-      next: "Rerun `cogcoin reset` and choose \"skip\" to keep the wallet unchanged, or type \"delete wallet\" to erase it fully.",
+      next: "Rerun `cogcoin reset` and choose \"skip\" to keep the wallet unchanged, or type \"clear wallet entropy\" to erase it fully.",
     };
   }
 
@@ -610,43 +610,67 @@ export function createCliErrorPresentation(
     };
   }
 
+  if (errorCode === "cli_restore_removed" || errorCode === "cli_wallet_restore_removed") {
+    return {
+      what: "Standalone restore commands were removed.",
+      why: "Cogcoin now uses `cogcoin init` as the single wallet setup entrypoint for both new and restored wallets.",
+      next: "Run `cogcoin init` and choose \"Restore existing wallet\".",
+    };
+  }
+
+  if (errorCode === "cli_wallet_delete_removed") {
+    return {
+      what: "`wallet delete` was removed.",
+      why: "Cogcoin no longer supports multiple local wallet seeds, so replacing the wallet now flows through reset and init.",
+      next: "Run `cogcoin reset`, choose \"clear wallet entropy\", then rerun `cogcoin init`.",
+    };
+  }
+
+  if (errorCode === "cli_seed_removed") {
+    return {
+      what: "`--seed` was removed.",
+      why: "Cogcoin now supports only a single local wallet instead of multiple named wallet seeds.",
+      next: "Use the current wallet directly, or run `cogcoin reset`, choose \"clear wallet entropy\", then rerun `cogcoin init` to import a different wallet.",
+    };
+  }
+
   if (errorCode === "wallet_restore_requires_main_wallet") {
     return {
-      what: "Main wallet is required before importing another seed.",
-      why: "Named restore only creates imported seeds. Cogcoin requires the primary `main` wallet to exist first so shared local state has a canonical default seed.",
-      next: "Run `cogcoin init`, then rerun `cogcoin restore --seed <name>`.",
+      what: "Legacy multi-seed restore is no longer available.",
+      why: "Cogcoin no longer supports restoring into named imported wallet slots.",
+      next: "Run `cogcoin init` and choose \"Restore existing wallet\".",
     };
   }
 
   if (errorCode === "wallet_seed_name_exists") {
     return {
-      what: "Seed name is already in use.",
-      why: "This machine already has a wallet seed registered with that name.",
-      next: "Choose a different `--seed` name, or delete the imported seed first with `cogcoin wallet delete --seed <name>`.",
+      what: "Legacy multi-seed state is still present.",
+      why: "This machine still has old named-wallet artifacts from the removed multi-seed model.",
+      next: "Run `cogcoin reset`, choose \"clear wallet entropy\", then rerun `cogcoin init`.",
     };
   }
 
   if (errorCode === "wallet_seed_not_found") {
     return {
-      what: "Seed was not found.",
-      why: "No local wallet seed is registered under that name.",
-      next: "Check `--seed <name>` and retry.",
+      what: "Legacy named-wallet state was not found.",
+      why: "Cogcoin no longer supports selecting named local wallet seeds.",
+      next: "Use the single current wallet, or run `cogcoin reset` and `cogcoin init` to replace it.",
     };
   }
 
   if (errorCode === "wallet_seed_index_invalid") {
     return {
-      what: "Wallet seed registry is invalid.",
-      why: "Cogcoin could not parse or trust the local seed registry file, so it cannot safely decide which named wallet seed to use.",
-      next: "Run `cogcoin repair`, then retry the command.",
+      what: "Legacy wallet-seed registry is invalid.",
+      why: "Cogcoin found old multi-seed metadata from a removed feature and could not trust it for cleanup decisions.",
+      next: "Run `cogcoin repair`, or reset the wallet state if you intend to replace the local wallet.",
     };
   }
 
   if (errorCode === "wallet_delete_main_not_supported") {
     return {
-      what: "The main wallet cannot be deleted with `wallet delete`.",
-      why: "This command only removes imported seeds. The canonical `main` wallet is part of the base local client state.",
-      next: "Use `cogcoin reset` if you need to remove the main wallet.",
+      what: "`wallet delete` is no longer available.",
+      why: "Cogcoin no longer supports deleting named imported wallets because the client now has a single local wallet model.",
+      next: "Run `cogcoin reset`, choose \"clear wallet entropy\", then rerun `cogcoin init`.",
     };
   }
 
@@ -686,7 +710,7 @@ export function createCliErrorPresentation(
     return {
       what: "Recovery phrase is invalid.",
       why: "Mnemonic-only restore accepts only a valid 24-word English BIP39 phrase with a matching checksum.",
-      next: "Rerun `cogcoin restore --seed <name>` and enter the 24 recovery words in the original order.",
+      next: "Rerun `cogcoin init`, choose \"Restore existing wallet\", and enter the 24 recovery words in the original order.",
     };
   }
 
@@ -700,25 +724,25 @@ export function createCliErrorPresentation(
 
   if (errorCode === "wallet_seed_name_invalid" || errorCode === "wallet_seed_name_reserved" || errorCode === "cli_invalid_seed_name") {
     return {
-      what: "Seed name is invalid.",
-      why: "Wallet seed names must be lowercase slugs like `trading` or `cold-backup`, and `main` is reserved.",
-      next: "Choose a different seed name and retry.",
+      what: "Named wallet seeds were removed.",
+      why: "Cogcoin no longer accepts named local wallet seeds because the client now uses a single wallet model.",
+      next: "Run `cogcoin init` for setup, or reset the wallet first if you need to replace it.",
     };
   }
 
   if (errorCode === "cli_missing_seed_name") {
     return {
-      what: "A seed name is required.",
-      why: "This command needs `--seed <name>` to identify which imported wallet seed it should restore or delete.",
-      next: "Rerun the command with `--seed <name>`.",
+      what: "Named wallet seeds were removed.",
+      why: "This version of Cogcoin no longer supports `--seed`.",
+      next: "Drop `--seed` and retry, or use reset plus init if you need to replace the wallet.",
     };
   }
 
   if (errorCode === "cli_seed_not_supported_for_command" || errorCode === "wallet_init_seed_not_supported") {
     return {
-      what: "This command does not support `--seed`.",
-      why: "Only wallet-aware commands are seed-selectable. Global lifecycle and shared service commands still operate on the shared local client state.",
-      next: "Drop `--seed` for this command and retry.",
+      what: "Named wallet seeds were removed.",
+      why: "Cogcoin now operates on a single local wallet instead of multiple named wallet seeds.",
+      next: "Drop `--seed` and retry.",
     };
   }
 
@@ -774,7 +798,7 @@ export function createCliErrorPresentation(
     return {
       what: "`wallet import` is no longer available.",
       why: "Portable encrypted wallet archives were removed from the client, so this version no longer imports wallet state from archive files.",
-      next: "Use `cogcoin restore --seed <name>` with the recovery mnemonic instead.",
+      next: "Use `cogcoin init`, choose \"Restore existing wallet\", and enter the recovery mnemonic instead.",
     };
   }
 
@@ -1325,11 +1349,6 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
     case "init":
     case "wallet-init":
       return "cogcoin init";
-    case "restore":
-    case "wallet-restore":
-      return "cogcoin restore";
-    case "wallet-delete":
-      return "cogcoin wallet delete";
     case "wallet-show-mnemonic":
       return "cogcoin wallet show-mnemonic";
     case "client-unlock":
@@ -1519,9 +1538,6 @@ export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string |
     case "init":
     case "wallet-init":
       return "cogcoin/init/v1";
-    case "restore":
-    case "wallet-restore":
-      return "cogcoin/restore/v1";
     case "client-unlock":
       return "cogcoin/client-unlock/v1";
     case "client-lock":
@@ -1530,8 +1546,6 @@ export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string |
       return "cogcoin/client-change-password/v1";
     case "bitcoin-transfer":
       return "cogcoin/bitcoin-transfer/v1";
-    case "wallet-delete":
-      return "cogcoin/wallet-delete/v1";
     case "reset":
       return "cogcoin/reset/v1";
     case "repair":
@@ -1673,7 +1687,6 @@ function createSchemaProbe(command: CommandName | null): ParsedCliArgs {
     dbPath: null,
     dataDir: null,
     progressOutput: "auto",
-    seedName: null,
     unlockFor: null,
     assumeYes: false,
     force: false,

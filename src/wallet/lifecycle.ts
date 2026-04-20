@@ -43,7 +43,6 @@ import {
   validateEnglishMnemonic,
 } from "./material.js";
 import {
-  deriveWalletRuntimePathsForSeed,
   resolveWalletRuntimePathsForTesting,
   type WalletRuntimePaths,
 } from "./runtime.js";
@@ -58,14 +57,6 @@ import {
   loadWalletPendingInitializationStateOrNull,
   saveWalletPendingInitializationState,
 } from "./state/pending-init.js";
-import {
-  addImportedWalletSeedRecord,
-  assertValidImportedWalletSeedName,
-  ensureMainWalletSeedIndexRecord,
-  findWalletSeedRecord,
-  loadWalletSeedIndex,
-  removeWalletSeedRecord,
-} from "./state/seed-index.js";
 import {
   createDefaultWalletSecretProvider,
   ensureClientPasswordConfigured,
@@ -109,26 +100,12 @@ export interface WalletPrompter {
 }
 
 export interface WalletInitializationResult {
+  setupMode: "generated" | "restored" | "existing";
   passwordAction: "created" | "migrated" | "already-configured";
   walletAction: "initialized" | "already-initialized";
   walletRootId: string;
   fundingAddress: string;
   state: WalletStateV1;
-}
-
-export interface WalletRestoreResult {
-  passwordAction: "created" | "migrated" | "already-configured";
-  seedName?: string | null;
-  walletRootId: string;
-  fundingAddress: string;
-  state: WalletStateV1;
-  warnings?: string[];
-}
-
-export interface WalletDeleteResult {
-  seedName: string;
-  walletRootId: string;
-  deleted: boolean;
 }
 
 export interface WalletRepairResult {
@@ -483,6 +460,47 @@ async function promptForRestoreMnemonic(
   return phrase;
 }
 
+async function promptForInitializationMode(
+  prompter: WalletPrompter,
+): Promise<Exclude<WalletInitializationResult["setupMode"], "existing">> {
+  if (prompter.selectOption != null) {
+    return await prompter.selectOption({
+      message: "How should Cogcoin set up this wallet?",
+      options: [
+        {
+          label: "Create new wallet",
+          description: "Generate a fresh 24-word recovery phrase.",
+          value: "generated",
+        },
+        {
+          label: "Restore existing wallet",
+          description: "Enter an existing 24-word recovery phrase.",
+          value: "restored",
+        },
+      ],
+      initialValue: "generated",
+    }) as Exclude<WalletInitializationResult["setupMode"], "existing">;
+  }
+
+  prompter.writeLine("How should Cogcoin set up this wallet?");
+  prompter.writeLine("1. Create new wallet");
+  prompter.writeLine("2. Restore existing wallet");
+
+  while (true) {
+    const answer = (await prompter.prompt("Choice [1-2]: ")).trim();
+
+    if (answer === "1") {
+      return "generated";
+    }
+
+    if (answer === "2") {
+      return "restored";
+    }
+
+    prompter.writeLine("Enter 1 or 2.");
+  }
+}
+
 async function confirmTypedAcknowledgement(
   prompter: WalletPrompter,
   expected: string,
@@ -493,29 +511,6 @@ async function confirmTypedAcknowledgement(
 
   if (answer !== expected) {
     throw new Error(errorCode);
-  }
-}
-
-async function confirmRestoreReplacement(
-  prompter: WalletPrompter,
-): Promise<void> {
-  const answer = (await prompter.prompt(
-    "Type \"RESTORE\" to replace the existing local wallet state and managed Core wallet replica: ",
-  )).trim();
-
-  if (answer !== "RESTORE") {
-    throw new Error("wallet_restore_replace_confirmation_required");
-  }
-}
-
-async function confirmYesNo(
-  prompter: WalletPrompter,
-  message: string,
-): Promise<void> {
-  const answer = (await prompter.prompt(message)).trim().toLowerCase();
-
-  if (answer !== "yes") {
-    throw new Error("wallet_delete_confirmation_required");
   }
 }
 
@@ -876,21 +871,6 @@ function createSilentNonInteractivePrompter(): WalletPrompter {
   };
 }
 
-function resolveMainWalletPaths(paths: WalletRuntimePaths): WalletRuntimePaths {
-  return deriveWalletRuntimePathsForSeed(paths, "main");
-}
-
-async function loadSharedWalletSeedIndex(
-  paths: WalletRuntimePaths,
-  nowUnixMs: number,
-) {
-  const mainPaths = resolveMainWalletPaths(paths);
-  return await loadWalletSeedIndex({
-    paths: mainPaths,
-    nowUnixMs,
-  });
-}
-
 function applyRepairStoppedMiningState(state: WalletStateV1): WalletStateV1 {
   const miningState = normalizeMiningStateRecord(state.miningState);
 
@@ -1182,6 +1162,61 @@ function isWalletSecretAccessError(error: unknown): boolean {
     || message.startsWith("wallet_secret_provider_");
 }
 
+async function persistInitializedWallet(options: {
+  dataDir: string;
+  provider: WalletSecretProvider;
+  material: ReturnType<typeof deriveWalletMaterialFromMnemonic>;
+  nowUnixMs: number;
+  paths: WalletRuntimePaths;
+  attachService?: typeof attachOrStartManagedBitcoindService;
+  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
+}): Promise<{ walletRootId: string; state: WalletStateV1 }> {
+  const walletRootId = createWalletRootId();
+  const internalCoreWalletPassphrase = createInternalCoreWalletPassphrase();
+  const secretReference = createWalletSecretReference(walletRootId);
+  await options.provider.storeSecret(secretReference.keyId, randomBytes(32));
+
+  const initialState = createInitialWalletState({
+    walletRootId,
+    nowUnixMs: options.nowUnixMs,
+    material: options.material,
+    internalCoreWalletPassphrase,
+  });
+  const verifiedState = await withClaimedUninitializedManagedRuntime({
+    dataDir: options.dataDir,
+    walletRootId,
+  }, async () => {
+    await saveWalletState(
+      {
+        primaryPath: options.paths.walletStatePath,
+        backupPath: options.paths.walletStateBackupPath,
+      },
+      initialState,
+      {
+        provider: options.provider,
+        secretReference,
+      },
+    );
+
+    return importDescriptorIntoManagedCoreWallet(
+      initialState,
+      options.provider,
+      options.paths,
+      options.dataDir,
+      options.nowUnixMs,
+      options.attachService,
+      options.rpcFactory,
+    );
+  });
+  await clearLegacyWalletLockArtifacts(options.paths.walletRuntimeRoot);
+  await clearPendingInitialization(options.paths, options.provider);
+
+  return {
+    walletRootId,
+    state: verifiedState,
+  };
+}
+
 function writeMnemonicReveal(
   prompter: WalletPrompter,
   phrase: string,
@@ -1458,10 +1493,6 @@ export async function initializeWallet(options: {
   const nowUnixMs = options.nowUnixMs ?? Date.now();
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
 
-  if (paths.selectedSeedName !== "main") {
-    throw new Error("wallet_init_seed_not_supported");
-  }
-
   const controlLock = await acquireFileLock(paths.walletControlLockPath, {
     purpose: "wallet-init",
     walletRootId: null,
@@ -1483,6 +1514,7 @@ export async function initializeWallet(options: {
       });
 
       return {
+        setupMode: "existing",
         passwordAction,
         walletAction: "already-initialized",
         walletRootId: loaded.state.walletRootId,
@@ -1491,81 +1523,66 @@ export async function initializeWallet(options: {
       };
     }
 
-    const material = await loadOrCreatePendingInitializationMaterial({
-      provider: interactiveProvider,
-      paths,
-      nowUnixMs,
-    });
-    let mnemonicRevealed = false;
-    writeMnemonicReveal(options.prompter, material.mnemonic.phrase, [
-      "Cogcoin Wallet Initialization",
-      "Write down this 24-word recovery phrase.",
-      "The same phrase will be shown again until confirmation succeeds:",
-      "",
-    ]);
-    mnemonicRevealed = true;
-    try {
-      await confirmMnemonic(options.prompter, material.mnemonic.words);
-    } finally {
-      if (mnemonicRevealed) {
-        await Promise.resolve()
-          .then(() => options.prompter.clearSensitiveDisplay?.("mnemonic-reveal"))
-          .catch(() => undefined);
+    const setupMode = await promptForInitializationMode(options.prompter);
+    let material: ReturnType<typeof deriveWalletMaterialFromMnemonic>;
+
+    if (setupMode === "generated") {
+      material = await loadOrCreatePendingInitializationMaterial({
+        provider: interactiveProvider,
+        paths,
+        nowUnixMs,
+      });
+      let mnemonicRevealed = false;
+      writeMnemonicReveal(options.prompter, material.mnemonic.phrase, [
+        "Cogcoin Wallet Initialization",
+        "Write down this 24-word recovery phrase.",
+        "The same phrase will be shown again until confirmation succeeds:",
+        "",
+      ]);
+      mnemonicRevealed = true;
+      try {
+        await confirmMnemonic(options.prompter, material.mnemonic.words);
+      } finally {
+        if (mnemonicRevealed) {
+          await Promise.resolve()
+            .then(() => options.prompter.clearSensitiveDisplay?.("mnemonic-reveal"))
+            .catch(() => undefined);
+        }
       }
+    } else {
+      let promptPhaseStarted = false;
+      let mnemonicPhrase: string;
+
+      try {
+        promptPhaseStarted = true;
+        mnemonicPhrase = await promptForRestoreMnemonic(options.prompter);
+      } finally {
+        if (promptPhaseStarted) {
+          await options.prompter.clearSensitiveDisplay?.("restore-mnemonic-entry");
+        }
+      }
+
+      await clearPendingInitialization(paths, interactiveProvider);
+      material = deriveWalletMaterialFromMnemonic(mnemonicPhrase);
     }
 
-    const walletRootId = createWalletRootId();
-    const internalCoreWalletPassphrase = createInternalCoreWalletPassphrase();
-    const secretReference = createWalletSecretReference(walletRootId);
-    const secret = randomBytes(32);
-    await interactiveProvider.storeSecret(secretReference.keyId, secret);
-
-    const initialState = createInitialWalletState({
-      walletRootId,
-      nowUnixMs,
-      material,
-      internalCoreWalletPassphrase,
-    });
-    const verifiedState = await withClaimedUninitializedManagedRuntime({
+    const initialized = await persistInitializedWallet({
       dataDir: options.dataDir,
-      walletRootId,
-    }, async () => {
-      await saveWalletState(
-        {
-          primaryPath: paths.walletStatePath,
-          backupPath: paths.walletStateBackupPath,
-        },
-        initialState,
-        {
-          provider: interactiveProvider,
-          secretReference,
-        },
-      );
-
-      return importDescriptorIntoManagedCoreWallet(
-        initialState,
-        interactiveProvider,
-        paths,
-        options.dataDir,
-        nowUnixMs,
-        options.attachService,
-        options.rpcFactory,
-      );
-    });
-    await clearLegacyWalletLockArtifacts(paths.walletRuntimeRoot);
-    await clearPendingInitialization(paths, interactiveProvider);
-    await ensureMainWalletSeedIndexRecord({
-      paths: resolveMainWalletPaths(paths),
-      walletRootId,
+      provider: interactiveProvider,
+      material,
       nowUnixMs,
+      paths,
+      attachService: options.attachService,
+      rpcFactory: options.rpcFactory,
     });
 
     return {
+      setupMode,
       passwordAction,
       walletAction: "initialized",
-      walletRootId,
-      fundingAddress: verifiedState.funding.address,
-      state: verifiedState,
+      walletRootId: initialized.walletRootId,
+      fundingAddress: initialized.state.funding.address,
+      state: initialized.state,
     };
   } finally {
     await controlLock.release();
@@ -1637,213 +1654,6 @@ export async function showWalletMnemonic(options: {
           .catch(() => undefined);
       }
     }
-  } finally {
-    await controlLock.release();
-  }
-}
-
-export async function restoreWalletFromMnemonic(options: {
-  dataDir: string;
-  provider?: WalletSecretProvider;
-  prompter: WalletPrompter;
-  nowUnixMs?: number;
-  paths?: WalletRuntimePaths;
-  attachService?: typeof attachOrStartManagedBitcoindService;
-  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
-}): Promise<WalletRestoreResult> {
-  if (!options.prompter.isInteractive) {
-    throw new Error("wallet_restore_requires_tty");
-  }
-
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const interactiveProvider = withInteractiveWalletSecretProvider(provider, options.prompter);
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const seedName = assertValidImportedWalletSeedName(paths.selectedSeedName);
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: "wallet-restore",
-    walletRootId: null,
-  });
-
-  try {
-    const mainPaths = resolveMainWalletPaths(paths);
-    const seedIndex = await loadSharedWalletSeedIndex(paths, nowUnixMs);
-
-    if (findWalletSeedRecord(seedIndex, "main") === null) {
-      throw new Error("wallet_restore_requires_main_wallet");
-    }
-
-    if (findWalletSeedRecord(seedIndex, seedName) !== null) {
-      throw new Error("wallet_seed_name_exists");
-    }
-
-    const passwordAction = await ensureClientPasswordConfigured(provider, options.prompter);
-    await ensureWalletNotInitialized(paths, interactiveProvider);
-    let promptPhaseStarted = false;
-    let mnemonicPhrase: string;
-
-    try {
-      promptPhaseStarted = true;
-      mnemonicPhrase = await promptForRestoreMnemonic(options.prompter);
-    } finally {
-      if (promptPhaseStarted) {
-        await options.prompter.clearSensitiveDisplay?.("restore-mnemonic-entry");
-      }
-    }
-
-    await clearPendingInitialization(paths, interactiveProvider);
-    const material = deriveWalletMaterialFromMnemonic(mnemonicPhrase);
-    const walletRootId = createWalletRootId();
-    const internalCoreWalletPassphrase = createInternalCoreWalletPassphrase();
-    const secretReference = createWalletSecretReference(walletRootId);
-    const secret = randomBytes(32);
-    await interactiveProvider.storeSecret(secretReference.keyId, secret);
-
-    const initialState = createInitialWalletState({
-      walletRootId,
-      nowUnixMs,
-      material,
-      internalCoreWalletPassphrase,
-    });
-
-    await clearLegacyWalletLockArtifacts(paths.walletRuntimeRoot);
-    await saveWalletState(
-      {
-        primaryPath: paths.walletStatePath,
-        backupPath: paths.walletStateBackupPath,
-      },
-      initialState,
-      {
-        provider: interactiveProvider,
-        secretReference,
-      },
-    );
-
-    const restoredState = await recreateManagedCoreWalletReplica(
-      initialState,
-      interactiveProvider,
-      paths,
-      options.dataDir,
-      nowUnixMs,
-      {
-        attachService: options.attachService,
-        rpcFactory: options.rpcFactory,
-      },
-    );
-    await clearLegacyWalletLockArtifacts(paths.walletRuntimeRoot);
-    await clearPendingInitialization(paths, interactiveProvider);
-    await addImportedWalletSeedRecord({
-      paths: mainPaths,
-      seedName,
-      walletRootId,
-      nowUnixMs,
-    });
-
-    return {
-      passwordAction,
-      seedName,
-      walletRootId,
-      fundingAddress: restoredState.funding.address,
-      state: restoredState,
-      warnings: [],
-    };
-  } finally {
-    await controlLock.release();
-  }
-}
-
-export async function deleteImportedWalletSeed(options: {
-  dataDir: string;
-  provider?: WalletSecretProvider;
-  prompter: WalletPrompter;
-  assumeYes?: boolean;
-  nowUnixMs?: number;
-  paths?: WalletRuntimePaths;
-  attachService?: typeof attachOrStartManagedBitcoindService;
-  probeBitcoindService?: typeof probeManagedBitcoindService;
-  rpcFactory?: (config: Parameters<typeof createRpcClient>[0]) => WalletLifecycleRpcClient;
-}): Promise<WalletDeleteResult> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  if ((paths.selectedSeedName ?? "main") === "main") {
-    throw new Error("wallet_delete_main_not_supported");
-  }
-  const seedName = assertValidImportedWalletSeedName(paths.selectedSeedName);
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: "wallet-delete",
-    walletRootId: null,
-  });
-
-  try {
-    const mainPaths = resolveMainWalletPaths(paths);
-    const seedIndex = await loadSharedWalletSeedIndex(paths, nowUnixMs);
-    const seedRecord = findWalletSeedRecord(seedIndex, seedName);
-
-    if (seedRecord === null) {
-      throw new Error("wallet_seed_not_found");
-    }
-
-    if (seedRecord.kind !== "imported") {
-      throw new Error("wallet_delete_main_not_supported");
-    }
-
-    if (!options.assumeYes) {
-      await confirmYesNo(
-        options.prompter,
-        `Delete imported seed "${seedName}" and release its local wallet artifacts? Type yes to continue: `,
-      );
-    }
-
-    const probeManagedBitcoind = options.probeBitcoindService ?? probeManagedBitcoindService;
-    const managedBitcoindProbe = await probeManagedBitcoind({
-      dataDir: options.dataDir,
-      chain: "main",
-      startHeight: 0,
-    }).catch(() => ({
-      compatibility: "unreachable" as const,
-      status: null,
-      error: null,
-    }));
-
-    if (managedBitcoindProbe.compatibility !== "compatible" && managedBitcoindProbe.compatibility !== "unreachable") {
-      throw new Error(managedBitcoindProbe.error ?? "managed_bitcoind_protocol_error");
-    }
-
-    if (managedBitcoindProbe.compatibility === "compatible") {
-      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-        dataDir: options.dataDir,
-        chain: "main",
-        startHeight: 0,
-      });
-      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-      const walletName = sanitizeWalletName(seedRecord.walletRootId);
-
-      if (rpc.unloadWallet != null) {
-        await rpc.unloadWallet(walletName, false).catch(() => undefined);
-      }
-    }
-
-    await clearLegacyWalletLockArtifacts(paths.walletRuntimeRoot).catch(() => undefined);
-    await clearPendingInitialization(paths, provider).catch(() => undefined);
-    await provider.deleteSecret(createWalletSecretReference(seedRecord.walletRootId).keyId).catch(() => undefined);
-    await rm(paths.walletStateRoot, { recursive: true, force: true }).catch(() => undefined);
-    await rm(paths.walletRuntimeRoot, { recursive: true, force: true }).catch(() => undefined);
-    await rm(join(options.dataDir, "wallets", sanitizeWalletName(seedRecord.walletRootId)), {
-      recursive: true,
-      force: true,
-    }).catch(() => undefined);
-    await removeWalletSeedRecord({
-      paths: mainPaths,
-      seedName,
-      nowUnixMs,
-    });
-
-    return {
-      seedName,
-      walletRootId: seedRecord.walletRootId,
-      deleted: true,
-    };
   } finally {
     await controlLock.release();
   }

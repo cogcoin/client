@@ -20,11 +20,9 @@ import type { WalletRuntimePaths } from "../wallet/runtime.js";
 import type {
   WalletPrompter,
   initializeWallet,
-  deleteImportedWalletSeed,
   previewResetWallet,
   repairWallet,
   resetWallet,
-  restoreWalletFromMnemonic,
   showWalletMnemonic,
 } from "../wallet/lifecycle.js";
 import type { openWalletReadContext } from "../wallet/read/index.js";
@@ -71,7 +69,6 @@ export type ProgressOutput = "auto" | "tty" | "none";
 export type OutputMode = "text" | "json" | "preview-json";
 export type CommandName =
   | "init"
-  | "restore"
   | "reset"
   | "repair"
   | "update"
@@ -132,8 +129,6 @@ export type CommandName =
   | "mine-status"
   | "mine-log"
   | "wallet-init"
-  | "wallet-delete"
-  | "wallet-restore"
   | "wallet-show-mnemonic"
   | "wallet-status"
   | "wallet-address"
@@ -172,7 +167,6 @@ export interface ParsedCliArgs {
   dbPath: string | null;
   dataDir: string | null;
   progressOutput: ProgressOutput;
-  seedName: string | null;
   unlockFor: string | null;
   assumeYes: boolean;
   force: boolean;
@@ -263,9 +257,7 @@ export interface CliRunnerContext {
   loadWalletState?: typeof loadWalletState;
   loadRawWalletStateEnvelope?: typeof loadRawWalletStateEnvelope;
   initializeWallet?: typeof initializeWallet;
-  restoreWalletFromMnemonic?: typeof restoreWalletFromMnemonic;
   previewResetWallet?: typeof previewResetWallet;
-  deleteImportedWalletSeed?: typeof deleteImportedWalletSeed;
   showWalletMnemonic?: typeof showWalletMnemonic;
   registerDomain?: typeof registerDomain;
   anchorDomain?: typeof anchorDomain;
@@ -308,7 +300,7 @@ export interface CliRunnerContext {
   resolveDefaultBitcoindDataDir?: () => string;
   resolveDefaultClientDatabasePath?: () => string;
   resolveUpdateCheckStatePath?: () => string;
-  resolveWalletRuntimePaths?: (seedName?: string | null) => WalletRuntimePaths;
+  resolveWalletRuntimePaths?: () => WalletRuntimePaths;
 }
 
 export interface StopSignalWatcher {

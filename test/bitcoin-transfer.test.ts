@@ -31,10 +31,9 @@ function createStringWriter() {
 }
 
 function createTestRuntimePaths(homeDirectory: string) {
-  return (seedName: string | null = null) => resolveWalletRuntimePathsForTesting({
+  return () => resolveWalletRuntimePathsForTesting({
     platform: "linux",
     homeDirectory,
-    seedName,
     env: {
       ...process.env,
       XDG_DATA_HOME: join(homeDirectory, "data-home"),

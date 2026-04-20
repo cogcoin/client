@@ -25,11 +25,9 @@ import { inspectPassiveClientStatus } from "../passive-status.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import {
   initializeWallet,
-  deleteImportedWalletSeed,
   previewResetWallet,
   repairWallet,
   resetWallet,
-  restoreWalletFromMnemonic,
   showWalletMnemonic,
 } from "../wallet/lifecycle.js";
 import { resolveWalletRuntimePathsForTesting } from "../wallet/runtime.js";
@@ -134,9 +132,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     inspectPassiveClientStatus: overrides.inspectPassiveClientStatus ?? inspectPassiveClientStatus,
     openWalletReadContext: overrides.openWalletReadContext ?? openWalletReadContext,
     initializeWallet: overrides.initializeWallet ?? initializeWallet,
-    restoreWalletFromMnemonic: overrides.restoreWalletFromMnemonic ?? restoreWalletFromMnemonic,
     previewResetWallet: overrides.previewResetWallet ?? previewResetWallet,
-    deleteImportedWalletSeed: overrides.deleteImportedWalletSeed ?? deleteImportedWalletSeed,
     showWalletMnemonic: overrides.showWalletMnemonic ?? showWalletMnemonic,
     registerDomain: overrides.registerDomain ?? registerDomain,
     anchorDomain: overrides.anchorDomain ?? anchorDomain,
@@ -194,7 +190,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     resolveDefaultBitcoindDataDir: overrides.resolveDefaultBitcoindDataDir ?? resolveDefaultBitcoindDataDirForTesting,
     resolveDefaultClientDatabasePath: overrides.resolveDefaultClientDatabasePath ?? resolveDefaultClientDatabasePathForTesting,
     resolveUpdateCheckStatePath: overrides.resolveUpdateCheckStatePath ?? resolveDefaultUpdateCheckStatePathForTesting,
-    resolveWalletRuntimePaths: overrides.resolveWalletRuntimePaths ?? ((seedName) =>
-      resolveWalletRuntimePathsForTesting({ seedName })),
+    resolveWalletRuntimePaths: overrides.resolveWalletRuntimePaths ?? (() =>
+      resolveWalletRuntimePathsForTesting()),
   };
 }

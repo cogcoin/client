@@ -132,7 +132,7 @@ export function getRepairRecommendation(context: WalletReadContext): string | nu
   }
 
   if (context.localState.availability === "uninitialized") {
-    return "Run `cogcoin init` to create a new local wallet root.";
+    return "Run `cogcoin init` to create or restore a wallet.";
   }
 
   if (context.localState.availability === "local-state-corrupt") {

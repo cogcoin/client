@@ -3,11 +3,7 @@ import { join } from "node:path";
 import type { CogcoinPathResolution } from "../app-paths.js";
 import { resolveCogcoinPathsForTesting } from "../app-paths.js";
 
-export type WalletSeedKind = "main" | "imported";
-
-export interface WalletRuntimePathResolution extends CogcoinPathResolution {
-  seedName?: string | null;
-}
+export interface WalletRuntimePathResolution extends CogcoinPathResolution {}
 
 export interface WalletRuntimePaths {
   dataRoot: string;
@@ -17,9 +13,6 @@ export interface WalletRuntimePaths {
   walletRuntimeRoot: string;
   stateRoot: string;
   walletStateRoot: string;
-  seedRegistryPath: string;
-  selectedSeedName: string;
-  selectedSeedKind: WalletSeedKind;
   bitcoinDataDir: string;
   indexerRoot: string;
   walletStateDirectory: string;
@@ -38,59 +31,11 @@ export interface WalletRuntimePaths {
   miningControlLockPath: string;
 }
 
-function resolveSeedLayout(
-  sharedStateRoot: string,
-  sharedRuntimeRoot: string,
-  seedName: string,
-): {
-  seedKind: WalletSeedKind;
-  walletStateRoot: string;
-  walletRuntimeRoot: string;
-} {
-  if (seedName === "main") {
-    return {
-      seedKind: "main",
-      walletStateRoot: sharedStateRoot,
-      walletRuntimeRoot: sharedRuntimeRoot,
-    };
-  }
-
-  return {
-    seedKind: "imported",
-    walletStateRoot: join(sharedStateRoot, "seeds", seedName),
-    walletRuntimeRoot: join(sharedRuntimeRoot, "seeds", seedName),
-  };
-}
-
-export function deriveWalletRuntimePathsForSeed(
-  basePaths: WalletRuntimePaths,
-  seedName: string | null | undefined,
-): WalletRuntimePaths {
-  const resolvedSeedName = seedName ?? "main";
-  const seedLayout = resolveSeedLayout(basePaths.stateRoot, basePaths.runtimeRoot, resolvedSeedName);
-
-  return {
-    ...basePaths,
-    walletRuntimeRoot: seedLayout.walletRuntimeRoot,
-    walletStateRoot: seedLayout.walletStateRoot,
-    selectedSeedName: resolvedSeedName,
-    selectedSeedKind: seedLayout.seedKind,
-    walletStateDirectory: seedLayout.walletStateRoot,
-    walletStatePath: join(seedLayout.walletStateRoot, "wallet-state.enc"),
-    walletStateBackupPath: join(seedLayout.walletStateRoot, "wallet-state.enc.bak"),
-    walletInitPendingPath: join(seedLayout.walletStateRoot, "wallet-init-pending.enc"),
-    walletInitPendingBackupPath: join(seedLayout.walletStateRoot, "wallet-init-pending.enc.bak"),
-    miningRoot: join(seedLayout.walletRuntimeRoot, "mining"),
-    miningStatusPath: join(seedLayout.walletRuntimeRoot, "mining", "status.json"),
-    miningEventsPath: join(seedLayout.walletRuntimeRoot, "mining", "events.jsonl"),
-  };
-}
-
 export function resolveWalletRuntimePathsForTesting(
   resolution: WalletRuntimePathResolution = {},
 ): WalletRuntimePaths {
   const paths = resolveCogcoinPathsForTesting(resolution);
-  return deriveWalletRuntimePathsForSeed({
+  return {
     dataRoot: paths.dataRoot,
     clientDataDir: paths.clientDataDir,
     clientConfigPath: paths.clientConfigPath,
@@ -98,9 +43,6 @@ export function resolveWalletRuntimePathsForTesting(
     walletRuntimeRoot: paths.runtimeRoot,
     stateRoot: paths.stateRoot,
     walletStateRoot: paths.stateRoot,
-    seedRegistryPath: join(paths.stateRoot, "seed-index.json"),
-    selectedSeedName: "main",
-    selectedSeedKind: "main",
     bitcoinDataDir: paths.bitcoinDataDir,
     indexerRoot: paths.indexerRoot,
     walletStateDirectory: paths.stateRoot,
@@ -117,5 +59,5 @@ export function resolveWalletRuntimePathsForTesting(
     miningStatusPath: join(paths.runtimeRoot, "mining", "status.json"),
     miningEventsPath: join(paths.runtimeRoot, "mining", "events.jsonl"),
     miningControlLockPath: paths.miningControlLockPath,
-  }, resolution.seedName);
+  };
 }

@@ -31,7 +31,6 @@ import {
   createWalletSecretReference,
   type WalletSecretProvider,
 } from "./state/provider.js";
-import { loadWalletSeedIndex } from "./state/seed-index.js";
 import {
   extractWalletRootIdHintFromWalletStateEnvelope,
   loadRawWalletStateEnvelope,
@@ -100,7 +99,7 @@ export interface WalletResetPreview {
   confirmationPhrase: "permanently reset";
   walletPrompt: null | {
     defaultAction: "retain-mnemonic";
-    acceptedInputs: ["", "skip", "delete wallet"];
+    acceptedInputs: ["", "skip", "clear wallet entropy"];
     entropyRetainingResetAvailable: boolean;
     envelopeSource: "primary" | "backup" | null;
   };
@@ -206,7 +205,7 @@ interface ResetWalletRpcClient {
 }
 
 interface ResetExecutionDecision {
-  walletChoice: "" | "skip" | "delete wallet";
+  walletChoice: "" | "skip" | "clear wallet entropy";
   deleteSnapshot: boolean;
   deleteBitcoinDataDir: boolean;
   loadedWalletForEntropyReset: WalletAccessForReset | null;
@@ -248,6 +247,45 @@ async function readJsonFileOrNull<T>(path: string): Promise<T | null> {
 
     return null;
   }
+}
+
+async function collectLegacyImportedSeedSecretProviderKeyIds(
+  paths: WalletRuntimePaths,
+): Promise<string[]> {
+  const seedsRoot = join(paths.stateRoot, "seeds");
+  const entries = await readdir(seedsRoot, { withFileTypes: true }).catch((error) => {
+    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+
+    throw error;
+  });
+  const keyIds = new Set<string>();
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const seedRoot = join(seedsRoot, entry.name);
+    const candidatePaths = [
+      join(seedRoot, "wallet-state.enc"),
+      join(seedRoot, "wallet-state.enc.bak"),
+      join(seedRoot, "wallet-init-pending.enc"),
+      join(seedRoot, "wallet-init-pending.enc.bak"),
+    ];
+
+    for (const candidatePath of candidatePaths) {
+      const envelope = await readJsonFileOrNull<{ secretProvider?: { keyId?: string | null } | null }>(candidatePath);
+      const keyId = envelope?.secretProvider?.keyId?.trim() ?? "";
+
+      if (keyId.length > 0) {
+        keyIds.add(keyId);
+      }
+    }
+  }
+
+  return [...keyIds].sort((left, right) => left.localeCompare(right));
 }
 
 async function isProcessAlive(pid: number | null): Promise<boolean> {
@@ -751,12 +789,7 @@ async function preflightReset(options: {
 
   const tracked = await collectTrackedManagedProcesses(options.paths);
   const secretProviderKeyId = rawEnvelope?.envelope.secretProvider?.keyId ?? null;
-  const seedIndex = await loadWalletSeedIndex({
-    paths: options.paths,
-  }).catch(() => null);
-  const importedSeedSecretProviderKeyIds = [...new Set((seedIndex?.seeds ?? [])
-    .filter((seed) => seed.kind === "imported")
-    .map((seed) => createWalletSecretReference(seed.walletRootId).keyId))];
+  const importedSeedSecretProviderKeyIds = await collectLegacyImportedSeedSecretProviderKeyIds(options.paths);
 
   return {
     dataRoot: options.paths.dataRoot,
@@ -868,10 +901,10 @@ async function resolveResetExecutionDecision(options: {
 
   if (options.preflight.wallet.present) {
     const answer = (await options.prompter.prompt(
-      "Wallet reset choice ([Enter] retain base entropy, \"skip\", or \"delete wallet\"): ",
+      "Wallet reset choice ([Enter] retain base entropy, \"skip\", or \"clear wallet entropy\"): ",
     )).trim();
 
-    if (answer !== "" && answer !== "skip" && answer !== "delete wallet") {
+    if (answer !== "" && answer !== "skip" && answer !== "clear wallet entropy") {
       throw new Error("reset_wallet_choice_invalid");
     }
 
@@ -922,7 +955,7 @@ function determineWalletAction(
     return "kept-unchanged";
   }
 
-  if (walletChoice === "delete wallet") {
+  if (walletChoice === "clear wallet entropy") {
     return "deleted";
   }
 
@@ -988,7 +1021,7 @@ export async function previewResetWallet(options: {
     walletPrompt: preflight.wallet.present
       ? {
         defaultAction: "retain-mnemonic",
-        acceptedInputs: ["", "skip", "delete wallet"],
+        acceptedInputs: ["", "skip", "clear wallet entropy"],
         entropyRetainingResetAvailable: preflight.wallet.mode === "provider-backed",
         envelopeSource: preflight.wallet.envelopeSource,
       }

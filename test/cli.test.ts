@@ -18,10 +18,16 @@ test("help text reflects the one-address model", () => {
   assert.match(HELP_TEXT, /client unlock\s+Unlock password-protected local wallet secrets/i);
   assert.match(HELP_TEXT, /client lock\s+Flush the cached client password unlock session/i);
   assert.match(HELP_TEXT, /client change-password\s+Rotate the client password that protects local wallet secrets/i);
+  assert.match(HELP_TEXT, /init\s+Initialize a new wallet or restore an existing wallet/i);
+  assert.match(HELP_TEXT, /Run `cogcoin init` to create or restore a wallet\./);
   assert.doesNotMatch(HELP_TEXT, /--from/);
   assert.doesNotMatch(HELP_TEXT, /per-identity/);
+  assert.doesNotMatch(HELP_TEXT, /^\s*restore\b/m);
+  assert.doesNotMatch(HELP_TEXT, /wallet restore/i);
+  assert.doesNotMatch(HELP_TEXT, /wallet delete/i);
   assert.doesNotMatch(HELP_TEXT, /wallet export <path>/);
   assert.doesNotMatch(HELP_TEXT, /wallet import <path>/);
+  assert.doesNotMatch(HELP_TEXT, /--seed/);
 });
 
 test("parser rejects removed selector-based commands", () => {
@@ -75,14 +81,32 @@ test("parser accepts mine prompt and mine prompt list", () => {
   assert.equal(parseCliArgs(["mine", "prompt", "list", "--output", "json"]).command, "mine-prompt-list");
 });
 
-test("parser accepts bitcoin transfer with --yes and --seed", () => {
-  const parsed = parseCliArgs(["bitcoin", "transfer", "1200", "--to", "bc1qrecipient", "--yes", "--seed", "spend"]);
+test("parser accepts bitcoin transfer with --yes", () => {
+  const parsed = parseCliArgs(["bitcoin", "transfer", "1200", "--to", "bc1qrecipient", "--yes"]);
 
   assert.equal(parsed.command, "bitcoin-transfer");
   assert.equal(parsed.args[0], "1200");
   assert.equal(parsed.transferTarget, "bc1qrecipient");
   assert.equal(parsed.assumeYes, true);
-  assert.equal(parsed.seedName, "spend");
+});
+
+test("parser rejects removed wallet seed and restore surfaces", () => {
+  assert.throws(
+    () => parseCliArgs(["bitcoin", "transfer", "1200", "--to", "bc1qrecipient", "--seed", "spend"]),
+    /cli_seed_removed/,
+  );
+  assert.throws(
+    () => parseCliArgs(["restore"]),
+    /cli_restore_removed/,
+  );
+  assert.throws(
+    () => parseCliArgs(["wallet", "restore"]),
+    /cli_wallet_restore_removed/,
+  );
+  assert.throws(
+    () => parseCliArgs(["wallet", "delete"]),
+    /cli_wallet_delete_removed/,
+  );
 });
 
 test("parser accepts --satvb for wallet mutation commands", () => {

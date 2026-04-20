@@ -62,7 +62,7 @@ test("reset preview-json dispatches through previewResetWallet", async () => {
         confirmationPhrase: "permanently reset" as const,
         walletPrompt: {
           defaultAction: "retain-mnemonic" as const,
-          acceptedInputs: ["", "skip", "delete wallet"] as const,
+          acceptedInputs: ["", "skip", "clear wallet entropy"] as const,
           entropyRetainingResetAvailable: true,
           envelopeSource: "primary" as const,
         },
@@ -110,7 +110,7 @@ test("reset preview-json dispatches through previewResetWallet", async () => {
   assert.equal(envelope.outcome, "planned");
   assert.deepEqual(envelope.data.operation.walletPrompt, {
     defaultAction: "retain-mnemonic",
-    acceptedInputs: ["", "skip", "delete wallet"],
+    acceptedInputs: ["", "skip", "clear wallet entropy"],
     entropyRetainingResetAvailable: true,
     envelopeSource: "primary",
   });
@@ -180,7 +180,7 @@ test("reset json emits the stable reset mutation envelope", async () => {
   assert.equal(envelope.schema, "cogcoin/reset/v1");
   assert.equal(envelope.command, "cogcoin reset");
   assert.equal(envelope.outcome, "completed");
-  assert.deepEqual(envelope.nextSteps, ["Run `cogcoin init` to create a new wallet."]);
+  assert.deepEqual(envelope.nextSteps, ["Run `cogcoin init` to create or restore a wallet."]);
   assert.equal(envelope.data.resultType, "operation");
   assert.equal(envelope.data.operation.kind, "reset");
   assert.equal(envelope.data.operation.walletAction, "deleted");
@@ -331,7 +331,7 @@ test("reset text renders warnings in a separate section and keeps the next step 
   assert.match(output, /^\n⛭ Cogcoin Reset ⛭/u);
   assert.match(output, /\n\nReset Outcome\n✓ Wallet action: deleted\n✓ Snapshot: deleted\n✓ Bitcoin datadir: deleted\n✗ Secret cleanup: unknown\n✓ Previous wallet root: wallet-root-old/u);
   assert.match(output, /\n\nWarnings\n✗ Warning: Some existing Cogcoin secret-provider entries could not be discovered from the remaining local wallet artifacts and may need manual cleanup\./u);
-  assert.match(output, /\n\nNext step: Run `cogcoin init` to create a new wallet\.\n$/u);
+  assert.match(output, /\n\nNext step: Run `cogcoin init` to create or restore a wallet\.\n$/u);
   assert.equal(stderr.toString(), "");
 });
 
@@ -340,6 +340,6 @@ test("reset entropy-reset-unavailable errors are presented clearly in text mode"
   assert.deepEqual(formatted, [
     "What happened: Entropy-retaining wallet reset is unavailable.",
     "Why: Cogcoin found wallet state, but it could not safely load and reconstruct it into a fresh wallet while preserving only the mnemonic-derived continuity data.",
-    "Next: Rerun `cogcoin reset` and choose \"skip\" to keep the wallet unchanged, or type \"delete wallet\" to erase it fully.",
+    "Next: Rerun `cogcoin reset` and choose \"skip\" to keep the wallet unchanged, or type \"clear wallet entropy\" to erase it fully.",
   ]);
 });

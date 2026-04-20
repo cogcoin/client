@@ -483,7 +483,7 @@ test("balance fallback text remains unchanged when wallet state is unavailable",
       + "Wallet state: uninitialized\n"
       + "Wallet root: none\n"
       + "Wallet note: Wallet state has not been initialized yet.\n"
-      + "Recommended next step: Run `cogcoin init` to create a new local wallet root.",
+      + "Recommended next step: Run `cogcoin init` to create or restore a wallet.",
   );
 });
 

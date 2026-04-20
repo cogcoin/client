@@ -110,7 +110,7 @@ export async function runWalletMutationCommand(
   parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
 ): Promise<number> {
-  const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
+  const runtimePaths = context.resolveWalletRuntimePaths();
   const stopWatcher = createOwnedLockCleanupSignalWatcher(context.signalSource, context.forceExit, [
     runtimePaths.walletControlLockPath,
     runtimePaths.miningControlLockPath,

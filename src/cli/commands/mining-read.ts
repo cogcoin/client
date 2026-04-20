@@ -46,7 +46,7 @@ export async function runMiningReadCommand(
     const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
     const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
     const packageVersion = await context.readPackageVersion();
-    const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
+    const runtimePaths = context.resolveWalletRuntimePaths();
     await context.ensureDirectory(dirname(dbPath));
 
     if (parsed.command === "mine-log") {

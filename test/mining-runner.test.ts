@@ -25,6 +25,7 @@ import {
   createWalletReadContext,
   createWalletState,
 } from "./current-model-helpers.js";
+import { createHealthyMiningRpc } from "./mining-rpc-test-helpers.js";
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -40,11 +41,10 @@ async function writeJsonFile(path: string, value: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function createRuntimePaths(homeDirectory: string, seedName: string | null = null): WalletRuntimePaths {
+function createRuntimePaths(homeDirectory: string): WalletRuntimePaths {
   return resolveWalletRuntimePathsForTesting({
     homeDirectory,
     platform: "linux",
-    seedName,
   });
 }
 
@@ -162,39 +162,7 @@ function createLoopReadContext(overrides: Record<string, unknown> = {}) {
 }
 
 function createLoopMiningRpc(overrides: Record<string, unknown> = {}) {
-  return {
-    async listLockUnspent() {
-      return [];
-    },
-    async lockUnspent() {
-      return true;
-    },
-    async listUnspent() {
-      return [];
-    },
-    async getBlockchainInfo() {
-      return {
-        blocks: 100,
-        bestblockhash: "11".repeat(32),
-        initialblockdownload: false,
-      };
-    },
-    async getNetworkInfo() {
-      return {
-        networkactive: true,
-        connections_out: 8,
-      };
-    },
-    async getMempoolInfo() {
-      return {
-        loaded: true,
-      };
-    },
-    async saveMempool() {
-      return null;
-    },
-    ...overrides,
-  };
+  return createHealthyMiningRpc(overrides);
 }
 
 function createLoopMiningCandidate(overrides: Record<string, unknown> = {}) {

@@ -35,7 +35,7 @@ export async function runMiningAdminCommand(
   context: RequiredCliRunnerContext,
 ): Promise<number> {
   try {
-    const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
+    const runtimePaths = context.resolveWalletRuntimePaths();
     const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
     const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
     const packageVersion = await context.readPackageVersion();

@@ -1,8 +1,6 @@
 import {
   buildInitMutationData,
   buildResetMutationData,
-  buildRestoreMutationData,
-  buildWalletDeleteMutationData,
   buildRepairMutationData,
 } from "../mutation-json.js";
 import {
@@ -25,7 +23,6 @@ import {
   formatNextStepLines,
   getFundingQuickstartGuidance,
   getInitNextSteps,
-  getRestoreNextSteps,
   getSetupUnlockGuidanceLines,
 } from "../workflow-hints.js";
 import {
@@ -73,20 +70,15 @@ function writeWelcomeArtBlock(stdout: RequiredCliRunnerContext["stdout"]): void 
 
 function assertInitTextPreflight(options: {
   prompter: ReturnType<typeof createCommandPrompter>;
-  runtimePaths: ReturnType<RequiredCliRunnerContext["resolveWalletRuntimePaths"]>;
 }): void {
   if (!options.prompter.isInteractive) {
     throw new Error("wallet_init_requires_tty");
-  }
-
-  if (options.runtimePaths.selectedSeedName !== "main") {
-    throw new Error("wallet_init_seed_not_supported");
   }
 }
 
 function getResetNextSteps(result: WalletResetResult): string[] {
   return result.walletAction === "deleted" || result.walletAction === "not-present"
-    ? ["Run `cogcoin init` to create a new wallet."]
+    ? ["Run `cogcoin init` to create or restore a wallet."]
     : ["Run `cogcoin sync` to bootstrap assumeutxo and the managed Bitcoin/indexer state."];
 }
 
@@ -279,7 +271,7 @@ export async function runWalletAdminCommand(
   parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
 ): Promise<number> {
-  const runtimePaths = context.resolveWalletRuntimePaths(parsed.seedName);
+  const runtimePaths = context.resolveWalletRuntimePaths();
   const stopWatcher = createOwnedLockCleanupSignalWatcher(context.signalSource, context.forceExit, [
     runtimePaths.walletControlLockPath,
     runtimePaths.miningControlLockPath,
@@ -298,7 +290,6 @@ export async function runWalletAdminCommand(
         if (parsed.outputMode === "text") {
           assertInitTextPreflight({
             prompter,
-            runtimePaths,
           });
           writeWelcomeArtBlock(context.stdout);
         }
@@ -328,7 +319,9 @@ export async function runWalletAdminCommand(
           context.stdout,
           result.walletAction === "already-initialized"
             ? "Wallet already initialized."
-            : "Wallet initialized.",
+            : result.setupMode === "restored"
+              ? "Wallet restored."
+              : "Wallet initialized.",
         );
 
         if (result.walletAction === "already-initialized") {
@@ -352,73 +345,6 @@ export async function runWalletAdminCommand(
         writeLine(context.stdout, "");
         writeLine(context.stdout, `Quickstart: ${getFundingQuickstartGuidance()}`);
         shouldAutoSyncAfterInit = true;
-        return 0;
-      }
-
-      if (parsed.command === "restore" || parsed.command === "wallet-restore") {
-        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-        const prompter = createCommandPrompter(parsed, context);
-        const interactiveProvider = withInteractiveWalletSecretProvider(provider, prompter);
-        const result = await context.restoreWalletFromMnemonic({
-          dataDir,
-          provider: interactiveProvider,
-          prompter,
-          paths: runtimePaths,
-        });
-        const nextSteps = getRestoreNextSteps();
-        const explanations = ["Managed Bitcoin/indexer bootstrap is deferred until you run `cogcoin sync`."];
-        if (parsed.outputMode === "json") {
-          writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-            resolveStableMutationJsonSchema(parsed)!,
-            describeCanonicalCommand(parsed),
-            "restored",
-            buildRestoreMutationData(result),
-            {
-              explanations,
-              nextSteps,
-              warnings: result.warnings ?? [],
-            },
-          ));
-          return 0;
-        }
-        writeLine(context.stdout, `Wallet seed "${result.seedName}" restored from mnemonic.`);
-        if (result.passwordAction !== "already-configured") {
-          writeSetupUnlockGuidance(context.stdout);
-        }
-        writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
-        writeLine(context.stdout, `Funding address: ${result.fundingAddress}`);
-        writeLine(context.stdout, "Note: Managed Bitcoin/indexer bootstrap is deferred until you run `cogcoin sync`.");
-        for (const warning of result.warnings ?? []) {
-          writeLine(context.stdout, `Warning: ${warning}`);
-        }
-        for (const line of formatNextStepLines(nextSteps)) {
-          writeLine(context.stdout, line);
-        }
-        return 0;
-      }
-
-      if (parsed.command === "wallet-delete") {
-        const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-        const prompter = createCommandPrompter(parsed, context);
-        const interactiveProvider = withInteractiveWalletSecretProvider(provider, prompter);
-        const result = await context.deleteImportedWalletSeed({
-          dataDir,
-          provider: interactiveProvider,
-          prompter,
-          assumeYes: parsed.assumeYes,
-          paths: runtimePaths,
-        });
-        if (parsed.outputMode === "json") {
-          writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-            resolveStableMutationJsonSchema(parsed)!,
-            describeCanonicalCommand(parsed),
-            "deleted",
-            buildWalletDeleteMutationData(result),
-          ));
-          return 0;
-        }
-        writeLine(context.stdout, `Imported wallet seed "${result.seedName}" deleted.`);
-        writeLine(context.stdout, `Wallet root: ${result.walletRootId}`);
         return 0;
       }
 

@@ -80,10 +80,9 @@ function createSignalSource() {
 }
 
 function createTestRuntimePaths(homeDirectory: string) {
-  return (seedName: string | null = null) => resolveWalletRuntimePathsForTesting({
+  return () => resolveWalletRuntimePathsForTesting({
     platform: "linux",
     homeDirectory,
-    seedName,
     env: {
       ...process.env,
       XDG_DATA_HOME: join(homeDirectory, "data-home"),
@@ -184,7 +183,7 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
   const prompter = createPrompter();
   const version = "7.8.9";
   const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-runtime"));
-  const runtimePaths = resolvePaths(null);
+  const runtimePaths = resolvePaths();
   const events: string[] = [];
   let expectedBinaryVersion: string | null = null;
   let runOptions: {
@@ -208,7 +207,7 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
     walletSecretProvider: provider,
     createPrompter: () => prompter,
     readPackageVersion: async () => version,
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => {
@@ -279,7 +278,7 @@ test("mine tty shows the mining visualizer during preflight and reuses it for fo
     walletSecretProvider: provider,
     createPrompter: () => prompter,
     readPackageVersion: async () => version,
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => {
@@ -325,7 +324,7 @@ test("mine text marks updateAvailable when tty mining sees a newer npm version",
   const version = "1.1.4";
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mine-runtime-update");
   const resolvePaths = createTestRuntimePaths(homeDirectory);
-  const runtimePaths = resolvePaths(null);
+  const runtimePaths = resolvePaths();
   const cachePath = join(homeDirectory, "update-check.json");
   let runOptions: {
     clientVersion: string | null | undefined;
@@ -339,7 +338,7 @@ test("mine text marks updateAvailable when tty mining sees a newer npm version",
     walletSecretProvider: provider,
     createPrompter: () => prompter,
     readPackageVersion: async () => version,
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     resolveUpdateCheckStatePath: () => cachePath,
@@ -383,7 +382,7 @@ test("mine start text ensures provider setup, syncs managed services, then start
   const provider = createMemoryWalletSecretProviderForTesting();
   const prompter = createPrompter();
   const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-start-runtime"));
-  const runtimePaths = resolvePaths(null);
+  const runtimePaths = resolvePaths();
   const events: string[] = [];
   let startOptions: {
     dataDir: string;
@@ -404,7 +403,7 @@ test("mine start text ensures provider setup, syncs managed services, then start
     signalSource: QUIET_SIGNAL_SOURCE,
     walletSecretProvider: provider,
     createPrompter: () => prompter,
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => {
@@ -470,7 +469,7 @@ test("mine start JSON output stays on stdout while sync progress goes to stderr"
     stderr: stderr.stream,
     signalSource: QUIET_SIGNAL_SOURCE,
     walletSecretProvider: provider,
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => true,
@@ -518,7 +517,7 @@ test("mine start preview JSON output stays on stdout while sync progress goes to
     stderr: stderr.stream,
     signalSource: QUIET_SIGNAL_SOURCE,
     walletSecretProvider: provider,
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => true,
@@ -556,7 +555,7 @@ test("mine reports a handled error and skips foreground mining when sync preflig
     signalSource: QUIET_SIGNAL_SOURCE,
     walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
     createPrompter,
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => true,
@@ -593,7 +592,7 @@ test("mine start reports a handled error and skips background mining when sync p
     signalSource: QUIET_SIGNAL_SOURCE,
     walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
     createPrompter,
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => true,
@@ -632,7 +631,7 @@ test("mine preflight uses the managed indexer monitor instead of the foreground 
     signalSource: QUIET_SIGNAL_SOURCE,
     walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
     createPrompter,
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => true,
@@ -665,7 +664,7 @@ test("mine interrupt during sync preflight exits before foreground mining starts
     signalSource,
     walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
     createPrompter,
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
     ensureBuiltInMiningSetupIfNeeded: async () => true,

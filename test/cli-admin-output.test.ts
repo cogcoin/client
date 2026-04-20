@@ -40,10 +40,9 @@ const QUIET_SIGNAL_SOURCE = {
 };
 
 function createTestRuntimePaths(homeDirectory: string) {
-  return (seedName: string | null = null) => resolveWalletRuntimePathsForTesting({
+  return () => resolveWalletRuntimePathsForTesting({
     platform: "linux",
     homeDirectory,
-    seedName,
     env: {
       ...process.env,
       XDG_DATA_HOME: join(homeDirectory, "data-home"),
@@ -159,11 +158,12 @@ test("init text output prints welcome art before prompt text and again before th
         return "";
       },
     }),
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => paths.bitcoinDataDir,
     initializeWallet: async ({ prompter }) => {
       prompter.writeLine(promptLine);
       return {
+        setupMode: "generated",
         passwordAction: "created",
         walletAction: "initialized",
         walletRootId: "wallet-init-root",
@@ -216,9 +216,10 @@ test("init text output keeps the welcome art before the initialized summary", as
         return "";
       },
     }),
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => paths.bitcoinDataDir,
     initializeWallet: async () => ({
+      setupMode: "generated",
       passwordAction: "created",
       walletAction: "initialized",
       walletRootId: "wallet-init-root",
@@ -245,10 +246,7 @@ test("init text output keeps the welcome art before the initialized summary", as
   assert.match(rendered, /Wallet root: wallet-init-root/);
   assert.match(rendered, /Funding address: bc1qinitwelcome/);
   assert.match(rendered, /Funding address: bc1qinitwelcome\n\nQuickstart: /);
-  assert.match(
-    rendered,
-    /Quickstart: .*?\nCOG Balance\nWallet state: uninitialized\n/s,
-  );
+  assert.match(rendered, /Quickstart: Fund this wallet with about 0\.0015 BTC/);
   assert.doesNotMatch(rendered, /Next step:/);
 });
 
@@ -272,9 +270,10 @@ test("init text output describes the 24-hour client unlock window after setup mi
         return "";
       },
     }),
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => paths.bitcoinDataDir,
     initializeWallet: async () => ({
+      setupMode: "existing",
       passwordAction: "migrated",
       walletAction: "already-initialized",
       walletRootId: "wallet-test-root",
@@ -324,9 +323,10 @@ test("init text output shows a checkmarked wallet section when already configure
         return "";
       },
     }),
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => paths.bitcoinDataDir,
     initializeWallet: async () => ({
+      setupMode: "existing",
       passwordAction: "already-configured",
       walletAction: "already-initialized",
       walletRootId: "wallet-0123456789abcdef0123456789abcdef",
@@ -401,6 +401,7 @@ test("init json output stays art-free", async () => {
     },
     walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
     initializeWallet: async () => ({
+      setupMode: "generated",
       passwordAction: "created",
       walletAction: "initialized",
       walletRootId: "wallet-json-root",
@@ -411,18 +412,41 @@ test("init json output stays art-free", async () => {
 
   const exitCode = await runWalletAdminCommand(parseCliArgs(["init", "--output", "json"]), context);
   const rendered = stdout.read();
+  const envelope = JSON.parse(rendered) as {
+    schema: string;
+    data: {
+      resultType: string;
+      state: {
+        setupMode: string;
+        seedName?: unknown;
+      };
+      stateChange: {
+        after: {
+          setupMode: string;
+          seedName?: unknown;
+        };
+      };
+    };
+  };
 
   assert.equal(exitCode, 0);
   assert.equal(stderr.read(), "");
   assert.ok(rendered.startsWith("{"));
   assert.ok(!rendered.includes(WELCOME_ART));
+  assert.equal(envelope.schema, "cogcoin/init/v1");
+  assert.equal(envelope.data.resultType, "state-change");
+  assert.equal(envelope.data.state.setupMode, "generated");
+  assert.equal(envelope.data.stateChange.after.setupMode, "generated");
+  assert.equal("seedName" in envelope.data.state, false);
+  assert.equal("seedName" in envelope.data.stateChange.after, false);
 });
 
-test("restore text output describes the 24-hour client unlock window after password setup", async (t) => {
+test("init text output describes the 24-hour client unlock window after restore", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
   const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-cli-restore-output"));
-  const paths = resolvePaths("seed-2");
+  const paths = resolvePaths();
+  let syncCalls = 0;
   const context = createDefaultContext({
     stdout: stdout.stream,
     stderr: stderr.stream,
@@ -438,24 +462,31 @@ test("restore text output describes the 24-hour client unlock window after passw
         return "";
       },
     }),
-    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => paths.bitcoinDataDir,
-    restoreWalletFromMnemonic: async () => ({
+    initializeWallet: async () => ({
+      setupMode: "restored",
       passwordAction: "created",
-      seedName: "seed-2",
+      walletAction: "initialized",
       walletRootId: "wallet-restore-root",
       fundingAddress: "bc1qrestoreoutput",
       state: createWalletState(),
-      warnings: [],
+    }),
+    ...createInitAutoSyncOverrides({
+      walletRootId: "wallet-restore-root",
+      onSyncStart: () => {
+        syncCalls += 1;
+      },
     }),
   });
 
-  const exitCode = await runWalletAdminCommand(parseCliArgs(["restore", "--seed", "seed-2"]), context);
+  const exitCode = await runWalletAdminCommand(parseCliArgs(["init"]), context);
   const rendered = stdout.read();
 
   assert.equal(exitCode, 0);
   assert.equal(stderr.read(), "");
-  assert.match(rendered, /Wallet seed "seed-2" restored from mnemonic\./);
+  assert.equal(syncCalls, 1);
+  assert.match(rendered, /Wallet restored\./);
   assert.match(rendered, /Client unlock: active for 86400 seconds\./);
   assert.match(rendered, /cogcoin client unlock/);
   assert.match(rendered, /cogcoin client lock/);
