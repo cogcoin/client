@@ -41,6 +41,7 @@ import {
   createMemoryWalletSecretProviderForTesting,
   createWalletSecretReference,
 } from "../src/wallet/state/provider.js";
+import { MiningProviderRequestError } from "../src/wallet/mining/sentences.js";
 import type { MiningFollowVisualizerState } from "../src/wallet/mining/visualizer.js";
 import {
   createMiningControlPlaneView,
@@ -506,6 +507,69 @@ function createHealthyMiningRpc(overrides: Record<string, unknown> = {}) {
     },
     ...overrides,
   };
+}
+
+function createProviderRetryReadContext() {
+  return createReadyMiningReadContext({
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+    readContextOverrides: {
+      snapshot: {
+        tip: {
+          height: 100,
+          blockHashHex: "11".repeat(32),
+          previousHashHex: "00".repeat(32),
+          stateHashHex: null,
+        },
+        state: {
+          consensus: {
+            domainIdsByName: new Map([["cogdemo", 7]]),
+            domainsById: new Map([[7, {
+              domainId: 7,
+              name: "cogdemo",
+              anchored: true,
+              anchorHeight: 100,
+              endpoint: null,
+            }]]),
+            balances: new Map(),
+          },
+          history: {
+            foundingMessageByDomain: new Map(),
+            blockWinnersByHeight: new Map(),
+          },
+        },
+      },
+      indexer: {
+        health: "synced",
+        message: null,
+        status: null,
+        source: "lease",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-100",
+        openedAtUnixMs: 1,
+        snapshotTip: {
+          height: 100,
+          blockHashHex: "11".repeat(32),
+          previousHashHex: "00".repeat(32),
+          stateHashHex: null,
+        },
+      },
+      nodeStatus: {
+        chain: "mainnet",
+        nodeBestHeight: 100,
+        nodeBestHashHex: "11".repeat(32),
+        walletReplica: {
+          proofStatus: "ready",
+        },
+        serviceStatus: {
+          serviceInstanceId: "svc-1",
+          processId: 9_001,
+        },
+      },
+      nodeHealth: "synced",
+    },
+  });
 }
 
 test("normalizeMiningStateRecord accepts legacy liveMiningFamilyInMempool snapshots", () => {
@@ -1481,6 +1545,176 @@ test("performMiningCycle clears transient recovery errors once Bitcoin RPC recov
   assert.equal(snapshot?.currentPhase, "waiting-indexer");
   assert.equal(snapshot?.lastError, null);
   assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
+});
+
+test("performMiningCycle backs off transient provider failures and retries without marking the tip attempted", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-provider-backoff");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const timeoutMessage = "The built-in OpenAI mining provider timed out after 30 seconds.";
+  let generateCalls = 0;
+
+  const runCycle = async (nowUnixMs: number) => {
+    await performMiningCycleForTesting({
+      dataDir: homeDirectory,
+      databasePath: `${homeDirectory}/client.sqlite`,
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      openReadContext: async () => createProviderRetryReadContext(),
+      attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+      rpcFactory: () => createHealthyMiningRpc() as any,
+      loopState,
+      nowImpl: () => nowUnixMs,
+      generateCandidatesForDomainsImpl: async () => {
+        generateCalls += 1;
+        if (generateCalls === 1) {
+          throw new MiningProviderRequestError("unavailable", timeoutMessage);
+        }
+        return [createTestMiningCandidate()];
+      },
+      runCompetitivenessGateImpl: async () => ({
+        allowed: false,
+        decision: "indeterminate-mempool-gate",
+        sameDomainCompetitorSuppressed: false,
+        higherRankedCompetitorDomainCount: 0,
+        dedupedCompetitorDomainCount: 0,
+        competitivenessGateIndeterminate: true,
+        mempoolSequenceCacheStatus: null,
+        lastMempoolSequence: null,
+        visibleBoardEntries: [],
+        candidateRank: null,
+      }) as any,
+    });
+  };
+
+  await runCycle(1_000);
+  let snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-provider");
+  assert.equal(snapshot?.providerState, "backoff");
+  assert.equal(snapshot?.lastError, timeoutMessage);
+  assert.equal(loopState.attemptedTipKey, null);
+  assert.equal(loopState.providerTransientFailureCount, 1);
+  assert.equal(loopState.providerWaitNextRetryAtUnixMs, 31_000);
+  assert.equal(generateCalls, 1);
+
+  await runCycle(30_000);
+  snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-provider");
+  assert.equal(snapshot?.providerState, "backoff");
+  assert.equal(snapshot?.lastError, timeoutMessage);
+  assert.equal(generateCalls, 1);
+
+  await runCycle(31_000);
+  snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "scoring");
+  assert.equal(snapshot?.currentPublishDecision, null);
+  assert.equal(snapshot?.providerState, "unavailable");
+  assert.equal(snapshot?.lastError, null);
+  assert.equal(snapshot?.note, "Scoring mining candidates for the current tip.");
+  assert.equal(loopState.providerTransientFailureCount, 0);
+  assert.equal(loopState.providerWaitNextRetryAtUnixMs, null);
+  assert.equal(generateCalls, 2);
+});
+
+test("performMiningCycle exponentially backs off repeated transient provider failures and preserves rate-limited state", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-provider-backoff-scale");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const retryTimes = [1_000, 31_000, 91_000, 211_000, 451_000, 931_000, 1_831_000];
+  const expectedNextRetryTimes = [31_000, 91_000, 211_000, 451_000, 931_000, 1_831_000, 2_731_000];
+  let generateCalls = 0;
+
+  for (const [index, nowUnixMs] of retryTimes.entries()) {
+    await performMiningCycleForTesting({
+      dataDir: homeDirectory,
+      databasePath: `${homeDirectory}/client.sqlite`,
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      openReadContext: async () => createProviderRetryReadContext(),
+      attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+      rpcFactory: () => createHealthyMiningRpc() as any,
+      loopState,
+      nowImpl: () => nowUnixMs,
+      generateCandidatesForDomainsImpl: async () => {
+        generateCalls += 1;
+        if (generateCalls === 1) {
+          throw new MiningProviderRequestError("rate-limited", "The built-in OpenAI mining provider is rate limited.");
+        }
+        throw new MiningProviderRequestError("unavailable", "The built-in OpenAI mining provider timed out after 30 seconds.");
+      },
+    });
+
+    const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+    assert.equal(snapshot?.currentPhase, "waiting-provider");
+    assert.equal(snapshot?.providerState, index === 0 ? "rate-limited" : "backoff");
+    assert.equal(loopState.providerTransientFailureCount, index + 1);
+    assert.equal(loopState.providerWaitNextRetryAtUnixMs, expectedNextRetryTimes[index]);
+    assert.equal(loopState.attemptedTipKey, null);
+  }
+});
+
+test("performMiningCycle keeps auth provider failures on the same-tip provider wait path without backoff", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-provider-auth");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const authMessage = "The built-in OpenAI mining provider rejected the configured API key.";
+  let generateCalls = 0;
+
+  const runCycle = async (nowUnixMs: number) => {
+    await performMiningCycleForTesting({
+      dataDir: homeDirectory,
+      databasePath: `${homeDirectory}/client.sqlite`,
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      openReadContext: async () => createProviderRetryReadContext(),
+      attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+      rpcFactory: () => createHealthyMiningRpc() as any,
+      loopState,
+      nowImpl: () => nowUnixMs,
+      generateCandidatesForDomainsImpl: async () => {
+        generateCalls += 1;
+        throw new MiningProviderRequestError("auth-error", authMessage);
+      },
+    });
+  };
+
+  await runCycle(1_000);
+  let snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-provider");
+  assert.equal(snapshot?.providerState, "auth-error");
+  assert.equal(snapshot?.lastError, authMessage);
+  assert.equal(loopState.providerWaitNextRetryAtUnixMs, null);
+  assert.notEqual(loopState.attemptedTipKey, null);
+  assert.equal(generateCalls, 1);
+
+  await runCycle(2_000);
+  snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-provider");
+  assert.equal(snapshot?.providerState, "auth-error");
+  assert.equal(snapshot?.lastError, authMessage);
+  assert.equal(loopState.providerTransientFailureCount, 0);
+  assert.equal(generateCalls, 1);
 });
 
 test("performMiningCycle still throws on non-recoverable managed bitcoind mismatches", async (t) => {

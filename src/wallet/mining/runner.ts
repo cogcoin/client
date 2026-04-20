@@ -390,6 +390,10 @@ interface MiningLoopState {
   selectedCandidate: MiningCandidate | null;
   ui: MiningFollowVisualizerState;
   waitingNote: string | null;
+  providerWaitState: "backoff" | "rate-limited" | "auth-error" | "not-found" | null;
+  providerWaitLastError: string | null;
+  providerWaitNextRetryAtUnixMs: number | null;
+  providerTransientFailureCount: number;
   bitcoinRecoveryFirstFailureAtUnixMs: number | null;
   bitcoinRecoveryFirstUnreachableAtUnixMs: number | null;
   bitcoinRecoveryLastRestartAttemptAtUnixMs: number | null;
@@ -424,6 +428,53 @@ type MiningCooperativeYield = () => Promise<void>;
 
 function resolveSnapshotOverride<T>(override: T | undefined, fallback: T): T {
   return override === undefined ? fallback : override;
+}
+
+function resolveMiningProviderBackoffDelayMs(consecutiveFailureCount: number): number {
+  const exponent = Math.max(consecutiveFailureCount - 1, 0);
+  return Math.min(MINING_PROVIDER_BACKOFF_BASE_MS * (2 ** exponent), MINING_PROVIDER_BACKOFF_MAX_MS);
+}
+
+function clearMiningProviderWait(
+  loopState: MiningLoopState,
+  resetTransientFailureCount = true,
+): void {
+  loopState.providerWaitState = null;
+  loopState.providerWaitLastError = null;
+  loopState.providerWaitNextRetryAtUnixMs = null;
+  if (resetTransientFailureCount) {
+    loopState.providerTransientFailureCount = 0;
+  }
+}
+
+function recordTransientMiningProviderWait(options: {
+  loopState: MiningLoopState;
+  error: MiningProviderRequestError;
+  nowUnixMs: number;
+}): void {
+  options.loopState.providerTransientFailureCount += 1;
+  options.loopState.providerWaitState = options.error.providerState === "rate-limited"
+    ? "rate-limited"
+    : "backoff";
+  options.loopState.providerWaitLastError = options.error.message;
+  options.loopState.providerWaitNextRetryAtUnixMs = options.nowUnixMs
+    + resolveMiningProviderBackoffDelayMs(options.loopState.providerTransientFailureCount);
+}
+
+function recordTerminalMiningProviderWait(options: {
+  loopState: MiningLoopState;
+  error: MiningProviderRequestError;
+}): void {
+  clearMiningProviderWait(options.loopState);
+  if (options.error.providerState !== "auth-error" && options.error.providerState !== "not-found") {
+    throw new Error("mining_provider_wait_state_invalid");
+  }
+  options.loopState.providerWaitState = options.error.providerState;
+  options.loopState.providerWaitLastError = options.error.message;
+}
+
+function isTransientMiningProviderError(error: MiningProviderRequestError): boolean {
+  return error.providerState === "unavailable" || error.providerState === "rate-limited";
 }
 
 class MiningSuspendDetectedError extends Error {
@@ -1083,6 +1134,10 @@ function createMiningLoopState(): MiningLoopState {
     selectedCandidate: null,
     ui: createEmptyMiningFollowVisualizerState(),
     waitingNote: null,
+    providerWaitState: null,
+    providerWaitLastError: null,
+    providerWaitNextRetryAtUnixMs: null,
+    providerTransientFailureCount: 0,
     bitcoinRecoveryFirstFailureAtUnixMs: null,
     bitcoinRecoveryFirstUnreachableAtUnixMs: null,
     bitcoinRecoveryLastRestartAttemptAtUnixMs: null,
@@ -1385,6 +1440,7 @@ function discardMiningLoopTransientWork(
   clearSelectedCandidate(loopState);
   clearMiningUiTransientCandidate(loopState);
   loopState.waitingNote = null;
+  clearMiningProviderWait(loopState);
 }
 
 function resolveMiningBitcoindRecoveryIdentity(
@@ -2081,6 +2137,11 @@ function buildStatusSnapshot(
   view: MiningControlPlaneView,
   overrides: MiningRunnerStatusOverrides = {},
 ): MiningRuntimeStatusV1 {
+  const resolvedCurrentPhase = resolveSnapshotOverride(overrides.currentPhase, view.runtime.currentPhase);
+  const clearProviderWaitCarryover = overrides.currentPhase !== undefined
+    && overrides.currentPhase !== "waiting-provider"
+    && view.runtime.currentPhase === "waiting-provider";
+
   return {
     ...view.runtime,
     runMode: resolveSnapshotOverride(overrides.runMode, view.runtime.runMode),
@@ -2090,7 +2151,7 @@ function buildStatusSnapshot(
       overrides.backgroundWorkerHeartbeatAtUnixMs,
       view.runtime.backgroundWorkerHeartbeatAtUnixMs,
     ),
-    currentPhase: resolveSnapshotOverride(overrides.currentPhase, view.runtime.currentPhase),
+    currentPhase: resolvedCurrentPhase,
     currentPublishState: resolveSnapshotOverride(overrides.currentPublishState, view.runtime.currentPublishState),
     targetBlockHeight: resolveSnapshotOverride(overrides.targetBlockHeight, view.runtime.targetBlockHeight),
     referencedBlockHashDisplay: resolveSnapshotOverride(
@@ -2130,7 +2191,12 @@ function buildStatusSnapshot(
       overrides.tipSettledUntilUnixMs,
       view.runtime.tipSettledUntilUnixMs,
     ),
-    providerState: resolveSnapshotOverride(overrides.providerState, view.runtime.providerState),
+    providerState: resolveSnapshotOverride(
+      overrides.providerState,
+      clearProviderWaitCarryover
+        ? (view.provider.status === "ready" ? "ready" : "unavailable")
+        : view.runtime.providerState,
+    ),
     corePublishState: resolveSnapshotOverride(overrides.corePublishState, view.runtime.corePublishState),
     currentPublishDecision: resolveSnapshotOverride(overrides.currentPublishDecision, view.runtime.currentPublishDecision),
     sameDomainCompetitorSuppressed: resolveSnapshotOverride(
@@ -2158,8 +2224,14 @@ function buildStatusSnapshot(
       overrides.lastCompetitivenessGateAtUnixMs,
       view.runtime.lastCompetitivenessGateAtUnixMs,
     ),
-    lastError: resolveSnapshotOverride(overrides.lastError, view.runtime.lastError),
-    note: resolveSnapshotOverride(overrides.note, view.runtime.note),
+    lastError: resolveSnapshotOverride(
+      overrides.lastError,
+      clearProviderWaitCarryover ? null : view.runtime.lastError,
+    ),
+    note: resolveSnapshotOverride(
+      overrides.note,
+      clearProviderWaitCarryover ? null : view.runtime.note,
+    ),
     livePublishInMempool: resolveSnapshotOverride(overrides.livePublishInMempool, view.runtime.livePublishInMempool),
     updatedAtUnixMs: Date.now(),
   };
@@ -4032,9 +4104,11 @@ async function performMiningCycle(options: {
     }, false);
 
     if (readContext.localState.availability !== "ready" || readContext.localState.state === null) {
+      clearMiningProviderWait(options.loopState);
       await saveCycleStatus(readContext, {
         runMode: options.runMode,
         currentPhase: "waiting",
+        lastError: null,
         note: "Wallet state must be locally available for mining to continue.",
       });
       return;
@@ -4103,20 +4177,26 @@ async function performMiningCycle(options: {
     });
     if (tipChanged) {
       setMiningTipSettleWindow(options.loopState, now());
+      if (options.loopState.providerWaitNextRetryAtUnixMs === null) {
+        clearMiningProviderWait(options.loopState);
+      }
     }
     const displaySats = await resolveFundingDisplaySats(effectiveReadContext.localState.state, rpc).catch(() => null);
     syncMiningVisualizerBalances(options.loopState, effectiveReadContext, displaySats);
 
     if (effectiveReadContext.localState.state.miningState.state === "repair-required") {
+      clearMiningProviderWait(options.loopState);
       await saveCycleStatus(effectiveReadContext, {
         runMode: options.runMode,
         currentPhase: "waiting",
+        lastError: null,
         note: "Mining is blocked until the current mining publish is repaired or reconciled.",
       });
       return;
     }
 
     if (hasBlockingMutation(effectiveReadContext.localState.state)) {
+      clearMiningProviderWait(options.loopState);
       const nextState = defaultMiningStatePatch(effectiveReadContext.localState.state, {
         state: "paused",
         pauseReason: "wallet-busy",
@@ -4137,6 +4217,7 @@ async function performMiningCycle(options: {
       await saveCycleStatus(effectiveReadContext, {
         runMode: options.runMode,
         currentPhase: "waiting",
+        lastError: null,
         note: "Mining is paused while another wallet mutation is active.",
       });
       return;
@@ -4144,6 +4225,7 @@ async function performMiningCycle(options: {
 
     const preemptionRequest = await readMiningPreemptionRequest(options.paths);
     if (preemptionRequest !== null) {
+      clearMiningProviderWait(options.loopState);
       const nextState = defaultMiningStatePatch(effectiveReadContext.localState.state, {
         state: effectiveReadContext.localState.state.miningState.livePublishInMempool
           && effectiveReadContext.localState.state.miningState.state === "paused-stale"
@@ -4165,6 +4247,7 @@ async function performMiningCycle(options: {
       }, {
         runMode: options.runMode,
         currentPhase: "waiting",
+        lastError: null,
         note: "Mining is paused while another wallet command is preempting sentence generation.",
       });
       return;
@@ -4187,6 +4270,7 @@ async function performMiningCycle(options: {
     );
 
     if (corePublishState !== "healthy") {
+      clearMiningProviderWait(options.loopState);
       await saveCycleStatus(effectiveReadContext, {
         runMode: options.runMode,
         currentPhase: "waiting-bitcoin-network",
@@ -4197,6 +4281,7 @@ async function performMiningCycle(options: {
     }
 
     if (effectiveReadContext.indexer.health !== "synced" || effectiveReadContext.nodeHealth !== "synced") {
+      clearMiningProviderWait(options.loopState);
       await saveCycleStatus(effectiveReadContext, {
         runMode: options.runMode,
         currentPhase: effectiveReadContext.indexer.health !== "synced"
@@ -4210,6 +4295,7 @@ async function performMiningCycle(options: {
     }
 
     if (targetBlockHeight === null) {
+      clearMiningProviderWait(options.loopState);
       await saveCycleStatus(effectiveReadContext, {
         runMode: options.runMode,
         currentPhase: "waiting-bitcoin-network",
@@ -4219,6 +4305,7 @@ async function performMiningCycle(options: {
     }
 
     if (getBlockRewardCogtoshi(targetBlockHeight) === 0n) {
+      clearMiningProviderWait(options.loopState);
       const nextState = defaultMiningStatePatch(effectiveReadContext.localState.state, {
         state: "paused",
         pauseReason: "zero-reward",
@@ -4238,6 +4325,7 @@ async function performMiningCycle(options: {
         runMode: options.runMode,
         currentPhase: "idle",
         currentPublishDecision: "publish-skipped-zero-reward",
+        lastError: null,
         note: "Mining is disabled because the target block reward is zero.",
       });
       await appendEvent(options.paths, createEvent(
@@ -4252,10 +4340,50 @@ async function performMiningCycle(options: {
       return;
     }
 
+    if (
+      options.loopState.providerWaitState !== null
+      && options.loopState.providerWaitLastError !== null
+    ) {
+      if (
+        options.loopState.providerWaitNextRetryAtUnixMs !== null
+        && now() < options.loopState.providerWaitNextRetryAtUnixMs
+      ) {
+        await saveCycleStatus(effectiveReadContext, {
+          runMode: options.runMode,
+          currentPhase: "waiting-provider",
+          providerState: options.loopState.providerWaitState,
+          lastError: options.loopState.providerWaitLastError,
+          note: "Mining is waiting for the sentence provider to recover.",
+        });
+        return;
+      }
+
+      if (
+        options.loopState.providerWaitNextRetryAtUnixMs === null
+        && tipKey !== null
+        && options.loopState.attemptedTipKey === tipKey
+      ) {
+        await saveCycleStatus(effectiveReadContext, {
+          runMode: options.runMode,
+          currentPhase: "waiting-provider",
+          providerState: options.loopState.providerWaitState,
+          lastError: options.loopState.providerWaitLastError,
+          note: "Mining is waiting for the sentence provider to recover.",
+        });
+        return;
+      }
+
+      clearMiningProviderWait(
+        options.loopState,
+        options.loopState.providerWaitNextRetryAtUnixMs === null,
+      );
+    }
+
     if (tipKey !== null && options.loopState.attemptedTipKey === tipKey) {
       await saveCycleStatus(effectiveReadContext, {
         runMode: options.runMode,
         currentPhase: "waiting",
+        lastError: null,
         note: options.loopState.waitingNote ?? "Waiting for the next block after the last mining attempt on this tip.",
       });
       return;
@@ -4312,9 +4440,11 @@ async function performMiningCycle(options: {
     if (selectedCandidate === null) {
       const domains = resolveEligibleAnchoredRoots(effectiveReadContext);
       if (domains.length === 0) {
+        clearMiningProviderWait(options.loopState);
         await saveCycleStatus(effectiveReadContext, {
           runMode: options.runMode,
           currentPhase: "idle",
+          lastError: null,
           note: "No locally controlled anchored root domains are currently eligible to mine.",
         });
         return;
@@ -4323,6 +4453,7 @@ async function performMiningCycle(options: {
       await saveCycleStatus(effectiveReadContext, {
         runMode: options.runMode,
         currentPhase: "generating",
+        lastError: null,
         note: "Generating mining sentences for eligible root domains.",
       });
 
@@ -4355,14 +4486,27 @@ async function performMiningCycle(options: {
         throwIfMiningSuspendDetected(options.suspendDetector);
       } catch (error) {
         if (error instanceof MiningProviderRequestError) {
-          if (tipKey !== null) {
-            options.loopState.attemptedTipKey = tipKey;
-            options.loopState.waitingNote = "Mining is waiting for the sentence provider to recover.";
+          if (isTransientMiningProviderError(error)) {
+            recordTransientMiningProviderWait({
+              loopState: options.loopState,
+              error,
+              nowUnixMs: now(),
+            });
+          } else {
+            recordTerminalMiningProviderWait({
+              loopState: options.loopState,
+              error,
+            });
           }
+
+          if (!isTransientMiningProviderError(error) && tipKey !== null) {
+            options.loopState.attemptedTipKey = tipKey;
+          }
+
           await saveCycleStatus(effectiveReadContext, {
             runMode: options.runMode,
             currentPhase: "waiting-provider",
-            providerState: error.providerState,
+            providerState: options.loopState.providerWaitState ?? error.providerState,
             lastError: error.message,
             note: "Mining is waiting for the sentence provider to recover.",
           });
@@ -4394,6 +4538,7 @@ async function performMiningCycle(options: {
         }
 
         if (error instanceof Error && error.message === "mining_generation_stale_indexer_truth") {
+          clearMiningProviderWait(options.loopState);
           clearMiningGateCache(walletRootId);
           await appendEvent(options.paths, createEvent(
             "generation-restarted-indexer-truth",
@@ -4409,6 +4554,7 @@ async function performMiningCycle(options: {
         }
 
         if (error instanceof Error && error.message === "mining_generation_preempted") {
+          clearMiningProviderWait(options.loopState);
           await appendEvent(options.paths, createEvent(
             "generation-paused-preempted",
             "Stopped sentence generation because another wallet command requested mining preemption.",
@@ -4422,6 +4568,7 @@ async function performMiningCycle(options: {
           return;
         }
 
+        clearMiningProviderWait(options.loopState);
         const failureMessage = error instanceof Error ? error.message : String(error);
         if (tipKey !== null) {
           options.loopState.attemptedTipKey = tipKey;
@@ -4448,9 +4595,11 @@ async function performMiningCycle(options: {
         return;
       }
 
+      clearMiningProviderWait(options.loopState);
       await saveCycleStatus(effectiveReadContext, {
         runMode: options.runMode,
         currentPhase: "scoring",
+        lastError: null,
         note: "Scoring mining candidates for the current tip.",
       });
 

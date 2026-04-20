@@ -29,6 +29,12 @@ function createMiningSentenceRequest() {
   };
 }
 
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
 async function createSentenceGenerationFixture(t: TestContext, options: {
   provider: "openai" | "anthropic";
   modelOverride: string | null;
@@ -107,6 +113,129 @@ test("Anthropic 404 with the default model becomes a not-found provider error", 
         error.message,
         "The built-in Anthropic mining provider returned HTTP 404 for default model \"claude-sonnet-4-20250514\". Anthropic may no longer serve that model. Rerun `cogcoin mine setup` to choose a valid override.",
       );
+      return true;
+    },
+  );
+});
+
+test("OpenAI 429 becomes a rate-limited provider error", async (t) => {
+  const fixture = await createSentenceGenerationFixture(t, {
+    provider: "openai",
+    modelOverride: "gpt-5.4-mini",
+  });
+
+  await assert.rejects(
+    () => generateMiningSentences(createMiningSentenceRequest(), {
+      paths: fixture.paths,
+      provider: fixture.provider,
+      fetchImpl: async () => new Response("", { status: 429 }),
+    }),
+    (error) => {
+      if (!(error instanceof MiningProviderRequestError)) {
+        return false;
+      }
+      assert.equal(error.providerState, "rate-limited");
+      assert.equal(error.message, "The built-in OpenAI mining provider is rate limited.");
+      return true;
+    },
+  );
+});
+
+test("OpenAI auth rejection becomes an auth-error provider error", async (t) => {
+  const fixture = await createSentenceGenerationFixture(t, {
+    provider: "openai",
+    modelOverride: "gpt-5.4-mini",
+  });
+
+  await assert.rejects(
+    () => generateMiningSentences(createMiningSentenceRequest(), {
+      paths: fixture.paths,
+      provider: fixture.provider,
+      fetchImpl: async () => new Response("", { status: 401 }),
+    }),
+    (error) => {
+      if (!(error instanceof MiningProviderRequestError)) {
+        return false;
+      }
+      assert.equal(error.providerState, "auth-error");
+      assert.equal(error.message, "The built-in OpenAI mining provider rejected the configured API key.");
+      return true;
+    },
+  );
+});
+
+test("built-in provider timeouts become timeout-specific unavailable errors", async (t) => {
+  const fixture = await createSentenceGenerationFixture(t, {
+    provider: "openai",
+    modelOverride: "gpt-5.4-mini",
+  });
+  const request = {
+    ...createMiningSentenceRequest(),
+    limits: {
+      ...createMiningSentenceRequest().limits,
+      timeoutMs: 1_000,
+    },
+  };
+
+  await assert.rejects(
+    () => generateMiningSentences(request, {
+      paths: fixture.paths,
+      provider: fixture.provider,
+      fetchImpl: (async (_url, init) => {
+        await new Promise((_, reject) => {
+          const signal = init?.signal as AbortSignal | undefined;
+          signal?.addEventListener("abort", () => {
+            reject(createAbortError("provider request aborted"));
+          }, { once: true });
+        });
+        throw new Error("unreachable");
+      }) as typeof fetch,
+    }),
+    (error) => {
+      if (!(error instanceof MiningProviderRequestError)) {
+        return false;
+      }
+      assert.equal(error.providerState, "unavailable");
+      assert.equal(error.message, "The built-in OpenAI mining provider timed out after 1 second.");
+      return true;
+    },
+  );
+});
+
+test("caller aborts are not reclassified as provider unavailability", async (t) => {
+  const fixture = await createSentenceGenerationFixture(t, {
+    provider: "openai",
+    modelOverride: "gpt-5.4-mini",
+  });
+  const controller = new AbortController();
+
+  await assert.rejects(
+    async () => {
+      const requestPromise = generateMiningSentences(createMiningSentenceRequest(), {
+        paths: fixture.paths,
+        provider: fixture.provider,
+        signal: controller.signal,
+        fetchImpl: (async (_url, init) => {
+          await new Promise((_, reject) => {
+            const signal = init?.signal as AbortSignal | undefined;
+            if (signal?.aborted) {
+              reject(createAbortError("caller aborted"));
+              return;
+            }
+            signal?.addEventListener("abort", () => {
+              reject(createAbortError("caller aborted"));
+            }, { once: true });
+          });
+          throw new Error("unreachable");
+        }) as typeof fetch,
+      });
+      controller.abort();
+      await requestPromise;
+    },
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.name, "AbortError");
+      assert.notEqual(error instanceof MiningProviderRequestError, true);
       return true;
     },
   );

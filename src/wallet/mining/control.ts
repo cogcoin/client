@@ -177,7 +177,11 @@ function mapProviderState(
     ? null
     : normalizeMiningStateRecord(localState.state.miningState);
 
-  if (existingRuntime?.currentPhase === "waiting-provider" && existingRuntime.providerState !== null) {
+  if (
+    existingRuntime?.currentPhase === "waiting-provider"
+    && existingRuntime.providerState !== null
+    && (miningState === null || miningState.state === "idle")
+  ) {
     return existingRuntime.providerState;
   }
 
@@ -198,6 +202,15 @@ function mapProviderState(
   }
 
   return "unavailable";
+}
+
+function shouldReuseExistingProviderWait(options: {
+  existingRuntime: MiningRuntimeStatusV1 | null;
+  miningState: ReturnType<typeof normalizeMiningStateRecord> | null;
+}): boolean {
+  return options.existingRuntime?.currentPhase === "waiting-provider"
+    && options.existingRuntime.providerState !== null
+    && (options.miningState === null || options.miningState.state === "idle");
 }
 
 function mapIndexerDaemonState(indexer: WalletIndexerStatus): MiningRuntimeStatusV1["indexerDaemonState"] {
@@ -329,6 +342,10 @@ async function buildMiningRuntimeSnapshot(options: {
   const indexerDaemonState = mapIndexerDaemonState(options.indexer);
   const corePublishState = mapCorePublishState(options.nodeHealth, options.nodeStatus);
   const existing = options.existingRuntime;
+  const reuseExistingProviderWait = shouldReuseExistingProviderWait({
+    existingRuntime: existing,
+    miningState: state,
+  });
 
   return {
     schemaVersion: 1,
@@ -396,12 +413,16 @@ async function buildMiningRuntimeSnapshot(options: {
     indexerHealth: options.indexer.health,
     tipsAligned: options.tipsAligned,
     lastEventAtUnixMs: options.lastEventAtUnixMs,
-    lastError: existing?.lastError ?? options.provider.message ?? options.indexer.message ?? null,
+    lastError: reuseExistingProviderWait
+      ? existing?.lastError ?? null
+      : existing?.currentPhase === "waiting-bitcoin-network" || existing?.currentPhase === "waiting-indexer"
+        ? existing?.lastError ?? options.provider.message ?? options.indexer.message ?? null
+        : options.provider.message ?? options.indexer.message ?? null,
     note: state?.pauseReason === "zero-reward"
       ? "Mining is disabled because the target block reward is zero."
       : existing?.currentPhase === "resuming"
         ? "Mining discarded stale in-flight work after a large local runtime gap and is rechecking health."
-        : existing?.currentPhase === "waiting-provider"
+        : reuseExistingProviderWait
           ? "Mining is waiting for the sentence provider to recover."
           : existing?.currentPhase === "waiting-indexer"
             ? "Mining is waiting for Bitcoin Core and the indexer to align."

@@ -49,6 +49,21 @@ function createBuiltInProviderNotFoundError(options: {
   return new MiningProviderRequestError("not-found", message);
 }
 
+function createBuiltInProviderTimeoutError(options: {
+  provider: MiningProviderKind;
+  timeoutMs: number;
+}): MiningProviderRequestError {
+  const providerName = options.provider === "anthropic" ? "Anthropic" : "OpenAI";
+  const seconds = Number.isInteger(options.timeoutMs / 1_000)
+    ? String(options.timeoutMs / 1_000)
+    : (options.timeoutMs / 1_000).toFixed(1);
+  const unit = seconds === "1" ? "second" : "seconds";
+  return new MiningProviderRequestError(
+    "unavailable",
+    `The built-in ${providerName} mining provider timed out after ${seconds} ${unit}.`,
+  );
+}
+
 function buildSystemPrompt(extraPrompt: string | null): string {
   const lines = [
     "You are helping generate candidate Cogcoin mining sentences.",
@@ -117,9 +132,41 @@ function parseProviderJsonResponse(options: {
   }
 }
 
-function createProviderSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  return signal === undefined ? timeoutSignal : AbortSignal.any([signal, timeoutSignal]);
+function createProviderSignal(signal: AbortSignal | undefined, timeoutMs: number): {
+  signal: AbortSignal;
+  didTimeout(): boolean;
+  dispose(): void;
+} {
+  const controller = new AbortController();
+  let didTimeout = false;
+  const timer = setTimeout(() => {
+    didTimeout = true;
+    controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+  }, timeoutMs);
+  timer.unref?.();
+
+  const handleAbort = () => {
+    controller.abort(signal?.reason);
+  };
+
+  if (signal !== undefined) {
+    if (signal.aborted) {
+      handleAbort();
+    } else {
+      signal.addEventListener("abort", handleAbort, { once: true });
+    }
+  }
+
+  return {
+    signal: controller.signal,
+    didTimeout() {
+      return didTimeout;
+    },
+    dispose() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", handleAbort);
+    },
+  };
 }
 
 async function requestBuiltInSentences(options: {
@@ -131,10 +178,8 @@ async function requestBuiltInSentences(options: {
   signal?: AbortSignal;
 }): Promise<MiningSentenceCandidateV1[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const providerSignal = createProviderSignal(
-    options.signal,
-    Math.min(MINING_BUILTIN_TIMEOUT_MS, options.request.limits.timeoutMs),
-  );
+  const timeoutMs = Math.min(MINING_BUILTIN_TIMEOUT_MS, options.request.limits.timeoutMs);
+  const providerSignal = createProviderSignal(options.signal, timeoutMs);
 
   try {
     if (options.provider === "openai") {
@@ -161,7 +206,7 @@ async function requestBuiltInSentences(options: {
             },
           ],
         }),
-        signal: providerSignal,
+        signal: providerSignal.signal,
       });
 
       if (response.status === 401 || response.status === 403) {
@@ -217,7 +262,7 @@ async function requestBuiltInSentences(options: {
           },
         ],
       }),
-      signal: providerSignal,
+      signal: providerSignal.signal,
     });
 
     if (response.status === 401 || response.status === 403) {
@@ -254,14 +299,26 @@ async function requestBuiltInSentences(options: {
       throw error;
     }
 
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new MiningProviderRequestError("unavailable", "Mining sentence generation was aborted.");
+    if (providerSignal.didTimeout()) {
+      throw createBuiltInProviderTimeoutError({
+        provider: options.provider,
+        timeoutMs,
+      });
+    }
+
+    if (
+      error instanceof Error
+      && (error.name === "AbortError" || error.name === "TimeoutError")
+    ) {
+      throw error;
     }
 
     throw new MiningProviderRequestError(
       "unavailable",
       error instanceof Error ? error.message : String(error),
     );
+  } finally {
+    providerSignal.dispose();
   }
 }
 
