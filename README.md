@@ -137,7 +137,6 @@ The installed `cogcoin` command covers the first-party local wallet and node wor
 - COG and reputation commands such as `send`, `cog lock`, `claim`, `reclaim`, `rep give`, and `rep revoke`
 - mining commands such as `mine`, `mine start`, `mine stop`, `mine status`, `mine log`, `mine setup`, `mine prompt`, and `mine prompt list`
 
-The CLI also supports stable `--output json` and `--output preview-json` envelopes on the commands that advertise machine-readable output.
 Use `cogcoin mine prompt <domain>` to set or clear a per-domain mining prompt override for one anchored root domain, and `cogcoin mine prompt list` to inspect the current per-domain prompt state alongside the global fallback prompt.
 Interactive text invocations periodically check the npm registry for newer `@cogcoin/client` releases and print `npm install -g @cogcoin/client` when a newer version is available.
 Set `COGCOIN_DISABLE_UPDATE_CHECK=1` to disable the CLI update notice entirely.

@@ -1,12 +1,5 @@
 import { writeLine } from "../io.js";
-import { createTerminalPrompter } from "../prompt.js";
-import {
-  createMutationSuccessEnvelope,
-  describeCanonicalCommand,
-  resolveStableMutationJsonSchema,
-  writeHandledCliError,
-  writeJsonValue,
-} from "../output.js";
+import { writeHandledCliError } from "../output.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import {
   changeClientPassword,
@@ -15,12 +8,9 @@ import {
 } from "../../wallet/state/provider.js";
 
 function createCommandPrompter(
-  parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
 ) {
-  return parsed.outputMode !== "text"
-    ? createTerminalPrompter(context.stdin, context.stderr)
-    : context.createPrompter();
+  return context.createPrompter();
 }
 
 export async function runClientAdminCommand(
@@ -29,57 +19,15 @@ export async function runClientAdminCommand(
 ): Promise<number> {
   try {
     if (parsed.command === "client-lock") {
-      const status = await lockClientPassword(context.walletSecretProvider);
-
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-          resolveStableMutationJsonSchema(parsed)!,
-          describeCanonicalCommand(parsed),
-          "locked",
-          {
-            resultType: "operation",
-            operation: {
-              kind: "client-lock",
-              locked: true,
-              unlockUntilUnixMs: status.unlockUntilUnixMs,
-            },
-            state: {
-              locked: true,
-              unlockUntilUnixMs: status.unlockUntilUnixMs,
-            },
-          },
-        ));
-        return 0;
-      }
+      await lockClientPassword(context.walletSecretProvider);
 
       writeLine(context.stdout, "Client locked.");
       return 0;
     }
 
     if (parsed.command === "client-unlock") {
-      const prompter = createCommandPrompter(parsed, context);
+      const prompter = createCommandPrompter(context);
       const status = await unlockClientPassword(context.walletSecretProvider, prompter);
-
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-          resolveStableMutationJsonSchema(parsed)!,
-          describeCanonicalCommand(parsed),
-          "unlocked",
-          {
-            resultType: "operation",
-            operation: {
-              kind: "client-unlock",
-              unlocked: status.unlocked,
-              unlockUntilUnixMs: status.unlockUntilUnixMs,
-            },
-            state: {
-              unlocked: status.unlocked,
-              unlockUntilUnixMs: status.unlockUntilUnixMs,
-            },
-          },
-        ));
-        return 0;
-      }
 
       writeLine(
         context.stdout,
@@ -91,31 +39,8 @@ export async function runClientAdminCommand(
     }
 
     if (parsed.command === "client-change-password") {
-      const prompter = createCommandPrompter(parsed, context);
+      const prompter = createCommandPrompter(context);
       const status = await changeClientPassword(context.walletSecretProvider, prompter);
-
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-          resolveStableMutationJsonSchema(parsed)!,
-          describeCanonicalCommand(parsed),
-          "changed",
-          {
-            resultType: "operation",
-            operation: {
-              kind: "client-change-password",
-              changed: true,
-              unlocked: status.unlocked,
-              unlockUntilUnixMs: status.unlockUntilUnixMs,
-            },
-            state: {
-              changed: true,
-              unlocked: status.unlocked,
-              unlockUntilUnixMs: status.unlockUntilUnixMs,
-            },
-          },
-        ));
-        return 0;
-      }
 
       writeLine(
         context.stdout,

@@ -71,8 +71,6 @@ export type CommandName =
   | "domains"
   | "show";
 
-type OutputMode = "text" | "json" | "preview-json";
-type JsonSchemaKind = "stable" | "mutation" | "mining-control";
 type AliasMatchMode = "always" | "requires-arg" | "end-or-flag";
 
 interface HelpEntry {
@@ -88,12 +86,8 @@ interface CommandAlias {
 export interface CommandSpec {
   id: CommandName;
   handlerFamily: CommandHandlerFamily;
-  outputModes: readonly OutputMode[];
   supportsYes: boolean;
   supportsSatvb: boolean;
-  jsonSchemaKind: JsonSchemaKind | null;
-  jsonSchema: string | null;
-  previewJsonSchema: string | null;
   aliases: readonly CommandAlias[];
   helpEntries: readonly HelpEntry[];
   describeCommand(args: readonly string[], options: { follow: boolean }): string;
@@ -119,21 +113,13 @@ const commandSpecs = [
   {
     id: "status",
     handlerFamily: "status",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/status/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["status"] }],
     helpEntries: [
       {
         usage: "status",
         description: "Show wallet-aware local service and chain status",
-      },
-      {
-        usage: "status --output json",
-        description: "Emit the stable v1 machine-readable status envelope",
       },
     ],
     describeCommand() {
@@ -143,21 +129,13 @@ const commandSpecs = [
   {
     id: "update",
     handlerFamily: "update",
-    outputModes: ["text", "json"],
     supportsYes: true,
     supportsSatvb: false,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/update/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["update"] }],
     helpEntries: [
       {
         usage: "update",
         description: "Show the current and latest client versions and install updates",
-      },
-      {
-        usage: "update --output json",
-        description: "Emit the stable v1 machine-readable update result envelope",
       },
     ],
     describeCommand() {
@@ -167,12 +145,8 @@ const commandSpecs = [
   {
     id: "client-unlock",
     handlerFamily: "client-admin",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/client-unlock/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["client", "unlock"] }],
     helpEntries: [
       {
@@ -187,12 +161,8 @@ const commandSpecs = [
   {
     id: "client-lock",
     handlerFamily: "client-admin",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/client-lock/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["client", "lock"] }],
     helpEntries: [
       {
@@ -207,12 +177,8 @@ const commandSpecs = [
   {
     id: "client-change-password",
     handlerFamily: "client-admin",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/client-change-password/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["client", "change-password"] }],
     helpEntries: [
       {
@@ -227,12 +193,8 @@ const commandSpecs = [
   {
     id: "bitcoin-start",
     handlerFamily: "service-runtime",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/bitcoin-start/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["bitcoin", "start"] }],
     helpEntries: [
       {
@@ -247,12 +209,8 @@ const commandSpecs = [
   {
     id: "bitcoin-stop",
     handlerFamily: "service-runtime",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/bitcoin-stop/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["bitcoin", "stop"] }],
     helpEntries: [
       {
@@ -267,12 +225,8 @@ const commandSpecs = [
   {
     id: "bitcoin-status",
     handlerFamily: "service-runtime",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/bitcoin-status/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["bitcoin", "status"] }],
     helpEntries: [
       {
@@ -287,12 +241,8 @@ const commandSpecs = [
   {
     id: "bitcoin-transfer",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json"],
     supportsYes: true,
     supportsSatvb: false,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/bitcoin-transfer/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["bitcoin", "transfer"] }],
     helpEntries: [
       {
@@ -307,12 +257,8 @@ const commandSpecs = [
   {
     id: "indexer-start",
     handlerFamily: "service-runtime",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/indexer-start/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["indexer", "start"] }],
     helpEntries: [
       {
@@ -327,12 +273,8 @@ const commandSpecs = [
   {
     id: "indexer-stop",
     handlerFamily: "service-runtime",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/indexer-stop/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["indexer", "stop"] }],
     helpEntries: [
       {
@@ -347,12 +289,8 @@ const commandSpecs = [
   {
     id: "indexer-status",
     handlerFamily: "service-runtime",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/indexer-status/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["indexer", "status"] }],
     helpEntries: [
       {
@@ -367,12 +305,8 @@ const commandSpecs = [
   {
     id: "init",
     handlerFamily: "wallet-admin",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/init/v1",
-    previewJsonSchema: null,
     aliases: [
       { tokens: ["init"] },
       { tokens: ["wallet", "init"] },
@@ -381,10 +315,6 @@ const commandSpecs = [
       {
         usage: "init",
         description: "Initialize a new wallet or restore an existing wallet",
-      },
-      {
-        usage: "init --output json",
-        description: "Emit the stable v1 machine-readable init result envelope",
       },
       {
         usage: "wallet init",
@@ -398,12 +328,8 @@ const commandSpecs = [
   {
     id: "reset",
     handlerFamily: "wallet-admin",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/reset/v1",
-    previewJsonSchema: "cogcoin-preview/reset/v1",
     aliases: [{ tokens: ["reset"] }],
     helpEntries: [
       {
@@ -418,12 +344,8 @@ const commandSpecs = [
   {
     id: "repair",
     handlerFamily: "wallet-admin",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: false,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/repair/v1",
-    previewJsonSchema: "cogcoin-preview/repair/v1",
     aliases: [{ tokens: ["repair"] }],
     helpEntries: [
       {
@@ -438,12 +360,8 @@ const commandSpecs = [
   {
     id: "address",
     handlerFamily: "wallet-read",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/address/v1",
-    previewJsonSchema: null,
     aliases: [
       { tokens: ["address"] },
       { tokens: ["wallet", "address"] },
@@ -465,12 +383,8 @@ const commandSpecs = [
   {
     id: "ids",
     handlerFamily: "wallet-read",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/ids/v1",
-    previewJsonSchema: null,
     aliases: [
       { tokens: ["ids"] },
       { tokens: ["wallet", "ids"] },
@@ -492,12 +406,8 @@ const commandSpecs = [
   {
     id: "mine",
     handlerFamily: "mining-runtime",
-    outputModes: ["text"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: null,
-    jsonSchema: null,
-    previewJsonSchema: null,
     aliases: [{ tokens: ["mine"], matchMode: "end-or-flag" }],
     helpEntries: [
       {
@@ -512,12 +422,8 @@ const commandSpecs = [
   {
     id: "mine-start",
     handlerFamily: "mining-runtime",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "mining-control",
-    jsonSchema: "cogcoin/mine-start/v1",
-    previewJsonSchema: "cogcoin-preview/mine-start/v1",
     aliases: [{ tokens: ["mine", "start"] }],
     helpEntries: [
       {
@@ -532,12 +438,8 @@ const commandSpecs = [
   {
     id: "mine-stop",
     handlerFamily: "mining-runtime",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "mining-control",
-    jsonSchema: "cogcoin/mine-stop/v1",
-    previewJsonSchema: "cogcoin-preview/mine-stop/v1",
     aliases: [{ tokens: ["mine", "stop"] }],
     helpEntries: [
       {
@@ -552,21 +454,13 @@ const commandSpecs = [
   {
     id: "mine-setup",
     handlerFamily: "mining-admin",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "mining-control",
-    jsonSchema: "cogcoin/mine-setup/v1",
-    previewJsonSchema: "cogcoin-preview/mine-setup/v1",
     aliases: [{ tokens: ["mine", "setup"] }],
     helpEntries: [
       {
         usage: "mine setup",
         description: "Configure the built-in mining provider",
-      },
-      {
-        usage: "mine setup --output json",
-        description: "Emit the stable v1 machine-readable mine setup result envelope",
       },
     ],
     describeCommand() {
@@ -576,12 +470,8 @@ const commandSpecs = [
   {
     id: "mine-prompt-list",
     handlerFamily: "mining-read",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/mine-prompt-list/v1",
-    previewJsonSchema: null,
     aliases: [
       { tokens: ["mine", "prompt"], matchMode: "end-or-flag" },
       { tokens: ["mine", "prompt", "list"] },
@@ -590,10 +480,6 @@ const commandSpecs = [
       {
         usage: "mine prompt",
         description: "Show per-domain mining prompt state",
-      },
-      {
-        usage: "mine prompt --output json",
-        description: "Emit the stable v1 machine-readable mine prompt list envelope",
       },
       {
         usage: "mine prompt list",
@@ -607,21 +493,13 @@ const commandSpecs = [
   {
     id: "mine-prompt",
     handlerFamily: "mining-admin",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "mining-control",
-    jsonSchema: "cogcoin/mine-prompt/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["mine", "prompt"], matchMode: "requires-arg" }],
     helpEntries: [
       {
         usage: "mine prompt <domain>",
         description: "Configure a per-domain mining prompt override",
-      },
-      {
-        usage: "mine prompt <domain> --output json",
-        description: "Emit the stable v1 machine-readable mine prompt result envelope",
       },
     ],
     describeCommand(args) {
@@ -631,12 +509,8 @@ const commandSpecs = [
   {
     id: "mine-status",
     handlerFamily: "mining-read",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/mine-status/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["mine", "status"] }],
     helpEntries: [
       {
@@ -651,12 +525,8 @@ const commandSpecs = [
   {
     id: "mine-log",
     handlerFamily: "mining-read",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/mine-log/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["mine", "log"] }],
     helpEntries: [
       {
@@ -671,12 +541,8 @@ const commandSpecs = [
   {
     id: "anchor",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: false,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/anchor/v1",
-    previewJsonSchema: "cogcoin-preview/anchor/v1",
     aliases: [
       { tokens: ["anchor"] },
       { tokens: ["domain", "anchor"] },
@@ -694,12 +560,8 @@ const commandSpecs = [
   {
     id: "register",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/register/v1",
-    previewJsonSchema: "cogcoin-preview/register/v1",
     aliases: [
       { tokens: ["register"] },
       { tokens: ["domain", "register"] },
@@ -717,12 +579,8 @@ const commandSpecs = [
   {
     id: "transfer",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/transfer/v1",
-    previewJsonSchema: "cogcoin-preview/transfer/v1",
     aliases: [
       { tokens: ["transfer"] },
       { tokens: ["domain", "transfer"] },
@@ -740,12 +598,8 @@ const commandSpecs = [
   {
     id: "sell",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/sell/v1",
-    previewJsonSchema: "cogcoin-preview/sell/v1",
     aliases: [
       { tokens: ["sell"] },
       { tokens: ["domain", "sell"] },
@@ -763,12 +617,8 @@ const commandSpecs = [
   {
     id: "unsell",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/unsell/v1",
-    previewJsonSchema: "cogcoin-preview/unsell/v1",
     aliases: [
       { tokens: ["unsell"] },
       { tokens: ["domain", "unsell"] },
@@ -786,12 +636,8 @@ const commandSpecs = [
   {
     id: "buy",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/buy/v1",
-    previewJsonSchema: "cogcoin-preview/buy/v1",
     aliases: [
       { tokens: ["buy"] },
       { tokens: ["domain", "buy"] },
@@ -809,12 +655,8 @@ const commandSpecs = [
   {
     id: "send",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/send/v1",
-    previewJsonSchema: "cogcoin-preview/send/v1",
     aliases: [
       { tokens: ["send"] },
       { tokens: ["cog", "send"] },
@@ -832,12 +674,8 @@ const commandSpecs = [
   {
     id: "claim",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/claim/v1",
-    previewJsonSchema: "cogcoin-preview/claim/v1",
     aliases: [
       { tokens: ["claim"] },
       { tokens: ["cog", "claim"] },
@@ -855,12 +693,8 @@ const commandSpecs = [
   {
     id: "reclaim",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/reclaim/v1",
-    previewJsonSchema: "cogcoin-preview/reclaim/v1",
     aliases: [
       { tokens: ["reclaim"] },
       { tokens: ["cog", "reclaim"] },
@@ -878,12 +712,8 @@ const commandSpecs = [
   {
     id: "cog-lock",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/cog-lock/v1",
-    previewJsonSchema: "cogcoin-preview/cog-lock/v1",
     aliases: [{ tokens: ["cog", "lock"] }],
     helpEntries: [
       {
@@ -898,12 +728,8 @@ const commandSpecs = [
   {
     id: "wallet-status",
     handlerFamily: "wallet-read",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/wallet-status/v1",
-    previewJsonSchema: null,
     aliases: [{ tokens: ["wallet", "status"] }],
     helpEntries: [
       {
@@ -918,12 +744,8 @@ const commandSpecs = [
   {
     id: "wallet-show-mnemonic",
     handlerFamily: "wallet-admin",
-    outputModes: ["text"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: null,
-    jsonSchema: null,
-    previewJsonSchema: null,
     aliases: [{ tokens: ["wallet", "show-mnemonic"] }],
     helpEntries: [
       {
@@ -938,12 +760,8 @@ const commandSpecs = [
   {
     id: "balance",
     handlerFamily: "wallet-read",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/balance/v1",
-    previewJsonSchema: null,
     aliases: [
       { tokens: ["balance"] },
       { tokens: ["cog", "balance"] },
@@ -961,12 +779,8 @@ const commandSpecs = [
   {
     id: "locks",
     handlerFamily: "wallet-read",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/locks/v1",
-    previewJsonSchema: null,
     aliases: [
       { tokens: ["locks"] },
       { tokens: ["cog", "locks"] },
@@ -984,12 +798,8 @@ const commandSpecs = [
   {
     id: "domains",
     handlerFamily: "wallet-read",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/domains/v1",
-    previewJsonSchema: null,
     aliases: [
       { tokens: ["domains"] },
       { tokens: ["domain", "list"] },
@@ -1011,12 +821,8 @@ const commandSpecs = [
   {
     id: "show",
     handlerFamily: "wallet-read",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/show/v1",
-    previewJsonSchema: null,
     aliases: [
       { tokens: ["show"] },
       { tokens: ["domain", "show"] },
@@ -1038,12 +844,8 @@ const commandSpecs = [
   {
     id: "fields",
     handlerFamily: "wallet-read",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/fields/v1",
-    previewJsonSchema: null,
     aliases: [
       { tokens: ["fields"] },
       { tokens: ["field", "list"] },
@@ -1061,12 +863,8 @@ const commandSpecs = [
   {
     id: "field",
     handlerFamily: "wallet-read",
-    outputModes: ["text", "json"],
     supportsYes: false,
     supportsSatvb: false,
-    jsonSchemaKind: "stable",
-    jsonSchema: "cogcoin/field/v1",
-    previewJsonSchema: null,
     aliases: [
       { tokens: ["field"], matchMode: "always" },
       { tokens: ["field", "show"] },
@@ -1084,12 +882,8 @@ const commandSpecs = [
   {
     id: "field-create",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/field-create/v1",
-    previewJsonSchema: "cogcoin-preview/field-create/v1",
     aliases: [{ tokens: ["field", "create"] }],
     helpEntries: [
       {
@@ -1104,12 +898,8 @@ const commandSpecs = [
   {
     id: "field-set",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/field-set/v1",
-    previewJsonSchema: "cogcoin-preview/field-set/v1",
     aliases: [{ tokens: ["field", "set"] }],
     helpEntries: [
       {
@@ -1124,12 +914,8 @@ const commandSpecs = [
   {
     id: "field-clear",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/field-clear/v1",
-    previewJsonSchema: "cogcoin-preview/field-clear/v1",
     aliases: [{ tokens: ["field", "clear"] }],
     helpEntries: [
       {
@@ -1144,12 +930,8 @@ const commandSpecs = [
   {
     id: "domain-endpoint-set",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/domain-endpoint-set/v1",
-    previewJsonSchema: "cogcoin-preview/domain-endpoint-set/v1",
     aliases: [{ tokens: ["domain", "endpoint", "set"] }],
     helpEntries: [],
     describeCommand(args) {
@@ -1159,12 +941,8 @@ const commandSpecs = [
   {
     id: "domain-endpoint-clear",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/domain-endpoint-clear/v1",
-    previewJsonSchema: "cogcoin-preview/domain-endpoint-clear/v1",
     aliases: [{ tokens: ["domain", "endpoint", "clear"] }],
     helpEntries: [],
     describeCommand(args) {
@@ -1174,12 +952,8 @@ const commandSpecs = [
   {
     id: "domain-delegate-set",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/domain-delegate-set/v1",
-    previewJsonSchema: "cogcoin-preview/domain-delegate-set/v1",
     aliases: [{ tokens: ["domain", "delegate", "set"] }],
     helpEntries: [],
     describeCommand(args) {
@@ -1189,12 +963,8 @@ const commandSpecs = [
   {
     id: "domain-delegate-clear",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/domain-delegate-clear/v1",
-    previewJsonSchema: "cogcoin-preview/domain-delegate-clear/v1",
     aliases: [{ tokens: ["domain", "delegate", "clear"] }],
     helpEntries: [],
     describeCommand(args) {
@@ -1204,12 +974,8 @@ const commandSpecs = [
   {
     id: "domain-miner-set",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/domain-miner-set/v1",
-    previewJsonSchema: "cogcoin-preview/domain-miner-set/v1",
     aliases: [{ tokens: ["domain", "miner", "set"] }],
     helpEntries: [],
     describeCommand(args) {
@@ -1219,12 +985,8 @@ const commandSpecs = [
   {
     id: "domain-miner-clear",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/domain-miner-clear/v1",
-    previewJsonSchema: "cogcoin-preview/domain-miner-clear/v1",
     aliases: [{ tokens: ["domain", "miner", "clear"] }],
     helpEntries: [],
     describeCommand(args) {
@@ -1234,12 +996,8 @@ const commandSpecs = [
   {
     id: "domain-canonical",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/domain-canonical/v1",
-    previewJsonSchema: "cogcoin-preview/domain-canonical/v1",
     aliases: [{ tokens: ["domain", "canonical"] }],
     helpEntries: [],
     describeCommand(args) {
@@ -1249,12 +1007,8 @@ const commandSpecs = [
   {
     id: "rep-give",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/rep-give/v1",
-    previewJsonSchema: "cogcoin-preview/rep-give/v1",
     aliases: [{ tokens: ["rep", "give"] }],
     helpEntries: [
       {
@@ -1269,12 +1023,8 @@ const commandSpecs = [
   {
     id: "rep-revoke",
     handlerFamily: "wallet-mutation",
-    outputModes: ["text", "json", "preview-json"],
     supportsYes: true,
     supportsSatvb: true,
-    jsonSchemaKind: "mutation",
-    jsonSchema: "cogcoin/rep-revoke/v1",
-    previewJsonSchema: "cogcoin-preview/rep-revoke/v1",
     aliases: [{ tokens: ["rep", "revoke"] }],
     helpEntries: [
       {
@@ -1289,12 +1039,8 @@ const commandSpecs = [
   {
     id: "sync",
     handlerFamily: "sync",
-    outputModes: ["text"],
     supportsYes: true,
     supportsSatvb: false,
-    jsonSchemaKind: null,
-    jsonSchema: null,
-    previewJsonSchema: null,
     aliases: [{ tokens: ["sync"] }],
     helpEntries: [],
     describeCommand() {
@@ -1304,12 +1050,8 @@ const commandSpecs = [
   {
     id: "follow",
     handlerFamily: "follow",
-    outputModes: ["text"],
     supportsYes: true,
     supportsSatvb: false,
-    jsonSchemaKind: null,
-    jsonSchema: null,
-    previewJsonSchema: null,
     aliases: [{ tokens: ["follow"] }],
     helpEntries: [],
     describeCommand() {
@@ -1372,7 +1114,6 @@ const optionsSection = `Options:
   --limit <n>      Limit list rows (1..1000)
   --all            Show all rows for list commands
   --follow         Follow mining log output
-  --output <mode>  Output mode: text, json, or preview-json
   --progress <mode> Progress output mode: auto, tty, or none
   --force          Reserved for future use
   --force-race      Allow a visible root registration race
@@ -1386,10 +1127,10 @@ const quickstartSection = `Quickstart:
   3. Run \`cogcoin address\`, then fund the wallet with about 0.0015 BTC so you can buy a 6+ character domain to start mining and still keep BTC available for mining transaction fees.`;
 
 const examplesSection = `Examples:
-  cogcoin status --output json
+  cogcoin status
   cogcoin bitcoin status
   cogcoin indexer status
-  cogcoin init --output json
+  cogcoin init
   cogcoin wallet address
   cogcoin domain list --mineable
   cogcoin register alpha-child
@@ -1398,10 +1139,10 @@ const examplesSection = `Examples:
   cogcoin buy alpha
   cogcoin field set alpha bio --text "hello"
   cogcoin rep give alpha beta 10 --review "great operator"
-  cogcoin mine setup --output json
+  cogcoin mine setup
   cogcoin mine prompt
   cogcoin mine prompt alpha
-  cogcoin register alpha-child --output preview-json
+  cogcoin register alpha-child
   cogcoin mine status`;
 
 const commandSpecById = new Map<CommandName, CommandSpec>(
@@ -1518,33 +1259,6 @@ export function describeCanonicalCommandFromArgs(
   }
 
   return spec.describeCommand(args, options);
-}
-
-export function resolveStableJsonSchemaForCommand(command: CommandName | null): string | null {
-  const spec = getCommandSpec(command);
-  return spec?.jsonSchemaKind === "stable" ? spec.jsonSchema : null;
-}
-
-export function resolveStableMutationJsonSchemaForCommand(command: CommandName | null): string | null {
-  const spec = getCommandSpec(command);
-  return spec?.jsonSchemaKind === "mutation" ? spec.jsonSchema : null;
-}
-
-export function resolveStableMiningControlJsonSchemaForCommand(command: CommandName | null): string | null {
-  const spec = getCommandSpec(command);
-  return spec?.jsonSchemaKind === "mining-control" ? spec.jsonSchema : null;
-}
-
-export function resolvePreviewJsonSchemaForCommand(command: CommandName | null): string | null {
-  return getCommandSpec(command)?.previewJsonSchema ?? null;
-}
-
-export function isJsonOutputSupportedForCommand(command: CommandName | null): boolean {
-  return getCommandSpec(command)?.outputModes.includes("json") ?? false;
-}
-
-export function isPreviewJsonOutputSupportedForCommand(command: CommandName | null): boolean {
-  return getCommandSpec(command)?.outputModes.includes("preview-json") ?? false;
 }
 
 export function renderHelpText(): string {

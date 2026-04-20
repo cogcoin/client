@@ -20,10 +20,7 @@ import {
 } from "../../wallet/root-resolution.js";
 import { writeLine } from "../io.js";
 import {
-  createSuccessEnvelope,
-  describeCanonicalCommand,
   writeHandledCliError,
-  writeJsonValue,
 } from "../output.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 
@@ -395,46 +392,6 @@ function formatIndexerStatusReport(payload: IndexerStatusPayload): string {
   });
 }
 
-function buildStatusMessages(payload: BitcoinStatusPayload | IndexerStatusPayload): {
-  warnings: string[];
-  explanations: string[];
-  nextSteps: string[];
-} {
-  const warnings: string[] = [];
-  const explanations: string[] = [];
-  const nextSteps: string[] = [];
-
-  if (payload.compatibility !== "compatible") {
-    warnings.push(`Managed service compatibility is ${payload.compatibility}.`);
-  }
-
-  if ("nodeError" in payload && payload.nodeError !== null) {
-    explanations.push(payload.nodeError);
-  }
-
-  if ("service" in payload && payload.service?.lastError) {
-    explanations.push(payload.service.lastError);
-  }
-
-  if ("daemon" in payload && payload.daemon?.lastError) {
-    explanations.push(payload.daemon.lastError);
-  }
-
-  if ("service" in payload && payload.compatibility === "unreachable") {
-    nextSteps.push("Run `cogcoin bitcoin start` to start the managed Bitcoin service.");
-  }
-
-  if ("daemon" in payload && payload.compatibility === "unreachable") {
-    nextSteps.push("Run `cogcoin indexer start` to start the managed Cogcoin indexer.");
-  }
-
-  return {
-    warnings,
-    explanations,
-    nextSteps,
-  };
-}
-
 export async function runServiceRuntimeCommand(
   parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
@@ -444,16 +401,6 @@ export async function runServiceRuntimeCommand(
 
     if (parsed.command === "bitcoin-status") {
       const payload = await inspectManagedBitcoindStatus(dataDir, context);
-      const messages = buildStatusMessages(payload);
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createSuccessEnvelope(
-          "cogcoin/bitcoin-status/v1",
-          describeCanonicalCommand(parsed),
-          payload,
-          messages,
-        ));
-        return 0;
-      }
       context.stdout.write(formatBitcoinStatusReport(payload));
       return 0;
     }
@@ -463,16 +410,6 @@ export async function runServiceRuntimeCommand(
       const packageVersion = await context.readPackageVersion();
       await context.ensureDirectory(dirname(dbPath));
       const payload = await inspectManagedIndexerStatus(dataDir, dbPath, packageVersion, context);
-      const messages = buildStatusMessages(payload);
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createSuccessEnvelope(
-          "cogcoin/indexer-status/v1",
-          describeCanonicalCommand(parsed),
-          payload,
-          messages,
-        ));
-        return 0;
-      }
       context.stdout.write(formatIndexerStatusReport(payload));
       return 0;
     }
@@ -502,21 +439,6 @@ export async function runServiceRuntimeCommand(
         },
       };
 
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createSuccessEnvelope(
-          "cogcoin/bitcoin-start/v1",
-          describeCanonicalCommand(parsed),
-          payload,
-          {
-            nextSteps: [
-              "Run `cogcoin bitcoin status` to inspect the managed Bitcoin node.",
-              "Run `cogcoin indexer start` or `cogcoin sync` when you want the managed Cogcoin indexer.",
-            ],
-          },
-        ));
-        return 0;
-      }
-
       writeLine(
         context.stdout,
         bitcoindStatus === "already-running" ? "Managed bitcoind already running." : "Managed bitcoind started.",
@@ -542,15 +464,6 @@ export async function runServiceRuntimeCommand(
         bitcoind,
         indexer,
       };
-
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createSuccessEnvelope(
-          "cogcoin/bitcoin-stop/v1",
-          describeCanonicalCommand(parsed),
-          payload,
-        ));
-        return 0;
-      }
 
       writeLine(
         context.stdout,
@@ -602,20 +515,6 @@ export async function runServiceRuntimeCommand(
         },
       };
 
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createSuccessEnvelope(
-          "cogcoin/indexer-start/v1",
-          describeCanonicalCommand(parsed),
-          payload,
-          {
-            nextSteps: [
-              "Run `cogcoin indexer status` to inspect the managed Cogcoin indexer.",
-            ],
-          },
-        ));
-        return 0;
-      }
-
       writeLine(
         context.stdout,
         payload.indexer.status === "already-running" ? "Managed indexer already running." : "Managed indexer started.",
@@ -638,15 +537,6 @@ export async function runServiceRuntimeCommand(
         walletRootSource: resolution.source,
         indexer,
       };
-
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createSuccessEnvelope(
-          "cogcoin/indexer-stop/v1",
-          describeCanonicalCommand(parsed),
-          payload,
-        ));
-        return 0;
-      }
 
       writeLine(
         context.stdout,

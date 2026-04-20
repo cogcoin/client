@@ -8,13 +8,8 @@ import {
 } from "../mining-format.js";
 import { writeLine } from "../io.js";
 import {
-  createErrorEnvelope,
-  createSuccessEnvelope,
-  describeCanonicalCommand,
   normalizeListPage,
-  writeJsonValue,
 } from "../output.js";
-import { buildMineLogJson, buildMinePromptListJson, buildMineStatusJson } from "../read-json.js";
 import { formatNextStepLines } from "../workflow-hints.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
@@ -36,6 +31,15 @@ async function readRotationIndices(paths: {
   }
 
   return rotation;
+}
+
+function getMinePromptListNextSteps(result: Awaited<ReturnType<RequiredCliRunnerContext["inspectMiningDomainPromptState"]>>): string[] {
+  if (result.prompts.length === 0) {
+    return ["cogcoin domains --mineable"];
+  }
+
+  const nextDomainPrompt = result.prompts.find((entry) => entry.mineable && entry.prompt === null);
+  return nextDomainPrompt === undefined ? [] : [`cogcoin mine prompt ${nextDomainPrompt.domain.name}`];
 }
 
 export async function runMiningReadCommand(
@@ -63,37 +67,7 @@ export async function runMiningReadCommand(
         const events = normalized.items.slice().reverse();
 
         if (events.length === 0) {
-          if (parsed.outputMode === "json") {
-            const result = buildMineLogJson(events, normalized.page, await readRotationIndices(runtimePaths));
-            writeJsonValue(context.stdout, createSuccessEnvelope(
-              "cogcoin/mine-log/v1",
-              describeCanonicalCommand(parsed),
-              result.data,
-              {
-                warnings: result.warnings,
-                explanations: result.explanations,
-                nextSteps: result.nextSteps,
-              },
-            ));
-            return 0;
-          }
-
           writeLine(context.stdout, "No mining events recorded yet.");
-          return 0;
-        }
-
-        if (parsed.outputMode === "json") {
-          const result = buildMineLogJson(events, normalized.page, await readRotationIndices(runtimePaths));
-          writeJsonValue(context.stdout, createSuccessEnvelope(
-            "cogcoin/mine-log/v1",
-            describeCanonicalCommand(parsed),
-            result.data,
-            {
-              warnings: result.warnings,
-              explanations: result.explanations,
-              nextSteps: result.nextSteps,
-            },
-          ));
           return 0;
         }
 
@@ -132,9 +106,10 @@ export async function runMiningReadCommand(
     }
 
     if (parsed.command === "mine-prompt-list") {
-      const provider = parsed.outputMode === "text"
-        ? withInteractiveWalletSecretProvider(context.walletSecretProvider, context.createPrompter())
-        : context.walletSecretProvider;
+      const provider = withInteractiveWalletSecretProvider(
+        context.walletSecretProvider,
+        context.createPrompter(),
+      );
       const readContext = await context.openWalletReadContext({
         dataDir,
         databasePath: dbPath,
@@ -144,28 +119,14 @@ export async function runMiningReadCommand(
       });
 
       try {
-        const result = buildMinePromptListJson(await context.inspectMiningDomainPromptState({
+        const result = await context.inspectMiningDomainPromptState({
           paths: runtimePaths,
           provider,
           readContext,
-        }));
+        });
 
-        if (parsed.outputMode === "json") {
-          writeJsonValue(context.stdout, createSuccessEnvelope(
-            "cogcoin/mine-prompt-list/v1",
-            describeCanonicalCommand(parsed),
-            result.data,
-            {
-              warnings: result.warnings,
-              explanations: result.explanations,
-              nextSteps: result.nextSteps,
-            },
-          ));
-          return 0;
-        }
-
-        writeLine(context.stdout, formatMiningPromptListReport(result.data));
-        for (const line of formatNextStepLines(result.nextSteps)) {
+        writeLine(context.stdout, formatMiningPromptListReport(result));
+        for (const line of formatNextStepLines(getMinePromptListNextSteps(result))) {
           writeLine(context.stdout, line);
         }
         return 0;
@@ -174,41 +135,28 @@ export async function runMiningReadCommand(
       }
     }
 
-      const provider = parsed.outputMode === "text"
-        ? withInteractiveWalletSecretProvider(context.walletSecretProvider, context.createPrompter())
-        : context.walletSecretProvider;
-      const readContext = await context.openWalletReadContext({
-        dataDir,
-        databasePath: dbPath,
-        secretProvider: provider,
-        expectedIndexerBinaryVersion: packageVersion,
-        paths: runtimePaths,
-      });
+    const provider = withInteractiveWalletSecretProvider(
+      context.walletSecretProvider,
+      context.createPrompter(),
+    );
+    const readContext = await context.openWalletReadContext({
+      dataDir,
+      databasePath: dbPath,
+      secretProvider: provider,
+      expectedIndexerBinaryVersion: packageVersion,
+      paths: runtimePaths,
+    });
 
     try {
-        const mining = readContext.mining ?? await context.inspectMiningControlPlane({
-          provider,
-          localState: readContext.localState,
-          bitcoind: readContext.bitcoind,
-          nodeStatus: readContext.nodeStatus,
-          nodeHealth: readContext.nodeHealth,
-          indexer: readContext.indexer,
-          paths: runtimePaths,
-        });
-      if (parsed.outputMode === "json") {
-        const result = buildMineStatusJson(mining);
-        writeJsonValue(context.stdout, createSuccessEnvelope(
-          "cogcoin/mine-status/v1",
-          describeCanonicalCommand(parsed),
-          result.data,
-          {
-            warnings: result.warnings,
-            explanations: result.explanations,
-            nextSteps: result.nextSteps,
-          },
-        ));
-        return 0;
-      }
+      const mining = readContext.mining ?? await context.inspectMiningControlPlane({
+        provider,
+        localState: readContext.localState,
+        bitcoind: readContext.bitcoind,
+        nodeStatus: readContext.nodeStatus,
+        nodeHealth: readContext.nodeHealth,
+        indexer: readContext.indexer,
+        paths: runtimePaths,
+      });
       writeLine(context.stdout, formatMineStatusReport(mining));
       return 0;
     } finally {
@@ -216,19 +164,6 @@ export async function runMiningReadCommand(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (parsed.outputMode === "json") {
-      writeJsonValue(context.stdout, createErrorEnvelope(
-        parsed.command === "mine-log"
-          ? "cogcoin/mine-log/v1"
-          : parsed.command === "mine-prompt-list"
-            ? "cogcoin/mine-prompt-list/v1"
-          : "cogcoin/mine-status/v1",
-        describeCanonicalCommand(parsed),
-        message,
-        message,
-      ));
-      return 5;
-    }
     writeLine(context.stderr, message);
     return 5;
   }

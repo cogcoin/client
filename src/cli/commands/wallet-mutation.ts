@@ -64,7 +64,6 @@ import {
   formatReputationReviewSummary,
   formatReputationSenderSummary,
 } from "../mutation-text-format.js";
-import { createTerminalPrompter } from "../prompt.js";
 import { writeHandledCliError } from "../output.js";
 import {
   getAnchorNextSteps,
@@ -98,12 +97,9 @@ function createFieldValueSource(parsed: ParsedCliArgs): FieldValueInputSource {
 }
 
 function createCommandPrompter(
-  parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
 ) {
-  return parsed.outputMode !== "text"
-    ? createTerminalPrompter(context.stdin, context.stderr)
-    : context.createPrompter();
+  return context.createPrompter();
 }
 
 export async function runWalletMutationCommand(
@@ -127,7 +123,7 @@ export async function runWalletMutationCommand(
 
       const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
       const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
-      const prompter = createCommandPrompter(parsed, context);
+      const prompter = createCommandPrompter(context);
       const interactive = prompter.isInteractive;
       const provider = withInteractiveWalletSecretProvider(context.walletSecretProvider, prompter);
 

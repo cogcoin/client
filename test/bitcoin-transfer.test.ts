@@ -315,7 +315,7 @@ test("runCli routes bitcoin transfer through the wallet mutation path and render
   assert.match(rendered, /Txid: txid-1/);
 });
 
-test("runCli emits the stable bitcoin transfer json envelope", async () => {
+test("runCli rejects the removed --output flag for bitcoin transfer", async () => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
 
@@ -329,49 +329,10 @@ test("runCli emits the stable bitcoin transfer json envelope", async () => {
         COGCOIN_DISABLE_UPDATE_CHECK: "1",
       },
       walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
-      transferBitcoin: async () => ({
-        amountSats: 1234n,
-        feeSats: 55n,
-        senderAddress: "bc1qsender",
-        recipientAddress: "bc1qrecipient",
-        recipientScriptPubKeyHex: `0014${"22".repeat(20)}`,
-        changeAddress: "bc1qsender",
-        txid: "txid-1",
-        wtxid: "wtxid-1",
-      }),
     },
   );
 
-  const rendered = JSON.parse(stdout.read()) as {
-    schema: string;
-    outcome: string;
-    data: {
-      resultType: string;
-      operation: {
-        kind: string;
-        amountSats: string;
-        feeSats: string;
-        senderAddress: string;
-        recipientAddress: string;
-        recipientScriptPubKeyHex: string;
-        changeAddress: string;
-        txid: string;
-        wtxid: string;
-      };
-    };
-  };
-
-  assert.equal(exitCode, 0);
-  assert.equal(stderr.read(), "");
-  assert.equal(rendered.schema, "cogcoin/bitcoin-transfer/v1");
-  assert.equal(rendered.outcome, "submitted");
-  assert.equal(rendered.data.resultType, "operation");
-  assert.equal(rendered.data.operation.kind, "bitcoin-transfer");
-  assert.equal(rendered.data.operation.amountSats, "1234");
-  assert.equal(rendered.data.operation.feeSats, "55");
-  assert.equal(rendered.data.operation.senderAddress, "bc1qsender");
-  assert.equal(rendered.data.operation.recipientAddress, "bc1qrecipient");
-  assert.equal(rendered.data.operation.changeAddress, "bc1qsender");
-  assert.equal(rendered.data.operation.txid, "txid-1");
-  assert.equal(rendered.data.operation.wtxid, "wtxid-1");
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.read(), "");
+  assert.match(stderr.read(), /cli_unknown_flag_output/);
 });

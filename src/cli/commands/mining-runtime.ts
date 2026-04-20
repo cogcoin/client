@@ -15,25 +15,8 @@ import {
   isManagedIndexerCaughtUp,
   pollManagedIndexerUntilCaughtUp,
 } from "../managed-indexer-observer.js";
-import {
-  buildMineStartData,
-  buildMineStopData,
-} from "../mining-json.js";
-import {
-  buildMineStartPreviewData,
-  buildMineStopPreviewData,
-} from "../preview-json.js";
 import { usesTtyProgress, writeLine } from "../io.js";
-import { createTerminalPrompter } from "../prompt.js";
-import {
-  createPreviewSuccessEnvelope,
-  createMutationSuccessEnvelope,
-  describeCanonicalCommand,
-  resolvePreviewJsonSchema,
-  resolveStableMiningControlJsonSchema,
-  writeHandledCliError,
-  writeJsonValue,
-} from "../output.js";
+import { writeHandledCliError } from "../output.js";
 import {
   formatNextStepLines,
   getMineStopNextSteps,
@@ -57,12 +40,9 @@ const MANAGED_MINING_READINESS_POLL_INTERVAL_MS = 500;
 const EMPTY_MINING_VISUALIZER_STATE = createEmptyMiningFollowVisualizerState();
 
 function createCommandPrompter(
-  parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
 ) {
-  return parsed.outputMode !== "text"
-    ? createTerminalPrompter(context.stdin, context.stderr)
-    : context.createPrompter();
+  return context.createPrompter();
 }
 
 async function ensureMiningProviderSetup(options: {
@@ -543,7 +523,7 @@ export async function runMiningRuntimeCommand(
     }
 
     if (parsed.command === "mine-start") {
-      const prompter = createCommandPrompter(parsed, context);
+      const prompter = createCommandPrompter(context);
       const provider = withInteractiveWalletSecretProvider(
         context.walletSecretProvider,
         prompter,
@@ -575,26 +555,6 @@ export async function runMiningRuntimeCommand(
         paths: runtimePaths,
       });
 
-      if (parsed.outputMode === "preview-json") {
-        writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
-          resolvePreviewJsonSchema(parsed)!,
-          describeCanonicalCommand(parsed),
-          result.started ? "started" : "already-active",
-          buildMineStartPreviewData(result),
-        ));
-        return 0;
-      }
-
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-          resolveStableMiningControlJsonSchema(parsed)!,
-          "cogcoin mine start",
-          result.started ? "started" : "already-active",
-          buildMineStartData(result),
-        ));
-        return 0;
-      }
-
       if (!result.started) {
         writeLine(context.stdout, "Background mining is already active.");
         if (result.snapshot?.backgroundWorkerPid !== null && result.snapshot?.backgroundWorkerPid !== undefined) {
@@ -611,9 +571,10 @@ export async function runMiningRuntimeCommand(
     }
 
     if (parsed.command === "mine-stop") {
-      const provider = parsed.outputMode === "text"
-        ? withInteractiveWalletSecretProvider(context.walletSecretProvider, context.createPrompter())
-        : context.walletSecretProvider;
+      const provider = withInteractiveWalletSecretProvider(
+        context.walletSecretProvider,
+        context.createPrompter(),
+      );
       const snapshot = await context.stopBackgroundMining({
         dataDir,
         databasePath: dbPath,
@@ -621,30 +582,6 @@ export async function runMiningRuntimeCommand(
         paths: runtimePaths,
       });
       const nextSteps = getMineStopNextSteps();
-      if (parsed.outputMode === "preview-json") {
-        writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
-          resolvePreviewJsonSchema(parsed)!,
-          describeCanonicalCommand(parsed),
-          snapshot === null ? "not-active" : "stopped",
-          buildMineStopPreviewData(snapshot),
-          {
-            nextSteps,
-          },
-        ));
-        return 0;
-      }
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-          resolveStableMiningControlJsonSchema(parsed)!,
-          "cogcoin mine stop",
-          snapshot === null ? "not-active" : "stopped",
-          buildMineStopData(snapshot),
-          {
-            nextSteps,
-          },
-        ));
-        return 0;
-      }
       writeLine(context.stdout, snapshot?.note ?? "Background mining was not active.");
       for (const line of formatNextStepLines(nextSteps)) {
         writeLine(context.stdout, line);

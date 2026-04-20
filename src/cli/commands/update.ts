@@ -1,11 +1,5 @@
 import { writeLine } from "../io.js";
-import {
-  createMutationSuccessEnvelope,
-  describeCanonicalCommand,
-  resolveStableMutationJsonSchema,
-  writeHandledCliError,
-  writeJsonValue,
-} from "../output.js";
+import { writeHandledCliError } from "../output.js";
 import {
   CLI_INSTALL_COMMAND,
   EXPLICIT_UPDATE_CHECK_TIMEOUT_MS,
@@ -22,7 +16,7 @@ interface UpdateCommandResult {
   currentVersion: string;
   latestVersion: string;
   installCommand: typeof CLI_INSTALL_COMMAND;
-  status: "up-to-date" | "updated" | "canceled";
+  status: "up-to-date" | "updated";
   applied: boolean;
 }
 
@@ -73,20 +67,6 @@ async function confirmApplyUpdate(context: RequiredCliRunnerContext): Promise<bo
   }
 }
 
-function writeSuccessJson(
-  parsed: ParsedCliArgs,
-  context: RequiredCliRunnerContext,
-  result: UpdateCommandResult,
-): number {
-  writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-    resolveStableMutationJsonSchema(parsed)!,
-    describeCanonicalCommand(parsed),
-    result.status,
-    result,
-  ));
-  return 0;
-}
-
 export async function runUpdateCommand(
   parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
@@ -114,11 +94,7 @@ export async function runUpdateCommand(
     }
 
     if (comparison <= 0) {
-      const result = createUpdateResult(currentVersion, latestVersion, "up-to-date", false);
-
-      if (parsed.outputMode === "json") {
-        return writeSuccessJson(parsed, context, result);
-      }
+      createUpdateResult(currentVersion, latestVersion, "up-to-date", false);
 
       writeVersionSummary(context, currentVersion, latestVersion);
       writeLine(context.stdout, "Cogcoin is already up to date.");
@@ -126,35 +102,24 @@ export async function runUpdateCommand(
     }
 
     if (!parsed.assumeYes) {
-      if (parsed.outputMode !== "text") {
-        throw new Error("cli_update_requires_tty");
-      }
-
       writeVersionSummary(context, currentVersion, latestVersion);
 
       if (!(await confirmApplyUpdate(context))) {
         writeLine(context.stdout, "Update canceled.");
         return 0;
       }
-    } else if (parsed.outputMode === "text") {
+    } else {
       writeVersionSummary(context, currentVersion, latestVersion);
     }
 
-    if (parsed.outputMode === "text") {
-      writeLine(context.stdout, "Installing update...");
-    }
+    writeLine(context.stdout, "Installing update...");
 
     await context.runGlobalClientUpdateInstall({
-      stdout: parsed.outputMode === "json" ? context.stderr : context.stdout,
+      stdout: context.stdout,
       stderr: context.stderr,
       env: context.env,
     });
-
-    const result = createUpdateResult(currentVersion, latestVersion, "updated", true);
-
-    if (parsed.outputMode === "json") {
-      return writeSuccessJson(parsed, context, result);
-    }
+    createUpdateResult(currentVersion, latestVersion, "updated", true);
 
     writeLine(context.stdout, "Update completed. The next cogcoin invocation will use the new install.");
     return 0;

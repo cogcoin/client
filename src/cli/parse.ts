@@ -1,10 +1,8 @@
-import type { CommandName, OutputMode, ParsedCliArgs, ProgressOutput } from "./types.js";
+import type { CommandName, ParsedCliArgs, ProgressOutput } from "./types.js";
 import {
   commandSupportsSatvb,
   commandSupportsYesFlag,
   getCommandHandlerFamily,
-  isJsonOutputSupportedForCommand,
-  isPreviewJsonOutputSupportedForCommand,
   renderHelpText,
   resolveCommandMatch,
   resolveUnknownCommandError,
@@ -20,7 +18,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   const args: string[] = [];
   let help = false;
   let version = false;
-  let outputMode: OutputMode = "text";
   let dbPath: string | null = null;
   let dataDir: string | null = null;
   let progressOutput: ProgressOutput = "auto";
@@ -61,18 +58,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
     if (token === "--version") {
       version = true;
-      continue;
-    }
-
-    if (token === "--output") {
-      index += 1;
-      const value = argv[index] ?? null;
-
-      if (value !== "text" && value !== "json" && value !== "preview-json") {
-        throw new Error("cli_invalid_output_mode");
-      }
-
-      outputMode = value;
       continue;
     }
 
@@ -609,20 +594,8 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_follow_not_supported_for_command");
   }
 
-  if (command === "mine-log" && follow && outputMode !== "text") {
-    throw new Error("cli_follow_json_not_supported");
-  }
-
   if (command === "mine-log" && follow && (listAll || listLimit !== null)) {
     throw new Error("cli_follow_limit_not_supported");
-  }
-
-  if (outputMode === "json" && !isJsonOutputSupportedForCommand(command)) {
-    throw new Error("cli_output_not_supported_for_command");
-  }
-
-  if (outputMode === "preview-json" && !isPreviewJsonOutputSupportedForCommand(command)) {
-    throw new Error("cli_output_not_supported_for_command");
   }
 
   if (command === "cog-lock") {
@@ -649,7 +622,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     args,
     help,
     version,
-    outputMode,
     dbPath,
     dataDir,
     progressOutput,

@@ -3,14 +3,6 @@ import {
   type WalletMutationFeeSummary,
 } from "../wallet/tx/common.js";
 import {
-  createPreviewSuccessEnvelope,
-  createMutationSuccessEnvelope,
-  describeCanonicalCommand,
-  resolvePreviewJsonSchema,
-  resolveStableMutationJsonSchema,
-  writeJsonValue,
-} from "./output.js";
-import {
   type MutationTextField,
   writeMutationTextResult,
 } from "./mutation-text-write.js";
@@ -21,13 +13,11 @@ import type {
 import { formatNextStepLines } from "./workflow-hints.js";
 
 export interface MutationSuccessNextSteps {
-  json: string[];
   text: string[];
 }
 
 export function commandMutationNextSteps(command: string): MutationSuccessNextSteps {
   return {
-    json: [`Run \`${command}\`.`],
     text: [`Next step: ${command}`],
   };
 }
@@ -36,7 +26,6 @@ export function workflowMutationNextSteps(
   nextSteps: readonly string[],
 ): MutationSuccessNextSteps {
   return {
-    json: [...nextSteps],
     text: formatNextStepLines(nextSteps),
   };
 }
@@ -80,42 +69,6 @@ export function writeMutationCommandSuccess(
     warnings?: string[];
   },
 ): number {
-  if (parsed.outputMode === "preview-json") {
-    writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
-      resolvePreviewJsonSchema(parsed)!,
-      describeCanonicalCommand(parsed),
-      options.outcome ?? mutationOutcome(options.reusedExisting),
-      options.previewData ?? options.data,
-      {
-        explanations: reuseExplanation(
-          options.reusedExisting,
-          options.reusedMessage,
-        ),
-        nextSteps: options.nextSteps.json,
-        warnings: options.warnings,
-      },
-    ));
-    return 0;
-  }
-
-  if (parsed.outputMode === "json") {
-    writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-      resolveStableMutationJsonSchema(parsed)!,
-      describeCanonicalCommand(parsed),
-      options.outcome ?? mutationOutcome(options.reusedExisting),
-      options.data,
-      {
-        explanations: reuseExplanation(
-          options.reusedExisting,
-          options.reusedMessage,
-        ),
-        nextSteps: options.nextSteps.json,
-        warnings: options.warnings,
-      },
-    ));
-    return 0;
-  }
-
   writeMutationTextResult(context.stdout, {
     heading: options.text.heading,
     fields: [...options.text.fields, ...feeFields(options.fees)],

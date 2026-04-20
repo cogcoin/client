@@ -23,7 +23,7 @@ function isEligibleForUpdateNotification(
     return false;
   }
 
-  if (parsed.outputMode !== "text" || parsed.help || parsed.version) {
+  if (parsed.help || parsed.version) {
     return false;
   }
 

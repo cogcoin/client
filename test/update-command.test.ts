@@ -225,71 +225,6 @@ test("update --yes skips prompting and invokes npm", async (t) => {
   assert.equal(harness.prompt.prompts.length, 0);
 });
 
-test("update json output reports the up-to-date result", async (t) => {
-  const harness = await createUpdateTestContext(t, {
-    currentVersion: CURRENT_VERSION,
-    latestVersion: CURRENT_VERSION,
-  });
-
-  const exitCode = await runUpdateCommand(parseCliArgs(["update", "--output", "json"]), harness.context);
-  const payload = JSON.parse(harness.stdout.read()) as {
-    ok: boolean;
-    schema: string;
-    outcome: string;
-    data: {
-      status: string;
-      applied: boolean;
-      currentVersion: string;
-      latestVersion: string;
-      installCommand: string;
-    };
-  };
-
-  assert.equal(exitCode, 0);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.schema, "cogcoin/update/v1");
-  assert.equal(payload.outcome, "up-to-date");
-  assert.equal(payload.data.status, "up-to-date");
-  assert.equal(payload.data.applied, false);
-  assert.equal(payload.data.currentVersion, CURRENT_VERSION);
-  assert.equal(payload.data.latestVersion, CURRENT_VERSION);
-  assert.equal(payload.data.installCommand, "npm install -g @cogcoin/client");
-});
-
-test("update json output reports the updated result", async (t) => {
-  const harness = await createUpdateTestContext(t, {
-    currentVersion: CURRENT_VERSION,
-    latestVersion: NEXT_VERSION,
-  });
-
-  const exitCode = await runUpdateCommand(
-    parseCliArgs(["update", "--output", "json", "--yes"]),
-    harness.context,
-  );
-  const payload = JSON.parse(harness.stdout.read()) as {
-    ok: boolean;
-    schema: string;
-    outcome: string;
-    data: {
-      status: string;
-      applied: boolean;
-      currentVersion: string;
-      latestVersion: string;
-      installCommand: string;
-    };
-  };
-
-  assert.equal(exitCode, 0);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.schema, "cogcoin/update/v1");
-  assert.equal(payload.outcome, "updated");
-  assert.equal(payload.data.status, "updated");
-  assert.equal(payload.data.applied, true);
-  assert.equal(payload.data.currentVersion, CURRENT_VERSION);
-  assert.equal(payload.data.latestVersion, NEXT_VERSION);
-  assert.equal(payload.data.installCommand, "npm install -g @cogcoin/client");
-});
-
 test("update registry failures map to cli_update_registry_unavailable", async (t) => {
   const harness = await createUpdateTestContext(t, {
     currentVersion: CURRENT_VERSION,
@@ -298,17 +233,11 @@ test("update registry failures map to cli_update_registry_unavailable", async (t
     }) as typeof fetch,
   });
 
-  const exitCode = await runUpdateCommand(parseCliArgs(["update", "--output", "json"]), harness.context);
-  const payload = JSON.parse(harness.stdout.read()) as {
-    ok: boolean;
-    error: {
-      code: string;
-    };
-  };
+  const exitCode = await runUpdateCommand(parseCliArgs(["update"]), harness.context);
 
   assert.equal(exitCode, 2);
-  assert.equal(payload.ok, false);
-  assert.equal(payload.error.code, "cli_update_registry_unavailable");
+  assert.equal(harness.stdout.read(), "");
+  assert.match(harness.stderr.read(), /Cogcoin could not read the latest client version from the npm registry\./);
 });
 
 test("update missing npm failures map to cli_update_npm_not_found", async (t) => {
@@ -321,19 +250,12 @@ test("update missing npm failures map to cli_update_npm_not_found", async (t) =>
   });
 
   const exitCode = await runUpdateCommand(
-    parseCliArgs(["update", "--output", "json", "--yes"]),
+    parseCliArgs(["update", "--yes"]),
     harness.context,
   );
-  const payload = JSON.parse(harness.stdout.read()) as {
-    ok: boolean;
-    error: {
-      code: string;
-    };
-  };
 
   assert.equal(exitCode, 2);
-  assert.equal(payload.ok, false);
-  assert.equal(payload.error.code, "cli_update_npm_not_found");
+  assert.match(harness.stderr.read(), /Cogcoin could not find npm to install the update\./);
 });
 
 test("update install failures map to cli_update_install_failed", async (t) => {
@@ -346,19 +268,12 @@ test("update install failures map to cli_update_install_failed", async (t) => {
   });
 
   const exitCode = await runUpdateCommand(
-    parseCliArgs(["update", "--output", "json", "--yes"]),
+    parseCliArgs(["update", "--yes"]),
     harness.context,
   );
-  const payload = JSON.parse(harness.stdout.read()) as {
-    ok: boolean;
-    error: {
-      code: string;
-    };
-  };
 
   assert.equal(exitCode, 2);
-  assert.equal(payload.ok, false);
-  assert.equal(payload.error.code, "cli_update_install_failed");
+  assert.match(harness.stderr.read(), /Cogcoin update installation failed\./);
 });
 
 test("passive update notifications still run for ordinary commands", async (t) => {

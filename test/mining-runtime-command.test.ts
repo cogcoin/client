@@ -5,16 +5,7 @@ import test from "node:test";
 
 import { createDefaultContext } from "../src/cli/context.js";
 import { runMiningRuntimeCommand } from "../src/cli/commands/mining-runtime.js";
-import { buildMineStartData } from "../src/cli/mining-json.js";
-import {
-  createMutationSuccessEnvelope,
-  createPreviewSuccessEnvelope,
-  describeCanonicalCommand,
-  resolvePreviewJsonSchema,
-  resolveStableMiningControlJsonSchema,
-} from "../src/cli/output.js";
 import { parseCliArgs } from "../src/cli/parse.js";
-import { buildMineStartPreviewData } from "../src/cli/preview-json.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
@@ -35,22 +26,6 @@ function createStringWriter(options: { isTTY?: boolean; columns?: number } = {})
       return text;
     },
   };
-}
-
-function parseJsonOutput(text: string): Record<string, unknown> {
-  return JSON.parse(text) as Record<string, unknown>;
-}
-
-function assertStableJsonEnvelope(
-  actualText: string,
-  expected: unknown,
-): void {
-  const actual = parseJsonOutput(actualText);
-  const expectedObject = structuredClone(expected) as Record<string, unknown>;
-  assert.equal(typeof actual.generatedAtUnixMs, "number");
-  delete actual.generatedAtUnixMs;
-  delete expectedObject.generatedAtUnixMs;
-  assert.deepEqual(actual, expectedObject);
 }
 
 const QUIET_SIGNAL_SOURCE = {
@@ -446,102 +421,6 @@ test("mine start text ensures provider setup, syncs managed services, then start
   assert.equal(actualStartOptions.provider, provider);
   assert.equal(actualStartOptions.builtInSetupEnsured, true);
   assert.deepEqual(actualStartOptions.paths, runtimePaths);
-});
-
-test("mine start JSON output stays on stdout while sync progress goes to stderr", async (t) => {
-  const stdout = createStringWriter();
-  const stderr = createStringWriter();
-  const provider = createMemoryWalletSecretProviderForTesting();
-  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-start-json"));
-  const snapshot = createMiningRuntimeStatus({
-    runMode: "background",
-    backgroundWorkerPid: 5151,
-    backgroundWorkerRunId: "run-json",
-    backgroundWorkerHealth: "healthy",
-  });
-  const result = {
-    started: true,
-    snapshot,
-  };
-  const parsed = parseCliArgs(["mine", "start", "--output", "json"]);
-  const context = createDefaultContext({
-    stdout: stdout.stream,
-    stderr: stderr.stream,
-    signalSource: QUIET_SIGNAL_SOURCE,
-    walletSecretProvider: provider,
-    resolveWalletRuntimePaths: () => resolvePaths(),
-    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
-    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
-    ensureBuiltInMiningSetupIfNeeded: async () => true,
-    loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
-    openManagedIndexerMonitor: async () => createCompletedSyncMonitor([]) as any,
-    startBackgroundMining: async () => result,
-  });
-
-  const exitCode = await runMiningRuntimeCommand(parsed, context);
-
-  assert.equal(exitCode, 0);
-  assert.match(stderr.read(), /Bitcoin sync is catching up\./);
-  assertStableJsonEnvelope(
-    stdout.read(),
-    createMutationSuccessEnvelope(
-      resolveStableMiningControlJsonSchema(parsed)!,
-      "cogcoin mine start",
-      "started",
-      buildMineStartData(result),
-      {
-        generatedAtUnixMs: 0,
-      },
-    ),
-  );
-});
-
-test("mine start preview JSON output stays on stdout while sync progress goes to stderr", async (t) => {
-  const stdout = createStringWriter();
-  const stderr = createStringWriter();
-  const provider = createMemoryWalletSecretProviderForTesting();
-  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-start-preview"));
-  const snapshot = createMiningRuntimeStatus({
-    runMode: "background",
-    backgroundWorkerPid: 6161,
-    backgroundWorkerRunId: "run-preview",
-    backgroundWorkerHealth: "healthy",
-  });
-  const result = {
-    started: true,
-    snapshot,
-  };
-  const parsed = parseCliArgs(["mine", "start", "--output", "preview-json"]);
-  const context = createDefaultContext({
-    stdout: stdout.stream,
-    stderr: stderr.stream,
-    signalSource: QUIET_SIGNAL_SOURCE,
-    walletSecretProvider: provider,
-    resolveWalletRuntimePaths: () => resolvePaths(),
-    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
-    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
-    ensureBuiltInMiningSetupIfNeeded: async () => true,
-    loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
-    openManagedIndexerMonitor: async () => createCompletedSyncMonitor([]) as any,
-    startBackgroundMining: async () => result,
-  });
-
-  const exitCode = await runMiningRuntimeCommand(parsed, context);
-
-  assert.equal(exitCode, 0);
-  assert.match(stderr.read(), /Bitcoin sync is catching up\./);
-  assertStableJsonEnvelope(
-    stdout.read(),
-    createPreviewSuccessEnvelope(
-      resolvePreviewJsonSchema(parsed)!,
-      describeCanonicalCommand(parsed),
-      "started",
-      buildMineStartPreviewData(result),
-      {
-        generatedAtUnixMs: 0,
-      },
-    ),
-  );
 });
 
 test("mine reports a handled error and skips foreground mining when sync preflight fails", async (t) => {

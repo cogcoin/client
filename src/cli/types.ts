@@ -69,7 +69,6 @@ import type { CommandHandlerFamily, CommandName } from "./command-registry.js";
 export type { CommandHandlerFamily, CommandName } from "./command-registry.js";
 
 export type ProgressOutput = "auto" | "tty" | "none";
-export type OutputMode = "text" | "json" | "preview-json";
 
 export interface WritableLike {
   isTTY?: boolean;
@@ -93,7 +92,6 @@ export interface ParsedCliArgs {
   args: string[];
   help: boolean;
   version: boolean;
-  outputMode: OutputMode;
   dbPath: string | null;
   dataDir: string | null;
   progressOutput: ProgressOutput;

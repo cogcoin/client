@@ -108,9 +108,8 @@ test("parser accepts update with --yes", () => {
 
 test("parser accepts mine prompt and mine prompt list", () => {
   assert.equal(parseCliArgs(["mine", "prompt"]).command, "mine-prompt-list");
-  assert.equal(parseCliArgs(["mine", "prompt", "--output", "json"]).command, "mine-prompt-list");
   assert.equal(parseCliArgs(["mine", "prompt", "alpha"]).command, "mine-prompt");
-  assert.equal(parseCliArgs(["mine", "prompt", "list", "--output", "json"]).command, "mine-prompt-list");
+  assert.equal(parseCliArgs(["mine", "prompt", "list"]).command, "mine-prompt-list");
 });
 
 test("parser still routes bare field to the canonical field command before arity validation", () => {
@@ -185,21 +184,21 @@ test("parser rejects --satvb for non-mutation commands", () => {
   );
 });
 
-test("parser rejects preview-json for bitcoin transfer", () => {
+test("parser rejects the removed --output flag for bitcoin transfer", () => {
   assert.throws(
     () => parseCliArgs(["bitcoin", "transfer", "1200", "--to", "bc1qrecipient", "--output", "preview-json"]),
-    /cli_output_not_supported_for_command/,
+    /cli_unknown_flag_output/,
   );
 });
 
-test("parser rejects preview-json for mine prompt commands", () => {
+test("parser rejects the removed --output flag for mine prompt commands", () => {
   assert.throws(
     () => parseCliArgs(["mine", "prompt", "alpha", "--output", "preview-json"]),
-    /cli_output_not_supported_for_command/,
+    /cli_unknown_flag_output/,
   );
   assert.throws(
     () => parseCliArgs(["mine", "prompt", "list", "--output", "preview-json"]),
-    /cli_output_not_supported_for_command/,
+    /cli_unknown_flag_output/,
   );
 });
 

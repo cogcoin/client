@@ -89,7 +89,7 @@ test("runCli routes address and wallet address through the same wallet-read path
   let canonicalCalls = 0;
   const canonicalStdout = new MemoryStream();
   const canonicalStderr = new MemoryStream();
-  const canonicalCode = await runCli(["address", "--output", "json"], createBaseContext({
+  const canonicalCode = await runCli(["address"], createBaseContext({
     stdout: canonicalStdout,
     stderr: canonicalStderr,
     onOpenWalletReadContext: () => {
@@ -100,7 +100,7 @@ test("runCli routes address and wallet address through the same wallet-read path
   let aliasCalls = 0;
   const aliasStdout = new MemoryStream();
   const aliasStderr = new MemoryStream();
-  const aliasCode = await runCli(["wallet", "address", "--output", "json"], createBaseContext({
+  const aliasCode = await runCli(["wallet", "address"], createBaseContext({
     stdout: aliasStdout,
     stderr: aliasStderr,
     onOpenWalletReadContext: () => {
@@ -114,8 +114,8 @@ test("runCli routes address and wallet address through the same wallet-read path
   assert.equal(aliasCalls, 1);
   assert.equal(canonicalStderr.toString(), "");
   assert.equal(aliasStderr.toString(), "");
-  assert.equal(JSON.parse(canonicalStdout.toString()).command, "cogcoin address");
-  assert.equal(JSON.parse(aliasStdout.toString()).command, "cogcoin address");
+  assert.equal(canonicalStdout.toString(), aliasStdout.toString());
+  assert.match(canonicalStdout.toString(), /BTC Wallet Address/);
 });
 
 test("runCli routes mine prompt and mine prompt list through the same mining-read path", async () => {
@@ -130,12 +130,12 @@ test("runCli routes mine prompt and mine prompt list through the same mining-rea
 
   const promptStdout = new MemoryStream();
   const promptListStdout = new MemoryStream();
-  const promptCode = await runCli(["mine", "prompt", "--output", "json"], createBaseContext({
+  const promptCode = await runCli(["mine", "prompt"], createBaseContext({
     stdout: promptStdout,
     stderr: new MemoryStream(),
     inspectMiningDomainPromptState: makeInspectPromptState,
   }));
-  const promptListCode = await runCli(["mine", "prompt", "list", "--output", "json"], createBaseContext({
+  const promptListCode = await runCli(["mine", "prompt", "list"], createBaseContext({
     stdout: promptListStdout,
     stderr: new MemoryStream(),
     inspectMiningDomainPromptState: makeInspectPromptState,
@@ -144,6 +144,6 @@ test("runCli routes mine prompt and mine prompt list through the same mining-rea
   assert.equal(promptCode, 0);
   assert.equal(promptListCode, 0);
   assert.equal(promptCalls, 2);
-  assert.equal(JSON.parse(promptStdout.toString()).command, "cogcoin mine prompt");
-  assert.equal(JSON.parse(promptListStdout.toString()).command, "cogcoin mine prompt");
+  assert.equal(promptStdout.toString(), promptListStdout.toString());
+  assert.match(promptStdout.toString(), /Mining Prompt List/);
 });

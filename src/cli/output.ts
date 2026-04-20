@@ -1,14 +1,6 @@
 import { FileLockBusyError } from "../wallet/fs/lock.js";
-import type { CommandName, OutputMode, ParsedCliArgs, WritableLike } from "./types.js";
-import {
-  describeCanonicalCommandFromArgs,
-  isJsonOutputSupportedForCommand,
-  isPreviewJsonOutputSupportedForCommand,
-  resolvePreviewJsonSchemaForCommand,
-  resolveStableJsonSchemaForCommand,
-  resolveStableMiningControlJsonSchemaForCommand,
-  resolveStableMutationJsonSchemaForCommand,
-} from "./command-registry.js";
+import type { ParsedCliArgs, WritableLike } from "./types.js";
+import { describeCanonicalCommandFromArgs } from "./command-registry.js";
 
 export interface JsonAvailabilityEntry {
   available: boolean;
@@ -129,10 +121,6 @@ export interface PreviewJsonErrorEnvelope extends PreviewJsonEnvelopeBase {
 
 export function writeJsonValue(stream: WritableLike, value: unknown): void {
   stream.write(`${JSON.stringify(value, jsonReplacer)}\n`);
-}
-
-export function isStructuredOutputMode(mode: OutputMode): boolean {
-  return mode === "json" || mode === "preview-json";
 }
 
 function jsonReplacer(_key: string, value: unknown): unknown {
@@ -1357,147 +1345,6 @@ export function describeCanonicalCommand(parsed: ParsedCliArgs): string {
   });
 }
 
-export function inferOutputMode(argv: readonly string[]): OutputMode {
-  const index = argv.lastIndexOf("--output");
-
-  if (index === -1) {
-    return "text";
-  }
-
-  const value = argv[index + 1];
-  if (value === "json" || value === "preview-json") {
-    return value;
-  }
-
-  return "text";
-}
-
-export function resolveStableJsonSchema(parsed: ParsedCliArgs): string | null {
-  return resolveStableJsonSchemaForCommand(parsed.command);
-}
-
-export function resolveStableMutationJsonSchema(parsed: ParsedCliArgs): string | null {
-  return resolveStableMutationJsonSchemaForCommand(parsed.command);
-}
-
-export function resolveStableMiningControlJsonSchema(parsed: ParsedCliArgs): string | null {
-  return resolveStableMiningControlJsonSchemaForCommand(parsed.command);
-}
-
-export function resolvePreviewJsonSchema(parsed: ParsedCliArgs): string | null {
-  return resolvePreviewJsonSchemaForCommand(parsed.command);
-}
-
-export function isJsonOutputSupportedCommand(command: CommandName | null): boolean {
-  return isJsonOutputSupportedForCommand(command);
-}
-
-export function isPreviewJsonOutputSupportedCommand(command: CommandName | null): boolean {
-  return isPreviewJsonOutputSupportedForCommand(command);
-}
-
-export function createCommandJsonErrorEnvelope(
-  parsed: ParsedCliArgs,
-  error: unknown,
-): StableJsonErrorEnvelope | MutationJsonErrorEnvelope | PreviewJsonErrorEnvelope {
-  const classified = classifyCliError(error);
-  const presentation = createCliErrorPresentation(classified.errorCode, classified.message, error);
-  const humanMessage = presentation?.what ?? classified.message;
-  const explanations = presentation?.why === null || presentation?.why === undefined ? [] : [presentation.why];
-  const nextSteps = presentation?.next === null || presentation?.next === undefined ? [] : [presentation.next];
-  const details = createCliErrorDetails(classified.errorCode, humanMessage, classified.message);
-  const stableMutationSchema = resolveStableMutationJsonSchema(parsed);
-  const stableMiningControlSchema = resolveStableMiningControlJsonSchema(parsed);
-  const previewSchema = resolvePreviewJsonSchema(parsed);
-
-  if (parsed.outputMode === "preview-json" && previewSchema !== null) {
-    return createPreviewErrorEnvelope(
-      previewSchema,
-      describeCanonicalCommand(parsed),
-      classified.errorCode,
-      humanMessage,
-      {
-        explanations,
-        nextSteps,
-        details,
-      },
-    );
-  }
-
-  if (stableMutationSchema !== null) {
-    return createMutationErrorEnvelope(
-      stableMutationSchema,
-      describeCanonicalCommand(parsed),
-      classified.errorCode,
-      humanMessage,
-      {
-        explanations,
-        nextSteps,
-        details,
-      },
-    );
-  }
-
-  if (stableMiningControlSchema !== null) {
-    return createMutationErrorEnvelope(
-      stableMiningControlSchema,
-      describeCanonicalCommand(parsed),
-      classified.errorCode,
-      humanMessage,
-      {
-        explanations,
-        nextSteps,
-        details,
-      },
-    );
-  }
-
-  if (previewSchema !== null) {
-    return createPreviewErrorEnvelope(
-      previewSchema,
-      describeCanonicalCommand(parsed),
-      classified.errorCode,
-      humanMessage,
-      {
-        explanations,
-        nextSteps,
-        details,
-      },
-    );
-  }
-
-  return createErrorEnvelope(
-    resolveStableJsonSchema(parsed) ?? "cogcoin/cli/v1",
-    describeCanonicalCommand(parsed),
-    classified.errorCode,
-    humanMessage,
-    {
-      explanations,
-      nextSteps,
-      details,
-    },
-  );
-}
-
-function createCliErrorDetails(
-  errorCode: string,
-  humanMessage: string,
-  rawMessage: string,
-): Record<string, unknown> {
-  const details: Record<string, unknown> = {};
-  const initMatch = /^wallet_init_confirmation_failed_word_(\d+)$/.exec(errorCode);
-
-  if (initMatch !== null) {
-    details.wordIndex = Number.parseInt(initMatch[1]!, 10);
-  }
-
-  if (humanMessage !== rawMessage) {
-    details.rawMessage = rawMessage;
-  }
-
-  return details;
-}
-
 export function writeHandledCliError(options: {
   parsed: ParsedCliArgs;
   stdout: WritableLike;
@@ -1505,11 +1352,6 @@ export function writeHandledCliError(options: {
   error: unknown;
 }): number {
   const classified = classifyCliError(options.error);
-
-  if (isStructuredOutputMode(options.parsed.outputMode)) {
-    writeJsonValue(options.stdout, createCommandJsonErrorEnvelope(options.parsed, options.error));
-    return classified.exitCode;
-  }
 
   const formatted = formatCliTextError(options.error);
   if (formatted !== null) {

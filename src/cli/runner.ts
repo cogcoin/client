@@ -1,14 +1,6 @@
 import { createDefaultContext } from "./context.js";
 import { writeLine } from "./io.js";
-import {
-  classifyCliError,
-  createCommandJsonErrorEnvelope,
-  createErrorEnvelope,
-  formatCliTextError,
-  inferOutputMode,
-  isStructuredOutputMode,
-  writeJsonValue,
-} from "./output.js";
+import { classifyCliError, formatCliTextError } from "./output.js";
 import { HELP_TEXT, parseCliArgs } from "./parse.js";
 import { runFollowCommand } from "./commands/follow.js";
 import { runClientAdminCommand } from "./commands/client-admin.js";
@@ -37,15 +29,6 @@ export async function runCli(
     parsed = parseCliArgs(argv);
   } catch (error) {
     const classified = classifyCliError(error);
-    if (isStructuredOutputMode(inferOutputMode(argv))) {
-      writeJsonValue(context.stdout, createErrorEnvelope(
-        "cogcoin/cli/v1",
-        `cogcoin ${argv.join(" ")}`.trim(),
-        classified.errorCode,
-        classified.message,
-      ));
-      return classified.exitCode;
-    }
     writeLine(context.stderr, classified.message);
     writeLine(context.stderr, HELP_TEXT.trimEnd());
     return classified.exitCode;
@@ -57,15 +40,6 @@ export async function runCli(
   }
 
   if (parsed.help || parsed.command === null) {
-    if (parsed.command === null && isStructuredOutputMode(parsed.outputMode)) {
-      writeJsonValue(context.stdout, createErrorEnvelope(
-        "cogcoin/cli/v1",
-        "cogcoin",
-        "cli_missing_command",
-        "cli_missing_command",
-      ));
-      return 2;
-    }
     writeLine(context.stdout, HELP_TEXT.trimEnd());
     return parsed.help ? 0 : 2;
   }
@@ -103,11 +77,6 @@ export async function runCli(
     }
   } catch (error) {
     const classified = classifyCliError(error);
-    if (isStructuredOutputMode(parsed.outputMode)) {
-      writeJsonValue(context.stdout, createCommandJsonErrorEnvelope(parsed, error));
-      return classified.exitCode;
-    }
-
     const formatted = formatCliTextError(error);
     if (formatted !== null) {
       for (const line of formatted) {

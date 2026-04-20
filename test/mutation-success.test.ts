@@ -23,16 +23,55 @@ class MemoryStream {
   }
 }
 
-test("commandMutationNextSteps and workflowMutationNextSteps preserve json and text variants", () => {
+function createParsed(command: ParsedCliArgs["command"], args: string[]): ParsedCliArgs {
+  return {
+    command,
+    commandFamily: null,
+    invokedCommandTokens: null,
+    invokedCommandPath: null,
+    args,
+    help: false,
+    version: false,
+    dbPath: null,
+    dataDir: null,
+    progressOutput: "auto",
+    unlockFor: null,
+    assumeYes: false,
+    force: false,
+    forceRace: false,
+    anchorMessage: null,
+    transferTarget: null,
+    endpointText: null,
+    endpointJson: null,
+    endpointBytes: null,
+    fieldPermanent: false,
+    fieldFormat: null,
+    fieldValue: null,
+    lockRecipientDomain: null,
+    conditionHex: null,
+    untilHeight: null,
+    preimageHex: null,
+    reviewText: null,
+    satvb: null,
+    locksClaimableOnly: false,
+    locksReclaimableOnly: false,
+    domainsAnchoredOnly: false,
+    domainsListedOnly: false,
+    domainsMineableOnly: false,
+    listLimit: null,
+    listAll: false,
+    follow: false,
+  };
+}
+
+test("commandMutationNextSteps and workflowMutationNextSteps preserve text next-step variants", () => {
   assert.deepEqual(commandMutationNextSteps("cogcoin balance"), {
-    json: ["Run `cogcoin balance`."],
     text: ["Next step: cogcoin balance"],
   });
 
   assert.deepEqual(
     workflowMutationNextSteps(["cogcoin show alpha", "cogcoin mine"]),
     {
-      json: ["cogcoin show alpha", "cogcoin mine"],
       text: ["Next step: cogcoin show alpha", "Next step: cogcoin mine"],
     },
   );
@@ -40,11 +79,7 @@ test("commandMutationNextSteps and workflowMutationNextSteps preserve json and t
 
 test("writeMutationCommandSuccess writes text output with shared reuse and next-step handling", () => {
   const stdout = new MemoryStream();
-  const parsed = {
-    command: "transfer",
-    args: ["alpha"],
-    outputMode: "text",
-  } as ParsedCliArgs;
+  const parsed = createParsed("transfer", ["alpha"]);
   const context = {
     stdout,
   } as unknown as RequiredCliRunnerContext;
@@ -80,11 +115,7 @@ test("writeMutationCommandSuccess writes text output with shared reuse and next-
 
 test("writeMutationCommandSuccess skips explorer links for non-interactive text output", () => {
   const stdout = new MemoryStream();
-  const parsed = {
-    command: "transfer",
-    args: ["alpha"],
-    outputMode: "text",
-  } as ParsedCliArgs;
+  const parsed = createParsed("transfer", ["alpha"]);
   const context = {
     stdout,
   } as unknown as RequiredCliRunnerContext;
@@ -113,11 +144,7 @@ test("writeMutationCommandSuccess skips explorer links for non-interactive text 
 
 test("writeMutationCommandSuccess appends fee summary fields when provided", () => {
   const stdout = new MemoryStream();
-  const parsed = {
-    command: "register",
-    args: ["alpha"],
-    outputMode: "text",
-  } as ParsedCliArgs;
+  const parsed = createParsed("register", ["alpha"]);
   const context = {
     stdout,
   } as unknown as RequiredCliRunnerContext;
@@ -148,41 +175,4 @@ test("writeMutationCommandSuccess appends fee summary fields when provided", () 
     "Next step: cogcoin show alpha",
     "",
   ].join("\n"));
-});
-
-test("writeMutationCommandSuccess writes mutation json output with shared explanations and next steps", () => {
-  const stdout = new MemoryStream();
-  const parsed = {
-    command: "transfer",
-    args: ["alpha"],
-    outputMode: "json",
-  } as ParsedCliArgs;
-  const context = {
-    stdout,
-  } as unknown as RequiredCliRunnerContext;
-
-  const code = writeMutationCommandSuccess(parsed, context, {
-    data: { domainName: "alpha" },
-    reusedExisting: true,
-    reusedMessage: "The existing pending transfer was reconciled instead of creating a duplicate.",
-    interactive: true,
-    explorerTxid: "11".repeat(32),
-    nextSteps: commandMutationNextSteps("cogcoin show alpha"),
-    text: {
-      heading: "Transfer submitted.",
-      fields: [{ label: "Domain", value: "alpha" }],
-    },
-  });
-
-  assert.equal(code, 0);
-
-  const envelope = JSON.parse(stdout.toString());
-  assert.equal(envelope.schema, "cogcoin/transfer/v1");
-  assert.equal(envelope.command, "cogcoin transfer alpha");
-  assert.equal(envelope.outcome, "reconciled");
-  assert.deepEqual(envelope.explanations, [
-    "The existing pending transfer was reconciled instead of creating a duplicate.",
-  ]);
-  assert.deepEqual(envelope.nextSteps, ["Run `cogcoin show alpha`."]);
-  assert.deepEqual(envelope.data, { domainName: "alpha" });
 });

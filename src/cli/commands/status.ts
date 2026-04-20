@@ -1,10 +1,8 @@
 import { dirname } from "node:path";
 
-import { buildStatusJson } from "../read-json.js";
 import { formatBalanceReport, formatWalletOverviewReport } from "../wallet-format.js";
 import { writeLine } from "../io.js";
 import { createTerminalPrompter } from "../prompt.js";
-import { createSuccessEnvelope, describeCanonicalCommand, writeJsonValue } from "../output.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
@@ -17,12 +15,10 @@ export async function runStatusCommand(
   const packageVersion = await context.readPackageVersion();
   const runtimePaths = context.resolveWalletRuntimePaths();
   await context.ensureDirectory(dirname(dbPath));
-  const provider = parsed.outputMode === "text"
-    ? withInteractiveWalletSecretProvider(
-      context.walletSecretProvider,
-      context.createPrompter?.() ?? createTerminalPrompter(context.stdin, context.stdout),
-    )
-    : context.walletSecretProvider;
+  const provider = withInteractiveWalletSecretProvider(
+    context.walletSecretProvider,
+    context.createPrompter?.() ?? createTerminalPrompter(context.stdin, context.stdout),
+  );
   const readContext = await context.openWalletReadContext({
     dataDir,
     databasePath: dbPath,
@@ -32,21 +28,6 @@ export async function runStatusCommand(
   });
 
   try {
-    if (parsed.outputMode === "json") {
-      const result = buildStatusJson(readContext);
-      writeJsonValue(context.stdout, createSuccessEnvelope(
-        "cogcoin/status/v1",
-        describeCanonicalCommand(parsed),
-        result.data,
-        {
-          warnings: result.warnings,
-          explanations: result.explanations,
-          nextSteps: result.nextSteps,
-        },
-      ));
-      return 0;
-    }
-
     writeLine(context.stdout, formatWalletOverviewReport(readContext, packageVersion));
     writeLine(context.stdout, formatBalanceReport(readContext));
     return 0;

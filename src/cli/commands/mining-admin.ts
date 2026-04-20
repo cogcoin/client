@@ -1,33 +1,16 @@
 import { dirname } from "node:path";
 
-import {
-  buildMinePromptData,
-  buildMineSetupData,
-} from "../mining-json.js";
-import { buildMineSetupPreviewData } from "../preview-json.js";
 import { formatMiningPromptMutationReport } from "../mining-format.js";
 import { writeLine } from "../io.js";
-import { createTerminalPrompter } from "../prompt.js";
-import {
-  createPreviewSuccessEnvelope,
-  createMutationSuccessEnvelope,
-  describeCanonicalCommand,
-  resolvePreviewJsonSchema,
-  resolveStableMiningControlJsonSchema,
-  writeHandledCliError,
-  writeJsonValue,
-} from "../output.js";
+import { writeHandledCliError } from "../output.js";
 import { formatNextStepLines, getMineSetupNextSteps } from "../workflow-hints.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
 function createCommandPrompter(
-  parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
 ) {
-  return parsed.outputMode !== "text"
-    ? createTerminalPrompter(context.stdin, context.stderr)
-    : context.createPrompter();
+  return context.createPrompter();
 }
 
 export async function runMiningAdminCommand(
@@ -41,7 +24,7 @@ export async function runMiningAdminCommand(
     const packageVersion = await context.readPackageVersion();
 
     if (parsed.command === "mine-setup") {
-      const prompter = createCommandPrompter(parsed, context);
+      const prompter = createCommandPrompter(context);
       const provider = withInteractiveWalletSecretProvider(context.walletSecretProvider, prompter);
       const view = await context.setupBuiltInMining({
         provider,
@@ -49,30 +32,6 @@ export async function runMiningAdminCommand(
         paths: runtimePaths,
       });
       const nextSteps = getMineSetupNextSteps();
-      if (parsed.outputMode === "preview-json") {
-        writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
-          resolvePreviewJsonSchema(parsed)!,
-          describeCanonicalCommand(parsed),
-          "configured",
-          buildMineSetupPreviewData(view),
-          {
-            nextSteps,
-          },
-        ));
-        return 0;
-      }
-      if (parsed.outputMode === "json") {
-        writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-          resolveStableMiningControlJsonSchema(parsed)!,
-          "cogcoin mine setup",
-          "configured",
-          buildMineSetupData(view),
-          {
-            nextSteps,
-          },
-        ));
-        return 0;
-      }
       writeLine(context.stdout, "Built-in mining provider configured.");
       writeLine(context.stdout, `Provider: ${view.provider.provider ?? "unknown"}`);
       if (view.provider.modelId !== null) {
@@ -91,7 +50,7 @@ export async function runMiningAdminCommand(
     }
 
     if (parsed.command === "mine-prompt") {
-      const prompter = createCommandPrompter(parsed, context);
+      const prompter = createCommandPrompter(context);
       if (!prompter.isInteractive) {
         throw new Error("mine_prompt_requires_tty");
       }
@@ -119,11 +78,9 @@ export async function runMiningAdminCommand(
           throw new Error("mine_prompt_domain_not_mineable");
         }
 
-        if (parsed.outputMode === "text") {
-          writeLine(context.stdout, `Domain: ${currentEntry.domain.name}`);
-          writeLine(context.stdout, `Current domain prompt: ${currentEntry.prompt ?? "none"}`);
-          writeLine(context.stdout, `Global fallback prompt: ${promptState.fallbackPromptConfigured ? "configured" : "not configured"}`);
-        }
+        writeLine(context.stdout, `Domain: ${currentEntry.domain.name}`);
+        writeLine(context.stdout, `Current domain prompt: ${currentEntry.prompt ?? "none"}`);
+        writeLine(context.stdout, `Global fallback prompt: ${promptState.fallbackPromptConfigured ? "configured" : "not configured"}`);
 
         const nextPrompt = await prompter.prompt("Domain prompt (blank to clear and use the global fallback): ");
         const result = await context.updateMiningDomainPrompt({
@@ -133,16 +90,6 @@ export async function runMiningAdminCommand(
           domainName: targetDomain,
           prompt: nextPrompt,
         });
-
-        if (parsed.outputMode === "json") {
-          writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-            resolveStableMiningControlJsonSchema(parsed)!,
-            describeCanonicalCommand(parsed),
-            result.status,
-            buildMinePromptData(result),
-          ));
-          return 0;
-        }
 
         writeLine(context.stdout, formatMiningPromptMutationReport(result));
         return 0;

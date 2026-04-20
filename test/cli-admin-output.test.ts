@@ -389,58 +389,6 @@ test("init text output fails before printing welcome art when no interactive pro
   assert.doesNotMatch(stderr.read(), new RegExp(WELCOME_ART.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
-test("init json output stays art-free", async () => {
-  const stdout = createStringWriter();
-  const stderr = createStringWriter();
-  const context = createDefaultContext({
-    stdout: stdout.stream,
-    stderr: stderr.stream,
-    signalSource: QUIET_SIGNAL_SOURCE,
-    forceExit(code) {
-      throw new Error(`unexpected forceExit: ${code}`);
-    },
-    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
-    initializeWallet: async () => ({
-      setupMode: "generated",
-      passwordAction: "created",
-      walletAction: "initialized",
-      walletRootId: "wallet-json-root",
-      fundingAddress: "bc1qjsoninit",
-      state: createWalletState(),
-    }),
-  });
-
-  const exitCode = await runWalletAdminCommand(parseCliArgs(["init", "--output", "json"]), context);
-  const rendered = stdout.read();
-  const envelope = JSON.parse(rendered) as {
-    schema: string;
-    data: {
-      resultType: string;
-      state: {
-        setupMode: string;
-        seedName?: unknown;
-      };
-      stateChange: {
-        after: {
-          setupMode: string;
-          seedName?: unknown;
-        };
-      };
-    };
-  };
-
-  assert.equal(exitCode, 0);
-  assert.equal(stderr.read(), "");
-  assert.ok(rendered.startsWith("{"));
-  assert.ok(!rendered.includes(WELCOME_ART));
-  assert.equal(envelope.schema, "cogcoin/init/v1");
-  assert.equal(envelope.data.resultType, "state-change");
-  assert.equal(envelope.data.state.setupMode, "generated");
-  assert.equal(envelope.data.stateChange.after.setupMode, "generated");
-  assert.equal("seedName" in envelope.data.state, false);
-  assert.equal("seedName" in envelope.data.stateChange.after, false);
-});
-
 test("init text output describes the 24-hour client unlock window after restore", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
@@ -527,48 +475,6 @@ test("client change-password text output reports the resulting unlock expiry", a
   assert.equal(stderr.read(), "");
   assert.match(rendered, /Client password changed\. Client unlocked until /);
   assert.match(rendered, new RegExp(new Date(unlockUntilUnixMs).toISOString().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-});
-
-test("client change-password json output uses the stable mutation envelope", async () => {
-  const stdout = createStringWriter();
-  const stderr = createStringWriter();
-  const unlockUntilUnixMs = Date.now() + 120_000;
-  const provider = Object.assign(createMemoryWalletSecretProviderForTesting(), {
-    async changeClientPassword() {
-      return {
-        unlocked: true,
-        unlockUntilUnixMs,
-      };
-    },
-  });
-  const context = createDefaultContext({
-    stdout: stdout.stream,
-    stderr: stderr.stream,
-    walletSecretProvider: provider,
-  });
-
-  const exitCode = await runClientAdminCommand(parseCliArgs(["client", "change-password", "--output", "json"]), context);
-  const rendered = JSON.parse(stdout.read()) as {
-    schema: string;
-    outcome: string;
-    data: {
-      operation: {
-        kind: string;
-        changed: boolean;
-        unlocked: boolean;
-        unlockUntilUnixMs: number;
-      };
-    };
-  };
-
-  assert.equal(exitCode, 0);
-  assert.equal(stderr.read(), "");
-  assert.equal(rendered.schema, "cogcoin/client-change-password/v1");
-  assert.equal(rendered.outcome, "changed");
-  assert.equal(rendered.data.operation.kind, "client-change-password");
-  assert.equal(rendered.data.operation.changed, true);
-  assert.equal(rendered.data.operation.unlocked, true);
-  assert.equal(rendered.data.operation.unlockUntilUnixMs, unlockUntilUnixMs);
 });
 
 test("client unlock text output reports the refreshed unlock expiry", async (t) => {

@@ -181,7 +181,7 @@ async function createFixture(t: TestContext, options: {
   };
 }
 
-async function runMinePromptListJsonCommand(options: {
+async function runMinePromptListCommand(options: {
   argv: string[];
   fixture: Awaited<ReturnType<typeof createFixture>>;
 }) {
@@ -201,24 +201,7 @@ async function runMinePromptListJsonCommand(options: {
   return {
     exitCode,
     stderr: stderr.read(),
-    payload: JSON.parse(stdout.read()) as {
-      ok: boolean;
-      schema: string;
-      command: string;
-      nextSteps: string[];
-      data: {
-        fallbackPromptConfigured: boolean;
-        prompts: Array<{
-          domain: {
-            name: string;
-            domainId: number | null;
-          };
-          mineable: boolean;
-          prompt: string | null;
-          effectivePromptSource: string;
-        }>;
-      };
-    },
+    output: stdout.read(),
   };
 }
 
@@ -256,52 +239,34 @@ test("mine prompt updates config for a mineable domain", async (t) => {
   assert.equal(stderr.read(), "");
 });
 
-test("mine prompt json output reports cleared prompts", async (t) => {
+test("mine prompt text output reports cleared prompts", async (t) => {
   const fixture = await createFixture(t, {
     mineableDomains: [{ name: "alpha", domainId: 7 }],
     domainExtraPrompts: { alpha: "legacy alpha" },
   });
   const stdout = createStringWriter();
-  const stderr = createStringWriter(true);
-  const stdin = new PassThrough() as PassThrough & { isTTY?: boolean };
-  stdin.isTTY = true;
-  stdin.end("\n");
+  const stderr = createStringWriter();
+  const prompt = createPrompter({
+    interactive: true,
+    answers: [""],
+  });
 
-  const exitCode = await runCli(["mine", "prompt", "alpha", "--output", "json"], {
+  const exitCode = await runCli(["mine", "prompt", "alpha"], {
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin,
     walletSecretProvider: fixture.provider,
+    createPrompter: () => prompt.prompter as any,
     resolveWalletRuntimePaths: () => fixture.paths,
     resolveDefaultClientDatabasePath: () => join(fixture.homeDirectory, "indexer.sqlite"),
     resolveDefaultBitcoindDataDir: () => join(fixture.homeDirectory, "bitcoin"),
     openWalletReadContext: async () => fixture.createReadContext(),
   });
 
-  const payload = JSON.parse(stdout.read()) as {
-    ok: boolean;
-    schema: string;
-    outcome: string;
-    data: {
-      previousPrompt: string | null;
-      prompt: string | null;
-      status: string;
-      fallbackPromptConfigured: boolean;
-      domain: {
-        name: string;
-        domainId: number | null;
-      };
-    };
-  };
-
   assert.equal(exitCode, 0);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.schema, "cogcoin/mine-prompt/v1");
-  assert.equal(payload.outcome, "cleared");
-  assert.equal(payload.data.previousPrompt, "legacy alpha");
-  assert.equal(payload.data.prompt, null);
-  assert.equal(payload.data.status, "cleared");
-  assert.equal(payload.data.domain.name, "alpha");
+  assert.match(stdout.read(), /Domain: alpha/);
+  assert.match(stdout.read(), /Domain prompt: none/);
+  assert.match(stdout.read(), /Previous domain prompt: legacy alpha/);
+  assert.match(stdout.read(), /Per-domain mining prompt cleared\./);
 });
 
 test("mine prompt requires an interactive terminal", async (t) => {
@@ -421,7 +386,7 @@ test("mine prompt text output suggests the first mineable domain without a custo
   assert.equal(stderr.read(), "");
 });
 
-test("mine prompt json prefers the bare canonical command and suggests the first missing custom prompt", async (t) => {
+test("mine prompt text suggests the first missing custom prompt and includes dormant entries", async (t) => {
   const fixture = await createFixture(t, {
     mineableDomains: [
       { name: "alpha", domainId: 7 },
@@ -434,47 +399,23 @@ test("mine prompt json prefers the bare canonical command and suggests the first
       legacy: "legacy prompt",
     },
   });
-  const { exitCode, stderr, payload } = await runMinePromptListJsonCommand({
-    argv: ["mine", "prompt", "--output", "json"],
+  const { exitCode, stderr, output } = await runMinePromptListCommand({
+    argv: ["mine", "prompt"],
     fixture,
   });
 
   assert.equal(exitCode, 0);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.schema, "cogcoin/mine-prompt-list/v1");
-  assert.equal(payload.command, "cogcoin mine prompt");
-  assert.deepEqual(payload.nextSteps, ["cogcoin mine prompt beta"]);
-  assert.equal(payload.data.fallbackPromptConfigured, true);
-  assert.deepEqual(payload.data.prompts, [
-    {
-      domain: { name: "alpha", domainId: 7 },
-      mineable: true,
-      prompt: "focus alpha",
-      effectivePromptSource: "domain",
-    },
-    {
-      domain: { name: "beta", domainId: 8 },
-      mineable: true,
-      prompt: null,
-      effectivePromptSource: "global-fallback",
-    },
-    {
-      domain: { name: "gamma", domainId: 9 },
-      mineable: true,
-      prompt: null,
-      effectivePromptSource: "global-fallback",
-    },
-    {
-      domain: { name: "legacy", domainId: null },
-      mineable: false,
-      prompt: "legacy prompt",
-      effectivePromptSource: "domain",
-    },
-  ]);
+  assert.match(output, /Mining Prompt List/);
+  assert.match(output, /Global fallback prompt: configured/);
+  assert.match(output, /alpha  domainId=7  mineable  source=domain/);
+  assert.match(output, /beta  domainId=8  mineable  source=global-fallback/);
+  assert.match(output, /gamma  domainId=9  mineable  source=global-fallback/);
+  assert.match(output, /legacy  domainId=none  dormant  source=domain/);
+  assert.match(output, /Next step: cogcoin mine prompt beta/);
   assert.equal(stderr, "");
 });
 
-test("mine prompt list alias keeps the same canonical command and next-step behavior", async (t) => {
+test("mine prompt list alias keeps the same next-step behavior", async (t) => {
   const fixture = await createFixture(t, {
     mineableDomains: [
       { name: "alpha", domainId: 7 },
@@ -484,18 +425,23 @@ test("mine prompt list alias keeps the same canonical command and next-step beha
       alpha: "focus alpha",
     },
   });
-  const { exitCode, stderr, payload } = await runMinePromptListJsonCommand({
-    argv: ["mine", "prompt", "list", "--output", "json"],
+  const canonical = await runMinePromptListCommand({
+    argv: ["mine", "prompt"],
+    fixture,
+  });
+  const alias = await runMinePromptListCommand({
+    argv: ["mine", "prompt", "list"],
     fixture,
   });
 
-  assert.equal(exitCode, 0);
-  assert.equal(payload.command, "cogcoin mine prompt");
-  assert.deepEqual(payload.nextSteps, ["cogcoin mine prompt beta"]);
-  assert.equal(stderr, "");
+  assert.equal(canonical.exitCode, 0);
+  assert.equal(alias.exitCode, 0);
+  assert.equal(canonical.output, alias.output);
+  assert.match(alias.output, /Next step: cogcoin mine prompt beta/);
+  assert.equal(alias.stderr, "");
 });
 
-test("mine prompt json emits no domain-edit next step when all mineable domains already have custom prompts", async (t) => {
+test("mine prompt text emits no domain-edit next step when all mineable domains already have custom prompts", async (t) => {
   const fixture = await createFixture(t, {
     mineableDomains: [
       { name: "alpha", domainId: 7 },
@@ -506,44 +452,46 @@ test("mine prompt json emits no domain-edit next step when all mineable domains 
       beta: "focus beta",
     },
   });
-  const { exitCode, stderr, payload } = await runMinePromptListJsonCommand({
-    argv: ["mine", "prompt", "--output", "json"],
+  const { exitCode, stderr, output } = await runMinePromptListCommand({
+    argv: ["mine", "prompt"],
     fixture,
   });
 
   assert.equal(exitCode, 0);
-  assert.deepEqual(payload.nextSteps, []);
+  assert.doesNotMatch(output, /Next step:/);
   assert.equal(stderr, "");
 });
 
-test("mine prompt json keeps the domains guidance next step when no prompts exist at all", async (t) => {
+test("mine prompt text keeps the domains guidance next step when no prompts exist at all", async (t) => {
   const fixture = await createFixture(t, {
     mineableDomains: [],
   });
-  const { exitCode, stderr, payload } = await runMinePromptListJsonCommand({
-    argv: ["mine", "prompt", "--output", "json"],
+  const { exitCode, stderr, output } = await runMinePromptListCommand({
+    argv: ["mine", "prompt"],
     fixture,
   });
 
   assert.equal(exitCode, 0);
-  assert.deepEqual(payload.nextSteps, ["Run `cogcoin domains --mineable` to see eligible mining domains."]);
+  assert.match(output, /No mineable root domains or stored per-domain mining prompts are configured\./);
+  assert.match(output, /Next step: cogcoin domains --mineable/);
   assert.equal(stderr, "");
 });
 
-test("mine prompt json emits no domain-edit next step when only dormant stored prompts exist", async (t) => {
+test("mine prompt text emits no domain-edit next step when only dormant stored prompts exist", async (t) => {
   const fixture = await createFixture(t, {
     mineableDomains: [],
     domainExtraPrompts: {
       legacy: "legacy prompt",
     },
   });
-  const { exitCode, stderr, payload } = await runMinePromptListJsonCommand({
-    argv: ["mine", "prompt", "--output", "json"],
+  const { exitCode, stderr, output } = await runMinePromptListCommand({
+    argv: ["mine", "prompt"],
     fixture,
   });
 
   assert.equal(exitCode, 0);
-  assert.deepEqual(payload.nextSteps, []);
+  assert.match(output, /legacy  domainId=none  dormant  source=domain/);
+  assert.doesNotMatch(output, /Next step:/);
   assert.equal(stderr, "");
 });
 

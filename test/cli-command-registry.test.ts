@@ -2,16 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  commandSupportsSatvb,
   commandSupportsYesFlag,
   getCommandHandlerFamily,
-  isJsonOutputSupportedForCommand,
-  isPreviewJsonOutputSupportedForCommand,
   listCommandSpecsForTesting,
   resolveCommandMatch,
-  resolvePreviewJsonSchemaForCommand,
-  resolveStableJsonSchemaForCommand,
-  resolveStableMiningControlJsonSchemaForCommand,
-  resolveStableMutationJsonSchemaForCommand,
 } from "../src/cli/command-registry.js";
 
 function argvForAlias(alias: { tokens: readonly string[]; matchMode?: string }): string[] {
@@ -20,7 +15,7 @@ function argvForAlias(alias: { tokens: readonly string[]; matchMode?: string }):
   }
 
   if (alias.matchMode === "end-or-flag") {
-    return [...alias.tokens, "--output", "json"];
+    return [...alias.tokens, "--help"];
   }
 
   return [...alias.tokens];
@@ -65,23 +60,14 @@ test("representative aliases map to the expected canonical command and handler f
   }
 });
 
-test("registry helpers preserve command capability and schema metadata", () => {
+test("registry helpers preserve command capability metadata", () => {
   for (const spec of listCommandSpecsForTesting()) {
     assert.equal(commandSupportsYesFlag(spec.id), spec.supportsYes, spec.id);
-    assert.equal(isJsonOutputSupportedForCommand(spec.id), spec.outputModes.includes("json"), spec.id);
-    assert.equal(isPreviewJsonOutputSupportedForCommand(spec.id), spec.outputModes.includes("preview-json"), spec.id);
-    assert.equal(resolveStableJsonSchemaForCommand(spec.id), spec.jsonSchemaKind === "stable" ? spec.jsonSchema : null, spec.id);
-    assert.equal(resolveStableMutationJsonSchemaForCommand(spec.id), spec.jsonSchemaKind === "mutation" ? spec.jsonSchema : null, spec.id);
-    assert.equal(resolveStableMiningControlJsonSchemaForCommand(spec.id), spec.jsonSchemaKind === "mining-control" ? spec.jsonSchema : null, spec.id);
-    assert.equal(resolvePreviewJsonSchemaForCommand(spec.id), spec.previewJsonSchema, spec.id);
+    assert.equal(commandSupportsSatvb(spec.id), spec.supportsSatvb, spec.id);
   }
 
   assert.equal(commandSupportsYesFlag("register"), true);
   assert.equal(commandSupportsYesFlag("reset"), false);
-  assert.equal(isJsonOutputSupportedForCommand("mine"), false);
-  assert.equal(isPreviewJsonOutputSupportedForCommand("mine-start"), true);
-  assert.equal(resolveStableJsonSchemaForCommand("show"), "cogcoin/show/v1");
-  assert.equal(resolveStableMutationJsonSchemaForCommand("register"), "cogcoin/register/v1");
-  assert.equal(resolveStableMiningControlJsonSchemaForCommand("mine-start"), "cogcoin/mine-start/v1");
-  assert.equal(resolvePreviewJsonSchemaForCommand("register"), "cogcoin-preview/register/v1");
+  assert.equal(commandSupportsSatvb("register"), true);
+  assert.equal(commandSupportsSatvb("mine-start"), false);
 });

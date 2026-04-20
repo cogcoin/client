@@ -1,23 +1,5 @@
-import {
-  buildInitMutationData,
-  buildResetMutationData,
-  buildRepairMutationData,
-} from "../mutation-json.js";
-import {
-  buildResetPreviewData,
-  buildRepairPreviewData,
-} from "../preview-json.js";
 import { writeLine } from "../io.js";
-import { createTerminalPrompter } from "../prompt.js";
-import {
-  createPreviewSuccessEnvelope,
-  createMutationSuccessEnvelope,
-  describeCanonicalCommand,
-  resolvePreviewJsonSchema,
-  resolveStableMutationJsonSchema,
-  writeHandledCliError,
-  writeJsonValue,
-} from "../output.js";
+import { writeHandledCliError } from "../output.js";
 import { loadWelcomeArtText } from "../art.js";
 import {
   formatNextStepLines,
@@ -36,12 +18,9 @@ import { CLIENT_PASSWORD_SETUP_AUTO_UNLOCK_SECONDS } from "../../wallet/state/cl
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
 function createCommandPrompter(
-  parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
 ) {
-  return parsed.outputMode !== "text"
-    ? createTerminalPrompter(context.stdin, context.stderr)
-    : context.createPrompter();
+  return context.createPrompter();
 }
 
 function getRepairWarnings(result: WalletRepairResult): string[] {
@@ -286,13 +265,11 @@ export async function runWalletAdminCommand(
 
       if (parsed.command === "init") {
         const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-        const prompter = createCommandPrompter(parsed, context);
-        if (parsed.outputMode === "text") {
-          assertInitTextPreflight({
-            prompter,
-          });
-          writeWelcomeArtBlock(context.stdout);
-        }
+        const prompter = createCommandPrompter(context);
+        assertInitTextPreflight({
+          prompter,
+        });
+        writeWelcomeArtBlock(context.stdout);
         const interactiveProvider = withInteractiveWalletSecretProvider(provider, prompter);
         const result = await context.initializeWallet({
           dataDir,
@@ -300,20 +277,6 @@ export async function runWalletAdminCommand(
           prompter,
           paths: runtimePaths,
         });
-        const nextSteps = getInitNextSteps();
-        if (parsed.outputMode === "json") {
-          writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-            resolveStableMutationJsonSchema(parsed)!,
-            describeCanonicalCommand(parsed),
-            "initialized",
-            buildInitMutationData(result),
-            {
-              explanations: [getFundingQuickstartGuidance()],
-              nextSteps,
-            },
-          ));
-          return 0;
-        }
         writeWelcomeArtBlock(context.stdout);
         writeLine(
           context.stdout,
@@ -349,7 +312,7 @@ export async function runWalletAdminCommand(
       }
 
       if (parsed.command === "wallet-show-mnemonic") {
-        const prompter = createCommandPrompter(parsed, context);
+        const prompter = createCommandPrompter(context);
         await context.showWalletMnemonic({
           provider: withInteractiveWalletSecretProvider(provider, prompter),
           prompter,
@@ -362,40 +325,12 @@ export async function runWalletAdminCommand(
 
       if (parsed.command === "reset") {
         const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-        if (parsed.outputMode === "preview-json") {
-          const preview = await context.previewResetWallet({
-            dataDir,
-            provider,
-          });
-          writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
-            resolvePreviewJsonSchema(parsed)!,
-            describeCanonicalCommand(parsed),
-            "planned",
-            buildResetPreviewData(preview),
-          ));
-          return 0;
-        }
-
-        const prompter = createCommandPrompter(parsed, context);
+        const prompter = createCommandPrompter(context);
         const result = await context.resetWallet({
           dataDir,
           provider: withInteractiveWalletSecretProvider(provider, prompter),
           prompter,
         });
-
-        if (parsed.outputMode === "json") {
-          writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-            resolveStableMutationJsonSchema(parsed)!,
-            describeCanonicalCommand(parsed),
-            "completed",
-            buildResetMutationData(result),
-            {
-              warnings: getResetWarnings(result),
-              nextSteps: getResetNextSteps(result),
-            },
-          ));
-          return 0;
-        }
 
         writeLine(context.stdout, formatResetResultText(result));
         return 0;
@@ -403,9 +338,7 @@ export async function runWalletAdminCommand(
 
       if (parsed.command === "repair") {
         const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-        const repairProvider = parsed.outputMode === "preview-json"
-          ? provider
-          : withInteractiveWalletSecretProvider(provider, createCommandPrompter(parsed, context));
+        const repairProvider = withInteractiveWalletSecretProvider(provider, createCommandPrompter(context));
         const result = await context.repairWallet({
           dataDir,
           databasePath: dbPath,
@@ -413,32 +346,6 @@ export async function runWalletAdminCommand(
           assumeYes: parsed.assumeYes,
           paths: runtimePaths,
         });
-        if (parsed.outputMode === "preview-json") {
-          writeJsonValue(context.stdout, createPreviewSuccessEnvelope(
-            resolvePreviewJsonSchema(parsed)!,
-            describeCanonicalCommand(parsed),
-            "completed",
-            buildRepairPreviewData(result),
-            {
-              nextSteps: getRepairNextSteps(),
-              warnings: getRepairWarnings(result),
-            },
-          ));
-          return 0;
-        }
-        if (parsed.outputMode === "json") {
-          writeJsonValue(context.stdout, createMutationSuccessEnvelope(
-            resolveStableMutationJsonSchema(parsed)!,
-            "cogcoin repair",
-            "completed",
-            buildRepairMutationData(result),
-            {
-              nextSteps: getRepairNextSteps(),
-              warnings: getRepairWarnings(result),
-            },
-          ));
-          return 0;
-        }
         writeLine(context.stdout, formatRepairResultText(result));
         return 0;
       }
