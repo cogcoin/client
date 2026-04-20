@@ -260,7 +260,7 @@ test("mine text marks updateAvailable when tty mining sees a newer npm version",
   const stderr = createStringWriter({ isTTY: true, columns: 120 });
   const provider = createMemoryWalletSecretProviderForTesting();
   const prompter = createPrompter();
-  const version = "1.1.0";
+  const version = "1.1.4";
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mine-runtime-update");
   const resolvePaths = createTestRuntimePaths(homeDirectory);
   const runtimePaths = resolvePaths(null);
@@ -285,7 +285,7 @@ test("mine text marks updateAvailable when tty mining sees a newer npm version",
     loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
     openManagedIndexerMonitor: async () => createCompletedSyncMonitor([]) as any,
     fetchImpl: async () => new Response(JSON.stringify({
-      version: "1.1.1",
+      version: "1.1.5",
     }), {
       status: 200,
       headers: {
@@ -311,7 +311,7 @@ test("mine text marks updateAvailable when tty mining sees a newer npm version",
   assert.deepEqual(actualRunOptions.paths, runtimePaths);
   assert.match(
     await readFile(cachePath, "utf8"),
-    /"latestVersion": "1.1.1"/,
+    /"latestVersion": "1.1.5"/,
   );
 });
 

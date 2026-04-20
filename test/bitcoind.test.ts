@@ -1776,7 +1776,7 @@ test("openManagedIndexerMonitor replaces stale and unparseable daemons using the
   await ensureBitcoinBinaries(t);
 
   const cases = [
-    { name: "stale", binaryVersion: "1.1.0" },
+    { name: "stale", binaryVersion: "1.1.3" },
     { name: "unparseable", binaryVersion: "dev-build" },
   ];
 
@@ -1822,7 +1822,7 @@ test("openWalletReadContext replaces stale and unparseable daemons using the cur
   await ensureBitcoinBinaries(t);
 
   const cases = [
-    { name: "stale", binaryVersion: "1.1.0" },
+    { name: "stale", binaryVersion: "1.1.3" },
     { name: "unparseable", binaryVersion: "dev-build" },
   ];
 
@@ -2049,7 +2049,7 @@ test("attach restarts a compatible stale daemon when expectedBinaryVersion is ne
   const server = await startFakeIndexerDaemonServer(
     paths.indexerDaemonSocketPath,
     createManagedIndexerDaemonStatus(walletRootId, {
-      binaryVersion: "1.1.0",
+      binaryVersion: "1.1.3",
       daemonInstanceId: "daemon-stale",
       processId: 4321,
     }),
@@ -2060,14 +2060,14 @@ test("attach restarts a compatible stale daemon when expectedBinaryVersion is ne
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.1.1",
+      expectedBinaryVersion: "1.1.4",
       startupTimeoutMs: 5_000,
     });
 
     try {
       const status = await daemon.getStatus();
       assert.notEqual(status.daemonInstanceId, "daemon-stale");
-      assert.notEqual(status.binaryVersion, "1.1.0");
+      assert.notEqual(status.binaryVersion, "1.1.3");
       assert.notEqual(status.processId, 4321);
       assert.equal(status.walletRootId, walletRootId);
     } finally {
@@ -2101,7 +2101,7 @@ test("attach restarts a compatible unparseable daemon when expectedBinaryVersion
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.1.1",
+      expectedBinaryVersion: "1.1.4",
       startupTimeoutMs: 5_000,
     });
 
@@ -2124,8 +2124,8 @@ test("attach restarts a compatible unparseable daemon when expectedBinaryVersion
 
 test("attach keeps compatible equal and newer daemon versions running", async () => {
   const cases = [
-    { name: "equal", binaryVersion: "1.1.1" },
-    { name: "newer", binaryVersion: "1.1.2" },
+    { name: "equal", binaryVersion: "1.1.4" },
+    { name: "newer", binaryVersion: "1.1.5" },
   ];
 
   for (const testCase of cases) {
@@ -2148,7 +2148,7 @@ test("attach keeps compatible equal and newer daemon versions running", async ()
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.1.1",
+        expectedBinaryVersion: "1.1.4",
         startupTimeoutMs: 1_000,
       });
 
@@ -2201,7 +2201,7 @@ test("attach rejects a live daemon with incompatible service metadata without sp
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.1.1",
+        expectedBinaryVersion: "1.1.4",
         startupTimeoutMs: 1_000,
       }),
       /indexer_daemon_service_version_mismatch/,
@@ -2230,7 +2230,7 @@ test("attach accepts a live daemon for a different wallet root when the daemon i
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.1.1",
+      expectedBinaryVersion: "1.1.4",
       startupTimeoutMs: 1_000,
     });
     await daemon.close();
@@ -2258,7 +2258,7 @@ test("attach rejects a live daemon with an incompatible schema version", async (
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.1.1",
+        expectedBinaryVersion: "1.1.4",
         startupTimeoutMs: 1_000,
       }),
       /indexer_daemon_schema_mismatch/,
