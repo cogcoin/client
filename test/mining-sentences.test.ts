@@ -11,6 +11,16 @@ import {
 } from "../src/wallet/state/provider.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 
+interface CapturedAnthropicRequestBody {
+  tool_choice?: {
+    type?: string;
+    name?: string;
+  };
+  tools?: Array<{
+    name?: string;
+  }>;
+}
+
 function createMiningSentenceRequest() {
   return {
     schemaVersion: 1 as const,
@@ -116,6 +126,111 @@ test("Anthropic 404 with the default model becomes a not-found provider error", 
       return true;
     },
   );
+});
+
+test("Anthropic requests force tool output and parse tool_use input", async (t) => {
+  const fixture = await createSentenceGenerationFixture(t, {
+    provider: "anthropic",
+    modelOverride: "claude-sonnet-4-6",
+  });
+  const request = createMiningSentenceRequest();
+  let capturedBody: CapturedAnthropicRequestBody | null = null;
+
+  const result = await generateMiningSentences(request, {
+    paths: fixture.paths,
+    provider: fixture.provider,
+    fetchImpl: (async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_test",
+            name: "return_mining_candidates",
+            input: {
+              schemaVersion: 1,
+              requestId: request.requestId,
+              candidates: [
+                {
+                  domainId: 7,
+                  sentence: "Under the tree the monkey youth carries a basket.",
+                },
+              ],
+            },
+          },
+        ],
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      });
+    }) as typeof fetch,
+  });
+
+  assert.deepEqual(result.candidates, [
+    {
+      domainId: 7,
+      sentence: "Under the tree the monkey youth carries a basket.",
+      attribution: {
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        promptLabel: "built-in",
+      },
+    },
+  ]);
+  assert.ok(capturedBody);
+  const body = capturedBody as CapturedAnthropicRequestBody;
+  assert.equal(body.tool_choice?.type, "tool");
+  assert.equal(body.tool_choice?.name, "return_mining_candidates");
+  assert.equal(body.tools?.[0]?.name, "return_mining_candidates");
+});
+
+test("Anthropic falls back to legacy text JSON when tool_use output is absent", async (t) => {
+  const fixture = await createSentenceGenerationFixture(t, {
+    provider: "anthropic",
+    modelOverride: "claude-sonnet-4-6",
+  });
+  const request = createMiningSentenceRequest();
+
+  const result = await generateMiningSentences(request, {
+    paths: fixture.paths,
+    provider: fixture.provider,
+    fetchImpl: (async () => new Response(JSON.stringify({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            schemaVersion: 1,
+            requestId: request.requestId,
+            candidates: [
+              {
+                domainId: 7,
+                sentence: "A monkey youth waits under the tree beside the basket.",
+              },
+            ],
+          }),
+        },
+      ],
+    }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+      },
+    })) as typeof fetch,
+  });
+
+  assert.deepEqual(result.candidates, [
+    {
+      domainId: 7,
+      sentence: "A monkey youth waits under the tree beside the basket.",
+      attribution: {
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        promptLabel: "built-in",
+      },
+    },
+  ]);
 });
 
 test("OpenAI 429 becomes a rate-limited provider error", async (t) => {

@@ -112,24 +112,67 @@ function annotateProviderCandidates(options: {
   }));
 }
 
+const ANTHROPIC_MINING_RESPONSE_TOOL_NAME = "return_mining_candidates";
+
+const ANTHROPIC_MINING_RESPONSE_TOOL = {
+  name: ANTHROPIC_MINING_RESPONSE_TOOL_NAME,
+  description: [
+    "Return the Cogcoin mining sentence generation result in structured form.",
+    "Use this tool exactly once instead of writing prose, markdown, or code fences.",
+    "Set schemaVersion to 1, copy the requestId exactly, and include only candidates for domainId values from rootDomains.",
+    "Each candidate sentence must be a single natural-language sentence with no surrounding commentary.",
+  ].join(" "),
+  input_schema: {
+    type: "object",
+    properties: {
+      schemaVersion: { type: "integer" },
+      requestId: { type: "string" },
+      candidates: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            domainId: { type: "integer" },
+            sentence: { type: "string" },
+          },
+          required: ["domainId", "sentence"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["schemaVersion", "requestId", "candidates"],
+    additionalProperties: false,
+  },
+} as const;
+
+function normalizeProviderCandidateResponse(options: {
+  response: unknown;
+  request: MiningSentenceGenerationRequest;
+  providerLabel: string;
+}): MiningSentenceCandidateV1[] {
+  try {
+    return normalizeMiningSentenceResponse({
+      request: options.request,
+      response: options.response,
+    }).candidates;
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : `${options.providerLabel} returned an invalid response.`);
+  }
+}
+
 function parseProviderJsonResponse(options: {
   raw: string;
   request: MiningSentenceGenerationRequest;
   providerLabel: string;
 }): MiningSentenceCandidateV1[] {
-  const response = parseStrictJsonValue(
-    stripMarkdownCodeFence(options.raw),
-    `${options.providerLabel} returned invalid JSON.`,
-  );
-
-  try {
-    return normalizeMiningSentenceResponse({
-      request: options.request,
-      response,
-    }).candidates;
-  } catch (error) {
-    throw new Error(error instanceof Error ? error.message : `${options.providerLabel} returned an invalid response.`);
-  }
+  return normalizeProviderCandidateResponse({
+    response: parseStrictJsonValue(
+      stripMarkdownCodeFence(options.raw),
+      `${options.providerLabel} returned invalid JSON.`,
+    ),
+    request: options.request,
+    providerLabel: options.providerLabel,
+  });
 }
 
 function createProviderSignal(signal: AbortSignal | undefined, timeoutMs: number): {
@@ -261,6 +304,11 @@ async function requestBuiltInSentences(options: {
             content: buildUserPrompt(options.request),
           },
         ],
+        tools: [ANTHROPIC_MINING_RESPONSE_TOOL],
+        tool_choice: {
+          type: "tool",
+          name: ANTHROPIC_MINING_RESPONSE_TOOL_NAME,
+        },
       }),
       signal: providerSignal.signal,
     });
@@ -286,8 +334,8 @@ async function requestBuiltInSentences(options: {
     }
 
     return annotateProviderCandidates({
-      candidates: parseProviderJsonResponse({
-        raw: extractAnthropicText(await response.json()),
+      candidates: normalizeProviderCandidateResponse({
+        response: extractAnthropicResponsePayload(await response.json()),
         request: options.request,
         providerLabel: "The built-in Anthropic mining provider",
       }),
@@ -382,6 +430,36 @@ function extractAnthropicText(payload: unknown): string {
   }
 
   throw new Error("The built-in Anthropic mining provider returned an empty response.");
+}
+
+function extractAnthropicResponsePayload(payload: unknown): unknown {
+  if (payload !== null && typeof payload === "object") {
+    const content = (payload as { content?: unknown }).content;
+    if (Array.isArray(content)) {
+      for (const entry of content) {
+        if (entry === null || typeof entry !== "object") {
+          continue;
+        }
+
+        const typedEntry = entry as {
+          type?: unknown;
+          name?: unknown;
+          input?: unknown;
+        };
+        if (
+          typedEntry.type === "tool_use"
+          && typedEntry.name === ANTHROPIC_MINING_RESPONSE_TOOL_NAME
+        ) {
+          return typedEntry.input;
+        }
+      }
+    }
+  }
+
+  return parseStrictJsonValue(
+    stripMarkdownCodeFence(extractAnthropicText(payload)),
+    "The built-in Anthropic mining provider returned invalid JSON.",
+  );
 }
 
 export async function generateMiningSentences(
