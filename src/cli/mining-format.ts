@@ -44,6 +44,12 @@ function resolveInsufficientFundsNextStep(): string {
   return "Next: wait for enough safe BTC funding to become spendable for the next publish; mining resumes automatically.";
 }
 
+function resolveMiningRuntimeNote(mining: MiningControlPlaneView): string | null {
+  return mining.runtime.currentPublishDecision === "publish-paused-insufficient-funds"
+    ? "Insufficient funds for mining."
+    : mining.runtime.note;
+}
+
 export function formatMiningSummaryLine(mining: MiningControlPlaneView): string {
   const provider = mining.provider.configured
     ? `${mining.provider.provider} configured`
@@ -140,8 +146,9 @@ export function formatMineStatusReport(mining: MiningControlPlaneView): string {
   if (mining.runtime.lastError !== null) {
     lines.push(`Last error: ${mining.runtime.lastError}`);
   }
-  if (mining.runtime.note !== null) {
-    lines.push(`Note: ${mining.runtime.note}`);
+  const runtimeNote = resolveMiningRuntimeNote(mining);
+  if (runtimeNote !== null) {
+    lines.push(`Note: ${runtimeNote}`);
   }
   if (mining.runtime.miningState === "repair-required") {
     lines.push("Next: run `cogcoin repair` before mining again.");

@@ -537,6 +537,92 @@ test("mining follow visualizer renders the current mined block board when settle
   });
 });
 
+test("mining follow visualizer replaces the provisional tx link with deposit guidance when BTC is insufficient", () => {
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot({
+    currentPhase: "waiting",
+    currentPublishDecision: "publish-paused-insufficient-funds",
+  }), createUiState({
+    fundingAddress: "bc1qfunding",
+    settledBlockHeight: 100,
+    settledBoardEntries: [
+      createBoardEntry(1, "alpha", "alpha sentence"),
+      createBoardEntry(2, "beta", "beta sentence"),
+    ],
+    provisionalRequiredWords: ["under", "tree", "monkey", "youth", "basket"],
+    provisionalEntry: {
+      domainName: "local",
+      sentence: "local sentence",
+    },
+    provisionalBroadcastTxid: "ab".repeat(32),
+    latestSentence: "local sentence",
+    latestTxid: "ab".repeat(32),
+  }));
+  visualizer.close();
+
+  assert.ok(capturedOptions?.extraLines);
+  assert.equal(capturedOptions.extraLines[13], "Deposit BTC to bc1qfunding to mine.");
+});
+
+test("mining follow visualizer falls back to a generic deposit line when the funding address is unavailable", () => {
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot({
+    currentPhase: "waiting",
+    currentPublishDecision: "publish-paused-insufficient-funds",
+  }), createUiState({
+    settledBlockHeight: 100,
+    provisionalRequiredWords: ["under", "tree", "monkey", "youth", "basket"],
+    provisionalEntry: {
+      domainName: "local",
+      sentence: "local sentence",
+    },
+  }));
+  visualizer.close();
+
+  assert.ok(capturedOptions?.extraLines);
+  assert.equal(capturedOptions.extraLines[13], "Deposit BTC to this wallet address to mine.");
+});
+
 test("mining follow visualizer uppercases each settled row with its own required words without cross-row bleed", () => {
   let capturedOptions: FollowSceneRenderOptions | undefined;
 

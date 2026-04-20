@@ -54,6 +54,7 @@ export interface MiningRecentWinSummary {
 export interface MiningFollowVisualizerState {
   balanceCogtoshi: bigint | null;
   balanceSats: bigint | null;
+  fundingAddress: string | null;
   visibleBlockTimesByHeight: Record<number, number>;
   settledBlockHeight: number | null;
   settledBoardEntries: MiningSentenceBoardEntry[];
@@ -243,13 +244,21 @@ function formatRequiredWordsLine(words: readonly string[]): string {
 }
 
 function formatProvisionalTxLinkLine(
-  entry: MiningProvisionalSentenceEntry,
-  txid: string | null,
+  snapshot: MiningRuntimeStatusV1,
+  ui: MiningFollowVisualizerState,
 ): string {
-  if (entry.domainName === null || entry.sentence === null || txid === null) {
+  if (snapshot.currentPublishDecision === "publish-paused-insufficient-funds") {
+    const fundingAddress = normalizeInlineText(ui.fundingAddress ?? "");
+    return fundingAddress.length > 0
+      ? `Deposit BTC to ${fundingAddress} to mine.`
+      : "Deposit BTC to this wallet address to mine.";
+  }
+
+  if (ui.provisionalEntry.domainName === null || ui.provisionalEntry.sentence === null || ui.provisionalBroadcastTxid === null) {
     return "";
   }
 
+  const txid = ui.provisionalBroadcastTxid;
   const normalizedTxid = normalizeInlineText(txid);
   if (normalizedTxid.length === 0) {
     return "";
@@ -273,6 +282,7 @@ export function createEmptyMiningFollowVisualizerState(): MiningFollowVisualizer
   return {
     balanceCogtoshi: null,
     balanceSats: null,
+    fundingAddress: null,
     visibleBlockTimesByHeight: {},
     settledBlockHeight: null,
     settledBoardEntries: [],
@@ -309,6 +319,7 @@ function cloneMiningFollowVisualizerState(
       ...state.provisionalEntry,
     },
     provisionalBroadcastTxid: state.provisionalBroadcastTxid,
+    fundingAddress: state.fundingAddress,
     recentWin: state.recentWin === null
       ? null
       : {
@@ -560,7 +571,7 @@ export class MiningFollowVisualizer {
             : formatSentenceRow(entry);
         }).flat(),
         "----------",
-        formatProvisionalTxLinkLine(uiState.provisionalEntry, uiState.provisionalBroadcastTxid),
+        formatProvisionalTxLinkLine(snapshot, uiState),
         formatRequiredWordsLine(uiState.provisionalRequiredWords),
         ...formatProvisionalSentenceRow(uiState.provisionalEntry, uiState.provisionalRequiredWords),
       ],

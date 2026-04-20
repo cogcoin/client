@@ -71,5 +71,7 @@ test("mine status text shows the insufficient-funds next step from publish decis
   }));
 
   assert.match(report, /Publish decision: publish-paused-insufficient-funds/);
+  assert.match(report, /Note: Insufficient funds for mining\./);
   assert.match(report, /Next: wait for enough safe BTC funding to become spendable for the next publish; mining resumes automatically\./);
+  assert.doesNotMatch(report, /Note: Mining is waiting for enough safe BTC funding that Bitcoin Core can use for the next publish\./);
 });

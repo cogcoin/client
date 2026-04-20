@@ -1197,9 +1197,11 @@ function buildMiningTipKey(bestBlockHash: string | null, targetBlockHeight: numb
 
 function resetMiningUiForTip(loopState: MiningLoopState, targetBlockHeight: number | null): void {
   const preservedTxid = loopState.ui.latestTxid;
+  const preservedFundingAddress = loopState.ui.fundingAddress;
 
   loopState.ui = {
     ...createEmptyMiningFollowVisualizerState(),
+    fundingAddress: preservedFundingAddress,
     latestTxid: preservedTxid,
   };
   loopState.selectedCandidateTipKey = null;
@@ -1682,6 +1684,7 @@ function syncMiningVisualizerBalances(
   readContext: WalletReadContext & { localState: { availability: "ready"; state: WalletStateV1 } },
   balanceSats: bigint | null,
 ): void {
+  loopState.ui.fundingAddress = readContext.model?.walletAddress ?? readContext.localState.state.funding.address;
   loopState.ui.balanceCogtoshi = readContext.snapshot === null
     ? null
     : getBalance(readContext.snapshot.state, readContext.localState.state.funding.scriptPubKeyHex);
@@ -1702,6 +1705,9 @@ function createIndexedMiningFollowVisualizerState(
 
   uiState.settledBlockHeight = settledBoard.settledBlockHeight;
   uiState.settledBoardEntries = settledBoard.settledBoardEntries;
+  if (localState.availability === "ready" && localState.state !== null) {
+    uiState.fundingAddress = readContext.model?.walletAddress ?? localState.state.funding.address;
+  }
 
   if (readContext.snapshot !== null && localState.availability === "ready" && localState.state !== null) {
     uiState.balanceCogtoshi = getBalance(
