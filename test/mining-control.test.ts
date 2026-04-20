@@ -96,7 +96,7 @@ test("mine status JSON shows the insufficient-funds next step from publish decis
       currentPhase: "waiting",
       miningState: "paused",
       currentPublishDecision: "publish-paused-insufficient-funds",
-      note: "Mining is waiting for enough safe BTC funding that Bitcoin Core can use for the next publish.",
+      note: "Insufficient BTC to mine.",
     }),
   });
 

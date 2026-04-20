@@ -7,6 +7,7 @@ import {
   describeMiningVisualizerProgress,
   describeMiningVisualizerStatus,
 } from "../src/wallet/mining/visualizer.js";
+import { centerLine } from "../src/bitcoind/progress/formatting.js";
 import { renderFollowFrameForTesting } from "../src/bitcoind/progress/follow-scene.js";
 import type { FollowSceneRenderOptions } from "../src/bitcoind/progress/tty-renderer.js";
 import type { MiningRuntimeStatusV1 } from "../src/wallet/mining/types.js";
@@ -222,6 +223,10 @@ function createBoardEntry(
 
 function countMatches(value: string, pattern: RegExp): number {
   return [...value.matchAll(pattern)].length;
+}
+
+function createCenteredBoardTitle(settledBlockHeight: number | string): string {
+  return centerLine(`✎ Block #${settledBlockHeight} Sentences ✎`, 80);
 }
 
 function createSceneCaptureVisualizer(options: {
@@ -515,24 +520,15 @@ test("mining follow visualizer renders the current mined block board when settle
     artworkCogText: "1.2345 COG",
     artworkSatText: "42 SAT",
     extraLines: [
-      "✎ Block #100 Sentences ✎",
-      "",
+      createCenteredBoardTitle(100),
       "1. @alpha: alpha sentence",
-      "",
       "2. @beta: beta sentence",
-      "",
       "3.",
-      "",
       "4.",
-      "",
       "5.",
-      "",
-      "----------",
-      `View at: https://mempool.space/tx/${"ab".repeat(32)}`,
-      "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
       "@local: local sentence",
       "",
-      "",
+      `View at: https://mempool.space/tx/${"ab".repeat(32)}`,
     ],
   });
 });
@@ -581,7 +577,9 @@ test("mining follow visualizer replaces the provisional tx link with deposit gui
   visualizer.close();
 
   assert.ok(capturedOptions?.extraLines);
-  assert.equal(capturedOptions.extraLines[13], "Deposit BTC to bc1qfunding to mine.");
+  assert.equal(capturedOptions.extraLines[6], "@local: local sentence");
+  assert.equal(capturedOptions.extraLines[7], "");
+  assert.equal(capturedOptions.extraLines[8], "Deposit BTC to bc1qfunding to mine.");
 });
 
 test("mining follow visualizer falls back to a generic deposit line when the funding address is unavailable", () => {
@@ -620,7 +618,9 @@ test("mining follow visualizer falls back to a generic deposit line when the fun
   visualizer.close();
 
   assert.ok(capturedOptions?.extraLines);
-  assert.equal(capturedOptions.extraLines[13], "Deposit BTC to this wallet address to mine.");
+  assert.equal(capturedOptions.extraLines[6], "@local: local sentence");
+  assert.equal(capturedOptions.extraLines[7], "");
+  assert.equal(capturedOptions.extraLines[8], "Deposit BTC to this wallet address to mine.");
 });
 
 test("mining follow visualizer uppercases each settled row with its own required words without cross-row bleed", () => {
@@ -660,16 +660,14 @@ test("mining follow visualizer uppercases each settled row with its own required
   }));
   visualizer.close();
 
-  assert.equal(capturedOptions?.extraLines?.[2], "1. @alpha: UNDER TREE trees treetop YOUTH, BASKET.");
-  assert.equal(capturedOptions?.extraLines?.[3], "");
-  assert.equal(capturedOptions?.extraLines?.[4], "2. @beta: CANDY VANISH YEAR TOAST toasty under.");
-  assert.equal(capturedOptions?.extraLines?.[5], "");
-  assert.equal(capturedOptions?.extraLines?.[15], "@local: MONKEY UNDER TREE trees.");
-  assert.equal(capturedOptions?.extraLines?.[16], "");
-  assert.equal(capturedOptions?.extraLines?.[17], "");
+  assert.equal(capturedOptions?.extraLines?.[1], "1. @alpha: UNDER TREE trees treetop YOUTH, BASKET.");
+  assert.equal(capturedOptions?.extraLines?.[2], "2. @beta: CANDY VANISH YEAR TOAST toasty under.");
+  assert.equal(capturedOptions?.extraLines?.[6], "@local: MONKEY UNDER TREE trees.");
+  assert.equal(capturedOptions?.extraLines?.[7], "");
+  assert.equal(capturedOptions?.extraLines?.[8], "");
 });
 
-test("mining follow visualizer wraps and ellipsizes sentence slots to two 80-column lines", () => {
+test("mining follow visualizer keeps the full settled sentence line instead of ellipsizing at 80 columns", () => {
   let capturedOptions: FollowSceneRenderOptions | undefined;
 
   const visualizer = new MiningFollowVisualizer({
@@ -705,18 +703,16 @@ test("mining follow visualizer wraps and ellipsizes sentence slots to two 80-col
   }));
   visualizer.close();
 
-  const firstLine = capturedOptions?.extraLines?.[2] ?? "";
-  const secondLine = capturedOptions?.extraLines?.[3] ?? "";
-  const indent = " ".repeat("1. @alpha: ".length);
+  const firstLine = capturedOptions?.extraLines?.[1] ?? "";
 
-  assert.ok(firstLine.length <= 80);
-  assert.ok(secondLine.length <= 80);
+  assert.ok(firstLine.length > 80);
   assert.ok(firstLine.includes("UNDER TREE MONKEY YOUTH BASKET"));
-  assert.ok(secondLine.startsWith(indent));
-  assert.ok(secondLine.endsWith("…"));
+  assert.ok(firstLine.includes("river canyon marble silver."));
+  assert.ok(!firstLine.endsWith("…"));
+  assert.equal(capturedOptions?.extraLines?.[2], "2.");
 });
 
-test("mining follow visualizer wraps and ellipsizes the provisional sentence slot to three lines", () => {
+test("mining follow visualizer wraps and ellipsizes the provisional sentence slot to two lines", () => {
   let capturedOptions: FollowSceneRenderOptions | undefined;
 
   const visualizer = new MiningFollowVisualizer({
@@ -749,18 +745,16 @@ test("mining follow visualizer wraps and ellipsizes the provisional sentence slo
   }));
   visualizer.close();
 
-  const firstLine = capturedOptions?.extraLines?.[15] ?? "";
-  const secondLine = capturedOptions?.extraLines?.[16] ?? "";
-  const thirdLine = capturedOptions?.extraLines?.[17] ?? "";
+  const firstLine = capturedOptions?.extraLines?.[6] ?? "";
+  const secondLine = capturedOptions?.extraLines?.[7] ?? "";
   const indent = " ".repeat("@local: ".length);
 
   assert.ok(firstLine.length <= 80);
   assert.ok(secondLine.length <= 80);
-  assert.ok(thirdLine.length <= 80);
   assert.ok(firstLine.includes("UNDER TREE MONKEY YOUTH BASKET"));
   assert.ok(secondLine.startsWith(indent));
-  assert.ok(thirdLine.startsWith(indent));
-  assert.ok(thirdLine.endsWith("…"));
+  assert.ok(secondLine.endsWith("…"));
+  assert.equal(capturedOptions?.extraLines?.[8], "");
 });
 
 test("mining follow visualizer keeps the raw tip rail while labeling the older indexed sentence board explicitly", () => {
@@ -804,9 +798,8 @@ test("mining follow visualizer keeps the raw tip rail while labeling the older i
 
   assert.equal(capturedIndexedHeight, 100);
   assert.equal(capturedNodeHeight, 102);
-  assert.equal(capturedOptions?.extraLines?.[0], "✎ Block #100 Sentences ✎");
-  assert.equal(capturedOptions?.extraLines?.[2], "1. @alpha: indexed sentence");
-  assert.equal(capturedOptions?.extraLines?.[3], "");
+  assert.equal(capturedOptions?.extraLines?.[0], createCenteredBoardTitle(100));
+  assert.equal(capturedOptions?.extraLines?.[1], "1. @alpha: indexed sentence");
 });
 
 test("mining follow visualizer leaves the indexed block rows blank until settled winners are available", () => {
@@ -840,25 +833,45 @@ test("mining follow visualizer leaves the indexed block rows blank until settled
   assert.equal(capturedOptions?.artworkCogText, null);
   assert.equal(capturedOptions?.artworkSatText, null);
   assert.deepEqual(capturedOptions?.extraLines, [
-    "✎ Block #101 Sentences ✎",
-    "",
+    createCenteredBoardTitle(101),
     "1.",
-    "",
     "2.",
-    "",
     "3.",
-    "",
     "4.",
-    "",
     "5.",
-    "",
-    "----------",
-    "",
-    "",
     "",
     "",
     "",
   ]);
+});
+
+test("mining follow visualizer centers the placeholder board title when the settled height is unavailable", () => {
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot(), createUiState());
+  visualizer.close();
+
+  assert.equal(capturedOptions?.extraLines?.[0], createCenteredBoardTitle("-----"));
 });
 
 test("mining follow visualizer keeps a fixed-height frame across empty, unpublished, and published states", () => {
@@ -901,11 +914,32 @@ test("mining follow visualizer keeps a fixed-height frame across empty, unpublis
   }));
   visualizer.close();
 
-  const expectedFrameHeight = 34;
+  const expectedFrameHeight = 25;
   assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[2K/g), expectedFrameHeight);
   assert.equal(countMatches(stream.chunks[1] ?? "", /\u001B\[1A/g), expectedFrameHeight - 1);
   assert.equal(countMatches(stream.chunks[3] ?? "", /\u001B\[2K/g), expectedFrameHeight);
   assert.equal(countMatches(stream.chunks[3] ?? "", /\u001B\[1A/g), expectedFrameHeight - 1);
+});
+
+test("mining follow visualizer renders a blank spacer above the board title", () => {
+  const stream = new MemoryStream({ isTTY: true, columns: 120 });
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream,
+  });
+
+  visualizer.update(createSnapshot({
+    currentPhase: "waiting",
+  }), createUiState({
+    settledBlockHeight: 102,
+  }));
+  visualizer.close();
+
+  const lines = (stream.chunks[0] ?? "").split("\n");
+  const titleIndex = lines.findIndex((line) => line.trim() === "✎ Block #102 Sentences ✎");
+
+  assert.notEqual(titleIndex, -1);
+  assert.equal(lines[titleIndex - 1], "");
 });
 
 test("mining follow visualizer snapshots runtime and board state for ticker redraws", () => {
@@ -988,21 +1022,12 @@ test("mining follow visualizer snapshots runtime and board state for ticker redr
     indexedHeight: 100,
     nodeHeight: 100,
     extraLines: [
-      "✎ Block #100 Sentences ✎",
-      "",
+      createCenteredBoardTitle(100),
       "1. @alpha: UNDER indexed sentence",
-      "",
       "2.",
-      "",
       "3.",
-      "",
       "4.",
-      "",
       "5.",
-      "",
-      "----------",
-      "",
-      "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
       "@local: local sentence",
       "",
       "",
@@ -1101,21 +1126,12 @@ test("mining follow visualizer snapshots queued headless redraw state", () => {
     indexedHeight: 100,
     nodeHeight: 101,
     extraLines: [
-      "✎ Block #100 Sentences ✎",
-      "",
+      createCenteredBoardTitle(100),
       "1. @alpha: UNDER queued sentence",
-      "",
       "2.",
-      "",
       "3.",
-      "",
       "4.",
-      "",
       "5.",
-      "",
-      "----------",
-      "",
-      "Required words: UNDER, TREE, MONKEY, YOUTH, BASKET",
       "@local: queued local sentence",
       "",
       "",

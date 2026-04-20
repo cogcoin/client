@@ -739,48 +739,17 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
   availableFundingMinConf?: number;
   temporarilyUnlockedPolicyOutpoints?: readonly OutpointRecord[];
 }): Promise<BuiltWalletMutationTransaction> {
-  const availableFundingMinConf = options.availableFundingMinConf ?? 1;
-  const availableFundingUtxos = (await options.rpc.listUnspent(options.walletName, availableFundingMinConf))
-    .filter((entry) => isSpendableFundingUtxo(
-      entry,
-      options.plan.allowedFundingScriptPubKeyHex,
-      availableFundingMinConf,
-    ));
-  const availableFundingValueByKey = new Map(
-    availableFundingUtxos.map((entry) => [
-      outpointKey({ txid: entry.txid, vout: entry.vout }),
-      btcNumberToSats(entry.amount),
-    ]),
-  );
-  const validationPlan = {
-    ...options.plan,
-    eligibleFundingOutpointKeys: new Set([
-      ...options.plan.eligibleFundingOutpointKeys,
-      ...availableFundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout })),
-    ]),
-  } as TPlan;
   const temporaryBuilderLockedOutpoints: OutpointRecord[] = [];
 
   try {
-    const funded = await options.rpc.walletCreateFundedPsbt(
-      options.walletName,
-      options.plan.fixedInputs,
-        options.plan.outputs,
-        0,
-        {
-          add_inputs: true,
-          include_unsafe: false,
-          minconf: availableFundingMinConf,
-          changeAddress: options.plan.changeAddress,
-          ...(options.plan.changePosition == null ? {} : { changePosition: options.plan.changePosition }),
-          lockUnspents: false,
-          fee_rate: options.feeRate ?? DEFAULT_WALLET_MUTATION_FEE_RATE_SAT_VB,
-          replaceable: true,
-          subtractFeeFromOutputs: [],
-        },
-      );
-    const decoded = await options.rpc.decodePsbt(funded.psbt);
-    options.validateFundedDraft(decoded, funded, validationPlan);
+    const { funded, decoded } = await fundAndValidateWalletMutationDraft({
+      rpc: options.rpc,
+      walletName: options.walletName,
+      plan: options.plan,
+      validateFundedDraft: options.validateFundedDraft,
+      feeRate: options.feeRate,
+      availableFundingMinConf: options.availableFundingMinConf,
+    });
     let signed: RpcWalletProcessPsbtResult;
     let finalized: RpcFinalizePsbtResult;
     let rawHex: string;
@@ -830,6 +799,73 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
     await unlockTemporaryBuilderLocks(options.rpc, options.walletName, temporaryBuilderLockedOutpoints);
     throw error;
   }
+}
+
+export async function fundAndValidateWalletMutationDraft<TPlan>(options: {
+  rpc: WalletMutationRpcClient;
+  walletName: string;
+  plan: TPlan & {
+    fixedInputs: FixedWalletInput[];
+    outputs: unknown[];
+    changeAddress: string;
+    changePosition?: number | null;
+    allowedFundingScriptPubKeyHex: string;
+    eligibleFundingOutpointKeys: Set<string>;
+  };
+  validateFundedDraft(
+    decoded: RpcDecodedPsbt,
+    funded: RpcWalletCreateFundedPsbtResult,
+    plan: TPlan,
+  ): void;
+  feeRate?: number;
+  availableFundingMinConf?: number;
+}): Promise<{
+  funded: RpcWalletCreateFundedPsbtResult;
+  decoded: RpcDecodedPsbt;
+}> {
+  const availableFundingMinConf = options.availableFundingMinConf ?? 1;
+  const availableFundingUtxos = (await options.rpc.listUnspent(options.walletName, availableFundingMinConf))
+    .filter((entry) => isSpendableFundingUtxo(
+      entry,
+      options.plan.allowedFundingScriptPubKeyHex,
+      availableFundingMinConf,
+    ));
+  const availableFundingValueByKey = new Map(
+    availableFundingUtxos.map((entry) => [
+      outpointKey({ txid: entry.txid, vout: entry.vout }),
+      btcNumberToSats(entry.amount),
+    ]),
+  );
+  const validationPlan = {
+    ...options.plan,
+    eligibleFundingOutpointKeys: new Set([
+      ...options.plan.eligibleFundingOutpointKeys,
+      ...availableFundingUtxos.map((entry) => outpointKey({ txid: entry.txid, vout: entry.vout })),
+    ]),
+  } as TPlan;
+  const funded = await options.rpc.walletCreateFundedPsbt(
+    options.walletName,
+    options.plan.fixedInputs,
+    options.plan.outputs,
+    0,
+    {
+      add_inputs: true,
+      include_unsafe: false,
+      minconf: availableFundingMinConf,
+      changeAddress: options.plan.changeAddress,
+      ...(options.plan.changePosition == null ? {} : { changePosition: options.plan.changePosition }),
+      lockUnspents: false,
+      fee_rate: options.feeRate ?? DEFAULT_WALLET_MUTATION_FEE_RATE_SAT_VB,
+      replaceable: true,
+      subtractFeeFromOutputs: [],
+    },
+  );
+  const decoded = await options.rpc.decodePsbt(funded.psbt);
+  options.validateFundedDraft(decoded, funded, validationPlan);
+  return {
+    funded,
+    decoded,
+  };
 }
 
 export async function buildWalletMutationTransactionWithReserveFallback<TPlan>(options: {

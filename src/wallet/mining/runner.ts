@@ -34,6 +34,7 @@ import { extractOpReturnPayloadFromScriptHex } from "../tx/register.js";
 import {
   assertFixedInputPrefixMatches,
   buildWalletMutationTransaction,
+  fundAndValidateWalletMutationDraft,
   isInsufficientFundsError,
   outpointKey as walletMutationOutpointKey,
   isAlreadyAcceptedError,
@@ -633,6 +634,7 @@ export interface RunForegroundMiningOptions extends RunnerDependencies {
   signal?: AbortSignal;
   progressOutput?: ProgressOutputMode;
   paths?: WalletRuntimePaths;
+  visualizer?: MiningFollowVisualizer;
 }
 
 export interface StartBackgroundMiningOptions extends RunnerDependencies {
@@ -2795,13 +2797,90 @@ function createRetryableMiningPublishWaitingNote(): string {
 }
 
 const MINING_FUNDING_MIN_CONF = 0;
+const MINING_FUNDING_PROBE_PLACEHOLDER_SENTENCE = "m".repeat(60);
 
 function createInsufficientFundsMiningPublishWaitingNote(): string {
-  return "Mining is waiting for enough safe BTC funding that Bitcoin Core can use for the next publish.";
+  return "Insufficient BTC to mine.";
 }
 
 function createInsufficientFundsMiningPublishErrorMessage(): string {
   return "Bitcoin Core could not fund the next mining publish with safe BTC.";
+}
+
+function createMiningFundingProbeCandidate(options: {
+  domain: ReturnType<typeof resolveEligibleAnchoredRoots>[number];
+  referencedBlockHashDisplay: string;
+  targetBlockHeight: number;
+}): MiningCandidate {
+  const referencedBlockHashInternal = Buffer.from(
+    displayToInternalBlockhash(options.referencedBlockHashDisplay),
+    "hex",
+  );
+  const bip39WordIndices = deriveMiningWordIndices(
+    referencedBlockHashInternal,
+    options.domain.domainId,
+  );
+
+  return {
+    domainId: options.domain.domainId,
+    domainName: options.domain.domainName,
+    localIndex: options.domain.localIndex,
+    sender: options.domain.sender,
+    sentence: MINING_FUNDING_PROBE_PLACEHOLDER_SENTENCE,
+    encodedSentenceBytes: Buffer.from(MINING_FUNDING_PROBE_PLACEHOLDER_SENTENCE, "utf8"),
+    bip39WordIndices,
+    bip39Words: resolveBip39WordsFromIndices(bip39WordIndices),
+    canonicalBlend: 0n,
+    referencedBlockHashDisplay: options.referencedBlockHashDisplay,
+    referencedBlockHashInternal,
+    targetBlockHeight: options.targetBlockHeight,
+  };
+}
+
+async function probeMiningFundingAvailability(options: {
+  rpc: MiningRpcClient;
+  walletName: string;
+  state: WalletStateV1;
+  domains: ReturnType<typeof resolveEligibleAnchoredRoots>;
+  referencedBlockHashDisplay: string;
+  targetBlockHeight: number;
+}): Promise<void> {
+  const templateDomain = options.domains[0];
+  if (templateDomain === undefined) {
+    return;
+  }
+
+  const allUtxos = await options.rpc.listUnspent(
+    options.walletName,
+    MINING_FUNDING_MIN_CONF,
+  );
+  const conflictOutpoint = resolveMiningConflictOutpoint({
+    state: options.state,
+    allUtxos,
+  });
+  const feeSelection = await resolveWalletMutationFeeSelection({
+    rpc: options.rpc,
+  });
+  const plan = createMiningPlan({
+    state: options.state,
+    candidate: createMiningFundingProbeCandidate({
+      domain: templateDomain,
+      referencedBlockHashDisplay: options.referencedBlockHashDisplay,
+      targetBlockHeight: options.targetBlockHeight,
+    }),
+    conflictOutpoint,
+    allUtxos,
+    feeRateSatVb: feeSelection.feeRateSatVb,
+  });
+
+  await fundAndValidateWalletMutationDraft({
+    rpc: options.rpc,
+    walletName: options.walletName,
+    plan,
+    validateFundedDraft: validateMiningDraft,
+    feeRate: plan.feeRateSatVb,
+    availableFundingMinConf: MINING_FUNDING_MIN_CONF,
+  });
 }
 
 function buildMiningGenerationRequest(options: {
@@ -4346,6 +4425,49 @@ async function performMiningCycle(options: {
       return;
     }
 
+    let eligibleDomains: ReturnType<typeof resolveEligibleAnchoredRoots> | null = null;
+    if (getSelectedCandidateForTip(options.loopState, tipKey) === null) {
+      eligibleDomains = resolveEligibleAnchoredRoots(effectiveReadContext);
+      if (eligibleDomains.length === 0) {
+        clearMiningProviderWait(options.loopState);
+        await saveCycleStatus(effectiveReadContext, {
+          runMode: options.runMode,
+          currentPhase: "idle",
+          currentPublishDecision: null,
+          lastError: null,
+          note: "No locally controlled anchored root domains are currently eligible to mine.",
+        });
+        return;
+      }
+
+      try {
+        await probeMiningFundingAvailability({
+          rpc,
+          walletName: effectiveReadContext.localState.state.managedCoreWallet.walletName,
+          state: effectiveReadContext.localState.state,
+          domains: eligibleDomains,
+          referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? "00".repeat(32),
+          targetBlockHeight,
+        });
+      } catch (error) {
+        if (isInsufficientFundsError(error)) {
+          clearMiningProviderWait(options.loopState);
+          clearSelectedCandidate(options.loopState);
+          options.loopState.waitingNote = createInsufficientFundsMiningPublishWaitingNote();
+          await saveCycleStatus(effectiveReadContext, {
+            runMode: options.runMode,
+            currentPhase: "waiting",
+            currentPublishDecision: "publish-paused-insufficient-funds",
+            lastError: createInsufficientFundsMiningPublishErrorMessage(),
+            note: createInsufficientFundsMiningPublishWaitingNote(),
+          });
+          return;
+        }
+
+        throw error;
+      }
+    }
+
     if (
       options.loopState.providerWaitState !== null
       && options.loopState.providerWaitLastError !== null
@@ -4357,6 +4479,7 @@ async function performMiningCycle(options: {
         await saveCycleStatus(effectiveReadContext, {
           runMode: options.runMode,
           currentPhase: "waiting-provider",
+          currentPublishDecision: null,
           providerState: options.loopState.providerWaitState,
           lastError: options.loopState.providerWaitLastError,
           note: "Mining is waiting for the sentence provider to recover.",
@@ -4372,6 +4495,7 @@ async function performMiningCycle(options: {
         await saveCycleStatus(effectiveReadContext, {
           runMode: options.runMode,
           currentPhase: "waiting-provider",
+          currentPublishDecision: null,
           providerState: options.loopState.providerWaitState,
           lastError: options.loopState.providerWaitLastError,
           note: "Mining is waiting for the sentence provider to recover.",
@@ -4444,21 +4568,12 @@ async function performMiningCycle(options: {
       };
 
     if (selectedCandidate === null) {
-      const domains = resolveEligibleAnchoredRoots(effectiveReadContext);
-      if (domains.length === 0) {
-        clearMiningProviderWait(options.loopState);
-        await saveCycleStatus(effectiveReadContext, {
-          runMode: options.runMode,
-          currentPhase: "idle",
-          lastError: null,
-          note: "No locally controlled anchored root domains are currently eligible to mine.",
-        });
-        return;
-      }
+      const domains = eligibleDomains ?? resolveEligibleAnchoredRoots(effectiveReadContext);
 
       await saveCycleStatus(effectiveReadContext, {
         runMode: options.runMode,
         currentPhase: "generating",
+        currentPublishDecision: null,
         lastError: null,
         note: "Generating mining sentences for eligible root domains.",
       });
@@ -4512,6 +4627,7 @@ async function performMiningCycle(options: {
           await saveCycleStatus(effectiveReadContext, {
             runMode: options.runMode,
             currentPhase: "waiting-provider",
+            currentPublishDecision: null,
             providerState: options.loopState.providerWaitState ?? error.providerState,
             lastError: error.message,
             note: "Mining is waiting for the sentence provider to recover.",
@@ -4584,6 +4700,7 @@ async function performMiningCycle(options: {
         await saveCycleStatus(effectiveReadContext, {
           runMode: options.runMode,
           currentPhase: "waiting-provider",
+          currentPublishDecision: null,
           providerState: "unavailable",
           lastError: failureMessage,
           note: "Mining sentence generation failed for the current tip.",
@@ -4605,6 +4722,7 @@ async function performMiningCycle(options: {
       await saveCycleStatus(effectiveReadContext, {
         runMode: options.runMode,
         currentPhase: "scoring",
+        currentPublishDecision: null,
         lastError: null,
         note: "Scoring mining candidates for the current tip.",
       });
@@ -4771,7 +4889,11 @@ async function performMiningCycle(options: {
         candidate: selectedCandidate,
         runId: options.backgroundWorkerRunId,
       });
-      if (tipKey !== null && published.retryable !== true) {
+      if (
+        tipKey !== null
+        && published.retryable !== true
+        && published.decision !== "publish-paused-insufficient-funds"
+      ) {
         options.loopState.attemptedTipKey = tipKey;
       }
       if (published.retryable === true) {
@@ -5167,7 +5289,8 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
   const requestMiningPreemption = options.requestMiningPreemption ?? requestMiningGenerationPreemption;
   const runMiningLoopImpl = options.runMiningLoopImpl ?? runMiningLoop;
   const saveStopSnapshotImpl = options.saveStopSnapshotImpl ?? saveStopSnapshot;
-  let visualizer: MiningFollowVisualizer | null = null;
+  let visualizer: MiningFollowVisualizer | null = options.visualizer ?? null;
+  const ownsVisualizer = visualizer === null;
 
   const setupReady = options.builtInSetupEnsured === true
     ? true
@@ -5204,12 +5327,14 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
       sleepImpl: options.sleepImpl,
     });
 
-    visualizer = new MiningFollowVisualizer({
-      clientVersion: options.clientVersion,
-      updateAvailable: options.updateAvailable,
-      progressOutput: options.progressOutput ?? "auto",
-      stream: options.stderr,
-    });
+    if (visualizer === null) {
+      visualizer = new MiningFollowVisualizer({
+        clientVersion: options.clientVersion,
+        updateAvailable: options.updateAvailable,
+        progressOutput: options.progressOutput ?? "auto",
+        stream: options.stderr,
+      });
+    }
 
     options.signal?.addEventListener("abort", abortListener, { once: true });
     process.on("SIGINT", handleSigint);
@@ -5245,7 +5370,9 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
     options.signal?.removeEventListener("abort", abortListener);
     process.off("SIGINT", handleSigint);
     process.off("SIGTERM", handleSigterm);
-    visualizer?.close();
+    if (ownsVisualizer) {
+      visualizer?.close();
+    }
     await controlLock.release();
   }
 }

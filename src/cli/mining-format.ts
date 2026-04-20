@@ -46,7 +46,7 @@ function resolveInsufficientFundsNextStep(): string {
 
 function resolveMiningRuntimeNote(mining: MiningControlPlaneView): string | null {
   return mining.runtime.currentPublishDecision === "publish-paused-insufficient-funds"
-    ? "Insufficient funds for mining."
+    ? "Insufficient BTC to mine."
     : mining.runtime.note;
 }
 

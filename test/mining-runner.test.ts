@@ -866,6 +866,43 @@ test("runForegroundMining replaces an existing foreground miner in the same runt
   assert.equal(await pathExists(paths.miningControlLockPath), false);
 });
 
+test("runForegroundMining reuses an injected visualizer without closing it", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-mine-fg-visualizer");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const events: string[] = [];
+  let receivedVisualizer: unknown = null;
+  let closeCalls = 0;
+
+  const visualizer = {
+    close() {
+      closeCalls += 1;
+    },
+  } as any;
+
+  await runForegroundMining({
+    dataDir: homeDirectory,
+    databasePath: join(homeDirectory, "indexer.sqlite"),
+    provider,
+    prompter: createPrompter(),
+    builtInSetupEnsured: true,
+    paths,
+    stderr: createStderrStream(),
+    visualizer,
+    runMiningLoopImpl: async (options) => {
+      receivedVisualizer = options.visualizer ?? null;
+      events.push("run");
+    },
+    saveStopSnapshotImpl: async () => {
+      events.push("save-stop");
+    },
+  });
+
+  assert.equal(receivedVisualizer, visualizer);
+  assert.equal(closeCalls, 0);
+  assert.deepEqual(events, ["run", "save-stop"]);
+});
+
 test("startBackgroundMining replaces an existing background miner and returns started true", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-mine-start-bg");
   const paths = createRuntimePaths(homeDirectory);

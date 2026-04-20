@@ -1,6 +1,6 @@
 import type { BootstrapProgress, ProgressOutputMode } from "../../bitcoind/types.js";
 import { createBootstrapProgress } from "../../bitcoind/progress/formatting.js";
-import { normalizeInlineText, truncateLine } from "../../bitcoind/progress/formatting.js";
+import { centerLine, normalizeInlineText, truncateLine } from "../../bitcoind/progress/formatting.js";
 import {
   advanceFollowSceneState,
   createFollowSceneState,
@@ -231,19 +231,20 @@ function formatSentenceSlot(
   return lines;
 }
 
-function formatSentenceRow(entry: MiningSentenceBoardEntry): [string, string] {
-  return formatSentenceSlot(`${entry.rank}. @${entry.domainName}: `, entry.sentence, entry.requiredWords, 2) as [string, string];
+function formatSentenceRow(entry: MiningSentenceBoardEntry): string {
+  const prefix = `${entry.rank}. @${entry.domainName}: `;
+  const highlightedSentence = highlightRequiredWords(normalizeInlineText(entry.sentence), entry.requiredWords);
+  return `${prefix}${highlightedSentence}`;
 }
 
-function formatRequiredWordsLine(words: readonly string[]): string {
-  if (words.length === 0) {
-    return "";
-  }
-
-  return `Required words: ${words.map((word) => word.toUpperCase()).join(", ")}`;
+function formatSentenceBoardTitle(settledBlockHeight: number | null): string {
+  return centerLine(
+    `✎ Block #${settledBlockHeight ?? "-----"} Sentences ✎`,
+    MINING_SENTENCE_BOARD_WRAP_WIDTH,
+  );
 }
 
-function formatProvisionalTxLinkLine(
+function formatProvisionalFundingLine(
   snapshot: MiningRuntimeStatusV1,
   ui: MiningFollowVisualizerState,
 ): string {
@@ -254,6 +255,12 @@ function formatProvisionalTxLinkLine(
       : "Deposit BTC to this wallet address to mine.";
   }
 
+  return "";
+}
+
+function formatProvisionalTxLinkLine(
+  ui: MiningFollowVisualizerState,
+): string {
   if (ui.provisionalEntry.domainName === null || ui.provisionalEntry.sentence === null || ui.provisionalBroadcastTxid === null) {
     return "";
   }
@@ -270,12 +277,26 @@ function formatProvisionalTxLinkLine(
 function formatProvisionalSentenceRow(
   entry: MiningProvisionalSentenceEntry,
   requiredWords: readonly string[],
-): [string, string, string] {
+): [string, string] {
   if (entry.domainName === null || entry.sentence === null) {
-    return ["", "", ""];
+    return ["", ""];
   }
 
-  return formatSentenceSlot(`@${entry.domainName}: `, entry.sentence, requiredWords, 3) as [string, string, string];
+  return formatSentenceSlot(`@${entry.domainName}: `, entry.sentence, requiredWords, 2) as [string, string];
+}
+
+function formatProvisionalSectionLines(
+  snapshot: MiningRuntimeStatusV1,
+  ui: MiningFollowVisualizerState,
+): [string, string, string] {
+  const sentenceLines = formatProvisionalSentenceRow(ui.provisionalEntry, ui.provisionalRequiredWords);
+  const fundingLine = formatProvisionalFundingLine(snapshot, ui);
+
+  if (fundingLine.length > 0) {
+    return [...sentenceLines, fundingLine];
+  }
+
+  return [...sentenceLines, formatProvisionalTxLinkLine(ui)];
 }
 
 export function createEmptyMiningFollowVisualizerState(): MiningFollowVisualizerState {
@@ -562,18 +583,14 @@ export class MiningFollowVisualizer {
       artworkCogText: formatCompactCogBalanceText(uiState.balanceCogtoshi),
       artworkSatText: formatCompactSatBalanceText(uiState.balanceSats),
       extraLines: [
-        `✎ Block #${uiState.settledBlockHeight ?? "-----"} Sentences ✎`,
-        "",
+        formatSentenceBoardTitle(uiState.settledBlockHeight),
         ...Array.from({ length: MINING_SENTENCE_BOARD_SIZE }, (_value, index) => {
           const entry = uiState.settledBoardEntries[index];
           return entry === undefined
-            ? [`${index + 1}.`, ""]
+            ? `${index + 1}.`
             : formatSentenceRow(entry);
-        }).flat(),
-        "----------",
-        formatProvisionalTxLinkLine(snapshot, uiState),
-        formatRequiredWordsLine(uiState.provisionalRequiredWords),
-        ...formatProvisionalSentenceRow(uiState.provisionalEntry, uiState.provisionalRequiredWords),
+        }),
+        ...formatProvisionalSectionLines(snapshot, uiState),
       ],
     };
 

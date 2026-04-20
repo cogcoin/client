@@ -474,6 +474,14 @@ function createRecoveryReadContext(overrides: Record<string, unknown> = {}) {
 }
 
 function createHealthyMiningRpc(overrides: Record<string, unknown> = {}) {
+  const fundingScriptPubKeyHex = "0014" + "11".repeat(20);
+  let lastFundedRequest:
+    | {
+      inputs: Array<{ txid: string; vout: number }>;
+      outputs: unknown[];
+    }
+    | null = null;
+
   return {
     async listLockUnspent() {
       return [];
@@ -482,7 +490,64 @@ function createHealthyMiningRpc(overrides: Record<string, unknown> = {}) {
       return true;
     },
     async listUnspent() {
-      return [];
+      return [{
+        txid: "aa".repeat(32),
+        vout: 0,
+        amount: 0.001,
+        scriptPubKey: fundingScriptPubKeyHex,
+        confirmations: 0,
+        spendable: true,
+        safe: true,
+      }];
+    },
+    async walletCreateFundedPsbt(
+      _walletName: string,
+      inputs: Array<{ txid: string; vout: number }>,
+      outputs: unknown[],
+    ) {
+      lastFundedRequest = {
+        inputs: [...inputs],
+        outputs,
+      };
+      return {
+        psbt: "probe-psbt",
+        fee: 0.00001,
+        changepos: 1,
+      };
+    },
+    async decodePsbt() {
+      const opReturnDataHex = typeof (lastFundedRequest?.outputs[0] as { data?: unknown } | undefined)?.data === "string"
+        ? (lastFundedRequest?.outputs[0] as { data: string }).data
+        : "";
+      const pushLengthHex = (opReturnDataHex.length / 2).toString(16).padStart(2, "0");
+      return {
+        tx: {
+          vin: [
+            ...(lastFundedRequest?.inputs ?? []),
+            {
+              txid: "aa".repeat(32),
+              vout: 0,
+            },
+          ],
+          vout: [
+            {
+              n: 0,
+              value: 0,
+              scriptPubKey: {
+                hex: `6a${pushLengthHex}${opReturnDataHex}`,
+              },
+            },
+            {
+              n: 1,
+              value: 0.00099,
+              scriptPubKey: {
+                hex: fundingScriptPubKeyHex,
+              },
+            },
+          ],
+        },
+        inputs: [],
+      };
     },
     async getBlockchainInfo() {
       return {
@@ -1568,6 +1633,18 @@ test("performMiningCycle does not downgrade a tolerated 2-block header lead into
     backgroundWorkerPid: null,
     backgroundWorkerRunId: null,
     openReadContext: async () => createRecoveryReadContext({
+      model: {
+        walletScriptPubKeyHex: "0014" + "11".repeat(20),
+        domains: [{
+          name: "cogdemo",
+          anchored: true,
+          readOnly: false,
+          localRelationship: "local",
+          domainId: 7,
+          ownerAddress: "bc1qfunding",
+          ownerScriptPubKeyHex: "0014" + "11".repeat(20),
+        }],
+      },
       nodeHealth: "synced",
       nodeMessage: "Bitcoin headers can briefly lead validated blocks; a short 1-2 block lead is normal and is being tolerated.",
       nodeStatus: {
@@ -1680,6 +1757,95 @@ test("performMiningCycle still blocks mining on a 3-block header lead", async (t
   const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
   assert.equal(snapshot?.currentPhase, "waiting-bitcoin-network");
   assert.equal(snapshot?.note, "Mining is waiting for the local Bitcoin node to become publishable.");
+});
+
+test("performMiningCycle pauses before generation when mining funding is insufficient", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-funding-gate");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  let generateCalls = 0;
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => createProviderRetryReadContext(),
+    attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+    rpcFactory: () => createHealthyMiningRpc({
+      async walletCreateFundedPsbt() {
+        throw new Error("bitcoind_rpc_walletcreatefundedpsbt_-4_Insufficient funds");
+      },
+    }) as any,
+    loopState,
+    nowImpl: () => 1_000,
+    generateCandidatesForDomainsImpl: async () => {
+      generateCalls += 1;
+      return [createTestMiningCandidate()];
+    },
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(generateCalls, 0);
+  assert.equal(loopState.attemptedTipKey, null);
+  assert.equal(snapshot?.currentPhase, "waiting");
+  assert.equal(snapshot?.currentPublishDecision, "publish-paused-insufficient-funds");
+  assert.equal(snapshot?.note, "Insufficient BTC to mine.");
+  assert.equal(snapshot?.lastError, "Bitcoin Core could not fund the next mining publish with safe BTC.");
+});
+
+test("performMiningCycle keeps the insufficient-funding blocker active across repeated cycles", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-funding-gate-repeat");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  let generateCalls = 0;
+
+  const runCycle = async (nowUnixMs: number) => {
+    await performMiningCycleForTesting({
+      dataDir: homeDirectory,
+      databasePath: `${homeDirectory}/client.sqlite`,
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      openReadContext: async () => createProviderRetryReadContext(),
+      attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+      rpcFactory: () => createHealthyMiningRpc({
+        async walletCreateFundedPsbt() {
+          throw new Error("bitcoind_rpc_walletcreatefundedpsbt_-4_Insufficient funds");
+        },
+      }) as any,
+      loopState,
+      nowImpl: () => nowUnixMs,
+      generateCandidatesForDomainsImpl: async () => {
+        generateCalls += 1;
+        return [createTestMiningCandidate()];
+      },
+    });
+  };
+
+  await runCycle(1_000);
+  await runCycle(2_000);
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(generateCalls, 0);
+  assert.equal(loopState.attemptedTipKey, null);
+  assert.equal(snapshot?.currentPhase, "waiting");
+  assert.equal(snapshot?.currentPublishDecision, "publish-paused-insufficient-funds");
+  assert.equal(snapshot?.note, "Insufficient BTC to mine.");
+  assert.equal(snapshot?.lastError, "Bitcoin Core could not fund the next mining publish with safe BTC.");
 });
 
 test("performMiningCycle backs off transient provider failures and retries without marking the tip attempted", async (t) => {
@@ -2300,7 +2466,7 @@ test("publish candidate pauses with a waiting result after insufficient funds", 
   }
   assert.equal(result.txid, null);
   assert.equal(result.decision, "publish-paused-insufficient-funds");
-  assert.match(result.note, /waiting for enough safe btc funding/i);
+  assert.equal(result.note, "Insufficient BTC to mine.");
   assert.equal(result.lastError, "Bitcoin Core could not fund the next mining publish with safe BTC.");
   assert.equal(result.candidate, null);
   assert.equal(events.length, 1);

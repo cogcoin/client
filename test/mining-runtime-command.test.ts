@@ -200,6 +200,10 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
   const context = createDefaultContext({
     stdout: stdout.stream,
     stderr: stderr.stream,
+    env: {
+      ...process.env,
+      COGCOIN_DISABLE_UPDATE_CHECK: "1",
+    },
     signalSource: QUIET_SIGNAL_SOURCE,
     walletSecretProvider: provider,
     createPrompter: () => prompter,
@@ -253,6 +257,64 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
   assert.equal(actualRunOptions.prompter, prompter);
   assert.equal(actualRunOptions.builtInSetupEnsured, true);
   assert.deepEqual(actualRunOptions.paths, runtimePaths);
+});
+
+test("mine tty shows the mining visualizer during preflight and reuses it for foreground mining", async (t) => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter({ isTTY: true, columns: 120 });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const prompter = createPrompter();
+  const version = "7.8.9";
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-runtime-tty"));
+  const events: string[] = [];
+  let receivedVisualizer: unknown = null;
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {
+      ...process.env,
+      COGCOIN_DISABLE_UPDATE_CHECK: "1",
+    },
+    signalSource: QUIET_SIGNAL_SOURCE,
+    walletSecretProvider: provider,
+    createPrompter: () => prompter,
+    readPackageVersion: async () => version,
+    resolveWalletRuntimePaths: (seedName) => resolvePaths(seedName),
+    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
+    ensureBuiltInMiningSetupIfNeeded: async () => {
+      events.push("setup");
+      return true;
+    },
+    loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
+    openManagedIndexerMonitor: async () => ({
+      async getStatus() {
+        events.push("status");
+        return createObservedIndexerStatus();
+      },
+      async close() {
+        events.push("close-monitor");
+      },
+    }) as any,
+    runForegroundMining: async (options) => {
+      receivedVisualizer = options.visualizer ?? null;
+      events.push("run");
+    },
+  });
+
+  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine"]), context);
+
+  assert.equal(exitCode, 0);
+  assert.equal(stdout.read(), "");
+  assert.deepEqual(events, [
+    "setup",
+    "status",
+    "close-monitor",
+    "run",
+  ]);
+  assert.notEqual(receivedVisualizer, null);
+  assert.doesNotMatch(stderr.read(), /Bitcoin sync is catching up\./);
+  assert.match(stderr.read(), /✎ Block #----- Sentences ✎/);
 });
 
 test("mine text marks updateAvailable when tty mining sees a newer npm version", async (t) => {

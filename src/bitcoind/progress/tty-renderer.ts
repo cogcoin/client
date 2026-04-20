@@ -175,14 +175,15 @@ export class TtyProgressRenderer {
       now,
     );
     const extraLines = (renderOptions.extraLines ?? []).map((line) => truncateLine(line, width));
+    const renderedExtraLines = extraLines.length > 0 ? ["", ...extraLines] : [""];
     const lines = width >= ART_WIDTH
       ? [...renderFollowFrame(followScene, statusFieldText, now, {
         artworkCogText: renderOptions.artworkCogText ?? null,
         artworkSatText: renderOptions.artworkSatText ?? null,
         artworkStatusLeftText: renderOptions.artworkStatusLeftText ?? null,
         artworkStatusRightText: renderOptions.artworkStatusRightText ?? null,
-      }), "", progressLine, "", ...extraLines]
-      : [truncateLine(NEUTRAL_MESSAGE_TITLE, width), progressLine, "", ...extraLines];
+      }), "", progressLine, ...renderedExtraLines]
+      : [truncateLine(NEUTRAL_MESSAGE_TITLE, width), progressLine, ...renderedExtraLines];
     const frame = lines.join("\n");
 
     this.#resetFrameIfExternalWritesDetected();
