@@ -7,6 +7,7 @@ import {
   createEmptyMiningFollowVisualizerState,
   MiningFollowVisualizer,
 } from "../../wallet/mining/visualizer.js";
+import { createMiningStopRequestedError } from "../../wallet/mining/stop.js";
 import { resolveWalletRootIdFromLocalArtifacts } from "../../wallet/root-resolution.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 import { bindClientPasswordPromptSessionPolicy } from "../../wallet/state/client-password/session-policy.js";
@@ -490,7 +491,7 @@ export async function runMiningRuntimeCommand(
           : false;
         abortController = new AbortController();
         onStop = (): void => {
-          abortController?.abort();
+          abortController?.abort(createMiningStopRequestedError());
         };
 
         context.signalSource.on("SIGINT", onStop);

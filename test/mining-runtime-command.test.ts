@@ -46,6 +46,9 @@ function createSignalSource() {
     off(event: "SIGINT" | "SIGTERM", listener: () => void) {
       listeners[event].delete(listener);
     },
+    listenerCount(event: "SIGINT" | "SIGTERM") {
+      return listeners[event].size;
+    },
     emit(event: "SIGINT" | "SIGTERM") {
       for (const listener of [...listeners[event]]) {
         listener();
@@ -456,4 +459,39 @@ test("mine interrupt during sync preflight exits before foreground mining starts
   assert.equal(runCalls, 0);
   assert.match(stderr.read(), /Stopping managed mining readiness observation/);
   assert.match(stderr.read(), /Stopped observing managed mining readiness\./);
+});
+
+test("mine runtime handoff keeps only one runtime stop listener on the CLI signal source", async (t) => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const signalSource = createSignalSource();
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-runtime-handoff"));
+  let runCalls = 0;
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    signalSource,
+    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
+    createPrompter,
+    resolveWalletRuntimePaths: () => resolvePaths(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
+    ensureBuiltInMiningSetupIfNeeded: async () => true,
+    loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
+    openManagedIndexerMonitor: async () => createCompletedSyncMonitor([]) as any,
+    runForegroundMining: async (options) => {
+      runCalls += 1;
+      assert.equal(signalSource.listenerCount("SIGINT"), 1);
+      assert.equal(signalSource.listenerCount("SIGTERM"), 1);
+      signalSource.emit("SIGINT");
+      assert.equal(options.signal?.aborted, true);
+    },
+  });
+
+  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine"]), context);
+
+  assert.equal(exitCode, 0);
+  assert.equal(runCalls, 1);
+  assert.equal(signalSource.listenerCount("SIGINT"), 0);
+  assert.equal(signalSource.listenerCount("SIGTERM"), 0);
 });

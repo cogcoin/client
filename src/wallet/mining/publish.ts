@@ -462,6 +462,7 @@ export async function publishCandidateOnce(options: {
   rpcFactory: (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
   runId: string | null;
   appendEventFn?: AppendMiningEventFn;
+  throwIfStopping?: () => void;
 }): Promise<{ state: WalletStateV1; txid: string | null; decision: string }> {
   const appendEventFn = options.appendEventFn;
   const service = await options.attachService({
@@ -470,6 +471,7 @@ export async function publishCandidateOnce(options: {
     startHeight: 0,
     walletRootId: options.readContext.localState.state.walletRootId,
   });
+  options.throwIfStopping?.();
   const rpc = options.rpcFactory(service.rpc);
   let state = (await reconcileLiveMiningState({
     state: options.readContext.localState.state,
@@ -478,7 +480,9 @@ export async function publishCandidateOnce(options: {
     nodeBestHeight: options.readContext.nodeStatus?.nodeBestHeight ?? null,
     snapshotState: options.readContext.snapshot.state,
   })).state;
+  options.throwIfStopping?.();
   const allUtxos = await rpc.listUnspent(state.managedCoreWallet.walletName, MINING_FUNDING_MIN_CONF);
+  options.throwIfStopping?.();
   const conflictOutpoint = resolveMiningConflictOutpoint({
     state,
     allUtxos,
@@ -503,6 +507,7 @@ export async function publishCandidateOnce(options: {
   const feeSelection = await resolveWalletMutationFeeSelection({
     rpc,
   });
+  options.throwIfStopping?.();
   const nextFeeRate = feeSelection.feeRateSatVb;
 
   const plan = createMiningPlan({
@@ -532,6 +537,7 @@ export async function publishCandidateOnce(options: {
 
     throw error;
   }
+  options.throwIfStopping?.();
   if (managedCoreWalletRelockOutcome === "recovered" && appendEventFn !== undefined) {
     await appendEventFn(options.paths, createMiningEventRecord(
       "managed-core-wallet-relock-recovered",
@@ -580,9 +586,11 @@ export async function publishCandidateOnce(options: {
     provider: options.provider,
     paths: options.paths,
   });
+  options.throwIfStopping?.();
 
   try {
     await rpc.sendRawTransaction(built.rawHex);
+    options.throwIfStopping?.();
   } catch (error) {
     if (isAlreadyAcceptedError(error)) {
       state = defaultMiningStatePatch(state, {
@@ -738,6 +746,7 @@ export async function publishCandidate(options: {
   runId: string | null;
   publishAttempt?: typeof publishCandidateOnce;
   appendEventFn: AppendMiningEventFn;
+  throwIfStopping?: () => void;
 }): Promise<MiningPublishOutcome> {
   const publishAttempt = options.publishAttempt ?? publishCandidateOnce;
 
@@ -766,6 +775,7 @@ export async function publishCandidate(options: {
       candidate: null,
     };
   };
+  options.throwIfStopping?.();
   const lockedReadContext = await options.openReadContext({
     dataDir: options.dataDir,
     databasePath: options.databasePath,
@@ -775,6 +785,7 @@ export async function publishCandidate(options: {
   });
 
   try {
+    options.throwIfStopping?.();
     if (
       lockedReadContext.localState.availability !== "ready"
       || lockedReadContext.localState.state === null
@@ -791,6 +802,7 @@ export async function publishCandidate(options: {
     }
 
     try {
+      options.throwIfStopping?.();
       const published = await publishAttempt({
         readContext: readyReadContext,
         candidate: refreshedCandidate,
@@ -801,6 +813,7 @@ export async function publishCandidate(options: {
         rpcFactory: options.rpcFactory,
         runId: options.runId,
         appendEventFn: options.appendEventFn,
+        throwIfStopping: options.throwIfStopping,
       });
       return {
         ...published,

@@ -46,9 +46,10 @@ interface RpcResponsePayload {
   readonly bodyText: string;
 }
 
-interface RpcTransportOptions {
+export interface RpcTransportOptions {
   fetchImpl?: typeof fetch;
   requestTimeoutMs?: number;
+  abortSignal?: AbortSignal;
   requestImpl?: (request: {
     url: URL;
     payload: RpcRequestPayload;
@@ -62,6 +63,7 @@ export class BitcoinRpcClient {
   readonly #cookieFile: string;
   readonly #fetchImpl: typeof fetch;
   readonly #requestTimeoutMs: number;
+  readonly #abortSignal: AbortSignal | undefined;
   readonly #requestImpl: (request: {
     url: URL;
     payload: RpcRequestPayload;
@@ -72,6 +74,7 @@ export class BitcoinRpcClient {
     this.#cookieFile = cookieFile;
     this.#fetchImpl = options.fetchImpl ?? fetch;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_MANAGED_RPC_REQUEST_TIMEOUT_MS;
+    this.#abortSignal = options.abortSignal;
     this.#requestImpl = options.requestImpl ?? this.#sendNodeRequest.bind(this);
   }
 
@@ -88,20 +91,73 @@ export class BitcoinRpcClient {
   async #callAtUrl<T>(urlString: string, method: string, params: unknown[] = []): Promise<T> {
     const payload = await this.#buildRequestPayload(method, params);
     let response: Response;
-    const abortSignal = AbortSignal.timeout(this.#requestTimeoutMs);
+    const requestSignal = this.#createRequestSignal();
 
     try {
       response = await this.#fetchImpl(urlString, {
         method: "POST",
         headers: payload.headers,
         body: payload.body,
-        signal: abortSignal,
+        signal: requestSignal.signal,
       });
     } catch (error) {
+      if (this.#abortSignal?.aborted) {
+        const reason = this.#abortSignal.reason;
+        if (reason instanceof Error) {
+          throw reason;
+        }
+      }
       throw new Error(this.#describeTransportError(urlString, method, error), { cause: error });
+    } finally {
+      requestSignal.dispose();
     }
 
     return this.#parseResponse(method, response.status, await response.text());
+  }
+
+  #createRequestSignal(): {
+    signal: AbortSignal;
+    dispose(): void;
+  } {
+    const timeoutSignal = AbortSignal.timeout(this.#requestTimeoutMs);
+
+    if (this.#abortSignal === undefined) {
+      return {
+        signal: timeoutSignal,
+        dispose() {},
+      };
+    }
+
+    const controller = new AbortController();
+    const handleAbort = (source: AbortSignal) => {
+      controller.abort(source.reason);
+    };
+    const forwardTimeout = () => {
+      handleAbort(timeoutSignal);
+    };
+    const forwardAbort = () => {
+      handleAbort(this.#abortSignal!);
+    };
+
+    if (timeoutSignal.aborted) {
+      handleAbort(timeoutSignal);
+    } else {
+      timeoutSignal.addEventListener("abort", forwardTimeout, { once: true });
+    }
+
+    if (this.#abortSignal.aborted) {
+      handleAbort(this.#abortSignal);
+    } else {
+      this.#abortSignal.addEventListener("abort", forwardAbort, { once: true });
+    }
+
+    return {
+      signal: controller.signal,
+      dispose: () => {
+        timeoutSignal.removeEventListener("abort", forwardTimeout);
+        this.#abortSignal?.removeEventListener("abort", forwardAbort);
+      },
+    };
   }
 
   async #buildRequestPayload(method: string, params: unknown[]): Promise<RpcRequestPayload> {

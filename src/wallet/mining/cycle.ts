@@ -89,6 +89,7 @@ export async function runMiningPhaseMachine(options: {
   attachService: typeof attachOrStartManagedBitcoindService;
   rpcFactory: (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
   fetchImpl?: typeof fetch;
+  stopSignal?: AbortSignal;
   generateCandidatesForDomainsImpl?: typeof generateCandidatesForDomains;
   runCompetitivenessGateImpl?: typeof runCompetitivenessGate;
   assaySentencesImpl?: typeof assaySentences;
@@ -100,6 +101,7 @@ export async function runMiningPhaseMachine(options: {
     overrides: MiningRuntimeStatusOverrides,
   ) => Promise<MiningRuntimeStatusV1>;
   appendEvent: (event: MiningEventRecord) => Promise<void>;
+  throwIfStopping?: () => void;
   throwIfSuspendDetected?: () => void;
 }): Promise<void> {
   const now = options.nowImpl ?? Date.now;
@@ -139,8 +141,13 @@ export async function runMiningPhaseMachine(options: {
       return false;
     }
   };
+  const throwIfInterrupted = () => {
+    options.throwIfSuspendDetected?.();
+    options.throwIfStopping?.();
+  };
 
   while (true) {
+    throwIfInterrupted();
     switch (state.phase) {
       case "idle": {
         if (options.corePublishState !== "healthy") {
@@ -303,8 +310,9 @@ export async function runMiningPhaseMachine(options: {
             indexerTruthKey,
             runId: options.backgroundWorkerRunId,
             fetchImpl: options.fetchImpl,
+            signal: options.stopSignal,
           });
-          options.throwIfSuspendDetected?.();
+          throwIfInterrupted();
         } catch (error) {
           if (error instanceof MiningProviderRequestError) {
             if (isTransientMiningProviderError(error)) {
@@ -489,8 +497,9 @@ export async function runMiningPhaseMachine(options: {
           assaySentencesImpl: options.assaySentencesImpl,
           cooperativeYield: options.cooperativeYieldImpl,
           cooperativeYieldEvery: options.cooperativeYieldEvery,
+          throwIfStopping: options.throwIfStopping,
         });
-        options.throwIfSuspendDetected?.();
+        throwIfInterrupted();
         state.gateSnapshot = {
           higherRankedCompetitorDomainCount: gate.higherRankedCompetitorDomainCount,
           dedupedCompetitorDomainCount: gate.dedupedCompetitorDomainCount,
@@ -589,7 +598,7 @@ export async function runMiningPhaseMachine(options: {
             return;
           }
 
-          options.throwIfSuspendDetected?.();
+          throwIfInterrupted();
           const published = await publishCandidate({
             dataDir: options.dataDir,
             databasePath: options.databasePath,
@@ -604,6 +613,7 @@ export async function runMiningPhaseMachine(options: {
             appendEventFn: async (_paths, event) => {
               await options.appendEvent(event);
             },
+            throwIfStopping: options.throwIfStopping,
           });
           if (
             state.tipKey !== null

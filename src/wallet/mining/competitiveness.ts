@@ -549,6 +549,7 @@ export async function runCompetitivenessGate(options: {
   assaySentencesImpl?: typeof assaySentences;
   cooperativeYield?: MiningCooperativeYield;
   cooperativeYieldEvery?: number;
+  throwIfStopping?: () => void;
 }): Promise<CompetitivenessDecision> {
   const createDecision = (overrides: Partial<CompetitivenessDecision>): CompetitivenessDecision => ({
     allowed: overrides.allowed ?? false,
@@ -581,6 +582,7 @@ export async function runCompetitivenessGate(options: {
   let mempoolVerbose: Awaited<ReturnType<MiningRpcClient["getRawMempoolVerbose"]>>;
   try {
     mempoolVerbose = await options.rpc.getRawMempoolVerbose();
+    options.throwIfStopping?.();
   } catch {
     return createDecision({
       competitivenessGateIndeterminate: true,
@@ -631,6 +633,7 @@ export async function runCompetitivenessGate(options: {
       cooperativeYield: options.cooperativeYield,
       cooperativeYieldEvery: options.cooperativeYieldEvery,
     });
+    options.throwIfStopping?.();
     const txid = visibleTxids[index]!;
     if (txContexts.has(txid)) {
       continue;
@@ -640,6 +643,7 @@ export async function runCompetitivenessGate(options: {
       options.rpc.getRawTransaction(txid, true).catch(() => null),
       options.rpc.getMempoolEntry(txid).catch(() => null),
     ]);
+    options.throwIfStopping?.();
     if (tx === null || mempoolEntry === null) {
       continue;
     }
@@ -666,6 +670,7 @@ export async function runCompetitivenessGate(options: {
       cooperativeYield: options.cooperativeYield,
       cooperativeYieldEvery: options.cooperativeYieldEvery,
     });
+    options.throwIfStopping?.();
     const txid = visibleTxids[index]!;
     const context = txContexts.get(txid);
 
@@ -685,6 +690,7 @@ export async function runCompetitivenessGate(options: {
       domainId: decoded.domainId,
       senderScriptHex: context.senderScriptHex,
     });
+    options.throwIfStopping?.();
     if (overlayDomain === "indeterminate") {
       const decision = createDecision({
         competitivenessGateIndeterminate: true,
@@ -715,6 +721,7 @@ export async function runCompetitivenessGate(options: {
       options.candidate.referencedBlockHashInternal,
       [Buffer.from(decoded.sentenceBytes).toString("utf8")],
     ).catch(() => []);
+    options.throwIfStopping?.();
     const scored = assayed[0];
     if (scored === undefined || !scored.gatesPass || scored.encodedSentenceBytes === null || scored.canonicalBlend === null) {
       continue;

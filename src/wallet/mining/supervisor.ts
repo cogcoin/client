@@ -27,6 +27,7 @@ import {
   loadMiningRuntimeStatus,
   saveMiningRuntimeStatus,
 } from "./runtime-artifacts.js";
+import { createMiningStopRequestedError } from "./stop.js";
 import type { MiningRuntimeStatusV1 } from "./types.js";
 import { MiningFollowVisualizer } from "./visualizer.js";
 
@@ -36,6 +37,7 @@ type RpcFactory = (config: Parameters<typeof createRpcClient>[0]) => MiningRpcCl
 type RequestMiningPreemption = typeof requestMiningGenerationPreemption;
 type SaveStopSnapshot = typeof saveStopSnapshot;
 type ProcessKill = typeof process.kill;
+type ForceExit = (code: number) => never | void;
 
 interface MiningLoopRunnerOptions {
   dataDir: string;
@@ -78,6 +80,7 @@ interface MiningSupervisorDependencies {
   nowUnixMs: () => number;
   processKill: ProcessKill;
   processPid: number;
+  forceExit: ForceExit;
 }
 
 export interface MiningSupervisorTakeoverResult {
@@ -89,6 +92,11 @@ export interface MiningSupervisorTakeoverResult {
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+
     const timer = setTimeout(resolve, ms);
     signal?.addEventListener("abort", () => {
       clearTimeout(timer);
@@ -129,7 +137,17 @@ function resolveSupervisorDependencies(
     nowUnixMs: overrides.nowUnixMs ?? Date.now,
     processKill: overrides.processKill ?? process.kill.bind(process),
     processPid: overrides.processPid ?? process.pid,
+    forceExit: overrides.forceExit ?? ((code: number) => {
+      process.exit(code);
+    }),
   };
+}
+
+class ForegroundMiningShutdownTimeoutError extends Error {
+  constructor() {
+    super("mining_foreground_shutdown_timeout");
+    this.name = "ForegroundMiningShutdownTimeoutError";
+  }
 }
 
 async function isProcessAlive(
@@ -465,6 +483,8 @@ export async function runForegroundMining(options: {
   deps?: Partial<MiningSupervisorDependencies>;
 }): Promise<void> {
   const deps = resolveSupervisorDependencies(options.deps);
+  const shutdownGraceMs = options.shutdownGraceMs ?? MINING_SHUTDOWN_GRACE_MS;
+  const usesExternalSignal = options.signal !== undefined;
   let visualizer: MiningFollowVisualizer | null = options.visualizer ?? null;
   const ownsVisualizer = visualizer === null;
   const destroyClientPasswordSessions = createOneShotClientPasswordSessionDestroyer();
@@ -472,74 +492,136 @@ export async function runForegroundMining(options: {
     paths: options.runtime.paths,
     purpose: "mine-foreground",
     takeoverReason: "mine-foreground-replace",
-    shutdownGraceMs: options.shutdownGraceMs,
+    shutdownGraceMs,
     deps,
   });
   const abortController = new AbortController();
+  let stopRequested = false;
+  let shutdownDeadlineTimer: NodeJS.Timeout | null = null;
+  let rejectShutdownDeadline: ((error: Error) => void) | null = null;
+  let forceExitIssued = false;
+  const shutdownDeadline = new Promise<never>((_, reject) => {
+    rejectShutdownDeadline = reject;
+  });
+  const requestStop = () => {
+    if (stopRequested) {
+      return;
+    }
+
+    stopRequested = true;
+    if (!abortController.signal.aborted) {
+      abortController.abort(createMiningStopRequestedError());
+    }
+    shutdownDeadlineTimer = setTimeout(() => {
+      rejectShutdownDeadline?.(new ForegroundMiningShutdownTimeoutError());
+    }, shutdownGraceMs);
+    shutdownDeadlineTimer.unref?.();
+  };
   const abortListener = () => {
-    abortController.abort();
+    requestStop();
   };
-  const handleSigint = () => abortController.abort();
+  const handleSigint = () => {
+    requestStop();
+  };
   const handleSigterm = () => {
-    process.once("exit", destroyClientPasswordSessions);
-    abortController.abort();
+    requestStop();
   };
+  const issueForcedExit = (code: number): never | void => {
+    if (forceExitIssued) {
+      return;
+    }
+
+    forceExitIssued = true;
+    visualizer?.close();
+    destroyClientPasswordSessions();
+    return deps.forceExit(code);
+  };
+  const gracefulRun = async (): Promise<void> => {
+    try {
+      await takeOverMiningRuntime({
+        paths: options.runtime.paths,
+        reason: "mine-foreground-replace",
+        shutdownGraceMs,
+        deps,
+      });
+
+      if (visualizer === null) {
+        visualizer = new MiningFollowVisualizer({
+          clientVersion: options.clientVersion,
+          updateAvailable: options.updateAvailable,
+          progressOutput: options.progressOutput ?? "auto",
+          stream: options.stderr,
+        });
+      }
+
+      await deps.runMiningLoop({
+        dataDir: options.dataDir,
+        databasePath: options.databasePath,
+        provider: options.runtime.provider,
+        paths: options.runtime.paths,
+        runMode: "foreground",
+        backgroundWorkerPid: null,
+        backgroundWorkerRunId: null,
+        signal: abortController.signal,
+        fetchImpl: options.fetchImpl,
+        openReadContext: options.runtime.openReadContext,
+        attachService: options.runtime.attachService,
+        rpcFactory: options.runtime.rpcFactory,
+        stdout: options.stdout,
+        visualizer,
+      });
+      await deps.saveStopSnapshot({
+        dataDir: options.dataDir,
+        databasePath: options.databasePath,
+        provider: options.runtime.provider,
+        paths: options.runtime.paths,
+        runMode: "foreground",
+        backgroundWorkerPid: null,
+        backgroundWorkerRunId: null,
+        note: "Foreground mining stopped cleanly.",
+      });
+    } finally {
+      if (ownsVisualizer) {
+        visualizer?.close();
+      }
+      await controlLock.release();
+      destroyClientPasswordSessions();
+    }
+  };
+  const gracefulRunPromise = gracefulRun();
 
   try {
-    await takeOverMiningRuntime({
-      paths: options.runtime.paths,
-      reason: "mine-foreground-replace",
-      shutdownGraceMs: options.shutdownGraceMs,
-      deps,
-    });
-
-    if (visualizer === null) {
-      visualizer = new MiningFollowVisualizer({
-        clientVersion: options.clientVersion,
-        updateAvailable: options.updateAvailable,
-        progressOutput: options.progressOutput ?? "auto",
-        stream: options.stderr,
-      });
+    if (options.signal?.aborted) {
+      requestStop();
+    } else {
+      options.signal?.addEventListener("abort", abortListener, { once: true });
     }
 
-    options.signal?.addEventListener("abort", abortListener, { once: true });
-    process.on("SIGINT", handleSigint);
-    process.on("SIGTERM", handleSigterm);
+    if (!usesExternalSignal) {
+      process.on("SIGINT", handleSigint);
+      process.on("SIGTERM", handleSigterm);
+    }
 
-    await deps.runMiningLoop({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      provider: options.runtime.provider,
-      paths: options.runtime.paths,
-      runMode: "foreground",
-      backgroundWorkerPid: null,
-      backgroundWorkerRunId: null,
-      signal: abortController.signal,
-      fetchImpl: options.fetchImpl,
-      openReadContext: options.runtime.openReadContext,
-      attachService: options.runtime.attachService,
-      rpcFactory: options.runtime.rpcFactory,
-      stdout: options.stdout,
-      visualizer,
-    });
-    await deps.saveStopSnapshot({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      provider: options.runtime.provider,
-      paths: options.runtime.paths,
-      runMode: "foreground",
-      backgroundWorkerPid: null,
-      backgroundWorkerRunId: null,
-      note: "Foreground mining stopped cleanly.",
-    });
+    await Promise.race([
+      gracefulRunPromise,
+      shutdownDeadline,
+    ]);
+  } catch (error) {
+    if (error instanceof ForegroundMiningShutdownTimeoutError) {
+      gracefulRunPromise.catch(() => undefined);
+      issueForcedExit(130);
+      return;
+    }
+
+    throw error;
   } finally {
-    options.signal?.removeEventListener("abort", abortListener);
-    process.off("SIGINT", handleSigint);
-    process.off("SIGTERM", handleSigterm);
-    if (ownsVisualizer) {
-      visualizer?.close();
+    if (shutdownDeadlineTimer !== null) {
+      clearTimeout(shutdownDeadlineTimer);
     }
-    await controlLock.release();
-    destroyClientPasswordSessions();
+    options.signal?.removeEventListener("abort", abortListener);
+    if (!usesExternalSignal) {
+      process.off("SIGINT", handleSigint);
+      process.off("SIGTERM", handleSigterm);
+    }
   }
 }

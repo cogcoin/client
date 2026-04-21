@@ -398,6 +398,101 @@ test("runForegroundMining clears client-password sessions after a SIGTERM-driven
   });
 });
 
+test("runForegroundMining uses the provided signal as the sole runtime stop source", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-mine-fg-external-signal");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const runtime = createSupervisorRuntime(paths, provider);
+  const abortController = new AbortController();
+  const sigintListenerCount = process.listenerCount("SIGINT");
+  const sigtermListenerCount = process.listenerCount("SIGTERM");
+
+  await runForegroundMining({
+    dataDir: homeDirectory,
+    databasePath: join(homeDirectory, "indexer.sqlite"),
+    runtime,
+    signal: abortController.signal,
+    visualizer: {
+      close() {},
+    } as any,
+    deps: {
+      runMiningLoop: async (options) => {
+        assert.equal(process.listenerCount("SIGINT"), sigintListenerCount);
+        assert.equal(process.listenerCount("SIGTERM"), sigtermListenerCount);
+        abortController.abort(new Error("external_stop"));
+        assert.equal(options.signal?.aborted, true);
+      },
+      saveStopSnapshot: async () => undefined,
+    },
+  });
+
+  assert.equal(process.listenerCount("SIGINT"), sigintListenerCount);
+  assert.equal(process.listenerCount("SIGTERM"), sigtermListenerCount);
+});
+
+test("runForegroundMining force-exits on the first stop signal when graceful shutdown stalls", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-mine-fg-force-exit");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const runtime = createSupervisorRuntime(paths, provider);
+  const abortController = new AbortController();
+  const sessionContext = resolveClientPasswordContext({
+    platform: "linux",
+    stateRoot: paths.stateRoot,
+    runtimeRoot: paths.runtimeRoot,
+    directoryPath: join(paths.stateRoot, "secrets"),
+    runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
+  });
+  let forceExitCode: number | null = null;
+  let closeCalls = 0;
+
+  t.after(async () => {
+    await lockClientPasswordSessionResolved(sessionContext);
+  });
+
+  await startClientPasswordSessionWithExpiryResolved({
+    ...sessionContext,
+    derivedKey: Buffer.alloc(32, 19),
+    unlockUntilUnixMs: null,
+  });
+
+  await assert.rejects(
+    runForegroundMining({
+      dataDir: homeDirectory,
+      databasePath: join(homeDirectory, "indexer.sqlite"),
+      runtime,
+      signal: abortController.signal,
+      shutdownGraceMs: 1,
+      visualizer: {
+        close() {
+          closeCalls += 1;
+        },
+      } as any,
+      deps: {
+        runMiningLoop: async () => {
+          abortController.abort(new Error("external_stop"));
+          return await new Promise<never>(() => undefined);
+        },
+        saveStopSnapshot: async () => {
+          assert.fail("saveStopSnapshot should not complete after a forced foreground mining exit");
+        },
+        forceExit: (code) => {
+          forceExitCode = code;
+          throw new Error(`force_exit_${code}`);
+        },
+      },
+    }),
+    /force_exit_130/,
+  );
+
+  assert.equal(forceExitCode, 130);
+  assert.equal(closeCalls, 1);
+  assert.deepEqual(await readClientPasswordSessionStatusResolved(sessionContext), {
+    unlocked: false,
+    unlockUntilUnixMs: null,
+  });
+});
+
 test("takeOverMiningRuntime clears only the current runtime, dedupes pids, and preempts before termination", async (t) => {
   const currentHomeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-takeover-current");
   const otherHomeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-takeover-other");

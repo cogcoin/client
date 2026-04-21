@@ -155,6 +155,10 @@ import {
 import {
   runForegroundMining as runForegroundMiningSupervisor,
 } from "./supervisor.js";
+import {
+  isMiningStopRequestedError,
+  throwIfMiningStopRequested,
+} from "./stop.js";
 import { createMiningSentenceRequestLimits } from "./sentence-protocol.js";
 import { generateMiningSentences, MiningProviderRequestError, type MiningSentenceGenerationRequest } from "./sentences.js";
 import type { MiningControlPlaneView, MiningEventRecord, MiningRuntimeStatusV1 } from "./types.js";
@@ -326,6 +330,11 @@ export interface RunForegroundMiningOptions extends RunnerDependencies {
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+
     const timer = setTimeout(resolve, ms);
     signal?.addEventListener("abort", () => {
       clearTimeout(timer);
@@ -455,6 +464,9 @@ async function performMiningCycle(options: {
   const now = options.nowImpl ?? Date.now;
   const generateCandidatesForDomainsImpl = options.generateCandidatesForDomainsImpl ?? generateCandidatesForDomains;
   const runCompetitivenessGateImpl = options.runCompetitivenessGateImpl ?? runCompetitivenessGate;
+  const throwIfStopping = () => {
+    throwIfMiningStopRequested(options.signal);
+  };
   let readContext: WalletReadContext | null = await options.openReadContext({
     dataDir: options.dataDir,
     databasePath: options.databasePath,
@@ -464,6 +476,7 @@ async function performMiningCycle(options: {
   let readContextClosed = false;
 
   try {
+    throwIfStopping();
     throwIfMiningSuspendDetected(options.suspendDetector);
     let clearRecoveredBitcoindError = false;
     const saveCycleStatus = async (
@@ -516,6 +529,7 @@ async function performMiningCycle(options: {
       startHeight: 0,
       walletRootId: readContext.localState.state.walletRootId,
     });
+    throwIfStopping();
     throwIfMiningSuspendDetected(options.suspendDetector);
     const rpc = options.rpcFactory(service.rpc);
     const reconciliation = await reconcileLiveMiningState({
@@ -525,6 +539,7 @@ async function performMiningCycle(options: {
       nodeBestHeight: readContext.nodeStatus?.nodeBestHeight ?? null,
       snapshotState: readContext.snapshot?.state ?? null,
     });
+    throwIfStopping();
     const reconciledState = reconciliation.state;
     throwIfMiningSuspendDetected(options.suspendDetector);
     let effectiveReadContext = readContext as WalletReadContext & {
@@ -561,6 +576,7 @@ async function performMiningCycle(options: {
       indexedTipHeight: indexedTip?.height ?? null,
       indexedTipHashHex: indexedTip?.blockHashHex ?? null,
     }).catch(() => ({}));
+    throwIfStopping();
     syncMiningVisualizerBlockTimes(options.loopState, visibleBlockTimes);
     const { targetBlockHeight, tipKey, tipChanged } = syncMiningUiForCurrentTip({
       loopState: options.loopState,
@@ -654,6 +670,7 @@ async function performMiningCycle(options: {
       rpc.getNetworkInfo(),
       rpc.getMempoolInfo(),
     ]);
+    throwIfStopping();
     throwIfMiningSuspendDetected(options.suspendDetector);
     const corePublishState = determineCorePublishState({
       blockchain: blockchainInfo,
@@ -726,11 +743,17 @@ async function performMiningCycle(options: {
       nowImpl: now,
       saveCycleStatus: async (context, overrides) => await saveCycleStatus(context, overrides),
       appendEvent: async (event) => await appendEvent(options.paths, event),
+      stopSignal: options.signal,
+      throwIfStopping,
       throwIfSuspendDetected: () => {
         throwIfMiningSuspendDetected(options.suspendDetector);
       },
     });
   } catch (error) {
+    if (isMiningStopRequestedError(error)) {
+      return;
+    }
+
     if (error instanceof MiningSuspendDetectedError) {
       discardMiningLoopTransientWork(options.loopState, readContext?.localState.walletRootId ?? undefined);
       if (readContext !== null && !readContextClosed) {
@@ -828,8 +851,13 @@ async function runMiningLoop(options: {
 
     while (!options.signal?.aborted) {
       try {
+        throwIfMiningStopRequested(options.signal);
         throwIfMiningSuspendDetected(suspendDetector);
       } catch (error) {
+        if (isMiningStopRequestedError(error)) {
+          break;
+        }
+
         if (!(error instanceof MiningSuspendDetectedError)) {
           throw error;
         }
@@ -851,17 +879,40 @@ async function runMiningLoop(options: {
         continue;
       }
 
-      await performMiningCycle({
-        ...options,
-        suspendDetector,
-        assaySentencesImpl: options.assaySentencesImpl,
-        cooperativeYieldImpl: options.cooperativeYieldImpl,
-        cooperativeYieldEvery: options.cooperativeYieldEvery,
-        loopState,
-        probeService,
-        stopService,
-      });
+      try {
+        await performMiningCycle({
+          ...options,
+          suspendDetector,
+          assaySentencesImpl: options.assaySentencesImpl,
+          cooperativeYieldImpl: options.cooperativeYieldImpl,
+          cooperativeYieldEvery: options.cooperativeYieldEvery,
+          loopState,
+          probeService,
+          stopService,
+        });
+      } catch (error) {
+        if (isMiningStopRequestedError(error)) {
+          break;
+        }
+
+        throw error;
+      }
+
+      if (options.signal?.aborted) {
+        break;
+      }
       await sleepImpl(Math.min(MINING_LOOP_INTERVAL_MS, MINING_STATUS_HEARTBEAT_INTERVAL_MS), options.signal);
+    }
+
+    if (options.signal?.aborted) {
+      await appendEvent(options.paths, createEvent(
+        "runtime-stop",
+        `Stopped ${options.runMode} mining runtime.`,
+        {
+          runId: options.backgroundWorkerRunId,
+        },
+      ));
+      return;
     }
 
     const service = await options.attachService({
@@ -905,7 +956,11 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
   const openReadContext = options.openReadContext ?? openWalletReadContext;
   const attachService = options.attachService ?? attachOrStartManagedBitcoindService;
-  const rpcFactory = options.rpcFactory ?? createRpcClient as (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
+  const rpcFactory = options.rpcFactory ?? (
+    (config: Parameters<typeof createRpcClient>[0]) => createRpcClient(config, {
+      abortSignal: options.signal,
+    }) as MiningRpcClient
+  );
   const requestMiningPreemption = options.requestMiningPreemption ?? requestMiningGenerationPreemption;
 
   const setupReady = options.builtInSetupEnsured === true

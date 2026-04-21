@@ -22,6 +22,7 @@ import type { WalletStateV1 } from "../types.js";
 import type { MiningRuntimeStatusV1 } from "./types.js";
 import { createMiningSentenceRequestLimits } from "./sentence-protocol.js";
 import { generateMiningSentences, type MiningSentenceGenerationRequest } from "./sentences.js";
+import { createMiningStopRequestedError } from "./stop.js";
 import { isMineableWalletDomain } from "../read/index.js";
 import { lookupDomain } from "@cogcoin/indexer/queries";
 
@@ -220,6 +221,7 @@ export async function generateCandidatesForDomains(options: {
   indexerTruthKey: IndexerTruthKey | null;
   runId?: string | null;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
 }): Promise<MiningCandidate[]> {
   const bestBlockHash = options.readContext.nodeStatus?.nodeBestHashHex;
 
@@ -241,6 +243,11 @@ export async function generateCandidatesForDomains(options: {
   let stale = false;
   let staleIndexerTruth = false;
   let preempted = false;
+  let stopRequested = false;
+  const handleStop = () => {
+    stopRequested = true;
+    abortController.abort(options.signal?.reason ?? createMiningStopRequestedError());
+  };
   const timer = setInterval(async () => {
     try {
       const [current, truthCurrent] = await Promise.all([
@@ -273,6 +280,12 @@ export async function generateCandidatesForDomains(options: {
   }, BEST_BLOCK_POLL_INTERVAL_MS);
 
   try {
+    if (options.signal?.aborted) {
+      handleStop();
+    } else {
+      options.signal?.addEventListener("abort", handleStop, { once: true });
+    }
+
     await markMiningGenerationActive({
       paths: options.paths,
       runId: options.runId ?? null,
@@ -288,12 +301,30 @@ export async function generateCandidatesForDomains(options: {
     let generated;
 
     try {
-      generated = await generateMiningSentences(generationRequest, {
-        paths: options.paths,
-        provider: options.provider,
-        signal: abortController.signal,
-        fetchImpl: options.fetchImpl,
-      });
+      generated = await Promise.race([
+        generateMiningSentences(generationRequest, {
+          paths: options.paths,
+          provider: options.provider,
+          signal: abortController.signal,
+          fetchImpl: options.fetchImpl,
+        }),
+        new Promise<never>((_resolve, reject) => {
+          const handleAbort = () => {
+            reject(
+              abortController.signal.reason instanceof Error
+                ? abortController.signal.reason
+                : createMiningStopRequestedError(),
+            );
+          };
+
+          if (abortController.signal.aborted) {
+            handleAbort();
+            return;
+          }
+
+          abortController.signal.addEventListener("abort", handleAbort, { once: true });
+        }),
+      ]);
     } catch (error) {
       if (stale) {
         throw new Error("mining_generation_stale_tip");
@@ -305,6 +336,12 @@ export async function generateCandidatesForDomains(options: {
 
       if (preempted) {
         throw new Error("mining_generation_preempted");
+      }
+
+      if (stopRequested || options.signal?.aborted) {
+        throw options.signal?.reason instanceof Error
+          ? options.signal.reason
+          : createMiningStopRequestedError();
       }
 
       throw error;
@@ -369,6 +406,7 @@ export async function generateCandidatesForDomains(options: {
     return candidates;
   } finally {
     clearInterval(timer);
+    options.signal?.removeEventListener("abort", handleStop);
     await markMiningGenerationInactive({
       paths: options.paths,
       runId: options.runId ?? null,

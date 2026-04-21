@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
-import { rm } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import { INDEXER_DAEMON_SCHEMA_VERSION, INDEXER_DAEMON_SERVICE_API_VERSION } from "../src/bitcoind/types.js";
 import { resolveManagedServicePaths } from "../src/bitcoind/service-paths.js";
+import { createRpcClient } from "../src/bitcoind/node.js";
 import {
   createMiningSuspendDetectorForTesting,
   runMiningLoopForTesting,
   throwIfMiningSuspendDetectedForTesting,
 } from "../src/wallet/mining/runner.js";
 import { buildMiningGenerationRequest as buildMiningGenerationRequestForTesting } from "../src/wallet/mining/candidate.js";
+import { saveClientConfig } from "../src/wallet/mining/config.js";
 import { loadMiningRuntimeStatus, readMiningEvents } from "../src/wallet/mining/runtime-artifacts.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../src/wallet/runtime.js";
-import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
+import {
+  createMemoryWalletSecretProviderForTesting,
+  createWalletSecretReference,
+} from "../src/wallet/state/provider.js";
+import { createMiningStopRequestedError } from "../src/wallet/mining/stop.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import {
   createMiningState,
@@ -203,6 +209,33 @@ function createSynchronizedLoopReadContext(overrides: Record<string, unknown> = 
       },
     },
     ...overrides,
+  });
+}
+
+async function seedBuiltInMiningConfig(options: {
+  paths: WalletRuntimePaths;
+  provider: ReturnType<typeof createMemoryWalletSecretProviderForTesting>;
+}): Promise<void> {
+  const secretReference = createWalletSecretReference("wallet-root");
+  await options.provider.storeSecret(secretReference.keyId, Buffer.alloc(32, 9));
+  await saveClientConfig({
+    path: options.paths.clientConfigPath,
+    provider: options.provider,
+    secretReference,
+    config: {
+      schemaVersion: 1,
+      mining: {
+        builtIn: {
+          provider: "openai",
+          apiKey: "test-api-key",
+          extraPrompt: null,
+          modelOverride: "gpt-5.4-mini",
+          modelSelectionSource: "catalog",
+          updatedAtUnixMs: 1,
+        },
+        domainExtraPrompts: {},
+      },
+    },
   });
 }
 
@@ -634,4 +667,303 @@ test("runMiningLoop still emits system-resumed after a real heartbeat gap", asyn
   assert.notEqual(resumeEvent, null);
   assert.equal(resumeEvent?.timestampUnixMs, 120_000);
   assert.equal(snapshot?.lastSuspendDetectedAtUnixMs, 120_000);
+});
+
+test("runMiningLoop aborts sentence generation promptly on stop request", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-loop-stop-generation");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const abortController = new AbortController();
+  const databasePath = join(homeDirectory, "indexer.sqlite");
+  const syncedContext = createSynchronizedLoopReadContext({
+    dataDir: homeDirectory,
+    databasePath,
+  });
+  let fetchCalls = 0;
+  let sleepCalls = 0;
+  let resolveFetchStarted: (() => void) | null = null;
+  const fetchStarted = new Promise<void>((resolve) => {
+    resolveFetchStarted = resolve;
+  });
+
+  await seedBuiltInMiningConfig({
+    paths,
+    provider,
+  });
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: syncedContext.localState.state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+  });
+
+  const startedAt = Date.now();
+  const runPromise = runMiningLoopForTesting({
+    dataDir: homeDirectory,
+    databasePath,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    signal: abortController.signal,
+    fetchImpl: async (_input, init) => {
+      fetchCalls += 1;
+      resolveFetchStarted?.();
+      return await new Promise<Response>((_resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error("provider_timeout_fallback"));
+        }, 1_000);
+        const signal = init?.signal;
+        const handleAbort = () => {
+          clearTimeout(timer);
+          reject(signal?.reason instanceof Error ? signal.reason : createMiningStopRequestedError());
+        };
+
+        if (signal?.aborted) {
+          handleAbort();
+          return;
+        }
+
+        signal?.addEventListener("abort", handleAbort, { once: true });
+      });
+    },
+    openReadContext: async () => syncedContext,
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    rpcFactory: () => createLoopMiningRpc() as any,
+    sleepImpl: async () => {
+      sleepCalls += 1;
+    },
+  });
+
+  await fetchStarted;
+  abortController.abort(createMiningStopRequestedError());
+  await assert.doesNotReject(async () => {
+    await runPromise;
+  });
+
+  const elapsedMs = Date.now() - startedAt;
+  assert.equal(fetchCalls, 1);
+  assert.equal(sleepCalls, 0);
+  assert.ok(
+    elapsedMs < 400,
+    `expected generation stop to finish before the fallback provider timeout, got ${elapsedMs}ms`,
+  );
+});
+
+test("runMiningLoop exits on the next competitiveness yield after stop is requested", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-loop-stop-gate");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const abortController = new AbortController();
+  const databasePath = join(homeDirectory, "indexer.sqlite");
+  const syncedContext = createSynchronizedLoopReadContext({
+    dataDir: homeDirectory,
+    databasePath,
+  });
+  const candidate = createLoopMiningCandidate();
+  const txids = Array.from({ length: 30 }, (_, index) => `${(index + 1).toString(16).padStart(64, "0")}`);
+  let rawTransactionCalls = 0;
+  let mempoolEntryCalls = 0;
+  let cooperativeYieldCalls = 0;
+  let sleepCalls = 0;
+
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: syncedContext.localState.state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+  });
+
+  await assert.doesNotReject(async () => {
+    await runMiningLoopForTesting({
+      dataDir: homeDirectory,
+      databasePath,
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      signal: abortController.signal,
+      openReadContext: async () => syncedContext,
+      attachService: async () => ({
+        rpc: {},
+        pid: 9_001,
+        refreshServiceStatus: async () => ({
+          serviceInstanceId: "svc-1",
+          processId: 9_001,
+        }),
+      }) as any,
+      rpcFactory: () => createLoopMiningRpc({
+        async getRawMempoolVerbose() {
+          return {
+            txids,
+            mempool_sequence: "seq-100",
+          };
+        },
+        async getRawTransaction() {
+          rawTransactionCalls += 1;
+          return {
+            txid: "aa".repeat(32),
+            vin: [],
+            vout: [],
+          };
+        },
+        async getMempoolEntry() {
+          mempoolEntryCalls += 1;
+          return {
+            fees: {
+              base: 0.00001,
+              ancestor: 0.00001,
+              descendant: 0.00001,
+            },
+            vsize: 200,
+            ancestorsize: 200,
+            descendantsize: 200,
+          };
+        },
+      }) as any,
+      generateCandidatesForDomainsImpl: async () => [candidate],
+      cooperativeYieldEvery: 1,
+      cooperativeYieldImpl: async () => {
+        cooperativeYieldCalls += 1;
+        abortController.abort(createMiningStopRequestedError());
+      },
+      sleepImpl: async () => {
+        sleepCalls += 1;
+      },
+    });
+  });
+
+  assert.equal(cooperativeYieldCalls, 1);
+  assert.equal(rawTransactionCalls, 1);
+  assert.equal(mempoolEntryCalls, 1);
+  assert.equal(sleepCalls, 0);
+});
+
+test("runMiningLoop aborts mining-scoped managed RPC calls before the request timeout", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-loop-stop-rpc");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const abortController = new AbortController();
+  const cookieFile = join(homeDirectory, ".cookie");
+  let resolveBlockchainStarted: (() => void) | null = null;
+  const blockchainStarted = new Promise<void>((resolve) => {
+    resolveBlockchainStarted = resolve;
+  });
+  let sleepCalls = 0;
+
+  await writeFile(cookieFile, "user:password\n", "utf8");
+
+  const startedAt = Date.now();
+  const runPromise = runMiningLoopForTesting({
+    dataDir: homeDirectory,
+    databasePath: join(homeDirectory, "indexer.sqlite"),
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    signal: abortController.signal,
+    openReadContext: async () => createLoopReadContext(),
+    attachService: async () => ({
+      rpc: {
+        url: "http://127.0.0.1:18443",
+        cookieFile,
+        port: 18_443,
+      },
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    rpcFactory: (config) => createRpcClient(config, {
+      abortSignal: abortController.signal,
+      requestTimeoutMs: 5_000,
+      fetchImpl: async (_input, init) => {
+        const body = typeof init?.body === "string" ? init.body : "";
+        const request = JSON.parse(body) as { method: string };
+
+        if (request.method === "listlockunspent") {
+          return new Response(JSON.stringify({
+            result: [],
+            error: null,
+          }), { status: 200 });
+        }
+
+        if (request.method === "lockunspent") {
+          return new Response(JSON.stringify({
+            result: true,
+            error: null,
+          }), { status: 200 });
+        }
+
+        if (request.method === "getnetworkinfo") {
+          return new Response(JSON.stringify({
+            result: {
+              networkactive: true,
+              connections_out: 8,
+            },
+            error: null,
+          }), { status: 200 });
+        }
+
+        if (request.method === "getmempoolinfo") {
+          return new Response(JSON.stringify({
+            result: {
+              loaded: true,
+            },
+            error: null,
+          }), { status: 200 });
+        }
+
+        if (request.method === "getblockchaininfo") {
+          resolveBlockchainStarted?.();
+          return await new Promise<Response>((_resolve, reject) => {
+            const timer = setTimeout(() => {
+              reject(new Error("rpc_timeout_fallback"));
+            }, 250);
+            const signal = init?.signal;
+            const handleAbort = () => {
+              clearTimeout(timer);
+              reject(signal?.reason instanceof Error ? signal.reason : createMiningStopRequestedError());
+            };
+
+            if (signal?.aborted) {
+              handleAbort();
+              return;
+            }
+
+            signal?.addEventListener("abort", handleAbort, { once: true });
+          });
+        }
+
+        throw new Error(`unexpected_rpc_method_${request.method}`);
+      },
+    }) as any,
+    sleepImpl: async () => {
+      sleepCalls += 1;
+    },
+  });
+
+  await blockchainStarted;
+  abortController.abort(createMiningStopRequestedError());
+  await assert.doesNotReject(async () => {
+    await runPromise;
+  });
+
+  const elapsedMs = Date.now() - startedAt;
+  assert.equal(sleepCalls, 0);
+  assert.ok(
+    elapsedMs < 200,
+    `expected mining RPC stop to finish before the fallback RPC timeout, got ${elapsedMs}ms`,
+  );
 });

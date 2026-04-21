@@ -8,7 +8,7 @@ import { getBitcoindPath } from "@cogcoin/bitcoin";
 
 import { resolveDefaultBitcoindDataDirForTesting } from "../app-paths.js";
 import { DEFAULT_MANAGED_BITCOIND_FOLLOW_POLL_INTERVAL_MS } from "./types.js";
-import { BitcoinRpcClient } from "./rpc.js";
+import { BitcoinRpcClient, type RpcTransportOptions } from "./rpc.js";
 import type {
   BitcoindRpcConfig,
   BitcoindZmqConfig,
@@ -285,6 +285,9 @@ export async function launchManagedBitcoindNode(
   };
 }
 
-export function createRpcClient(config: BitcoindRpcConfig): BitcoinRpcClient {
-  return new BitcoinRpcClient(config.url, config.cookieFile);
+export function createRpcClient(
+  config: BitcoindRpcConfig,
+  options: RpcTransportOptions = {},
+): BitcoinRpcClient {
+  return new BitcoinRpcClient(config.url, config.cookieFile, options);
 }
