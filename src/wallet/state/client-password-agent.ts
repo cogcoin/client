@@ -1,87 +1,24 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import net from "node:net";
 import { rm } from "node:fs/promises";
 
-function shouldRemoveAgentEndpointPath(endpoint: string): boolean {
-  return !endpoint.startsWith("\\\\.\\pipe\\");
-}
-
-function zeroizeBuffer(buffer: Uint8Array | null | undefined): void {
-  if (buffer != null) {
-    buffer.fill(0);
-  }
-}
-
-function createAgentError(message: string): string {
-  return JSON.stringify({
-    ok: false,
-    error: message,
-  });
-}
-
-async function readBootstrapConfig(): Promise<{
-  unlockUntilUnixMs: number;
-  endpoint: string;
-  derivedKey: Buffer;
-}> {
-  const endpoint = process.argv[2] ?? "";
-  const unlockUntilUnixMs = Number(process.argv[3] ?? "");
-
-  if (endpoint.length === 0 || !Number.isFinite(unlockUntilUnixMs)) {
-    throw new Error("wallet_client_password_agent_bootstrap_invalid");
-  }
-
-  const raw = await new Promise<string>((resolve, reject) => {
-    let received = "";
-
-    const onData = (chunk: Buffer) => {
-      received += chunk.toString("utf8");
-      const newlineIndex = received.indexOf("\n");
-
-      if (newlineIndex !== -1) {
-        cleanup();
-        resolve(received.slice(0, newlineIndex));
-      }
-    };
-
-    const onEnd = () => {
-      cleanup();
-      reject(new Error("wallet_client_password_agent_bootstrap_missing"));
-    };
-
-    const onError = (error: Error) => {
-      cleanup();
-      reject(error);
-    };
-
-    const cleanup = () => {
-      process.stdin.off("data", onData);
-      process.stdin.off("end", onEnd);
-      process.stdin.off("error", onError);
-    };
-
-    process.stdin.on("data", onData);
-    process.stdin.on("end", onEnd);
-    process.stdin.on("error", onError);
-  });
-
-  const parsed = JSON.parse(raw) as {
-    derivedKeyBase64?: string;
-  };
-
-  if (typeof parsed.derivedKeyBase64 !== "string") {
-    throw new Error("wallet_client_password_agent_bootstrap_invalid");
-  }
-
-  return {
-    endpoint,
-    unlockUntilUnixMs,
-    derivedKey: Buffer.from(parsed.derivedKeyBase64, "base64"),
-  };
-}
+import {
+  createAgentProtocolErrorResponse,
+  encodeAgentLine,
+  parseAgentRequestLine,
+  readAgentBootstrapConfigFromProcess,
+  shouldRemoveAgentEndpointPath,
+} from "./client-password/agent-protocol.js";
+import {
+  decryptSessionSecretBase64,
+  encryptSessionSecretBase64,
+  zeroizeBuffer,
+} from "./client-password/crypto.js";
 
 async function main(): Promise<void> {
-  const bootstrap = await readBootstrapConfig();
+  const bootstrap = await readAgentBootstrapConfigFromProcess({
+    argv: process.argv,
+    stdin: process.stdin,
+  });
   let key = bootstrap.derivedKey;
   let unlockUntilUnixMs = bootstrap.unlockUntilUnixMs;
   let expiryTimer: NodeJS.Timeout | null = null;
@@ -114,43 +51,11 @@ async function main(): Promise<void> {
     expiryTimer.unref();
   };
 
-  const encryptSecret = (secretBase64: string) => {
-    const nonce = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", key, nonce);
-    const ciphertext = Buffer.concat([
-      cipher.update(Buffer.from(secretBase64, "base64")),
-      cipher.final(),
-    ]);
-    const tag = cipher.getAuthTag();
-    return {
-      nonce: nonce.toString("base64"),
-      tag: tag.toString("base64"),
-      ciphertext: ciphertext.toString("base64"),
-    };
-  };
-
-  const decryptSecret = (options: {
-    nonce: string;
-    tag: string;
-    ciphertext: string;
-  }): string => {
-    const decipher = createDecipheriv(
-      "aes-256-gcm",
-      key,
-      Buffer.from(options.nonce, "base64"),
-    );
-    decipher.setAuthTag(Buffer.from(options.tag, "base64"));
-    return Buffer.concat([
-      decipher.update(Buffer.from(options.ciphertext, "base64")),
-      decipher.final(),
-    ]).toString("base64");
-  };
-
   const server = net.createServer((socket) => {
     let received = "";
 
     const send = (payload: unknown) => {
-      socket.end(`${JSON.stringify(payload)}\n`);
+      socket.end(encodeAgentLine(payload));
     };
 
     socket.on("data", (chunk) => {
@@ -161,21 +66,10 @@ async function main(): Promise<void> {
         return;
       }
 
-      let parsed: {
-        command?: string;
-        secretBase64?: string;
-        unlockUntilUnixMs?: unknown;
-        envelope?: {
-          nonce?: string;
-          tag?: string;
-          ciphertext?: string;
-        };
-      };
+      const parsed = parseAgentRequestLine(received.slice(0, newlineIndex));
 
-      try {
-        parsed = JSON.parse(received.slice(0, newlineIndex)) as typeof parsed;
-      } catch {
-        send({ ok: false, error: "wallet_client_password_agent_protocol_error" });
+      if (parsed === null) {
+        send(createAgentProtocolErrorResponse("wallet_client_password_agent_protocol_error"));
         return;
       }
 
@@ -192,7 +86,7 @@ async function main(): Promise<void> {
             return;
           case "refresh":
             if (!Number.isFinite(parsed.unlockUntilUnixMs)) {
-              send({ ok: false, error: "wallet_client_password_agent_protocol_error" });
+              send(createAgentProtocolErrorResponse("wallet_client_password_agent_protocol_error"));
               return;
             }
             unlockUntilUnixMs = Number(parsed.unlockUntilUnixMs);
@@ -201,13 +95,16 @@ async function main(): Promise<void> {
             return;
           case "encrypt":
             if (typeof parsed.secretBase64 !== "string") {
-              send({ ok: false, error: "wallet_client_password_agent_protocol_error" });
+              send(createAgentProtocolErrorResponse("wallet_client_password_agent_protocol_error"));
               return;
             }
             send({
               ok: true,
               unlockUntilUnixMs,
-              envelope: encryptSecret(parsed.secretBase64),
+              envelope: encryptSessionSecretBase64({
+                key,
+                secretBase64: parsed.secretBase64,
+              }),
             });
             return;
           case "decrypt":
@@ -216,27 +113,23 @@ async function main(): Promise<void> {
               || typeof parsed.envelope?.tag !== "string"
               || typeof parsed.envelope?.ciphertext !== "string"
             ) {
-              send({ ok: false, error: "wallet_client_password_agent_protocol_error" });
+              send(createAgentProtocolErrorResponse("wallet_client_password_agent_protocol_error"));
               return;
             }
             send({
               ok: true,
               unlockUntilUnixMs,
-              secretBase64: decryptSecret({
-                nonce: parsed.envelope.nonce,
-                tag: parsed.envelope.tag,
-                ciphertext: parsed.envelope.ciphertext,
+              secretBase64: decryptSessionSecretBase64({
+                key,
+                envelope: parsed.envelope,
               }),
             });
             return;
           default:
-            send({ ok: false, error: "wallet_client_password_agent_protocol_error" });
+            send(createAgentProtocolErrorResponse("wallet_client_password_agent_protocol_error"));
         }
       } catch (error) {
-        send({
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        send(createAgentProtocolErrorResponse(error instanceof Error ? error.message : String(error)));
       }
     });
   });
@@ -264,7 +157,4 @@ async function main(): Promise<void> {
   process.stdout.write("ready\n");
 }
 
-void main().catch((error) => {
-  process.stderr.write(`${createAgentError(error instanceof Error ? error.message : String(error))}\n`);
-  process.exit(1);
-});
+await main();
