@@ -11,6 +11,14 @@ import {
   readSnapshotWithRetry,
   type IndexerDaemonClient,
 } from "../../bitcoind/indexer-daemon.js";
+import {
+  deriveManagedBitcoindWalletStatus,
+  resolveManagedBitcoindProbeDecision,
+} from "../../bitcoind/managed-runtime/bitcoind-policy.js";
+import {
+  deriveManagedIndexerWalletStatus,
+  resolveIndexerDaemonProbeDecision,
+} from "../../bitcoind/managed-runtime/indexer-policy.js";
 import { createRpcClient } from "../../bitcoind/node.js";
 import { UNINITIALIZED_WALLET_ROOT_ID } from "../../bitcoind/service-paths.js";
 import {
@@ -55,7 +63,6 @@ import {
 import { createWalletReadModel } from "./project.js";
 import type {
   WalletBitcoindStatus,
-  WalletIndexerStatus,
   WalletLocalStateStatus,
   WalletNodeStatus,
   WalletReadContext,
@@ -65,7 +72,6 @@ import type {
 import type { WalletRuntimePaths } from "../runtime.js";
 
 const DEFAULT_SERVICE_START_TIMEOUT_MS = 10_000;
-const STALE_HEARTBEAT_THRESHOLD_MS = 15_000;
 const TOLERATED_NODE_HEADER_LEAD_BLOCKS = 2;
 const TOLERATED_NODE_HEADER_LEAD_MESSAGE =
   "Bitcoin headers can briefly lead validated blocks; a short 1-2 block lead is normal and is being tolerated.";
@@ -306,151 +312,6 @@ async function inspectWalletLocalState(options: {
   }
 }
 
-function mapIndexerStartupError(message: string): {
-  health: WalletServiceHealth;
-  message: string;
-} {
-  switch (message) {
-    case "indexer_daemon_start_timeout":
-      return {
-        health: "starting",
-        message: "Indexer daemon is still starting.",
-      };
-    case "indexer_daemon_service_version_mismatch":
-      return {
-        health: "service-version-mismatch",
-        message: "The live indexer daemon is running an incompatible service API version.",
-      };
-    case "indexer_daemon_schema_mismatch":
-      return {
-        health: "schema-mismatch",
-        message: "The live indexer daemon is using an incompatible sqlite schema.",
-      };
-    case "indexer_daemon_wallet_root_mismatch":
-      return {
-        health: "wallet-root-mismatch",
-        message: "The live indexer daemon belongs to a different wallet root.",
-      };
-    case "indexer_daemon_protocol_error":
-      return {
-        health: "unavailable",
-        message: "The live indexer daemon socket responded with an invalid or incomplete protocol exchange.",
-      };
-    case INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED:
-      return {
-        health: "failed",
-        message: "The managed indexer daemon could not recover automatic background follow.",
-      };
-    default:
-      return {
-        health: "unavailable",
-        message,
-      };
-  }
-}
-
-function mapBitcoindStartupError(message: string): WalletBitcoindStatus {
-  switch (message) {
-    case "managed_bitcoind_service_start_timeout":
-      return {
-        health: "starting",
-        status: null,
-        message: "Managed bitcoind service is still starting.",
-      };
-    case "managed_bitcoind_service_version_mismatch":
-      return {
-        health: "service-version-mismatch",
-        status: null,
-        message: "The live managed bitcoind service is running an incompatible service version.",
-      };
-    case "managed_bitcoind_wallet_root_mismatch":
-      return {
-        health: "wallet-root-mismatch",
-        status: null,
-        message: "The live managed bitcoind service belongs to a different wallet root.",
-      };
-    case "managed_bitcoind_runtime_mismatch":
-      return {
-        health: "runtime-mismatch",
-        status: null,
-        message: "The live managed bitcoind service runtime does not match this wallet's expected data directory or chain.",
-      };
-    case "managed_bitcoind_protocol_error":
-      return {
-        health: "unavailable",
-        status: null,
-        message: "The managed bitcoind runtime artifacts are invalid or incomplete.",
-      };
-    default:
-      return {
-        health: "unavailable",
-        status: null,
-        message,
-      };
-  }
-}
-
-function deriveBitcoindHealth(options: {
-  status: ManagedBitcoindObservedStatus | null;
-  nodeStatus: WalletNodeStatus | null;
-  startupError: string | null;
-}): WalletBitcoindStatus {
-  if (options.startupError !== null) {
-    const mapped = mapBitcoindStartupError(options.startupError);
-    return {
-      ...mapped,
-      status: options.status,
-    };
-  }
-
-  if (options.status === null) {
-    return {
-      health: "unavailable",
-      status: null,
-      message: "Managed bitcoind service is unavailable.",
-    };
-  }
-
-  if (options.status.state === "starting") {
-    return {
-      health: "starting",
-      status: options.status,
-      message: options.status.lastError ?? "Managed bitcoind service is still starting.",
-    };
-  }
-
-  if (options.status.state === "failed") {
-    return {
-      health: "failed",
-      status: options.status,
-      message: options.status.lastError ?? "Managed bitcoind service refresh failed.",
-    };
-  }
-
-  const proofStatus = options.nodeStatus?.walletReplica?.proofStatus;
-  if (proofStatus === "missing") {
-    return {
-      health: "replica-missing",
-      status: options.status,
-      message: options.nodeStatus?.walletReplicaMessage ?? "Managed Core wallet replica is missing.",
-    };
-  }
-
-  if (proofStatus === "mismatch") {
-    return {
-      health: "replica-mismatch",
-      status: options.status,
-      message: options.nodeStatus?.walletReplicaMessage ?? "Managed Core wallet replica does not match trusted wallet state.",
-    };
-  }
-
-  return {
-    health: "ready",
-    status: options.status,
-    message: options.nodeStatus?.walletReplicaMessage ?? options.status.lastError,
-  };
-}
-
 function deriveNodeHealth(status: WalletNodeStatus | null, bitcoindHealth: WalletBitcoindStatus["health"]): {
   health: WalletServiceHealth;
   message: string | null;
@@ -496,84 +357,6 @@ export function deriveNodeHealthForTesting(
   return deriveNodeHealth(status, bitcoindHealth);
 }
 
-function deriveIndexerHealth(options: {
-  daemonStatus: ManagedIndexerDaemonStatus | null;
-  observedStatus?: ManagedIndexerDaemonObservedStatus | null;
-  snapshot: WalletSnapshotView | null;
-  source: ManagedIndexerTruthSource;
-  now: number;
-  startupError: string | null;
-}): WalletIndexerStatus {
-  const daemonStatus = options.source === "lease"
-    ? options.daemonStatus
-    : options.observedStatus ?? options.daemonStatus;
-  const snapshotTip = options.snapshot?.tip ?? null;
-  const daemonInstanceId = options.snapshot?.daemonInstanceId ?? daemonStatus?.daemonInstanceId ?? null;
-  const snapshotSeq = options.snapshot?.snapshotSeq ?? daemonStatus?.snapshotSeq ?? null;
-  const openedAtUnixMs = options.snapshot?.openedAtUnixMs ?? null;
-  const source = daemonStatus === null && options.snapshot === null ? "none" : options.source;
-
-  const createResult = (
-    health: WalletIndexerStatus["health"],
-    message: string | null,
-  ): WalletIndexerStatus => ({
-    health,
-    status: daemonStatus,
-    message,
-    snapshotTip,
-    source,
-    daemonInstanceId,
-    snapshotSeq,
-    openedAtUnixMs,
-  });
-
-  if (options.startupError !== null) {
-    const mapped = mapIndexerStartupError(options.startupError);
-    return createResult(mapped.health, mapped.message);
-  }
-
-  if (daemonStatus === null) {
-    return createResult("unavailable", "Indexer daemon is unavailable.");
-  }
-
-  if ((options.now - daemonStatus.heartbeatAtUnixMs) > STALE_HEARTBEAT_THRESHOLD_MS) {
-    return createResult("stale-heartbeat", "Indexer daemon heartbeat is stale.");
-  }
-
-  if (daemonStatus.state === "schema-mismatch") {
-    return createResult("schema-mismatch", daemonStatus.lastError ?? "Indexer daemon sqlite schema is incompatible.");
-  }
-
-  if (daemonStatus.state === "failed") {
-    return createResult("failed", daemonStatus.lastError ?? "Indexer daemon refresh failed.");
-  }
-
-  if (daemonStatus.state === "service-version-mismatch") {
-    return createResult("service-version-mismatch", "Indexer daemon service API is incompatible.");
-  }
-
-  if (options.snapshot === null) {
-    if (daemonStatus.state === "reorging") {
-      return createResult("reorging", "Indexer daemon is replaying a reorg and refreshing the coherent snapshot.");
-    }
-
-    return createResult(
-      daemonStatus.state === "catching-up" ? "catching-up" : "starting",
-      "Indexer snapshot is not ready yet.",
-    );
-  }
-
-  if (daemonStatus.state === "catching-up") {
-    return createResult("catching-up", "Indexer daemon is still catching up to the managed Bitcoin tip.");
-  }
-
-  if (daemonStatus.state === "reorging") {
-    return createResult("reorging", "Indexer daemon is replaying a reorg and refreshing the coherent snapshot.");
-  }
-
-  return createResult("synced", null);
-}
-
 async function attachNodeStatus(options: {
   dataDir: string;
   walletRootId?: string;
@@ -593,14 +376,15 @@ async function attachNodeStatus(options: {
       walletRootId: options.walletRootId,
       startupTimeoutMs: options.startupTimeoutMs,
     });
+    const decision = resolveManagedBitcoindProbeDecision(probe);
 
-    if (probe.compatibility !== "compatible" && probe.compatibility !== "unreachable") {
+    if (decision.action === "reject") {
       return {
         handle: null,
         rpc: null,
         status: null,
         observedStatus: probe.status,
-        error: probe.error,
+        error: decision.error,
       };
     }
 
@@ -709,7 +493,7 @@ export async function openWalletReadContext(options: {
       walletReplicaMessage: verifiedReplica.message ?? null,
     };
   }
-  const bitcoind = deriveBitcoindHealth({
+  const bitcoind = deriveManagedBitcoindWalletStatus({
     status: node.observedStatus,
     nodeStatus: node.status,
     startupError: node.error,
@@ -728,8 +512,12 @@ export async function openWalletReadContext(options: {
       dataDir: options.dataDir,
       walletRootId,
     });
+    const probeDecision = resolveIndexerDaemonProbeDecision({
+      probe,
+      expectedBinaryVersion: expectedIndexerBinaryVersion,
+    });
 
-    if (probe.compatibility === "compatible" || probe.compatibility === "unreachable") {
+    if (probeDecision.action !== "reject") {
       await probe.client?.close().catch(() => undefined);
       daemonClient = await attachOrStartIndexerDaemon({
         dataDir: options.dataDir,
@@ -742,7 +530,7 @@ export async function openWalletReadContext(options: {
     } else {
       observedDaemonStatus = probe.status;
       indexerSource = probe.status === null ? "none" : "probe";
-      daemonError = probe.error;
+      daemonError = probeDecision.error;
     }
 
     if (daemonClient !== null) {
@@ -778,7 +566,7 @@ export async function openWalletReadContext(options: {
     }
   }
 
-  const indexer = deriveIndexerHealth({
+  const indexer = deriveManagedIndexerWalletStatus({
     daemonStatus,
     observedStatus: observedDaemonStatus,
     snapshot,

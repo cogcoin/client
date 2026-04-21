@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { access, constants, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import net from "node:net";
@@ -11,6 +12,17 @@ import { acquireFileLock, FileLockBusyError } from "../wallet/fs/lock.js";
 import { writeFileAtomic } from "../wallet/fs/atomic.js";
 import { writeRuntimeStatusFile } from "../wallet/fs/status-file.js";
 import { stopIndexerDaemonServiceWithLockHeld } from "./indexer-daemon.js";
+import {
+  mapManagedBitcoindRuntimeProbeFailure,
+  mapManagedBitcoindValidationError,
+  resolveManagedBitcoindProbeDecision,
+  validateManagedBitcoindObservedStatus,
+} from "./managed-runtime/bitcoind-policy.js";
+import { readJsonFileIfPresent } from "./managed-runtime/status.js";
+import type {
+  ManagedBitcoindServiceCompatibility,
+  ManagedBitcoindServiceProbeResult,
+} from "./managed-runtime/types.js";
 import { createRpcClient, validateNodeConfigForTesting } from "./node.js";
 import { resolveManagedServicePaths, UNINITIALIZED_WALLET_ROOT_ID } from "./service-paths.js";
 import type {
@@ -33,16 +45,41 @@ const LOCAL_HOST = "127.0.0.1";
 const SUPPORTED_BITCOIND_VERSION = "30.2.0";
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15_000;
-const DEFAULT_DBCACHE_MIB = 2048;
+const DEFAULT_DBCACHE_MIB = 450;
 const claimedUninitializedRuntimeKeys = new Set<string>();
+const GIB = 1024 ** 3;
+
+export type {
+  ManagedBitcoindServiceCompatibility,
+  ManagedBitcoindServiceProbeResult,
+} from "./managed-runtime/types.js";
 
 export function resolveManagedBitcoindDbcacheMiB(totalRamBytes: number): number {
-  void totalRamBytes;
-  return DEFAULT_DBCACHE_MIB;
+  if (!Number.isFinite(totalRamBytes) || totalRamBytes <= 0) {
+    return DEFAULT_DBCACHE_MIB;
+  }
+
+  if (totalRamBytes < 8 * GIB) {
+    return 450;
+  }
+
+  if (totalRamBytes < 16 * GIB) {
+    return 768;
+  }
+
+  if (totalRamBytes < 32 * GIB) {
+    return 1024;
+  }
+
+  return 2048;
 }
 
 function detectManagedBitcoindDbcacheMiB(): number {
-  return DEFAULT_DBCACHE_MIB;
+  try {
+    return resolveManagedBitcoindDbcacheMiB(totalmem());
+  } catch {
+    return DEFAULT_DBCACHE_MIB;
+  }
 }
 
 interface ManagedWalletReplicaRpc {
@@ -83,20 +120,6 @@ type ManagedBitcoindServiceOptions = Pick<
 };
 
 type ManagedBitcoindServiceOwnership = "attached" | "started";
-
-export type ManagedBitcoindServiceCompatibility =
-  | "compatible"
-  | "service-version-mismatch"
-  | "wallet-root-mismatch"
-  | "runtime-mismatch"
-  | "unreachable"
-  | "protocol-error";
-
-export interface ManagedBitcoindServiceProbeResult {
-  compatibility: ManagedBitcoindServiceCompatibility;
-  status: ManagedBitcoindObservedStatus | null;
-  error: string | null;
-}
 
 export interface ManagedBitcoindServiceStopResult {
   status: "stopped" | "not-running";
@@ -156,18 +179,6 @@ function getWalletReplicaName(walletRootId: string): string {
   return `cogcoin-${walletRootId}`.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 63);
 }
 
-async function readJsonFile<T>(filePath: string): Promise<T | null> {
-  try {
-    return JSON.parse(await readFile(filePath, "utf8")) as T;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-      return null;
-    }
-
-    throw error;
-  }
-}
-
 async function listManagedBitcoindStatusCandidates(options: {
   dataDir: string;
   runtimeRoot: string;
@@ -175,7 +186,7 @@ async function listManagedBitcoindStatusCandidates(options: {
 }): Promise<ManagedBitcoindStatusCandidate[]> {
   const candidates = new Map<string, ManagedBitcoindObservedStatus>();
   const addCandidate = async (statusPath: string, allowDataDirMismatch = false): Promise<void> => {
-    const status = await readJsonFile<ManagedBitcoindObservedStatus>(statusPath);
+    const status = await readJsonFileIfPresent<ManagedBitcoindObservedStatus>(statusPath);
 
     if (status === null) {
       return;
@@ -343,58 +354,6 @@ async function waitForRpcReady(
   throw lastError instanceof Error ? lastError : new Error("bitcoind_rpc_timeout");
 }
 
-function validateManagedBitcoindStatus(
-  status: ManagedBitcoindObservedStatus,
-  options: ManagedBitcoindServiceOptions,
-  runtimeRoot: string,
-): void {
-  const legacyRuntimeRoot = join(
-    resolveManagedServicePaths(
-      options.dataDir ?? "",
-      options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID,
-    ).runtimeRoot,
-    status.walletRootId,
-  );
-
-  if (status.serviceApiVersion !== MANAGED_BITCOIND_SERVICE_API_VERSION_VALUE) {
-    throw new Error("managed_bitcoind_service_version_mismatch");
-  }
-
-  if (
-    status.chain !== options.chain
-    || status.dataDir !== (options.dataDir ?? "")
-    || (status.runtimeRoot !== runtimeRoot && status.runtimeRoot !== legacyRuntimeRoot)
-  ) {
-    throw new Error("managed_bitcoind_runtime_mismatch");
-  }
-}
-
-function isRuntimeMismatchError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  return error.message.startsWith("bitcoind_chain_expected_")
-    || error.message === "managed_bitcoind_runtime_mismatch";
-}
-
-function isUnreachableManagedBitcoindError(error: unknown): boolean {
-  if (error instanceof Error) {
-    if ("code" in error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      return code === "ENOENT" || code === "ECONNREFUSED" || code === "ECONNRESET";
-    }
-
-    return error.message === "bitcoind_cookie_timeout"
-      || error.message.includes("cookie file is unavailable")
-      || error.message.includes("ECONNREFUSED")
-      || error.message.includes("ECONNRESET")
-      || error.message.includes("socket hang up");
-  }
-
-  return false;
-}
-
 function createBitcoindServiceStatus(options: {
   binaryVersion: string;
   serviceInstanceId: string;
@@ -440,31 +399,19 @@ function createBitcoindServiceStatus(options: {
   };
 }
 
-function mapManagedBitcoindValidationError(error: unknown): ManagedBitcoindServiceProbeResult {
-  return {
-    compatibility: error instanceof Error
-      ? error.message === "managed_bitcoind_service_version_mismatch"
-        ? "service-version-mismatch"
-        : "runtime-mismatch"
-      : "protocol-error",
-    status: null,
-    error: error instanceof Error ? error.message : "managed_bitcoind_protocol_error",
-  };
-}
-
 async function probeManagedBitcoindStatusCandidate(
   status: ManagedBitcoindObservedStatus,
   options: ManagedBitcoindServiceOptions,
   runtimeRoot: string,
 ): Promise<ManagedBitcoindServiceProbeResult> {
   try {
-    validateManagedBitcoindStatus(status, options, runtimeRoot);
+    validateManagedBitcoindObservedStatus(status, {
+      chain: options.chain,
+      dataDir: options.dataDir ?? "",
+      runtimeRoot,
+    });
   } catch (error) {
-    const mapped = mapManagedBitcoindValidationError(error);
-    return {
-      ...mapped,
-      status,
-    };
+    return mapManagedBitcoindValidationError(error, status);
   }
 
   const rpc = createRpcClient(status.rpc);
@@ -483,27 +430,7 @@ async function probeManagedBitcoindStatusCandidate(
       error: null,
     };
   } catch (error) {
-    if (isRuntimeMismatchError(error)) {
-      return {
-        compatibility: "runtime-mismatch",
-        status,
-        error: "managed_bitcoind_runtime_mismatch",
-      };
-    }
-
-    if (isUnreachableManagedBitcoindError(error)) {
-      return {
-        compatibility: "unreachable",
-        status,
-        error: null,
-      };
-    }
-
-    return {
-      compatibility: "protocol-error",
-      status,
-      error: "managed_bitcoind_protocol_error",
-    };
+    return mapManagedBitcoindRuntimeProbeFailure(error, status);
   }
 }
 
@@ -512,8 +439,8 @@ async function resolveRuntimeConfig(
   configPath: string,
   options: ManagedBitcoindServiceOptions,
 ): Promise<ManagedBitcoindRuntimeConfig> {
-  const previousStatus = await readJsonFile<ManagedBitcoindServiceStatus>(statusPath);
-  const previousConfig = await readJsonFile<ManagedBitcoindRuntimeConfig>(configPath);
+  const previousStatus = await readJsonFileIfPresent<ManagedBitcoindServiceStatus>(statusPath);
+  const previousConfig = await readJsonFileIfPresent<ManagedBitcoindRuntimeConfig>(configPath);
   const reserved = new Set<number>();
   const rpcPort = options.rpcPort
     ?? previousStatus?.rpc.port
@@ -805,7 +732,7 @@ export async function stopManagedBitcoindServiceWithLockHeld(options: {
 }): Promise<ManagedBitcoindServiceStopResult> {
   const walletRootId = options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
   const paths = options.paths ?? resolveManagedServicePaths(options.dataDir, walletRootId);
-  const status = await readJsonFile<ManagedBitcoindServiceStatus>(paths.bitcoindStatusPath);
+  const status = await readJsonFileIfPresent<ManagedBitcoindServiceStatus>(paths.bitcoindStatusPath);
   const processId = status?.processId ?? null;
 
   if (status === null || processId === null || !await isProcessAlive(processId)) {
@@ -1097,15 +1024,19 @@ export async function attachOrStartManagedBitcoindService(
     shutdownTimeoutMs: resolvedOptions.shutdownTimeoutMs,
   }, async () => {
     const existingProbe = await probeManagedBitcoindService(resolvedOptions);
-    if (existingProbe.compatibility === "compatible") {
+    const existingDecision = resolveManagedBitcoindProbeDecision(existingProbe);
+
+    if (existingDecision.action === "attach") {
       const existing = await tryAttachExistingManagedBitcoindService(resolvedOptions);
       if (existing !== null) {
         return existing;
       }
+
+      throw new Error("managed_bitcoind_protocol_error");
     }
 
-    if (existingProbe.compatibility !== "unreachable") {
-      throw new Error(existingProbe.error ?? "managed_bitcoind_protocol_error");
+    if (existingDecision.action === "reject") {
+      throw new Error(existingDecision.error ?? "managed_bitcoind_protocol_error");
     }
 
     const paths = resolveManagedServicePaths(resolvedOptions.dataDir ?? "", resolvedOptions.walletRootId);
@@ -1119,16 +1050,20 @@ export async function attachOrStartManagedBitcoindService(
 
       try {
         const liveProbe = await probeManagedBitcoindService(resolvedOptions);
-        if (liveProbe.compatibility === "compatible") {
+        const liveDecision = resolveManagedBitcoindProbeDecision(liveProbe);
+
+        if (liveDecision.action === "attach") {
           const reattached = await tryAttachExistingManagedBitcoindService(resolvedOptions);
 
           if (reattached !== null) {
             return reattached;
           }
+
+          throw new Error("managed_bitcoind_protocol_error");
         }
 
-        if (liveProbe.compatibility !== "unreachable") {
-          throw new Error(liveProbe.error ?? "managed_bitcoind_protocol_error");
+        if (liveDecision.action === "reject") {
+          throw new Error(liveDecision.error ?? "managed_bitcoind_protocol_error");
         }
 
         const bitcoindPath = await getBitcoindPath();
@@ -1275,7 +1210,7 @@ export async function readManagedBitcoindServiceStatusForTesting(
   walletRootId = UNINITIALIZED_WALLET_ROOT_ID,
 ): Promise<ManagedBitcoindObservedStatus | null> {
   const paths = resolveManagedServicePaths(dataDir, walletRootId);
-  return readJsonFile<ManagedBitcoindObservedStatus>(paths.bitcoindStatusPath);
+  return readJsonFileIfPresent<ManagedBitcoindObservedStatus>(paths.bitcoindStatusPath);
 }
 
 export async function shutdownManagedBitcoindServiceForTesting(
