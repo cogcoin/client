@@ -1,6 +1,6 @@
 import type { MiningStateRecord, WalletStateV1 } from "../types.js";
 import type { MiningCandidate } from "./engine-types.js";
-import type { MiningFollowVisualizerState } from "./visualizer.js";
+import type { MiningFollowVisualizerState, MiningSentenceBoardEntry } from "./visualizer.js";
 import { createEmptyMiningFollowVisualizerState } from "./visualizer.js";
 import { MiningProviderRequestError } from "./sentences.js";
 import { clearMiningGateCache } from "./competitiveness.js";
@@ -222,17 +222,30 @@ export function buildMiningTipKey(bestBlockHash: string | null, targetBlockHeigh
   return `${bestBlockHash}:${targetBlockHeight}`;
 }
 
+function cloneSettledBoardEntries(
+  entries: readonly MiningSentenceBoardEntry[],
+): MiningSentenceBoardEntry[] {
+  return entries.map((entry) => ({
+    ...entry,
+    requiredWords: [...entry.requiredWords],
+  }));
+}
+
 export function resetMiningUiForTip(
   loopState: MiningRuntimeLoopState,
   _targetBlockHeight: number | null,
 ): void {
   const preservedTxid = loopState.ui.latestTxid;
   const preservedFundingAddress = loopState.ui.fundingAddress;
+  const preservedSettledBlockHeight = loopState.ui.settledBlockHeight;
+  const preservedSettledBoardEntries = cloneSettledBoardEntries(loopState.ui.settledBoardEntries);
 
   loopState.ui = {
     ...createEmptyMiningFollowVisualizerState(),
     fundingAddress: preservedFundingAddress,
     latestTxid: preservedTxid,
+    settledBlockHeight: preservedSettledBlockHeight,
+    settledBoardEntries: preservedSettledBoardEntries,
   };
   loopState.selectedCandidateTipKey = null;
   loopState.selectedCandidate = null;

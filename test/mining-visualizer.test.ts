@@ -802,7 +802,7 @@ test("mining follow visualizer keeps the raw tip rail while labeling the older i
   assert.equal(capturedOptions?.extraLines?.[1], "1. @alpha: indexed sentence");
 });
 
-test("mining follow visualizer leaves the indexed block rows blank until settled winners are available", () => {
+test("mining follow visualizer renders blank indexed rows when the ui state itself has no settled board entries", () => {
   let capturedOptions: FollowSceneRenderOptions | undefined;
 
   const visualizer = new MiningFollowVisualizer({

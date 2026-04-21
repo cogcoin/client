@@ -23,6 +23,15 @@ import type {
 } from "./visualizer.js";
 import { createEmptyMiningFollowVisualizerState } from "./visualizer.js";
 
+function cloneSettledBoardEntries(
+  entries: readonly MiningSentenceBoardEntry[],
+): MiningSentenceBoardEntry[] {
+  return entries.map((entry) => ({
+    ...entry,
+    requiredWords: [...entry.requiredWords],
+  }));
+}
+
 function resolveSettledWinnerRequiredWords(options: {
   domainId: number;
   bip39WordIndices?: readonly number[] | null;
@@ -55,10 +64,70 @@ function fallbackSettledWinnerDomainName(domainId: number): string {
   return `domain-${domainId}`;
 }
 
+function resolveSettledBoardEntriesForHeight(options: {
+  snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"] | null | undefined;
+  blockHeight: number;
+  blockPreviousHashHex: string | null;
+}): MiningSentenceBoardEntry[] | null {
+  if (options.snapshotState === null || options.snapshotState === undefined) {
+    return null;
+  }
+
+  const winners = getBlockWinners(options.snapshotState, options.blockHeight);
+  if (winners === null) {
+    return null;
+  }
+
+  const snapshotState = options.snapshotState;
+  return winners
+    .slice()
+    .sort((left, right) => left.rank - right.rank || left.txIndex - right.txIndex)
+    .slice(0, 5)
+    .map((winner) => ({
+      rank: winner.rank,
+      domainName: lookupDomainById(snapshotState, winner.domainId)?.name ?? fallbackSettledWinnerDomainName(winner.domainId),
+      sentence: winner.sentenceText ?? "[unavailable]",
+      requiredWords: resolveSettledWinnerRequiredWords({
+        domainId: winner.domainId,
+        bip39WordIndices: (winner as typeof winner & { bip39WordIndices?: number[] }).bip39WordIndices,
+        snapshotTipPreviousHashHex: options.blockPreviousHashHex,
+      }),
+    }));
+}
+
+function resolveLatestPriorNonEmptySettledBoard(options: {
+  snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"];
+  snapshotTipHeight: number;
+}): {
+  settledBlockHeight: number | null;
+  settledBoardEntries: MiningSentenceBoardEntry[];
+} | null {
+  for (let blockHeight = options.snapshotTipHeight - 1; blockHeight >= 0; blockHeight -= 1) {
+    const settledBoardEntries = resolveSettledBoardEntriesForHeight({
+      snapshotState: options.snapshotState,
+      blockHeight,
+      blockPreviousHashHex: null,
+    });
+
+    if (settledBoardEntries !== null && settledBoardEntries.length > 0) {
+      return {
+        settledBlockHeight: blockHeight,
+        settledBoardEntries,
+      };
+    }
+  }
+
+  return null;
+}
+
 function resolveCurrentMinedBlockBoard(options: {
   snapshotState: NonNullable<WalletReadContext["snapshot"]>["state"] | null | undefined;
   snapshotTipHeight: number | null;
   snapshotTipPreviousHashHex: string | null;
+  currentDisplayedBoard?: {
+    settledBlockHeight: number | null;
+    settledBoardEntries: readonly MiningSentenceBoardEntry[];
+  };
 }): {
   settledBlockHeight: number | null;
   settledBoardEntries: MiningSentenceBoardEntry[];
@@ -79,24 +148,43 @@ function resolveCurrentMinedBlockBoard(options: {
     };
   }
 
-  const settledBoardEntries = (getBlockWinners(options.snapshotState, settledBlockHeight) ?? [])
-    .slice()
-    .sort((left, right) => left.rank - right.rank || left.txIndex - right.txIndex)
-    .slice(0, 5)
-    .map((winner) => ({
-      rank: winner.rank,
-      domainName: lookupDomainById(options.snapshotState!, winner.domainId)?.name ?? fallbackSettledWinnerDomainName(winner.domainId),
-      sentence: winner.sentenceText ?? "[unavailable]",
-      requiredWords: resolveSettledWinnerRequiredWords({
-        domainId: winner.domainId,
-        bip39WordIndices: (winner as typeof winner & { bip39WordIndices?: number[] }).bip39WordIndices,
-        snapshotTipPreviousHashHex: options.snapshotTipPreviousHashHex,
-      }),
-    }));
+  const settledBoardEntries = resolveSettledBoardEntriesForHeight({
+    snapshotState: options.snapshotState,
+    blockHeight: settledBlockHeight,
+    blockPreviousHashHex: options.snapshotTipPreviousHashHex,
+  });
+
+  if (settledBoardEntries !== null) {
+    return {
+      settledBlockHeight,
+      settledBoardEntries,
+    };
+  }
+
+  const currentDisplayedBlockHeight = options.currentDisplayedBoard?.settledBlockHeight ?? null;
+  const currentDisplayedEntries = options.currentDisplayedBoard?.settledBoardEntries ?? [];
+  if (
+    currentDisplayedBlockHeight !== null
+    && currentDisplayedBlockHeight <= settledBlockHeight
+    && currentDisplayedEntries.length > 0
+  ) {
+    return {
+      settledBlockHeight: currentDisplayedBlockHeight,
+      settledBoardEntries: cloneSettledBoardEntries(currentDisplayedEntries),
+    };
+  }
+
+  const latestPriorNonEmptyBoard = resolveLatestPriorNonEmptySettledBoard({
+    snapshotState: options.snapshotState,
+    snapshotTipHeight: settledBlockHeight,
+  });
+  if (latestPriorNonEmptyBoard !== null) {
+    return latestPriorNonEmptyBoard;
+  }
 
   return {
     settledBlockHeight,
-    settledBoardEntries,
+    settledBoardEntries: [],
   };
 }
 
@@ -128,6 +216,10 @@ function syncMiningUiSettledBoard(
     snapshotState,
     snapshotTipHeight,
     snapshotTipPreviousHashHex,
+    currentDisplayedBoard: {
+      settledBlockHeight: loopState.ui.settledBlockHeight,
+      settledBoardEntries: loopState.ui.settledBoardEntries,
+    },
   });
   loopState.ui.settledBlockHeight = settledBoard.settledBlockHeight;
   loopState.ui.settledBoardEntries = settledBoard.settledBoardEntries;

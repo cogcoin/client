@@ -954,6 +954,51 @@ test("mining board stays pinned to the indexed snapshot block until the snapshot
   ]);
 });
 
+test("mining board falls back to the latest prior non-empty board when the indexed tip has no winner history yet", () => {
+  const snapshotState = {
+    consensus: {
+      domainsById: new Map([
+        [7, {
+          domainId: 7,
+          name: "cogdemo",
+          anchored: true,
+          anchorHeight: 100,
+          endpoint: null,
+        }],
+      ]),
+    },
+    history: {
+      blockWinnersByHeight: new Map([
+        [100, [{
+          height: 100,
+          rank: 1,
+          domainId: 7,
+          creditedScriptPubKeyHex: "0014" + "11".repeat(20),
+          rewardCogtoshi: 123_000_000n,
+          canonicalBlend: 1000n,
+          sentenceHex: "",
+          sentenceText: "Prior non-empty settled sentence.",
+          bip39WordIndices: resolveWordIndices(["under", "tree", "monkey", "youth", "basket"]),
+          txIndex: 0,
+          txidHex: "aa".repeat(32),
+        }]],
+      ]),
+      foundingMessageByDomain: new Map(),
+    },
+  } as any;
+
+  const settled = resolveSettledBoardForTesting({
+    snapshotState,
+    snapshotTipHeight: 101,
+    nodeBestHeight: 101,
+  });
+
+  assert.equal(settled.settledBlockHeight, 100);
+  assert.deepEqual(settled.settledBoardEntries, [
+    createSettledBoardEntry(1, "cogdemo", "Prior non-empty settled sentence.", ["under", "tree", "monkey", "youth", "basket"]),
+  ]);
+});
+
 test("mining board falls back to the snapshot tip height when the node best height is unavailable", () => {
   const snapshotState = {
     consensus: {
@@ -999,7 +1044,7 @@ test("mining board falls back to the snapshot tip height when the node best heig
   ]);
 });
 
-test("performMiningCycle keeps the mining board pinned to the indexed snapshot while resetting provisional tip state", async (t) => {
+test("performMiningCycle keeps the prior settled board pinned across tip rollover until the new tip winners are available", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-board-stale");
   const paths = resolveWalletRuntimePathsForTesting({
     homeDirectory,
@@ -1161,6 +1206,105 @@ test("performMiningCycle keeps the mining board pinned to the indexed snapshot w
 
   const waitingSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
   assert.equal(waitingSnapshot?.currentPhase, "waiting-indexer");
+  assert.equal(loopState.ui.settledBlockHeight, 100);
+  assert.deepEqual(loopState.ui.settledBoardEntries, [
+    createSettledBoardEntry(1, "cogdemo", "Prior settled sentence.", ["under", "tree", "monkey", "youth", "basket"]),
+  ]);
+  assert.deepEqual(loopState.ui.provisionalRequiredWords, []);
+  assert.deepEqual(loopState.ui.provisionalEntry, {
+    domainName: null,
+    sentence: null,
+  });
+  assert.equal(loopState.ui.latestSentence, null);
+
+  const missingWinnersContext = createReadyMiningReadContext({
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+    readContextOverrides: {
+      snapshot: {
+        tip: {
+          height: 101,
+          blockHashHex: currentTipHash,
+          previousHashHex: snapshotTipHash,
+          stateHashHex: null,
+        },
+        state: {
+          consensus: {
+            domainIdsByName: new Map([["cogdemo", 7]]),
+            domainsById: new Map([[7, {
+              domainId: 7,
+              name: "cogdemo",
+              anchored: true,
+              anchorHeight: 100,
+              endpoint: null,
+            }]]),
+            balances: new Map(),
+          },
+          history: {
+            foundingMessageByDomain: new Map(),
+            blockWinnersByHeight: new Map([
+              [100, [{
+                height: 100,
+                rank: 1,
+                domainId: 7,
+                creditedScriptPubKeyHex: "0014" + "11".repeat(20),
+                rewardCogtoshi: 123_000_000n,
+                canonicalBlend: 1000n,
+                sentenceHex: "",
+                sentenceText: "Prior settled sentence.",
+                bip39WordIndices: resolveWordIndices(["under", "tree", "monkey", "youth", "basket"]),
+                txIndex: 0,
+                txidHex: "aa".repeat(32),
+              }]],
+            ]),
+          },
+        },
+      },
+      indexer: {
+        health: "synced",
+        message: null,
+        status: null,
+        source: "lease",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-101",
+        openedAtUnixMs: 2,
+        snapshotTip: {
+          height: 101,
+          blockHashHex: currentTipHash,
+          previousHashHex: snapshotTipHash,
+          stateHashHex: null,
+        },
+      },
+      nodeStatus: {
+        chain: "mainnet",
+        nodeBestHeight: 101,
+        nodeBestHashHex: currentTipHash,
+        walletReplica: {
+          proofStatus: "ready",
+        },
+      },
+      model: {
+        walletScriptPubKeyHex: "0014" + "11".repeat(20),
+        domains: [],
+      },
+    },
+  });
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => missingWinnersContext,
+    attachService: async () => ({ rpc: {} } as any),
+    rpcFactory: () => rpc as any,
+    loopState,
+  });
+
   assert.equal(loopState.ui.settledBlockHeight, 100);
   assert.deepEqual(loopState.ui.settledBoardEntries, [
     createSettledBoardEntry(1, "cogdemo", "Prior settled sentence.", ["under", "tree", "monkey", "youth", "basket"]),
@@ -2324,14 +2468,15 @@ test("performMiningCycle still throws on non-recoverable managed bitcoind mismat
   );
 });
 
-test("resume refresh passes a freshly indexed board state to the visualizer", async (t) => {
+test("resume refresh seeds the latest prior non-empty indexed board when the newest tip winners are not ready", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-resume-board");
   const paths = resolveWalletRuntimePathsForTesting({
     homeDirectory,
     platform: "linux",
   });
   const provider = createMemoryWalletSecretProviderForTesting();
-  const snapshotTipHash = "11".repeat(32);
+  const priorTipHash = "11".repeat(32);
+  const snapshotTipHash = "12".repeat(32);
   let capturedUiState:
     | {
       settledBlockHeight: number | null;
@@ -2355,9 +2500,9 @@ test("resume refresh passes a freshly indexed board state to the visualizer", as
       readContextOverrides: {
         snapshot: {
           tip: {
-            height: 100,
+            height: 101,
             blockHashHex: snapshotTipHash,
-            previousHashHex: null,
+            previousHashHex: priorTipHash,
             stateHashHex: null,
           },
           state: {
@@ -2398,19 +2543,19 @@ test("resume refresh passes a freshly indexed board state to the visualizer", as
           status: null,
           source: "lease",
           daemonInstanceId: "daemon-1",
-          snapshotSeq: "seq-100",
+          snapshotSeq: "seq-101",
           openedAtUnixMs: 1,
           snapshotTip: {
-            height: 100,
+            height: 101,
             blockHashHex: snapshotTipHash,
-            previousHashHex: null,
+            previousHashHex: priorTipHash,
             stateHashHex: null,
           },
         },
         nodeStatus: {
           chain: "mainnet",
           nodeBestHeight: 101,
-          nodeBestHashHex: "12".repeat(32),
+          nodeBestHashHex: "13".repeat(32),
           walletReplica: {
             proofStatus: "ready",
           },
@@ -2474,6 +2619,10 @@ test("selected mining candidates stay scoped to their tip and clear on tip reset
   const loopState = createMiningLoopStateForTesting();
   const candidate = createTestMiningCandidate();
   loopState.ui.latestTxid = "cc".repeat(32);
+  loopState.ui.settledBlockHeight = 100;
+  loopState.ui.settledBoardEntries = [
+    createSettledBoardEntry(1, "cogdemo", "Pinned settled sentence.", ["under", "tree", "monkey", "youth", "basket"]),
+  ];
   loopState.ui.provisionalBroadcastTxid = "aa".repeat(32);
 
   cacheSelectedCandidateForTipForTesting(loopState, "tip-1", candidate);
@@ -2487,6 +2636,10 @@ test("selected mining candidates stay scoped to their tip and clear on tip reset
   assert.equal(getSelectedCandidateForTipForTesting(loopState, "tip-1"), null);
   assert.equal(loopState.ui.latestTxid, "cc".repeat(32));
   assert.equal(loopState.ui.provisionalBroadcastTxid, null);
+  assert.equal(loopState.ui.settledBlockHeight, 100);
+  assert.deepEqual(loopState.ui.settledBoardEntries, [
+    createSettledBoardEntry(1, "cogdemo", "Pinned settled sentence.", ["under", "tree", "monkey", "youth", "basket"]),
+  ]);
 
   cacheSelectedCandidateForTipForTesting(loopState, "tip-2", candidate);
 
