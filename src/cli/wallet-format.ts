@@ -171,7 +171,7 @@ export function getRepairRecommendation(context: WalletReadContext): string | nu
 
 export function getClientUnlockRecommendation(context: WalletReadContext): string | null {
   if (context.localState.unlockRequired) {
-    return "Run `cogcoin client unlock` to temporarily unlock wallet-local secrets.";
+    return "Rerun this command in an interactive terminal so Cogcoin can prompt for the client password.";
   }
 
   return null;

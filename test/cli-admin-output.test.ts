@@ -9,14 +9,10 @@ import { runWalletAdminCommand } from "../src/cli/commands/wallet-admin.js";
 import { parseCliArgs } from "../src/cli/parse.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
-  createDefaultWalletSecretProviderForTesting,
   createMemoryWalletSecretProviderForTesting,
-  lockClientPassword,
-  readClientPasswordStatus,
 } from "../src/wallet/state/provider.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createWalletState } from "./current-model-helpers.js";
-import { configureTestClientPassword } from "./client-password-test-helpers.js";
 
 function createStringWriter() {
   let text = "";
@@ -250,7 +246,7 @@ test("init text output keeps the welcome art before the initialized summary", as
   assert.doesNotMatch(rendered, /Next step:/);
 });
 
-test("init text output describes the 24-hour client unlock window after setup migration", async (t) => {
+test("init text output describes process-local client password reuse after setup migration", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
   const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-cli-init-output"));
@@ -294,10 +290,10 @@ test("init text output describes the 24-hour client unlock window after setup mi
   assert.equal(countOccurrences(rendered, WELCOME_ART_BLOCK), 2);
   assert.match(rendered, /Wallet already initialized\./);
   assert.match(rendered, /\nWallet\n✓ Client password: migrated\n✓ Wallet root: wallet-test-root\n✓ Funding address: bc1qinitoutput\n/);
-  assert.match(rendered, /Client unlock: active for 86400 seconds\./);
-  assert.match(rendered, /cogcoin client unlock/);
-  assert.match(rendered, /cogcoin client lock/);
-  assert.match(rendered, /cogcoin client lock` to lock immediately\.\n\nQuickstart: /);
+  assert.match(rendered, /Client password reuse stays active for up to 86400 seconds while this command keeps running\./);
+  assert.match(rendered, /Future Cogcoin commands will prompt again when they need wallet-local secrets\./);
+  assert.doesNotMatch(rendered, /cogcoin client unlock/);
+  assert.doesNotMatch(rendered, /cogcoin client lock/);
   assert.doesNotMatch(rendered, /Next step:/);
 });
 
@@ -389,7 +385,7 @@ test("init text output fails before printing welcome art when no interactive pro
   assert.doesNotMatch(stderr.read(), new RegExp(WELCOME_ART.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
-test("init text output describes the 24-hour client unlock window after restore", async (t) => {
+test("init text output describes process-local client password reuse after restore", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
   const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-cli-restore-output"));
@@ -435,20 +431,20 @@ test("init text output describes the 24-hour client unlock window after restore"
   assert.equal(stderr.read(), "");
   assert.equal(syncCalls, 1);
   assert.match(rendered, /Wallet restored\./);
-  assert.match(rendered, /Client unlock: active for 86400 seconds\./);
-  assert.match(rendered, /cogcoin client unlock/);
-  assert.match(rendered, /cogcoin client lock/);
+  assert.match(rendered, /Client password reuse stays active for up to 86400 seconds while this command keeps running\./);
+  assert.match(rendered, /Future Cogcoin commands will prompt again when they need wallet-local secrets\./);
+  assert.doesNotMatch(rendered, /cogcoin client unlock/);
+  assert.doesNotMatch(rendered, /cogcoin client lock/);
 });
 
-test("client change-password text output reports the resulting unlock expiry", async () => {
+test("client change-password text output no longer reports a reusable unlock expiry", async () => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
-  const unlockUntilUnixMs = Date.now() + 86_000;
   const provider = Object.assign(createMemoryWalletSecretProviderForTesting(), {
     async changeClientPassword() {
       return {
         unlocked: true,
-        unlockUntilUnixMs,
+        unlockUntilUnixMs: Date.now() + 86_000,
       };
     },
   });
@@ -473,55 +469,5 @@ test("client change-password text output reports the resulting unlock expiry", a
 
   assert.equal(exitCode, 0);
   assert.equal(stderr.read(), "");
-  assert.match(rendered, /Client password changed\. Client unlocked until /);
-  assert.match(rendered, new RegExp(new Date(unlockUntilUnixMs).toISOString().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-});
-
-test("client unlock text output reports the refreshed unlock expiry", async (t) => {
-  const tempRoot = await createTrackedTempDirectory(t, "cogcoin-cli-client-unlock-output");
-  const resolvePaths = createTestRuntimePaths(tempRoot);
-  const paths = resolvePaths();
-  const provider = createDefaultWalletSecretProviderForTesting({
-    platform: "linux",
-    stateRoot: paths.stateRoot,
-    runtimeRoot: paths.runtimeRoot,
-  });
-  const stdout = createStringWriter();
-  const stderr = createStringWriter();
-  let hiddenPromptCount = 0;
-
-  await configureTestClientPassword(provider);
-  t.after(async () => {
-    await lockClientPassword(provider);
-  });
-
-  const context = createDefaultContext({
-    stdout: stdout.stream,
-    stderr: stderr.stream,
-    walletSecretProvider: provider,
-    createPrompter: () => ({
-      isInteractive: true,
-      writeLine() {},
-      async prompt() {
-        return "120";
-      },
-      async promptHidden() {
-        hiddenPromptCount += 1;
-        throw new Error("password should not be requested while already unlocked");
-      },
-    }),
-  });
-
-  const exitCode = await runClientAdminCommand(parseCliArgs(["client", "unlock"]), context);
-  const status = await readClientPasswordStatus(provider);
-  const rendered = stdout.read();
-
-  assert.equal(exitCode, 0);
-  assert.equal(stderr.read(), "");
-  assert.equal(hiddenPromptCount, 0);
-  assert.equal(status.unlocked, true);
-  assert.match(rendered, /Client unlocked until /);
-  assert.match(rendered, new RegExp((status.unlockUntilUnixMs != null
-    ? new Date(status.unlockUntilUnixMs).toISOString()
-    : "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(rendered, "Client password changed.\n");
 });

@@ -6,67 +6,74 @@ import {
   readLocalSecretFile,
   writeWrappedSecretEnvelope,
 } from "./files.js";
-import { finalizePendingClientPasswordRotationIfNeeded } from "./rotation.js";
 import { legacyMacKeychainHasSecret } from "./readiness.js";
-import { requestAgentOrNull } from "./agent-client.js";
-import { unlockClientPasswordSessionResolved } from "./session.js";
+import { finalizePendingClientPasswordRotationIfNeeded } from "./rotation.js";
+import {
+  decryptClientProtectedSecretWithSessionResolved,
+  encryptClientProtectedSecretWithSessionResolved,
+  unlockClientPasswordSessionResolved,
+} from "./session.js";
 import type {
   ClientPasswordPrompt,
   ClientPasswordResolvedContext,
 } from "./types.js";
 
 async function decryptWrappedSecretWithSessionResolved(options: ClientPasswordResolvedContext & {
-  envelope: { nonce: string; tag: string; ciphertext: string };
+  envelope: {
+    format: "cogcoin-local-wallet-secret";
+    version: 1;
+    cipher: "aes-256-gcm";
+    wrappedBy: "client-password";
+    nonce: string;
+    tag: string;
+    ciphertext: string;
+  };
   prompt?: ClientPasswordPrompt;
 }): Promise<Uint8Array> {
-  let response = await requestAgentOrNull(options, {
-    command: "decrypt",
-    envelope: options.envelope,
-  });
+  let secret = decryptClientProtectedSecretWithSessionResolved(options, options.envelope);
 
-  if (response === null && options.prompt != null && options.prompt.isInteractive) {
+  if (secret === null && options.prompt != null && options.prompt.isInteractive) {
     await unlockClientPasswordSessionResolved({
       context: options,
       prompt: options.prompt,
     });
-    response = await requestAgentOrNull(options, {
-      command: "decrypt",
-      envelope: options.envelope,
-    });
+    secret = decryptClientProtectedSecretWithSessionResolved(options, options.envelope);
   }
 
-  if (response === null || !response.ok || response.secretBase64 == null) {
+  if (secret === null) {
     throw new Error("wallet_client_password_locked");
   }
 
-  return new Uint8Array(Buffer.from(response.secretBase64, "base64"));
+  return secret;
 }
 
 async function encryptWrappedSecretWithSessionResolved(options: ClientPasswordResolvedContext & {
   secret: Uint8Array;
   prompt?: ClientPasswordPrompt;
-}): Promise<{ nonce: string; tag: string; ciphertext: string }> {
-  let response = await requestAgentOrNull(options, {
-    command: "encrypt",
-    secretBase64: Buffer.from(options.secret).toString("base64"),
-  });
+}): Promise<{
+  format: "cogcoin-local-wallet-secret";
+  version: 1;
+  cipher: "aes-256-gcm";
+  wrappedBy: "client-password";
+  nonce: string;
+  tag: string;
+  ciphertext: string;
+}> {
+  let envelope = encryptClientProtectedSecretWithSessionResolved(options, options.secret);
 
-  if (response === null && options.prompt != null && options.prompt.isInteractive) {
+  if (envelope === null && options.prompt != null && options.prompt.isInteractive) {
     await unlockClientPasswordSessionResolved({
       context: options,
       prompt: options.prompt,
     });
-    response = await requestAgentOrNull(options, {
-      command: "encrypt",
-      secretBase64: Buffer.from(options.secret).toString("base64"),
-    });
+    envelope = encryptClientProtectedSecretWithSessionResolved(options, options.secret);
   }
 
-  if (response === null || !response.ok || response.envelope == null) {
+  if (envelope === null) {
     throw new Error("wallet_client_password_locked");
   }
 
-  return response.envelope;
+  return envelope;
 }
 
 export async function loadClientProtectedSecretResolved(options: ClientPasswordResolvedContext & {
@@ -131,18 +138,7 @@ export async function storeClientProtectedSecretResolved(options: ClientPassword
 
     await mkdir(options.directoryPath, { recursive: true, mode: 0o700 });
     const envelope = await encryptWrappedSecretWithSessionResolved(options);
-    await writeWrappedSecretEnvelope(
-      resolveLocalSecretFilePath(options.directoryPath, options.keyId),
-      {
-        format: "cogcoin-local-wallet-secret",
-        version: 1,
-        cipher: "aes-256-gcm",
-        wrappedBy: "client-password",
-        nonce: envelope.nonce,
-        tag: envelope.tag,
-        ciphertext: envelope.ciphertext,
-      },
-    );
+    await writeWrappedSecretEnvelope(resolveLocalSecretFilePath(options.directoryPath, options.keyId), envelope);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 

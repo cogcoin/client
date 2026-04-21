@@ -15,8 +15,6 @@ test("help text reflects the one-address model", () => {
   assert.match(HELP_TEXT, /mine prompt\s+Show per-domain mining prompt state/i);
   assert.match(HELP_TEXT, /mine prompt <domain>\s+Configure a per-domain mining prompt override/i);
   assert.match(HELP_TEXT, /mine prompt list\s+Alias for mine prompt/i);
-  assert.match(HELP_TEXT, /client unlock\s+Unlock password-protected local wallet secrets/i);
-  assert.match(HELP_TEXT, /client lock\s+Flush the cached client password unlock session/i);
   assert.match(HELP_TEXT, /client change-password\s+Rotate the client password that protects local wallet secrets/i);
   assert.match(HELP_TEXT, /init\s+Initialize a new wallet or restore an existing wallet/i);
   assert.match(HELP_TEXT, /Run `cogcoin init` to create or restore a wallet\./);
@@ -28,6 +26,8 @@ test("help text reflects the one-address model", () => {
   assert.doesNotMatch(HELP_TEXT, /wallet export <path>/);
   assert.doesNotMatch(HELP_TEXT, /wallet import <path>/);
   assert.doesNotMatch(HELP_TEXT, /--seed/);
+  assert.doesNotMatch(HELP_TEXT, /client unlock/i);
+  assert.doesNotMatch(HELP_TEXT, /client lock/i);
 });
 
 test("parser rejects removed selector-based commands", () => {
@@ -61,9 +61,15 @@ test("parser rejects removed selector-based commands", () => {
   );
 });
 
-test("parser accepts client lock, unlock, and change-password", () => {
-  assert.equal(parseCliArgs(["client", "unlock"]).command, "client-unlock");
-  assert.equal(parseCliArgs(["client", "lock"]).command, "client-lock");
+test("parser rejects removed client unlock and lock commands and keeps client change-password", () => {
+  assert.throws(
+    () => parseCliArgs(["client", "unlock"]),
+    /cli_client_unlock_removed/,
+  );
+  assert.throws(
+    () => parseCliArgs(["client", "lock"]),
+    /cli_client_lock_removed/,
+  );
   assert.equal(parseCliArgs(["client", "change-password"]).command, "client-change-password");
 });
 
@@ -252,17 +258,24 @@ test("CLI error text explains unsupported legacy wallet state", () => {
   assert.doesNotMatch(rendered, /passphrase/i);
 });
 
-test("CLI error text explains client password setup and lock guidance", () => {
+test("CLI error text explains client password setup, lock guidance, and removed unlock commands", () => {
   const setup = (formatCliTextError(new Error("wallet_client_password_setup_required")) ?? []).join("\n");
   const locked = (formatCliTextError(new Error("wallet_client_password_locked")) ?? []).join("\n");
   const changeRequiresTty = (formatCliTextError(new Error("wallet_client_password_change_requires_tty")) ?? []).join("\n");
+  const unlockRemoved = (formatCliTextError(new Error("cli_client_unlock_removed")) ?? []).join("\n");
+  const lockRemoved = (formatCliTextError(new Error("cli_client_lock_removed")) ?? []).join("\n");
 
   assert.match(setup, /client password setup/i);
   assert.match(setup, /cogcoin init/i);
   assert.match(locked, /client password is locked/i);
-  assert.match(locked, /client unlock/i);
+  assert.match(locked, /interactive terminal/i);
+  assert.doesNotMatch(locked, /client unlock/i);
   assert.match(changeRequiresTty, /interactive terminal/i);
   assert.match(changeRequiresTty, /client change-password/i);
+  assert.match(unlockRemoved, /client unlock/i);
+  assert.match(unlockRemoved, /no longer share/i);
+  assert.match(lockRemoved, /client lock/i);
+  assert.match(lockRemoved, /fresh cli invocations start locked automatically/i);
 });
 
 test("CLI error text explains bitcoin transfer validation and confirmation failures", () => {

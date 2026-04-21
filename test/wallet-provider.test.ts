@@ -16,10 +16,8 @@ import {
 } from "../src/wallet/state/provider.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import {
-  cleanupLegacyClientPasswordPipeArtifactsForTesting,
   configureTestClientPassword,
   createScriptedPrompter,
-  listLegacyClientPasswordPipeArtifactsForTesting,
 } from "./client-password-test-helpers.js";
 
 const execFileAsync = promisify(execFile);
@@ -160,24 +158,44 @@ test("Windows default secret provider stores, loads, and deletes local secret fi
   await assert.rejects(() => provider.loadSecret(keyId), /wallet_secret_missing_wallet-state:wallet-root-test/);
 });
 
-test("Windows test provider does not leave legacy pipe sockets in the repo root", async (t) => {
-  await cleanupLegacyClientPasswordPipeArtifactsForTesting();
-
-  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-win32-agent-endpoint");
+test("client password sessions do not carry into a fresh provider process", async (t) => {
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-process-local-session");
   const provider = createDefaultWalletSecretProviderForTesting({
-    platform: "win32",
+    platform: "linux",
     stateRoot,
   });
 
+  await configureTestClientPassword(provider);
   t.after(async () => {
     await lockClientPassword(provider);
   });
 
-  await configureTestClientPassword(provider);
-  assert.deepEqual(await listLegacyClientPasswordPipeArtifactsForTesting(), []);
+  const providerModuleUrl = pathToFileURL(
+    join(process.cwd(), ".test-dist", "src", "wallet", "state", "provider.js"),
+  ).href;
+  const childScript = `
+    import {
+      createDefaultWalletSecretProviderForTesting,
+      readClientPasswordStatus,
+    } from ${JSON.stringify(providerModuleUrl)};
 
-  await lockClientPassword(provider);
-  assert.deepEqual(await listLegacyClientPasswordPipeArtifactsForTesting(), []);
+    const provider = createDefaultWalletSecretProviderForTesting({
+      platform: "linux",
+      stateRoot: process.argv[1],
+    });
+
+    console.log(JSON.stringify(await readClientPasswordStatus(provider)));
+  `;
+  const result = await execFileAsync(
+    process.execPath,
+    ["--input-type=module", "-e", childScript, stateRoot],
+    { cwd: process.cwd() },
+  );
+
+  assert.deepEqual(JSON.parse(result.stdout.trim()), {
+    unlocked: false,
+    unlockUntilUnixMs: null,
+  });
 });
 
 test("Windows default secret provider reports missing secrets generically", async (t) => {

@@ -1,8 +1,5 @@
 import { join } from "node:path";
 
-import {
-  resolveAgentEndpoint,
-} from "./agent-protocol.js";
 import type {
   ClientPasswordResolvedContext,
   ClientPasswordStorageOptions,
@@ -42,7 +39,6 @@ export function resolveClientPasswordContext(
     legacyMacKeychainReader: options.legacyMacKeychainReader ?? null,
     passwordStatePath: resolveClientPasswordStatePath(options.directoryPath),
     rotationJournalPath: resolveClientPasswordRotationJournalPath(options.directoryPath),
-    agentEndpoint: resolveAgentEndpoint(options.stateRoot),
   };
 }
 

@@ -1,17 +1,19 @@
 import assert from "node:assert/strict";
-import net from "node:net";
-import { access, constants } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
-import { requestAgentOrNull } from "../src/wallet/state/client-password/agent-client.js";
 import { resolveClientPasswordContext } from "../src/wallet/state/client-password/context.js";
 import {
   lockClientPasswordSessionResolved,
   readClientPasswordSessionStatusResolved,
   startClientPasswordSessionWithExpiryResolved,
 } from "../src/wallet/state/client-password/session.js";
+
+const execFileAsync = promisify(execFile);
 
 test("client-password session start/status/lock use the shared session owner", async (t) => {
   const stateRoot = await createTrackedTempDirectory(t, "cogcoin-client-password-session");
@@ -49,8 +51,8 @@ test("client-password session start/status/lock use the shared session owner", a
   });
 });
 
-test("client-password agent client removes stale unix socket endpoints", async (t) => {
-  const stateRoot = await createTrackedTempDirectory(t, "cogcoin-client-password-stale-socket");
+test("client-password session status does not carry into a fresh process", async (t) => {
+  const stateRoot = await createTrackedTempDirectory(t, "cogcoin-client-password-process-local");
   const context = resolveClientPasswordContext({
     platform: "linux",
     stateRoot,
@@ -59,27 +61,40 @@ test("client-password agent client removes stale unix socket endpoints", async (
     runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
   });
 
-  if (context.agentEndpoint.startsWith("\\\\.\\pipe\\")) {
-    t.skip("unix socket cleanup path is not used on Windows");
-    return;
-  }
-
-  const server = net.createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(context.agentEndpoint, () => resolve());
+  t.after(async () => {
+    await lockClientPasswordSessionResolved(context);
   });
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => {
-      if (error != null) {
-        reject(error);
-        return;
-      }
-      resolve();
+
+  await startClientPasswordSessionWithExpiryResolved({
+    ...context,
+    derivedKey: Buffer.alloc(32, 11),
+    unlockUntilUnixMs: Date.now() + 60_000,
+  });
+
+  const clientPasswordModuleUrl = pathToFileURL(
+    join(process.cwd(), ".test-dist", "src", "wallet", "state", "client-password.js"),
+  ).href;
+  const childScript = `
+    import { readClientPasswordSessionStatus } from ${JSON.stringify(clientPasswordModuleUrl)};
+
+    const status = await readClientPasswordSessionStatus({
+      platform: "linux",
+      stateRoot: process.argv[1],
+      runtimeRoot: process.argv[2],
+      directoryPath: process.argv[3],
+      runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
     });
-  });
 
-  const response = await requestAgentOrNull(context, { command: "status" });
-  assert.equal(response, null);
-  await assert.rejects(() => access(context.agentEndpoint, constants.F_OK), /ENOENT/);
+    console.log(JSON.stringify(status));
+  `;
+  const result = await execFileAsync(
+    process.execPath,
+    ["--input-type=module", "-e", childScript, stateRoot, context.runtimeRoot, context.directoryPath],
+    { cwd: process.cwd() },
+  );
+
+  assert.deepEqual(JSON.parse(result.stdout.trim()), {
+    unlocked: false,
+    unlockUntilUnixMs: null,
+  });
 });

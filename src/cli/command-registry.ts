@@ -19,9 +19,7 @@ export type CommandName =
   | "update"
   | "sync"
   | "status"
-  | "client-lock"
   | "client-change-password"
-  | "client-unlock"
   | "follow"
   | "bitcoin-start"
   | "bitcoin-stop"
@@ -140,38 +138,6 @@ const commandSpecs = [
     ],
     describeCommand() {
       return "cogcoin update";
-    },
-  },
-  {
-    id: "client-unlock",
-    handlerFamily: "client-admin",
-    supportsYes: false,
-    supportsSatvb: false,
-    aliases: [{ tokens: ["client", "unlock"] }],
-    helpEntries: [
-      {
-        usage: "client unlock",
-        description: "Unlock password-protected local wallet secrets for a limited time",
-      },
-    ],
-    describeCommand() {
-      return "cogcoin client unlock";
-    },
-  },
-  {
-    id: "client-lock",
-    handlerFamily: "client-admin",
-    supportsYes: false,
-    supportsSatvb: false,
-    aliases: [{ tokens: ["client", "lock"] }],
-    helpEntries: [
-      {
-        usage: "client lock",
-        description: "Flush the cached client password unlock session",
-      },
-    ],
-    describeCommand() {
-      return "cogcoin client lock";
     },
   },
   {
@@ -1061,6 +1027,8 @@ const commandSpecs = [
 ] as const satisfies readonly CommandSpec[];
 
 const removedPathSpecs = [
+  { tokens: ["client", "unlock"], errorCode: "cli_client_unlock_removed" },
+  { tokens: ["client", "lock"], errorCode: "cli_client_lock_removed" },
   { tokens: ["restore"], errorCode: "cli_restore_removed" },
   { tokens: ["wallet", "delete"], errorCode: "cli_wallet_delete_removed" },
   { tokens: ["wallet", "restore"], errorCode: "cli_wallet_restore_removed" },

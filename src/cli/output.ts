@@ -594,8 +594,8 @@ export function createCliErrorPresentation(
   if (errorCode === "wallet_client_password_locked") {
     return {
       what: "Client password is locked.",
-      why: "This command needs the password-protected local wallet secret, but no active unlock session is available.",
-      next: "Run `cogcoin client unlock`, or rerun the command in an interactive terminal so Cogcoin can prompt for the client password.",
+      why: "This command needs the password-protected local wallet secret, but this process does not currently hold an unlocked client-password session.",
+      next: "Rerun the command in an interactive terminal so Cogcoin can prompt for the client password. Separate CLI invocations no longer share unlocked state.",
     };
   }
 
@@ -604,6 +604,22 @@ export function createCliErrorPresentation(
       what: "Client password change needs an interactive terminal.",
       why: "Cogcoin has to securely prompt for the current client password and the new password twice before it can rotate local wallet-secret protection.",
       next: "Run `cogcoin client change-password` in an interactive terminal.",
+    };
+  }
+
+  if (errorCode === "cli_client_unlock_removed") {
+    return {
+      what: "`client unlock` was removed.",
+      why: "Cogcoin no longer shares unlocked client-password sessions across separate CLI commands.",
+      next: "Rerun password-aware commands in an interactive terminal so Cogcoin can prompt for the client password when needed.",
+    };
+  }
+
+  if (errorCode === "cli_client_lock_removed") {
+    return {
+      what: "`client lock` was removed.",
+      why: "Cogcoin no longer keeps reusable unlocked client-password sessions after a command exits.",
+      next: "Fresh CLI invocations start locked automatically and prompt when wallet-local secrets are needed.",
     };
   }
 

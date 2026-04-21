@@ -10,7 +10,7 @@ export {
   resolveLocalSecretFilePath,
   createLegacyKeychainServiceName,
 } from "./client-password/context.js";
-export { createAgentBootstrapState } from "./client-password/agent-protocol.js";
+export { createAgentBootstrapState } from "./client-password/bootstrap.js";
 export {
   describeClientPasswordLockedMessage,
   describeClientPasswordMigrationMessage,
@@ -19,6 +19,7 @@ export {
 export { listLocalSecretFilesForTesting } from "./client-password/files.js";
 
 import { resolveClientPasswordContext } from "./client-password/context.js";
+import { cleanupLegacyClientPasswordArtifactsResolved } from "./client-password/legacy-cleanup.js";
 import { inspectClientPasswordReadinessResolved } from "./client-password/readiness.js";
 import {
   lockClientPasswordSessionResolved,
@@ -38,15 +39,24 @@ import {
 import type {
   ClientPasswordPrompt,
   ClientPasswordReadiness,
+  ClientPasswordResolvedContext,
   ClientPasswordSessionStatus,
   ClientPasswordSetupAction,
   ClientPasswordStorageOptions,
 } from "./client-password/types.js";
 
+async function resolveCleanClientPasswordContext(
+  options: ClientPasswordStorageOptions,
+): Promise<ClientPasswordResolvedContext> {
+  const context = resolveClientPasswordContext(options);
+  await cleanupLegacyClientPasswordArtifactsResolved(context);
+  return context;
+}
+
 export async function inspectClientPasswordReadiness(
   options: ClientPasswordStorageOptions,
 ): Promise<ClientPasswordReadiness> {
-  const context = resolveClientPasswordContext(options);
+  const context = await resolveCleanClientPasswordContext(options);
   await finalizePendingClientPasswordRotationIfNeeded(context);
   return await inspectClientPasswordReadinessResolved(context);
 }
@@ -54,20 +64,21 @@ export async function inspectClientPasswordReadiness(
 export async function readClientPasswordSessionStatus(
   options: ClientPasswordStorageOptions,
 ): Promise<ClientPasswordSessionStatus> {
-  return await readClientPasswordSessionStatusResolved(resolveClientPasswordContext(options));
+  return await readClientPasswordSessionStatusResolved(await resolveCleanClientPasswordContext(options));
 }
 
 export async function lockClientPasswordSession(
   options: ClientPasswordStorageOptions,
 ): Promise<ClientPasswordSessionStatus> {
-  return await lockClientPasswordSessionResolved(resolveClientPasswordContext(options));
+  return await lockClientPasswordSessionResolved(await resolveCleanClientPasswordContext(options));
 }
 
 export async function ensureClientPasswordConfigured(options: ClientPasswordStorageOptions & {
   prompt: ClientPasswordPrompt;
 }): Promise<{ action: ClientPasswordSetupAction; session: ClientPasswordSessionStatus }> {
+  const context = await resolveCleanClientPasswordContext(options);
   return await ensureClientPasswordConfiguredResolved({
-    context: resolveClientPasswordContext(options),
+    context,
     prompt: options.prompt,
   });
 }
@@ -76,8 +87,9 @@ export async function loadClientProtectedSecret(options: ClientPasswordStorageOp
   keyId: string;
   prompt?: ClientPasswordPrompt;
 }): Promise<Uint8Array> {
+  const context = await resolveCleanClientPasswordContext(options);
   return await loadClientProtectedSecretResolved({
-    ...resolveClientPasswordContext(options),
+    ...context,
     keyId: options.keyId,
     prompt: options.prompt,
   });
@@ -88,8 +100,9 @@ export async function storeClientProtectedSecret(options: ClientPasswordStorageO
   secret: Uint8Array;
   prompt?: ClientPasswordPrompt;
 }): Promise<void> {
+  const context = await resolveCleanClientPasswordContext(options);
   await storeClientProtectedSecretResolved({
-    ...resolveClientPasswordContext(options),
+    ...context,
     keyId: options.keyId,
     secret: options.secret,
     prompt: options.prompt,
@@ -99,8 +112,9 @@ export async function storeClientProtectedSecret(options: ClientPasswordStorageO
 export async function deleteClientProtectedSecret(options: ClientPasswordStorageOptions & {
   keyId: string;
 }): Promise<void> {
+  const context = await resolveCleanClientPasswordContext(options);
   await deleteClientProtectedSecretResolved({
-    ...resolveClientPasswordContext(options),
+    ...context,
     keyId: options.keyId,
   });
 }
@@ -108,7 +122,7 @@ export async function deleteClientProtectedSecret(options: ClientPasswordStorage
 export async function unlockClientPasswordSession(options: ClientPasswordStorageOptions & {
   prompt: ClientPasswordPrompt;
 }): Promise<ClientPasswordSessionStatus> {
-  const context = resolveClientPasswordContext(options);
+  const context = await resolveCleanClientPasswordContext(options);
   await finalizePendingClientPasswordRotationIfNeeded(context);
   return await unlockClientPasswordSessionResolved({
     context,
@@ -119,8 +133,9 @@ export async function unlockClientPasswordSession(options: ClientPasswordStorage
 export async function changeClientPassword(options: ClientPasswordStorageOptions & {
   prompt: ClientPasswordPrompt;
 }): Promise<ClientPasswordSessionStatus> {
+  const context = await resolveCleanClientPasswordContext(options);
   return await changeClientPasswordResolved({
-    context: resolveClientPasswordContext(options),
+    context,
     prompt: options.prompt,
   });
 }

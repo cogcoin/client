@@ -43,7 +43,6 @@ export interface ClientPasswordResolvedContext extends ClientPasswordStorageOpti
   legacyMacKeychainReader?: ClientPasswordLegacyKeychainReader | null;
   passwordStatePath: string;
   rotationJournalPath: string;
-  agentEndpoint: string;
 }
 
 export interface ClientPasswordStateV1 {
@@ -83,29 +82,6 @@ export interface ClientPasswordRotationJournalV1 {
     keyId: string;
     envelope: WrappedSecretEnvelopeV1;
   }>;
-}
-
-export interface AgentRequest {
-  command: "status" | "lock" | "refresh" | "encrypt" | "decrypt";
-  secretBase64?: string;
-  unlockUntilUnixMs?: number;
-  envelope?: {
-    nonce: string;
-    tag: string;
-    ciphertext: string;
-  };
-}
-
-export interface AgentResponse {
-  ok: boolean;
-  unlockUntilUnixMs?: number | null;
-  secretBase64?: string;
-  envelope?: {
-    nonce: string;
-    tag: string;
-    ciphertext: string;
-  };
-  error?: string;
 }
 
 export interface ClientPasswordAgentBootstrapState {

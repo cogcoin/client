@@ -25,8 +25,8 @@ export function getRestoreNextSteps(): string[] {
 
 export function getSetupUnlockGuidanceLines(unlockSeconds: number): string[] {
   return [
-    `Client unlock: active for ${unlockSeconds} seconds.`,
-    "Use `cogcoin client unlock` to lengthen this unlock window, or `cogcoin client lock` to lock immediately.",
+    `Client password reuse stays active for up to ${unlockSeconds} seconds while this command keeps running.`,
+    "Future Cogcoin commands will prompt again when they need wallet-local secrets.",
   ];
 }
 
