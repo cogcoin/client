@@ -10,11 +10,11 @@ import {
   buildManagedIndexerStatusFromSnapshotHandle,
   mapIndexerDaemonTransportError,
   mapIndexerDaemonValidationError,
-  resolveIndexerDaemonProbeDecision,
   validateIndexerDaemonStatus,
   validateIndexerSnapshotHandle,
   validateIndexerSnapshotPayload,
 } from "./managed-runtime/indexer-policy.js";
+import { attachOrStartManagedIndexerRuntime } from "./managed-runtime/indexer-runtime.js";
 import { readJsonFileIfPresent } from "./managed-runtime/status.js";
 import type {
   IndexerDaemonCompatibility,
@@ -573,88 +573,38 @@ export async function attachOrStartIndexerDaemon(options: {
     });
   };
 
-  const existingProbe = await probeIndexerDaemonAtSocket(paths.indexerDaemonSocketPath, walletRootId);
-  const existingDecision = resolveIndexerDaemonProbeDecision({
-    probe: existingProbe,
+  return attachOrStartManagedIndexerRuntime({
+    ...options,
+    walletRootId,
+    startupTimeoutMs,
     expectedBinaryVersion,
+  }, {
+    getPaths: (runtimeOptions) => resolveManagedServicePaths(runtimeOptions.dataDir, runtimeOptions.walletRootId),
+    probeDaemon: async (runtimeOptions, runtimePaths) =>
+      probeIndexerDaemonAtSocket(runtimePaths.indexerDaemonSocketPath, runtimeOptions.walletRootId),
+    requestBackgroundFollow,
+    closeClient: async (client) => {
+      await client.close();
+    },
+    acquireStartLock: async (runtimeOptions, runtimePaths) =>
+      acquireFileLock(runtimePaths.indexerDaemonLockPath, {
+        purpose: "indexer-daemon-start",
+        walletRootId: runtimeOptions.walletRootId,
+        dataDir: runtimeOptions.dataDir,
+        databasePath: runtimeOptions.databasePath,
+      }),
+    startDaemon: async () => startDaemon(),
+    stopWithLockHeld: async (runtimeOptions, runtimePaths, processId) =>
+      stopIndexerDaemonServiceWithLockHeld({
+        dataDir: runtimeOptions.dataDir,
+        walletRootId: runtimeOptions.walletRootId,
+        shutdownTimeoutMs: runtimeOptions.shutdownTimeoutMs,
+        paths: resolveManagedServicePaths(runtimeOptions.dataDir, runtimeOptions.walletRootId),
+        processId,
+      }),
+    isLockBusyError: (error) => error instanceof FileLockBusyError,
+    sleep,
   });
-
-  if (existingDecision.action === "attach" && existingProbe.client !== null) {
-    try {
-      return await requestBackgroundFollow(existingProbe.client, existingProbe.status);
-    } catch {
-      await existingProbe.client.close().catch(() => undefined);
-    }
-  }
-
-  if (existingDecision.action === "replace" && existingProbe.client !== null) {
-    await existingProbe.client.close().catch(() => undefined);
-  }
-
-  if (existingDecision.action === "reject") {
-    throw new Error(existingDecision.error ?? "indexer_daemon_protocol_error");
-  }
-
-  try {
-    const lock = await acquireFileLock(paths.indexerDaemonLockPath, {
-      purpose: "indexer-daemon-start",
-      walletRootId,
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-    });
-
-    try {
-      const liveProbe = await probeIndexerDaemonAtSocket(paths.indexerDaemonSocketPath, walletRootId);
-      const liveDecision = resolveIndexerDaemonProbeDecision({
-        probe: liveProbe,
-        expectedBinaryVersion,
-      });
-
-      if (liveDecision.action === "attach" && liveProbe.client !== null) {
-        try {
-          return await requestBackgroundFollow(liveProbe.client, liveProbe.status);
-        } catch {
-          await liveProbe.client.close().catch(() => undefined);
-          await stopIndexerDaemonServiceWithLockHeld({
-            dataDir: options.dataDir,
-            walletRootId,
-            shutdownTimeoutMs: options.shutdownTimeoutMs,
-            paths,
-            processId: liveProbe.status?.processId ?? null,
-          });
-        }
-      } else if (liveDecision.action === "replace" && liveProbe.client !== null) {
-        await liveProbe.client.close().catch(() => undefined);
-        await stopIndexerDaemonServiceWithLockHeld({
-          dataDir: options.dataDir,
-          walletRootId,
-          shutdownTimeoutMs: options.shutdownTimeoutMs,
-          paths,
-          processId: liveProbe.status?.processId ?? null,
-        });
-      } else if (liveDecision.action === "reject") {
-        throw new Error(liveDecision.error ?? "indexer_daemon_protocol_error");
-      }
-
-      const daemon = await startDaemon();
-
-      try {
-        return await requestBackgroundFollow(daemon);
-      } catch (error) {
-        await daemon.close().catch(() => undefined);
-        throw new Error(INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED, { cause: error });
-      }
-    } finally {
-      await lock.release();
-    }
-  } catch (error) {
-    if (error instanceof FileLockBusyError) {
-      await waitForIndexerDaemon(options.dataDir, walletRootId, startupTimeoutMs);
-      return attachOrStartIndexerDaemon(options);
-    }
-
-    throw error;
-  }
 }
 
 export async function stopIndexerDaemonService(options: {

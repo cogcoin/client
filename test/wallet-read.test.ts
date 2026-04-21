@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { buildAddressJson, buildIdsJson, buildStatusJson } from "../src/cli/read-json.js";
 import { formatWalletOverviewReport } from "../src/cli/wallet-format.js";
-import { deriveNodeHealthForTesting } from "../src/wallet/read/context.js";
+import { deriveNodeHealthForTesting } from "../src/wallet/read/managed-services.js";
 import { normalizeListPage } from "../src/cli/output.js";
 import { inspectWalletLocalState } from "../src/wallet/read/index.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";

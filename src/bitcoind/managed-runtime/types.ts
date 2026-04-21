@@ -1,9 +1,17 @@
 import type { ClientTip } from "../../types.js";
+import type { ManagedServicePaths } from "../service-paths.js";
 import type {
   ManagedBitcoindObservedStatus,
   ManagedIndexerDaemonObservedStatus,
   ManagedIndexerTruthSource,
 } from "../types.js";
+import type {
+  WalletBitcoindStatus,
+  WalletIndexerStatus,
+  WalletNodeStatus,
+  WalletServiceHealth,
+  WalletSnapshotView,
+} from "../../wallet/read/types.js";
 
 export type ManagedBitcoindServiceCompatibility =
   | "compatible"
@@ -17,6 +25,11 @@ export interface ManagedBitcoindServiceProbeResult {
   compatibility: ManagedBitcoindServiceCompatibility;
   status: ManagedBitcoindObservedStatus | null;
   error: string | null;
+}
+
+export interface ManagedBitcoindStatusCandidate {
+  status: ManagedBitcoindObservedStatus;
+  statusPath: string;
 }
 
 export type IndexerDaemonCompatibility =
@@ -44,6 +57,28 @@ export interface IndexerDaemonProbeDecision {
   error: string | null;
 }
 
+export interface ManagedRuntimeLockLike {
+  release(): Promise<void>;
+}
+
+export type ManagedBitcoindRuntimePathsLike = ManagedServicePaths;
+
+export type ManagedIndexerRuntimePathsLike = ManagedServicePaths;
+
+export interface ManagedBitcoindRuntimeOptionsLike {
+  dataDir: string;
+  walletRootId: string;
+  startupTimeoutMs: number;
+}
+
+export interface ManagedIndexerRuntimeOptionsLike {
+  dataDir: string;
+  walletRootId: string;
+  startupTimeoutMs: number;
+  shutdownTimeoutMs?: number;
+  expectedBinaryVersion?: string | null;
+}
+
 export interface ManagedIndexerSnapshotLike {
   tip: ClientTip | null;
   daemonInstanceId?: string | null;
@@ -58,4 +93,23 @@ export interface ManagedIndexerStatusProjection {
   daemonInstanceId: string | null;
   snapshotSeq: string | null;
   openedAtUnixMs: number | null;
+}
+
+export interface ManagedWalletNodeConnection<TNodeHandle, TRpc> {
+  handle: TNodeHandle | null;
+  rpc: TRpc | null;
+  status: WalletNodeStatus | null;
+  observedStatus: ManagedBitcoindObservedStatus | null;
+  error: string | null;
+}
+
+export interface ManagedWalletReadServiceBundle<TNodeHandle, TRpc, TDaemonClient> {
+  node: ManagedWalletNodeConnection<TNodeHandle, TRpc>;
+  bitcoind: WalletBitcoindStatus;
+  nodeHealth: WalletServiceHealth;
+  nodeMessage: string | null;
+  daemonClient: TDaemonClient | null;
+  indexer: WalletIndexerStatus;
+  snapshot: WalletSnapshotView | null;
+  close(): Promise<void>;
 }
