@@ -107,7 +107,21 @@ export interface WalletLifecycleResolvedContext {
   nowUnixMs: number;
 }
 
-export interface WalletSetupContext extends WalletLifecycleResolvedContext, WalletSetupDependencies {
+export interface WalletManagedCoreContext extends WalletLifecycleResolvedContext {
+  attachService: NonNullable<WalletManagedCoreDependencies["attachService"]>;
+  rpcFactory: NonNullable<WalletManagedCoreDependencies["rpcFactory"]>;
+}
+
+export interface WalletAccessContext extends WalletManagedCoreContext {
+  dataDir?: string;
+}
+
+export interface WalletLoadedState {
+  state: WalletStateV1;
+  source: "primary" | "backup";
+}
+
+export interface WalletSetupContext extends WalletManagedCoreContext {
   dataDir: string;
   prompter: WalletPrompter;
 }
@@ -120,8 +134,30 @@ export interface WalletRepairDependencies extends WalletManagedCoreDependencies 
   startBackgroundMining?: typeof startBackgroundMining;
 }
 
-export interface WalletRepairContext extends WalletLifecycleResolvedContext, WalletRepairDependencies {
+export interface WalletRepairContext extends WalletManagedCoreContext {
   dataDir: string;
   databasePath: string;
   assumeYes: boolean;
+  probeBitcoindService: NonNullable<WalletRepairDependencies["probeBitcoindService"]>;
+  attachIndexerDaemon: NonNullable<WalletRepairDependencies["attachIndexerDaemon"]>;
+  probeIndexerDaemon: NonNullable<WalletRepairDependencies["probeIndexerDaemon"]>;
+  requestMiningPreemption?: WalletRepairDependencies["requestMiningPreemption"];
+  startBackgroundMining?: WalletRepairDependencies["startBackgroundMining"];
+}
+
+export interface WalletBitcoindRepairStageResult {
+  state: WalletStateV1;
+  repairStateNeedsPersist: boolean;
+  recreatedManagedCoreWallet: boolean;
+  bitcoindServiceAction: WalletRepairResult["bitcoindServiceAction"];
+  bitcoindCompatibilityIssue: WalletRepairResult["bitcoindCompatibilityIssue"];
+  managedCoreReplicaAction: WalletRepairResult["managedCoreReplicaAction"];
+  bitcoindPostRepairHealth: WalletRepairResult["bitcoindPostRepairHealth"];
+}
+
+export interface WalletIndexerRepairStageResult {
+  resetIndexerDatabase: boolean;
+  indexerDaemonAction: WalletRepairResult["indexerDaemonAction"];
+  indexerCompatibilityIssue: WalletRepairResult["indexerCompatibilityIssue"];
+  indexerPostRepairHealth: WalletRepairResult["indexerPostRepairHealth"];
 }

@@ -1,15 +1,12 @@
-import { access, constants, rename } from "node:fs/promises";
+import { rename } from "node:fs/promises";
 import { join } from "node:path";
 
 import { attachOrStartManagedBitcoindService, createManagedWalletReplica } from "../../bitcoind/service.js";
 import { createRpcClient } from "../../bitcoind/node.js";
 import type { ManagedCoreWalletReplicaStatus } from "../../bitcoind/types.js";
-import { persistWalletCoinControlStateIfNeeded, normalizeWalletStateRecord } from "../coin-control.js";
 import {
-  persistNormalizedWalletDescriptorStateIfNeeded,
   resolveNormalizedWalletDescriptorState,
 } from "../descriptor-normalization.js";
-import { normalizeMiningStateRecord } from "../mining/state.js";
 import type { WalletRuntimePaths } from "../runtime.js";
 import { createWalletSecretReference, type WalletSecretProvider } from "../state/provider.js";
 import { saveWalletState } from "../state/storage.js";
@@ -18,77 +15,11 @@ import { withUnlockedManagedCoreWallet } from "../managed-core-wallet.js";
 import type {
   WalletLifecycleRpcClient,
   WalletManagedCoreDependencies,
-  WalletLifecycleResolvedContext,
 } from "./types.js";
+import { pathExists } from "./context.js";
 
 export function sanitizeWalletName(walletRootId: string): string {
   return `cogcoin-${walletRootId}`.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 63);
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path, constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export async function normalizeLoadedWalletStateIfNeeded(options: WalletLifecycleResolvedContext & {
-  state: WalletStateV1;
-  source: "primary" | "backup";
-  dataDir?: string;
-} & WalletManagedCoreDependencies): Promise<{ state: WalletStateV1; source: "primary" | "backup" }> {
-  let state = options.state;
-  let source = options.source;
-
-  if (options.dataDir !== undefined) {
-    const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-      dataDir: options.dataDir,
-      chain: "main",
-      startHeight: 0,
-      walletRootId: state.walletRootId,
-    });
-
-    try {
-      const normalized = await persistNormalizedWalletDescriptorStateIfNeeded({
-        state,
-        access: {
-          provider: options.provider,
-          secretReference: createWalletSecretReference(state.walletRootId),
-        },
-        paths: options.paths,
-        nowUnixMs: options.nowUnixMs,
-        replacePrimary: options.source === "backup",
-        rpc: (options.rpcFactory ?? createRpcClient)(node.rpc),
-      });
-      state = normalized.state;
-      source = normalized.changed ? "primary" : options.source;
-      const coinControl = await persistWalletCoinControlStateIfNeeded({
-        state,
-        access: {
-          provider: options.provider,
-          secretReference: createWalletSecretReference(state.walletRootId),
-        },
-        paths: options.paths,
-        nowUnixMs: options.nowUnixMs,
-        replacePrimary: source === "backup",
-        rpc: createRpcClient(node.rpc),
-      });
-      state = coinControl.state;
-      source = coinControl.changed ? "primary" : source;
-    } finally {
-      await node.stop?.().catch(() => undefined);
-    }
-  }
-
-  return {
-    state: normalizeWalletStateRecord({
-      ...state,
-      miningState: normalizeMiningStateRecord(state.miningState),
-    }),
-    source,
-  };
 }
 
 export async function importDescriptorIntoManagedCoreWallet(
