@@ -56,7 +56,7 @@ function createManagedIndexerDaemonObservedStatus(
 ): ManagedIndexerDaemonObservedStatus {
   return {
     serviceApiVersion: "cogcoin/indexer-ipc/v1",
-    binaryVersion: "1.1.6",
+    binaryVersion: "1.1.7",
     buildId: null,
     updatedAtUnixMs: 1_700_000_000_100,
     walletRootId: "wallet-root-default",
@@ -360,14 +360,14 @@ test("attachOrStartManagedIndexerRuntime reuses a compatible daemon without lock
     walletRootId,
     databasePath: "/tmp/client.sqlite",
     startupTimeoutMs: 5_000,
-    expectedBinaryVersion: "1.1.6",
+    expectedBinaryVersion: "1.1.7",
   }, {
     getPaths: () => paths,
     probeDaemon: async () => ({
       compatibility: "compatible",
       status: createManagedIndexerDaemonObservedStatus({
         walletRootId,
-        binaryVersion: "1.1.6",
+        binaryVersion: "1.1.7",
       }),
       client: existingClient,
       error: null,
@@ -406,7 +406,7 @@ test("attachOrStartManagedIndexerRuntime replaces stale compatible daemons befor
     walletRootId,
     databasePath: "/tmp/client.sqlite",
     startupTimeoutMs: 5_000,
-    expectedBinaryVersion: "1.1.6",
+    expectedBinaryVersion: "1.1.7",
   }, {
     getPaths: () => paths,
     probeDaemon: async () => {
@@ -459,7 +459,7 @@ test("attachOrStartManagedIndexerRuntime rejects incompatible daemon metadata", 
       walletRootId,
       databasePath: "/tmp/client.sqlite",
       startupTimeoutMs: 5_000,
-      expectedBinaryVersion: "1.1.6",
+      expectedBinaryVersion: "1.1.7",
     }, {
       getPaths: () => paths,
       probeDaemon: async () => ({
@@ -503,7 +503,7 @@ test("attachOrStartManagedIndexerRuntime recycles a live daemon when background 
     databasePath: "/tmp/client.sqlite",
     startupTimeoutMs: 5_000,
     shutdownTimeoutMs: 2_000,
-    expectedBinaryVersion: "1.1.6",
+    expectedBinaryVersion: "1.1.7",
   }, {
     getPaths: () => paths,
     probeDaemon: async () => {
@@ -568,7 +568,7 @@ test("attachOrStartManagedIndexerRuntime throws recovery_failed when a freshly s
       walletRootId,
       databasePath: "/tmp/client.sqlite",
       startupTimeoutMs: 5_000,
-      expectedBinaryVersion: "1.1.6",
+      expectedBinaryVersion: "1.1.7",
     }, {
       getPaths: () => paths,
       probeDaemon: async () => ({
