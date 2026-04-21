@@ -13,11 +13,9 @@ import type {
   RpcListUnspentEntry,
   RpcWalletTransaction,
 } from "../../bitcoind/types.js";
-import { acquireFileLock } from "../fs/lock.js";
 import type { WalletPrompter } from "../lifecycle.js";
-import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../runtime.js";
+import { type WalletRuntimePaths } from "../runtime.js";
 import {
-  createDefaultWalletSecretProvider,
   type WalletSecretProvider,
 } from "../state/provider.js";
 import type {
@@ -35,20 +33,13 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
-  createBuiltWalletMutationFeeSummary,
   createFundingMutationSender,
   createWalletMutationFeeMetadata,
   formatCogAmount,
   getDecodedInputScriptPubKeyHex,
   isLocalWalletScript,
-  isAlreadyAcceptedError,
-  isBroadcastUnknownError,
   mergeFixedWalletInputs,
   outpointKey,
-  pauseMiningForWalletMutation,
-  resolvePendingMutationReuseDecision,
-  resolveWalletMutationFeeSelection,
-  saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
   type BuiltWalletMutationTransaction,
@@ -61,8 +52,14 @@ import {
   confirmTypedAcknowledgement as confirmSharedTypedAcknowledgement,
   confirmYesNo as confirmSharedYesNo,
 } from "./confirm.js";
+import {
+  executeWalletMutationOperation,
+  persistWalletMutationState,
+  publishWalletMutation,
+  resolveExistingWalletMutation,
+} from "./executor.js";
 import { getCanonicalIdentitySelector } from "./identity-selector.js";
-import { findPendingMutationByIntent, upsertPendingMutation } from "./journal.js";
+import { upsertPendingMutation } from "./journal.js";
 
 type ReputationMutationKind = "rep-give" | "rep-revoke";
 
@@ -106,6 +103,13 @@ interface ReputationReview {
   text: string | null;
   payload: Uint8Array | undefined;
   payloadHex: string | null;
+}
+
+interface StandaloneReputationOperation extends ReputationOperation {
+  normalizedSourceDomainName: string;
+  normalizedTargetDomainName: string;
+  review: ReputationReview;
+  resolved: ReputationResolvedSummary;
 }
 
 interface BuiltReputationTransaction extends BuiltWalletMutationTransaction {}
@@ -455,18 +459,7 @@ async function saveUpdatedMutationState(options: {
   nowUnixMs: number;
   paths: WalletRuntimePaths;
 }): Promise<WalletStateV1> {
-  const nextState = {
-    ...options.state,
-    stateRevision: options.state.stateRevision + 1,
-    lastWrittenAtUnixMs: options.nowUnixMs,
-  };
-  await saveWalletStatePreservingUnlock({
-    state: nextState,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-  return nextState;
+  return persistWalletMutationState(options);
 }
 
 function mutationNeedsRepair(
@@ -703,93 +696,6 @@ async function encodeReviewText(
     });
 }
 
-async function sendBuiltTransaction(options: {
-  rpc: ReputationRpcClient;
-  walletName: string;
-  snapshotHeight: number | null;
-  built: BuiltReputationTransaction;
-  mutation: PendingMutationRecord;
-  state: WalletStateV1;
-  provider: WalletSecretProvider;
-  nowUnixMs: number;
-  paths: WalletRuntimePaths;
-  errorPrefix: string;
-}): Promise<{
-  state: WalletStateV1;
-  mutation: PendingMutationRecord;
-}> {
-  let nextState = options.state;
-  const broadcasting = updateMutationRecord(options.mutation, "broadcasting", options.nowUnixMs, {
-    attemptedTxid: options.built.txid,
-    attemptedWtxid: options.built.wtxid,
-    temporaryBuilderLockedOutpoints: options.built.temporaryBuilderLockedOutpoints,
-  });
-  nextState = upsertPendingMutation(nextState, broadcasting);
-  nextState = await saveUpdatedMutationState({
-    state: nextState,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-
-  if (options.snapshotHeight !== null && options.snapshotHeight !== (await options.rpc.getBlockchainInfo()).blocks) {
-    await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.built.temporaryBuilderLockedOutpoints);
-    throw new Error(`${options.errorPrefix}_tip_mismatch`);
-  }
-
-  try {
-    await options.rpc.sendRawTransaction(options.built.rawHex);
-  } catch (error) {
-    if (!isAlreadyAcceptedError(error)) {
-      if (isBroadcastUnknownError(error)) {
-        const unknown = updateMutationRecord(broadcasting, "broadcast-unknown", options.nowUnixMs, {
-          attemptedTxid: options.built.txid,
-          attemptedWtxid: options.built.wtxid,
-          temporaryBuilderLockedOutpoints: options.built.temporaryBuilderLockedOutpoints,
-        });
-        nextState = upsertPendingMutation(nextState, unknown);
-        nextState = await saveUpdatedMutationState({
-          state: nextState,
-          provider: options.provider,
-          nowUnixMs: options.nowUnixMs,
-          paths: options.paths,
-        });
-        throw new Error(`${options.errorPrefix}_broadcast_unknown`);
-      }
-
-      await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.built.temporaryBuilderLockedOutpoints);
-      const canceled = updateMutationRecord(broadcasting, "canceled", options.nowUnixMs, {
-        attemptedTxid: options.built.txid,
-        attemptedWtxid: options.built.wtxid,
-        temporaryBuilderLockedOutpoints: [],
-      });
-      nextState = upsertPendingMutation(nextState, canceled);
-      nextState = await saveUpdatedMutationState({
-        state: nextState,
-        provider: options.provider,
-        nowUnixMs: options.nowUnixMs,
-        paths: options.paths,
-      });
-      throw error;
-    }
-  }
-
-  await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.built.temporaryBuilderLockedOutpoints);
-  const live = updateMutationRecord(broadcasting, "live", options.nowUnixMs, {
-    attemptedTxid: options.built.txid,
-    attemptedWtxid: options.built.wtxid,
-    temporaryBuilderLockedOutpoints: [],
-  });
-  nextState = upsertPendingMutation(nextState, live);
-  nextState = await saveUpdatedMutationState({
-    state: nextState,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-  return { state: nextState, mutation: live };
-}
-
 async function submitReputationMutation(options: ReputationBaseOptions & {
   kind: ReputationMutationKind;
   errorPrefix: string;
@@ -802,28 +708,17 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
     throw new Error(`${options.errorPrefix}_invalid_amount`);
   }
 
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: options.errorPrefix,
-    walletRootId: null,
-  });
-
-  try {
-    const miningPreemption = await pauseMiningForWalletMutation({
-      paths,
-      reason: options.errorPrefix,
-    });
-    const readContext = await (options.openReadContext ?? openWalletReadContext)({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      secretProvider: provider,
-      walletControlLockHeld: true,
-      paths,
-    });
-
-    try {
+  const execution = await executeWalletMutationOperation<
+    StandaloneReputationOperation,
+    ReputationRpcClient,
+    null,
+    BuiltReputationTransaction,
+    ReputationMutationResult
+  >({
+    ...options,
+    controlLockPurpose: options.errorPrefix,
+    preemptionReason: options.errorPrefix,
+    async resolveOperation(readContext) {
       const normalizedSourceDomainName = normalizeDomainName(options.sourceDomainName, `${options.errorPrefix}_missing_source_domain`);
       const normalizedTargetDomainName = normalizeDomainName(options.targetDomainName, `${options.errorPrefix}_missing_target_domain`);
       const operation = resolveReputationOperation(
@@ -848,181 +743,159 @@ async function submitReputationMutation(options: ReputationBaseOptions & {
 
       const review = await encodeReviewText(options.reviewText, options.errorPrefix);
       const selfStake = operation.sourceDomain.domainId === operation.targetDomain.domainId;
-      const resolved = createResolvedReputationSummary({
-        kind: options.kind === "rep-give" ? "give" : "revoke",
-        sender: operation.sender,
-        senderSelector: operation.senderSelector,
-        amountCogtoshi: options.amountCogtoshi,
+      return {
+        ...operation,
+        normalizedSourceDomainName,
+        normalizedTargetDomainName,
         review,
-        selfStake,
-      });
-      const intentFingerprintHex = createIntentFingerprint([
+        resolved: createResolvedReputationSummary({
+          kind: options.kind === "rep-give" ? "give" : "revoke",
+          sender: operation.sender,
+          senderSelector: operation.senderSelector,
+          amountCogtoshi: options.amountCogtoshi,
+          review,
+          selfStake,
+        }),
+      };
+    },
+    createIntentFingerprint(operation) {
+      return createIntentFingerprint([
         options.kind,
         operation.state.walletRootId,
         operation.sourceDomain.name,
         operation.targetDomain.name,
         options.amountCogtoshi,
-        review.payloadHex ?? "",
+        operation.review.payloadHex ?? "",
       ]);
-
-      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-        dataDir: options.dataDir,
-        chain: "main",
-        startHeight: 0,
-        walletRootId: operation.state.walletRootId,
-      });
-      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-      const walletName = operation.state.managedCoreWallet.walletName;
-      const feeSelection = await resolveWalletMutationFeeSelection({
-        rpc,
-        feeRateSatVb: options.feeRateSatVb ?? null,
-      });
-      const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
-      let workingState = operation.state;
-      let replacementFixedInputs: FixedWalletInput[] | null = null;
-
-      if (existingMutation !== null) {
-        const reconciled = await reconcilePendingReputationMutation({
+    },
+    async resolveExistingMutation({ operation, existingMutation, execution }) {
+      if (existingMutation === null) {
+        return {
           state: operation.state,
-          mutation: existingMutation,
-          provider,
-          nowUnixMs,
-          paths,
-          rpc,
-          walletName,
-          context: readContext,
-        });
-        workingState = reconciled.state;
-
-        if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          const reuse = await resolvePendingMutationReuseDecision({
-            rpc,
-            walletName,
-            mutation: reconciled.mutation,
-            nextFeeSelection: feeSelection,
-          });
-
-          if (reuse.reuseExisting) {
-            return {
-              kind: options.kind === "rep-give" ? "give" : "revoke",
-              sourceDomainName: normalizedSourceDomainName,
-              targetDomainName: normalizedTargetDomainName,
-              amountCogtoshi: options.amountCogtoshi,
-              txid: reconciled.mutation.attemptedTxid ?? "unknown",
-              status: reconciled.resolution,
-              reusedExisting: true,
-              reviewIncluded: review.payloadHex !== null,
-              resolved,
-              fees: reuse.fees,
-            };
-          }
-
-          replacementFixedInputs = reuse.replacementFixedInputs;
-        }
-
-        if (reconciled.resolution === "repair-required") {
-          throw new Error(`${options.errorPrefix}_repair_required`);
-        }
+          replacementFixedInputs: null,
+          result: null,
+        };
       }
 
+      return resolveExistingWalletMutation({
+        existingMutation,
+        execution,
+        repairRequiredErrorCode: `${options.errorPrefix}_repair_required`,
+        reconcileExistingMutation: (mutation) => reconcilePendingReputationMutation({
+          state: operation.state,
+          mutation,
+          provider: execution.provider,
+          nowUnixMs: execution.nowUnixMs,
+          paths: execution.paths,
+          rpc: execution.rpc,
+          walletName: execution.walletName,
+          context: execution.readContext,
+        }),
+        createReuseResult: ({ mutation, resolution, fees }) => ({
+          kind: options.kind === "rep-give" ? "give" : "revoke",
+          sourceDomainName: operation.normalizedSourceDomainName,
+          targetDomainName: operation.normalizedTargetDomainName,
+          amountCogtoshi: options.amountCogtoshi,
+          txid: mutation.attemptedTxid ?? "unknown",
+          status: resolution,
+          reusedExisting: true,
+          reviewIncluded: operation.review.payloadHex !== null,
+          resolved: operation.resolved,
+          fees,
+        }),
+      });
+    },
+    async confirm({ operation }) {
       await confirmReputationMutation(options.prompter, {
         kind: options.kind === "rep-give" ? "give" : "revoke",
-        sourceDomainName: normalizedSourceDomainName,
-        targetDomainName: normalizedTargetDomainName,
+        sourceDomainName: operation.normalizedSourceDomainName,
+        targetDomainName: operation.normalizedTargetDomainName,
         amountCogtoshi: options.amountCogtoshi,
-        reviewText: review.text,
-        resolved,
+        reviewText: operation.review.text,
+        resolved: operation.resolved,
         assumeYes: options.assumeYes,
       });
-
-      let nextState = upsertPendingMutation(
-        workingState,
-        createDraftMutation({
+    },
+    createDraftMutation({ operation, existingMutation, execution, intentFingerprintHex }) {
+      return {
+        mutation: createDraftMutation({
           kind: options.kind,
-          sourceDomainName: normalizedSourceDomainName,
-          targetDomainName: normalizedTargetDomainName,
+          sourceDomainName: operation.normalizedSourceDomainName,
+          targetDomainName: operation.normalizedTargetDomainName,
           amountCogtoshi: options.amountCogtoshi,
           sender: operation.sender,
           intentFingerprintHex,
-          nowUnixMs,
-          reviewPayloadHex: review.payloadHex,
-          feeSelection,
+          nowUnixMs: execution.nowUnixMs,
+          reviewPayloadHex: operation.review.payloadHex,
+          feeSelection: execution.feeSelection,
           existing: existingMutation,
         }),
-      );
-      nextState = await saveUpdatedMutationState({
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
-      });
-
+        prepared: null,
+      };
+    },
+    async build({ operation, state, execution, replacementFixedInputs }) {
       const opReturnData = options.kind === "rep-give"
         ? serializeRepCommit(
           operation.sourceDomain.domainId,
           operation.targetDomain.domainId,
           options.amountCogtoshi,
-          review.payload,
+          operation.review.payload,
         ).opReturnData
         : serializeRepRevoke(
           operation.sourceDomain.domainId,
           operation.targetDomain.domainId,
           options.amountCogtoshi,
-          review.payload,
+          operation.review.payload,
         ).opReturnData;
       const reputationPlan = buildPlanForReputationOperation({
-        state: nextState,
-        allUtxos: await rpc.listUnspent(walletName, 1),
+        state,
+        allUtxos: await execution.rpc.listUnspent(execution.walletName, 1),
         sender: operation.sender,
         opReturnData,
         errorPrefix: options.errorPrefix,
       });
-      const built = await buildTransaction({
-        rpc,
-        walletName,
-        state: nextState,
+      return buildTransaction({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        state,
         plan: {
           ...reputationPlan,
           fixedInputs: mergeFixedWalletInputs(reputationPlan.fixedInputs, replacementFixedInputs),
         },
-        feeRateSatVb: feeSelection.feeRateSatVb,
+        feeRateSatVb: execution.feeSelection.feeRateSatVb,
       });
-
-      const final = await sendBuiltTransaction({
-        rpc,
-        walletName,
-        snapshotHeight: readContext.snapshot?.tip?.height ?? null,
+    },
+    publish({ state, execution, built, mutation }) {
+      return publishWalletMutation({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        snapshotHeight: execution.readContext.snapshot?.tip?.height ?? null,
         built,
-        mutation: nextState.pendingMutations!.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)!,
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
+        mutation,
+        state,
+        provider: execution.provider,
+        nowUnixMs: execution.nowUnixMs,
+        paths: execution.paths,
         errorPrefix: options.errorPrefix,
       });
-
+    },
+    createResult({ operation, mutation, built, status, reusedExisting, fees }) {
       return {
         kind: options.kind === "rep-give" ? "give" : "revoke",
-        sourceDomainName: normalizedSourceDomainName,
-        targetDomainName: normalizedTargetDomainName,
+        sourceDomainName: operation.normalizedSourceDomainName,
+        targetDomainName: operation.normalizedTargetDomainName,
         amountCogtoshi: options.amountCogtoshi,
-        txid: final.mutation.attemptedTxid ?? built.txid,
-        status: "live",
-        reusedExisting: false,
-        reviewIncluded: review.payloadHex !== null,
-        resolved,
-        fees: createBuiltWalletMutationFeeSummary({
-          selection: feeSelection,
-          built,
-        }),
+        txid: mutation.attemptedTxid ?? built?.txid ?? "unknown",
+        status: status as ReputationMutationResult["status"],
+        reusedExisting,
+        reviewIncluded: operation.review.payloadHex !== null,
+        resolved: operation.resolved,
+        fees,
       };
-    } finally {
-      await readContext.close();
-      await miningPreemption.release();
-    }
-  } finally {
-    await controlLock.release();
-  }
+    },
+  });
+
+  return execution.result;
 }
 
 export async function giveReputation(

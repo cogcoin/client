@@ -14,14 +14,11 @@ import type {
   RpcListUnspentEntry,
   RpcTransaction,
 } from "../../bitcoind/types.js";
-import { acquireFileLock } from "../fs/lock.js";
 import type { WalletPrompter } from "../lifecycle.js";
 import {
-  resolveWalletRuntimePathsForTesting,
   type WalletRuntimePaths,
 } from "../runtime.js";
 import {
-  createDefaultWalletSecretProvider,
   type WalletSecretProvider,
 } from "../state/provider.js";
 import type {
@@ -42,16 +39,9 @@ import {
 import {
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
-  createBuiltWalletMutationFeeSummary,
   createWalletMutationFeeMetadata,
-  isAlreadyAcceptedError,
-  isBroadcastUnknownError,
   mergeFixedWalletInputs,
   outpointKey,
-  pauseMiningForWalletMutation,
-  resolvePendingMutationReuseDecision,
-  resolveWalletMutationFeeSelection,
-  saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
   type BuiltWalletMutationTransaction,
@@ -64,7 +54,13 @@ import {
   confirmTypedAcknowledgement as confirmSharedTypedAcknowledgement,
   confirmYesNo as confirmSharedYesNo,
 } from "./confirm.js";
-import { findPendingMutationByIntent, upsertPendingMutation } from "./journal.js";
+import {
+  executeWalletMutationOperation,
+  persistWalletMutationState,
+  publishWalletMutation,
+  resolveExistingWalletMutation,
+} from "./executor.js";
+import { upsertPendingMutation } from "./journal.js";
 
 type FieldMutationKind = "field-create" | "field-set" | "field-clear";
 
@@ -105,6 +101,12 @@ interface FieldOperation {
   sender: MutationSender;
   senderSelector: string;
   chainDomain: NonNullable<ReturnType<typeof lookupDomain>>;
+}
+
+interface StandaloneFieldMutationOperation extends FieldOperation {
+  normalizedDomainName: string;
+  normalizedFieldName: string;
+  existingObservedField: ReturnType<typeof getObservedFieldState>;
 }
 
 interface NormalizedFieldValue {
@@ -472,18 +474,7 @@ async function saveUpdatedState(options: {
   nowUnixMs: number;
   paths: WalletRuntimePaths;
 }): Promise<WalletStateV1> {
-  const nextState = {
-    ...options.state,
-    stateRevision: options.state.stateRevision + 1,
-    lastWrittenAtUnixMs: options.nowUnixMs,
-  };
-  await saveWalletStatePreservingUnlock({
-    state: nextState,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-  return nextState;
+  return persistWalletMutationState(options);
 }
 
 function createStandaloneFieldMutation(options: {
@@ -966,93 +957,6 @@ async function loadFieldValue(
   };
 }
 
-async function sendStandaloneMutation(options: {
-  rpc: FieldRpcClient;
-  walletName: string;
-  snapshotHeight: number | null;
-  built: BuiltWalletMutationTransaction;
-  mutation: PendingMutationRecord;
-  state: WalletStateV1;
-  provider: WalletSecretProvider;
-  nowUnixMs: number;
-  paths: WalletRuntimePaths;
-  errorPrefix: string;
-}): Promise<{
-  state: WalletStateV1;
-  mutation: PendingMutationRecord;
-}> {
-  let nextState = options.state;
-  const broadcasting = updateMutationRecord(options.mutation, "broadcasting", options.nowUnixMs, {
-    attemptedTxid: options.built.txid,
-    attemptedWtxid: options.built.wtxid,
-    temporaryBuilderLockedOutpoints: options.built.temporaryBuilderLockedOutpoints,
-  });
-  nextState = upsertPendingMutation(nextState, broadcasting);
-  nextState = await saveUpdatedState({
-    state: nextState,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-
-  if (options.snapshotHeight !== null && options.snapshotHeight !== (await options.rpc.getBlockchainInfo()).blocks) {
-    await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.built.temporaryBuilderLockedOutpoints);
-    throw new Error(`${options.errorPrefix}_tip_mismatch`);
-  }
-
-  try {
-    await options.rpc.sendRawTransaction(options.built.rawHex);
-  } catch (error) {
-    if (!isAlreadyAcceptedError(error)) {
-      if (isBroadcastUnknownError(error)) {
-        const unknown = updateMutationRecord(broadcasting, "broadcast-unknown", options.nowUnixMs, {
-          attemptedTxid: options.built.txid,
-          attemptedWtxid: options.built.wtxid,
-          temporaryBuilderLockedOutpoints: options.built.temporaryBuilderLockedOutpoints,
-        });
-        nextState = upsertPendingMutation(nextState, unknown);
-        nextState = await saveUpdatedState({
-          state: nextState,
-          provider: options.provider,
-          nowUnixMs: options.nowUnixMs,
-          paths: options.paths,
-        });
-        throw new Error(`${options.errorPrefix}_broadcast_unknown`);
-      }
-
-      await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.built.temporaryBuilderLockedOutpoints);
-      const canceled = updateMutationRecord(broadcasting, "canceled", options.nowUnixMs, {
-        attemptedTxid: options.built.txid,
-        attemptedWtxid: options.built.wtxid,
-        temporaryBuilderLockedOutpoints: [],
-      });
-      nextState = upsertPendingMutation(nextState, canceled);
-      nextState = await saveUpdatedState({
-        state: nextState,
-        provider: options.provider,
-        nowUnixMs: options.nowUnixMs,
-        paths: options.paths,
-      });
-      throw error;
-    }
-  }
-
-  await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.built.temporaryBuilderLockedOutpoints);
-  const live = updateMutationRecord(broadcasting, "live", options.nowUnixMs, {
-    attemptedTxid: options.built.txid,
-    attemptedWtxid: options.built.wtxid,
-    temporaryBuilderLockedOutpoints: [],
-  });
-  nextState = upsertPendingMutation(nextState, live);
-  nextState = await saveUpdatedState({
-    state: nextState,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-  return { state: nextState, mutation: live };
-}
-
 async function submitStandaloneFieldMutation(options: {
   kind: FieldMutationKind;
   errorPrefix: string;
@@ -1086,182 +990,154 @@ async function submitStandaloneFieldMutation(options: {
     throw new Error(`${options.errorPrefix}_requires_tty`);
   }
 
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: options.errorPrefix,
-    walletRootId: null,
-  });
-
-  try {
-    const miningPreemption = await pauseMiningForWalletMutation({
-      paths,
-      reason: options.errorPrefix,
-    });
-    const readContext = await (options.openReadContext ?? openWalletReadContext)({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      secretProvider: provider,
-      walletControlLockHeld: true,
-      paths,
-    });
-
-    try {
+  const execution = await executeWalletMutationOperation<
+    StandaloneFieldMutationOperation,
+    FieldRpcClient,
+    { opReturnData: Uint8Array },
+    BuiltWalletMutationTransaction,
+    FieldMutationResult
+  >({
+    ...options,
+    controlLockPurpose: options.errorPrefix,
+    preemptionReason: options.errorPrefix,
+    resolveOperation(readContext) {
       const normalizedDomainName = normalizeDomainName(options.domainName);
       const normalizedFieldName = normalizeFieldName(options.fieldName);
       const operation = resolveAnchoredFieldOperation(readContext, normalizedDomainName, options.errorPrefix);
-      const existingObservedField = getObservedFieldState(readContext, normalizedDomainName, normalizedFieldName);
-      const intentFingerprintHex = createIntentFingerprint([
-        options.kind,
-        operation.state.walletRootId,
+      return {
+        ...operation,
         normalizedDomainName,
         normalizedFieldName,
+        existingObservedField: getObservedFieldState(readContext, normalizedDomainName, normalizedFieldName),
+      };
+    },
+    createIntentFingerprint(operation) {
+      return createIntentFingerprint([
+        options.kind,
+        operation.state.walletRootId,
+        operation.normalizedDomainName,
+        operation.normalizedFieldName,
       ]);
-      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-        dataDir: options.dataDir,
-        chain: "main",
-        startHeight: 0,
-        walletRootId: operation.state.walletRootId,
-      });
-      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-      const walletName = operation.state.managedCoreWallet.walletName;
-      const feeSelection = await resolveWalletMutationFeeSelection({
-        rpc,
-        feeRateSatVb: options.feeRateSatVb ?? null,
-      });
-      const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
-      let workingState = operation.state;
-      let replacementFixedInputs: FixedWalletInput[] | null = null;
-
-      if (existingMutation !== null) {
-        const reconciled = await reconcilePendingFieldMutation({
+    },
+    async resolveExistingMutation({ operation, existingMutation, execution }) {
+      if (existingMutation === null) {
+        return {
           state: operation.state,
-          mutation: existingMutation,
-          provider,
-          nowUnixMs,
-          paths,
-          rpc,
-          walletName,
-          context: readContext,
-        });
-        workingState = reconciled.state;
-
-        if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          const reuse = await resolvePendingMutationReuseDecision({
-            rpc,
-            walletName,
-            mutation: reconciled.mutation,
-            nextFeeSelection: feeSelection,
-          });
-
-          if (reuse.reuseExisting) {
-            return {
-              kind: options.kind,
-              domainName: normalizedDomainName,
-              fieldName: normalizedFieldName,
-              fieldId: reconciled.mutation.fieldId ?? existingObservedField?.fieldId ?? null,
-              txid: reconciled.mutation.attemptedTxid ?? "unknown",
-              permanent: reconciled.mutation.fieldPermanent ?? existingObservedField?.permanent ?? null,
-              format: reconciled.mutation.fieldFormat ?? existingObservedField?.format ?? null,
-              status: reconciled.resolution,
-              reusedExisting: true,
-              resolved: createResolvedFieldSummary({
-                sender: operation.sender,
-                senderSelector: operation.senderSelector,
-                kind: options.kind,
-                value: createResolvedFieldValueFromStoredData(
-                  options.kind,
-                  reconciled.mutation.fieldFormat ?? existingObservedField?.format ?? null,
-                  reconciled.mutation.fieldValueHex,
-                ),
-              }),
-              fees: reuse.fees,
-            };
-          }
-
-          replacementFixedInputs = reuse.replacementFixedInputs;
-        }
-
-        if (reconciled.resolution === "repair-required") {
-          throw new Error(`${options.errorPrefix}_repair_required`);
-        }
+          replacementFixedInputs: null,
+          result: null,
+        };
       }
 
-      await options.confirm(operation);
-
-      const planned = await options.createMutation(operation, existingMutation, feeSelection);
-      let nextState = upsertPendingMutation(workingState, planned.mutation);
-      nextState = await saveUpdatedState({
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
+      return resolveExistingWalletMutation({
+        existingMutation,
+        execution,
+        repairRequiredErrorCode: `${options.errorPrefix}_repair_required`,
+        reconcileExistingMutation: (mutation) => reconcilePendingFieldMutation({
+          state: operation.state,
+          mutation,
+          provider: execution.provider,
+          nowUnixMs: execution.nowUnixMs,
+          paths: execution.paths,
+          rpc: execution.rpc,
+          walletName: execution.walletName,
+          context: execution.readContext,
+        }),
+        createReuseResult: ({ mutation, resolution, fees }) => ({
+          kind: options.kind,
+          domainName: operation.normalizedDomainName,
+          fieldName: operation.normalizedFieldName,
+          fieldId: mutation.fieldId ?? operation.existingObservedField?.fieldId ?? null,
+          txid: mutation.attemptedTxid ?? "unknown",
+          permanent: mutation.fieldPermanent ?? operation.existingObservedField?.permanent ?? null,
+          format: mutation.fieldFormat ?? operation.existingObservedField?.format ?? null,
+          status: resolution,
+          reusedExisting: true,
+          resolved: createResolvedFieldSummary({
+            sender: operation.sender,
+            senderSelector: operation.senderSelector,
+            kind: options.kind,
+            value: createResolvedFieldValueFromStoredData(
+              options.kind,
+              mutation.fieldFormat ?? operation.existingObservedField?.format ?? null,
+              mutation.fieldValueHex,
+            ),
+          }),
+          fees,
+        }),
       });
-
+    },
+    confirm({ operation }) {
+      return options.confirm(operation);
+    },
+    async createDraftMutation({ operation, existingMutation, execution }) {
+      const prepared = await options.createMutation(operation, existingMutation, execution.feeSelection);
+      return {
+        mutation: prepared.mutation,
+        prepared: {
+          opReturnData: prepared.opReturnData,
+        },
+      };
+    },
+    async build({ operation, state, execution, replacementFixedInputs, prepared }) {
       const fieldPlan = buildAnchoredFieldPlan({
-        state: nextState,
-        allUtxos: await rpc.listUnspent(walletName, 1),
+        state,
+        allUtxos: await execution.rpc.listUnspent(execution.walletName, 1),
         sender: operation.sender,
-        opReturnData: planned.opReturnData,
+        opReturnData: prepared.opReturnData,
         errorPrefix: options.errorPrefix,
       });
-      const built = await buildFieldTransaction({
-        rpc,
-        walletName,
-        state: nextState,
+      return buildFieldTransaction({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        state,
         plan: {
           ...fieldPlan,
           fixedInputs: mergeFixedWalletInputs(fieldPlan.fixedInputs, replacementFixedInputs),
         },
-        feeRateSatVb: feeSelection.feeRateSatVb,
+        feeRateSatVb: execution.feeSelection.feeRateSatVb,
       });
-
-      const final = await sendStandaloneMutation({
-        rpc,
-        walletName,
-        snapshotHeight: readContext.snapshot?.tip?.height ?? null,
+    },
+    publish({ state, execution, built, mutation }) {
+      return publishWalletMutation({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        snapshotHeight: execution.readContext.snapshot?.tip?.height ?? null,
         built,
-        mutation: nextState.pendingMutations!.find((mutation) => mutation.intentFingerprintHex === planned.mutation.intentFingerprintHex)!,
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
+        mutation,
+        state,
+        provider: execution.provider,
+        nowUnixMs: execution.nowUnixMs,
+        paths: execution.paths,
         errorPrefix: options.errorPrefix,
       });
-
+    },
+    createResult({ operation, mutation, built, status, reusedExisting, fees }) {
       return {
         kind: options.kind,
-        domainName: normalizedDomainName,
-        fieldName: normalizedFieldName,
-        fieldId: final.mutation.fieldId ?? existingObservedField?.fieldId ?? null,
-        txid: final.mutation.attemptedTxid ?? built.txid,
-        permanent: final.mutation.fieldPermanent ?? existingObservedField?.permanent ?? null,
-        format: final.mutation.fieldFormat ?? existingObservedField?.format ?? null,
-        status: "live",
-        reusedExisting: false,
+        domainName: operation.normalizedDomainName,
+        fieldName: operation.normalizedFieldName,
+        fieldId: mutation.fieldId ?? operation.existingObservedField?.fieldId ?? null,
+        txid: mutation.attemptedTxid ?? built?.txid ?? "unknown",
+        permanent: mutation.fieldPermanent ?? operation.existingObservedField?.permanent ?? null,
+        format: mutation.fieldFormat ?? operation.existingObservedField?.format ?? null,
+        status: status as FieldMutationResult["status"],
+        reusedExisting,
         resolved: createResolvedFieldSummary({
           sender: operation.sender,
           senderSelector: operation.senderSelector,
           kind: options.kind,
           value: createResolvedFieldValueFromStoredData(
             options.kind,
-            planned.mutation.fieldFormat ?? existingObservedField?.format ?? null,
-            planned.mutation.fieldValueHex,
+            mutation.fieldFormat ?? operation.existingObservedField?.format ?? null,
+            mutation.fieldValueHex,
           ),
         }),
-        fees: createBuiltWalletMutationFeeSummary({
-          selection: feeSelection,
-          built,
-        }),
+        fees,
       };
-    } finally {
-      await readContext.close();
-      await miningPreemption.release();
-    }
-  } finally {
-    await controlLock.release();
-  }
+    },
+  });
+
+  return execution.result;
 }
 
 export async function createField(

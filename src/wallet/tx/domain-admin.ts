@@ -11,11 +11,9 @@ import type {
   RpcListUnspentEntry,
   RpcTransaction,
 } from "../../bitcoind/types.js";
-import { acquireFileLock } from "../fs/lock.js";
 import type { WalletPrompter } from "../lifecycle.js";
-import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../runtime.js";
+import { type WalletRuntimePaths } from "../runtime.js";
 import {
-  createDefaultWalletSecretProvider,
   type WalletSecretProvider,
 } from "../state/provider.js";
 import type {
@@ -35,19 +33,12 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
-  createBuiltWalletMutationFeeSummary,
   createFundingMutationSender,
   createWalletMutationFeeMetadata,
   getDecodedInputScriptPubKeyHex,
   isLocalWalletScript,
-  isAlreadyAcceptedError,
-  isBroadcastUnknownError,
   mergeFixedWalletInputs,
   outpointKey,
-  pauseMiningForWalletMutation,
-  resolvePendingMutationReuseDecision,
-  resolveWalletMutationFeeSelection,
-  saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
   type BuiltWalletMutationTransaction,
@@ -57,8 +48,14 @@ import {
   type WalletMutationRpcClient,
 } from "./common.js";
 import { confirmYesNo } from "./confirm.js";
+import {
+  executeWalletMutationOperation,
+  persistWalletMutationState,
+  publishWalletMutation,
+  resolveExistingWalletMutation,
+} from "./executor.js";
 import { getCanonicalIdentitySelector } from "./identity-selector.js";
-import { findPendingMutationByIntent, upsertPendingMutation } from "./journal.js";
+import { upsertPendingMutation } from "./journal.js";
 import { normalizeBtcTarget } from "./targets.js";
 
 type DomainAdminKind = "endpoint" | "delegate" | "miner" | "canonical";
@@ -94,6 +91,12 @@ interface DomainAdminOperation {
   sender: MutationSender;
   senderSelector: string;
   chainDomain: NonNullable<ReturnType<typeof lookupDomain>>;
+}
+
+interface StandaloneDomainAdminOperation extends DomainAdminOperation {
+  normalizedDomainName: string;
+  resolvedSender: DomainAdminResolvedSenderSummary;
+  payload: PreparedDomainAdminPayload;
 }
 
 interface BuiltDomainAdminTransaction extends BuiltWalletMutationTransaction {}
@@ -430,18 +433,7 @@ async function saveUpdatedMutationState(options: {
   nowUnixMs: number;
   paths: WalletRuntimePaths;
 }): Promise<WalletStateV1> {
-  const nextState = {
-    ...options.state,
-    stateRevision: options.state.stateRevision + 1,
-    lastWrittenAtUnixMs: options.nowUnixMs,
-  };
-  await saveWalletStatePreservingUnlock({
-    state: nextState,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-  return nextState;
+  return persistWalletMutationState(options);
 }
 
 function mutationConfirmedOnChain(
@@ -741,93 +733,6 @@ async function loadEndpointPayload(
   return payload;
 }
 
-async function sendBuiltTransaction(options: {
-  rpc: DomainAdminRpcClient;
-  walletName: string;
-  snapshotHeight: number | null;
-  built: BuiltDomainAdminTransaction;
-  mutation: PendingMutationRecord;
-  state: WalletStateV1;
-  provider: WalletSecretProvider;
-  nowUnixMs: number;
-  paths: WalletRuntimePaths;
-  errorPrefix: string;
-}): Promise<{
-  state: WalletStateV1;
-  mutation: PendingMutationRecord;
-}> {
-  let nextState = options.state;
-  const broadcasting = updateMutationRecord(options.mutation, "broadcasting", options.nowUnixMs, {
-    attemptedTxid: options.built.txid,
-    attemptedWtxid: options.built.wtxid,
-    temporaryBuilderLockedOutpoints: options.built.temporaryBuilderLockedOutpoints,
-  });
-  nextState = upsertPendingMutation(nextState, broadcasting);
-  nextState = await saveUpdatedMutationState({
-    state: nextState,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-
-  if (options.snapshotHeight !== null && options.snapshotHeight !== (await options.rpc.getBlockchainInfo()).blocks) {
-    await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.built.temporaryBuilderLockedOutpoints);
-    throw new Error(`${options.errorPrefix}_tip_mismatch`);
-  }
-
-  try {
-    await options.rpc.sendRawTransaction(options.built.rawHex);
-  } catch (error) {
-    if (!isAlreadyAcceptedError(error)) {
-      if (isBroadcastUnknownError(error)) {
-        const unknown = updateMutationRecord(broadcasting, "broadcast-unknown", options.nowUnixMs, {
-          attemptedTxid: options.built.txid,
-          attemptedWtxid: options.built.wtxid,
-          temporaryBuilderLockedOutpoints: options.built.temporaryBuilderLockedOutpoints,
-        });
-        nextState = upsertPendingMutation(nextState, unknown);
-        nextState = await saveUpdatedMutationState({
-          state: nextState,
-          provider: options.provider,
-          nowUnixMs: options.nowUnixMs,
-          paths: options.paths,
-        });
-        throw new Error(`${options.errorPrefix}_broadcast_unknown`);
-      }
-
-      await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.built.temporaryBuilderLockedOutpoints);
-      const canceled = updateMutationRecord(broadcasting, "canceled", options.nowUnixMs, {
-        attemptedTxid: options.built.txid,
-        attemptedWtxid: options.built.wtxid,
-        temporaryBuilderLockedOutpoints: [],
-      });
-      nextState = upsertPendingMutation(nextState, canceled);
-      nextState = await saveUpdatedMutationState({
-        state: nextState,
-        provider: options.provider,
-        nowUnixMs: options.nowUnixMs,
-        paths: options.paths,
-      });
-      throw error;
-    }
-  }
-
-  await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.built.temporaryBuilderLockedOutpoints);
-  const live = updateMutationRecord(broadcasting, "live", options.nowUnixMs, {
-    attemptedTxid: options.built.txid,
-    attemptedWtxid: options.built.wtxid,
-    temporaryBuilderLockedOutpoints: [],
-  });
-  nextState = upsertPendingMutation(nextState, live);
-  nextState = await saveUpdatedMutationState({
-    state: nextState,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-  return { state: nextState, mutation: live };
-}
-
 async function submitDomainAdminMutation(options: DomainAdminBaseOptions & {
   kind: DomainAdminKind;
   errorPrefix: string;
@@ -836,28 +741,17 @@ async function submitDomainAdminMutation(options: DomainAdminBaseOptions & {
   createPayload(operation: DomainAdminOperation): Promise<PreparedDomainAdminPayload>;
   confirm(operation: DomainAdminOperation): Promise<void>;
 }): Promise<DomainAdminMutationResult> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: options.errorPrefix,
-    walletRootId: null,
-  });
-
-  try {
-    const miningPreemption = await pauseMiningForWalletMutation({
-      paths,
-      reason: options.errorPrefix,
-    });
-    const readContext = await (options.openReadContext ?? openWalletReadContext)({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      secretProvider: provider,
-      walletControlLockHeld: true,
-      paths,
-    });
-
-    try {
+  const execution = await executeWalletMutationOperation<
+    StandaloneDomainAdminOperation,
+    DomainAdminRpcClient,
+    null,
+    BuiltDomainAdminTransaction,
+    DomainAdminMutationResult
+  >({
+    ...options,
+    controlLockPurpose: options.errorPrefix,
+    preemptionReason: options.errorPrefix,
+    async resolveOperation(readContext) {
       const normalizedDomainName = normalizeDomainName(options.domainName);
       const operation = resolveAnchoredDomainOperation(
         readContext,
@@ -865,155 +759,132 @@ async function submitDomainAdminMutation(options: DomainAdminBaseOptions & {
         options.errorPrefix,
         { requireRoot: options.requireRoot },
       );
-      const resolvedSender = createResolvedDomainAdminSenderSummary(operation.sender, operation.senderSelector);
-      const payload = await options.createPayload(operation);
-      const intentFingerprintHex = createIntentFingerprint([
+      return {
+        ...operation,
+        normalizedDomainName,
+        resolvedSender: createResolvedDomainAdminSenderSummary(operation.sender, operation.senderSelector),
+        payload: await options.createPayload(operation),
+      };
+    },
+    createIntentFingerprint(operation) {
+      return createIntentFingerprint([
         options.kind,
         operation.state.walletRootId,
         ...options.intentParts(operation),
       ]);
-      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-        dataDir: options.dataDir,
-        chain: "main",
-        startHeight: 0,
-        walletRootId: operation.state.walletRootId,
-      });
-      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-      const walletName = operation.state.managedCoreWallet.walletName;
-      const feeSelection = await resolveWalletMutationFeeSelection({
-        rpc,
-        feeRateSatVb: options.feeRateSatVb ?? null,
-      });
-      const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
-      let workingState = operation.state;
-      let replacementFixedInputs: FixedWalletInput[] | null = null;
-
-      if (existingMutation !== null) {
-        const reconciled = await reconcilePendingAdminMutation({
+    },
+    async resolveExistingMutation({ operation, existingMutation, execution }) {
+      if (existingMutation === null) {
+        return {
           state: operation.state,
-          mutation: existingMutation,
-          provider,
-          nowUnixMs,
-          paths,
-          rpc,
-          walletName,
-          context: readContext,
-        });
-        workingState = reconciled.state;
-
-        if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          const reuse = await resolvePendingMutationReuseDecision({
-            rpc,
-            walletName,
-            mutation: reconciled.mutation,
-            nextFeeSelection: feeSelection,
-          });
-
-          if (reuse.reuseExisting) {
-            return {
-              kind: options.kind,
-              domainName: normalizedDomainName,
-              txid: reconciled.mutation.attemptedTxid ?? "unknown",
-              status: reconciled.resolution,
-              reusedExisting: true,
-              recipientScriptPubKeyHex: payload.recipientScriptPubKeyHex ?? null,
-              endpointValueHex: payload.endpointValueHex ?? null,
-              resolved: {
-                sender: resolvedSender,
-                target: payload.resolvedTarget,
-                effect: payload.resolvedEffect,
-              },
-              fees: reuse.fees,
-            };
-          }
-
-          replacementFixedInputs = reuse.replacementFixedInputs;
-        }
-
-        if (reconciled.resolution === "repair-required") {
-          throw new Error(`${options.errorPrefix}_repair_required`);
-        }
+          replacementFixedInputs: null,
+          result: null,
+        };
       }
 
-      await options.confirm(operation);
-
-      let nextState = upsertPendingMutation(
-        workingState,
-        createDraftMutation({
+      return resolveExistingWalletMutation({
+        existingMutation,
+        execution,
+        repairRequiredErrorCode: `${options.errorPrefix}_repair_required`,
+        reconcileExistingMutation: (mutation) => reconcilePendingAdminMutation({
+          state: operation.state,
+          mutation,
+          provider: execution.provider,
+          nowUnixMs: execution.nowUnixMs,
+          paths: execution.paths,
+          rpc: execution.rpc,
+          walletName: execution.walletName,
+          context: execution.readContext,
+        }),
+        createReuseResult: ({ mutation, resolution, fees }) => ({
           kind: options.kind,
-          domainName: normalizedDomainName,
+          domainName: operation.normalizedDomainName,
+          txid: mutation.attemptedTxid ?? "unknown",
+          status: resolution,
+          reusedExisting: true,
+          recipientScriptPubKeyHex: operation.payload.recipientScriptPubKeyHex ?? null,
+          endpointValueHex: operation.payload.endpointValueHex ?? null,
+          resolved: {
+            sender: operation.resolvedSender,
+            target: operation.payload.resolvedTarget,
+            effect: operation.payload.resolvedEffect,
+          },
+          fees,
+        }),
+      });
+    },
+    confirm({ operation }) {
+      return options.confirm(operation);
+    },
+    createDraftMutation({ operation, existingMutation, execution, intentFingerprintHex }) {
+      return {
+        mutation: createDraftMutation({
+          kind: options.kind,
+          domainName: operation.normalizedDomainName,
           sender: operation.sender,
           intentFingerprintHex,
-          nowUnixMs,
-          feeSelection,
-          recipientScriptPubKeyHex: payload.recipientScriptPubKeyHex ?? null,
-          endpointValueHex: payload.endpointValueHex ?? null,
+          nowUnixMs: execution.nowUnixMs,
+          feeSelection: execution.feeSelection,
+          recipientScriptPubKeyHex: operation.payload.recipientScriptPubKeyHex ?? null,
+          endpointValueHex: operation.payload.endpointValueHex ?? null,
           existing: existingMutation,
         }),
-      );
-      nextState = await saveUpdatedMutationState({
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
-      });
-
+        prepared: null,
+      };
+    },
+    async build({ operation, state, execution, replacementFixedInputs }) {
       const adminPlan = buildPlanForDomainAdminOperation({
-        state: nextState,
-        allUtxos: await rpc.listUnspent(walletName, 1),
+        state,
+        allUtxos: await execution.rpc.listUnspent(execution.walletName, 1),
         sender: operation.sender,
-        opReturnData: payload.opReturnData,
+        opReturnData: operation.payload.opReturnData,
         errorPrefix: options.errorPrefix,
       });
-      const built = await buildTransaction({
-        rpc,
-        walletName,
-        state: nextState,
+      return buildTransaction({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        state,
         plan: {
           ...adminPlan,
           fixedInputs: mergeFixedWalletInputs(adminPlan.fixedInputs, replacementFixedInputs),
         },
-        feeRateSatVb: feeSelection.feeRateSatVb,
+        feeRateSatVb: execution.feeSelection.feeRateSatVb,
       });
-
-      const final = await sendBuiltTransaction({
-        rpc,
-        walletName,
-        snapshotHeight: readContext.snapshot?.tip?.height ?? null,
+    },
+    publish({ state, execution, built, mutation }) {
+      return publishWalletMutation({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        snapshotHeight: execution.readContext.snapshot?.tip?.height ?? null,
         built,
-        mutation: nextState.pendingMutations!.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)!,
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
+        mutation,
+        state,
+        provider: execution.provider,
+        nowUnixMs: execution.nowUnixMs,
+        paths: execution.paths,
         errorPrefix: options.errorPrefix,
       });
-
+    },
+    createResult({ operation, mutation, built, status, reusedExisting, fees }) {
       return {
         kind: options.kind,
-        domainName: normalizedDomainName,
-        txid: final.mutation.attemptedTxid ?? built.txid,
-        status: "live",
-        reusedExisting: false,
-        recipientScriptPubKeyHex: payload.recipientScriptPubKeyHex ?? null,
-        endpointValueHex: payload.endpointValueHex ?? null,
+        domainName: operation.normalizedDomainName,
+        txid: mutation.attemptedTxid ?? built?.txid ?? "unknown",
+        status: status as DomainAdminMutationResult["status"],
+        reusedExisting,
+        recipientScriptPubKeyHex: operation.payload.recipientScriptPubKeyHex ?? null,
+        endpointValueHex: operation.payload.endpointValueHex ?? null,
         resolved: {
-          sender: resolvedSender,
-          target: payload.resolvedTarget,
-          effect: payload.resolvedEffect,
+          sender: operation.resolvedSender,
+          target: operation.payload.resolvedTarget,
+          effect: operation.payload.resolvedEffect,
         },
-        fees: createBuiltWalletMutationFeeSummary({
-          selection: feeSelection,
-          built,
-        }),
+        fees,
       };
-    } finally {
-      await readContext.close();
-      await miningPreemption.release();
-    }
-  } finally {
-    await controlLock.release();
-  }
+    },
+  });
+
+  return execution.result;
 }
 
 export async function setDomainEndpoint(

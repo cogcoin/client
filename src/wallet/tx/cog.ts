@@ -9,11 +9,9 @@ import type {
   RpcListUnspentEntry,
   RpcTransaction,
 } from "../../bitcoind/types.js";
-import { acquireFileLock } from "../fs/lock.js";
 import type { WalletPrompter } from "../lifecycle.js";
-import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../runtime.js";
+import { type WalletRuntimePaths } from "../runtime.js";
 import {
-  createDefaultWalletSecretProvider,
   type WalletSecretProvider,
 } from "../state/provider.js";
 import type {
@@ -31,19 +29,13 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
-  createBuiltWalletMutationFeeSummary,
   createFundingMutationSender,
   createWalletMutationFeeMetadata,
   formatCogAmount,
   getDecodedInputScriptPubKeyHex,
   isLocalWalletScript,
-  isAlreadyAcceptedError,
-  isBroadcastUnknownError,
   mergeFixedWalletInputs,
   outpointKey,
-  pauseMiningForWalletMutation,
-  resolvePendingMutationReuseDecision,
-  resolveWalletMutationFeeSelection,
   saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
@@ -55,10 +47,15 @@ import {
 } from "./common.js";
 import { confirmTypedAcknowledgement, confirmYesNo } from "./confirm.js";
 import {
+  executeWalletMutationOperation,
+  publishWalletMutation,
+  resolveExistingWalletMutation,
+} from "./executor.js";
+import {
   getCanonicalIdentitySelector,
   resolveIdentityBySelector,
 } from "./identity-selector.js";
-import { findPendingMutationByIntent, upsertPendingMutation } from "./journal.js";
+import { upsertPendingMutation } from "./journal.js";
 import { normalizeBtcTarget } from "./targets.js";
 
 const MAX_LOCK_DURATION_BLOCKS = 262_800;
@@ -85,6 +82,36 @@ interface CogMutationPlan {
 }
 
 type BuiltCogMutationTransaction = BuiltWalletMutationTransaction;
+
+interface SendCogOperation {
+  state: WalletStateV1;
+  sender: MutationSender;
+  resolved: CogResolvedSummary;
+  amountCogtoshi: bigint;
+  recipient: ReturnType<typeof normalizeBtcTarget>;
+}
+
+interface LockCogMutationOperation {
+  state: WalletStateV1;
+  sender: MutationSender;
+  resolved: CogResolvedSummary;
+  amountCogtoshi: bigint;
+  normalizedRecipientDomainName: string;
+  recipientDomain: NonNullable<ReturnType<typeof lookupDomain>>;
+  timeoutHeight: number;
+  conditionHex: string;
+}
+
+interface ClaimCogMutationOperation {
+  state: WalletStateV1;
+  sender: MutationSender;
+  resolved: CogResolvedSummary;
+  amountCogtoshi: bigint;
+  recipientDomainName: string | null;
+  lockId: number;
+  preimageHex: string;
+  errorPrefix: string;
+}
 
 export type CogResolvedClaimPath = "recipient-claim" | "timeout-reclaim";
 
@@ -725,313 +752,165 @@ async function confirmClaim(
   });
 }
 
-async function sendBuiltTransaction(options: {
-  rpc: WalletCogRpcClient;
-  walletName: string;
-  snapshotHeight: number | null;
-  built: BuiltCogMutationTransaction;
-  mutation: PendingMutationRecord;
-  state: WalletStateV1;
-  provider: WalletSecretProvider;
-  nowUnixMs: number;
-  paths: WalletRuntimePaths;
-  errorPrefix: string;
-}): Promise<{
-  state: WalletStateV1;
-  mutation: PendingMutationRecord;
-}> {
-  let nextState = options.state;
-  const broadcasting = updateMutationRecord(options.mutation, "broadcasting", options.nowUnixMs, {
-    attemptedTxid: options.built.txid,
-    attemptedWtxid: options.built.wtxid,
-    temporaryBuilderLockedOutpoints: options.built.temporaryBuilderLockedOutpoints,
-  });
-  nextState = {
-    ...upsertPendingMutation(nextState, broadcasting),
-    stateRevision: nextState.stateRevision + 1,
-    lastWrittenAtUnixMs: options.nowUnixMs,
-  };
-  await saveWalletStatePreservingUnlock({
-    state: nextState,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-
-  if (options.snapshotHeight !== null && options.snapshotHeight !== (await options.rpc.getBlockchainInfo()).blocks) {
-    await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.built.temporaryBuilderLockedOutpoints);
-    throw new Error(`${options.errorPrefix}_tip_mismatch`);
-  }
-
-  try {
-    await options.rpc.sendRawTransaction(options.built.rawHex);
-  } catch (error) {
-    if (!isAlreadyAcceptedError(error)) {
-      if (isBroadcastUnknownError(error)) {
-        const unknown = updateMutationRecord(broadcasting, "broadcast-unknown", options.nowUnixMs, {
-          attemptedTxid: options.built.txid,
-          attemptedWtxid: options.built.wtxid,
-          temporaryBuilderLockedOutpoints: options.built.temporaryBuilderLockedOutpoints,
-        });
-        nextState = {
-          ...upsertPendingMutation(nextState, unknown),
-          stateRevision: nextState.stateRevision + 1,
-          lastWrittenAtUnixMs: options.nowUnixMs,
-        };
-        await saveWalletStatePreservingUnlock({
-          state: nextState,
-          provider: options.provider,
-          nowUnixMs: options.nowUnixMs,
-          paths: options.paths,
-        });
-        throw new Error(`${options.errorPrefix}_broadcast_unknown`);
-      }
-
-      await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.built.temporaryBuilderLockedOutpoints);
-      const canceled = updateMutationRecord(broadcasting, "canceled", options.nowUnixMs, {
-        attemptedTxid: options.built.txid,
-        attemptedWtxid: options.built.wtxid,
-        temporaryBuilderLockedOutpoints: [],
-      });
-      nextState = {
-        ...upsertPendingMutation(nextState, canceled),
-        stateRevision: nextState.stateRevision + 1,
-        lastWrittenAtUnixMs: options.nowUnixMs,
-      };
-      await saveWalletStatePreservingUnlock({
-        state: nextState,
-        provider: options.provider,
-        nowUnixMs: options.nowUnixMs,
-        paths: options.paths,
-      });
-      throw error;
-    }
-  }
-
-  await unlockTemporaryBuilderLocks(options.rpc, options.walletName, options.built.temporaryBuilderLockedOutpoints);
-  const live = updateMutationRecord(broadcasting, "live", options.nowUnixMs, {
-    attemptedTxid: options.built.txid,
-    attemptedWtxid: options.built.wtxid,
-    temporaryBuilderLockedOutpoints: [],
-  });
-  nextState = {
-    ...upsertPendingMutation(nextState, live),
-    stateRevision: nextState.stateRevision + 1,
-    lastWrittenAtUnixMs: options.nowUnixMs,
-  };
-  await saveWalletStatePreservingUnlock({
-    state: nextState,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-  return { state: nextState, mutation: live };
-}
-
 export async function sendCog(options: SendCogOptions): Promise<CogMutationResult> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: "wallet-send",
-    walletRootId: null,
-  });
   const amountCogtoshi = normalizePositiveAmount(options.amountCogtoshi, "wallet_send_invalid_amount");
   const recipient = normalizeBtcTarget(options.target);
-
-  try {
-    const miningPreemption = await pauseMiningForWalletMutation({
-      paths,
-      reason: "wallet-send",
-    });
-    const readContext = await (options.openReadContext ?? openWalletReadContext)({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      secretProvider: provider,
-      walletControlLockHeld: true,
-      paths,
-    });
-
-    try {
+  const execution = await executeWalletMutationOperation<
+    SendCogOperation,
+    WalletCogRpcClient,
+    null,
+    BuiltCogMutationTransaction,
+    CogMutationResult
+  >({
+    ...options,
+    controlLockPurpose: "wallet-send",
+    preemptionReason: "wallet-send",
+    resolveOperation(readContext) {
       const operation = resolveIdentitySender(readContext, "wallet_send", amountCogtoshi, options.fromIdentity);
       if (operation.sender.scriptPubKeyHex === recipient.scriptPubKeyHex) {
         throw new Error("wallet_send_self_transfer");
       }
-
-      const intentFingerprintHex = createIntentFingerprint([
+      return {
+        ...operation,
+        amountCogtoshi,
+        recipient,
+      };
+    },
+    createIntentFingerprint(operation) {
+      return createIntentFingerprint([
         "send",
         operation.state.walletRootId,
         operation.sender.scriptPubKeyHex,
-        recipient.scriptPubKeyHex,
-        amountCogtoshi,
+        operation.recipient.scriptPubKeyHex,
+        operation.amountCogtoshi,
       ]);
-      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-        dataDir: options.dataDir,
-        chain: "main",
-        startHeight: 0,
-        walletRootId: operation.state.walletRootId,
-      });
-      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-      const walletName = operation.state.managedCoreWallet.walletName;
-      const feeSelection = await resolveWalletMutationFeeSelection({
-        rpc,
-        feeRateSatVb: options.feeRateSatVb ?? null,
-      });
-      const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
-      let workingState = operation.state;
-      let replacementFixedInputs: FixedWalletInput[] | null = null;
-
-      if (existingMutation !== null) {
-        const reconciled = await reconcilePendingCogMutation({
-          state: operation.state,
-          mutation: existingMutation,
-          provider,
-          nowUnixMs,
-          paths,
-          rpc,
-          walletName,
-          context: readContext,
-        });
-        workingState = reconciled.state;
-
-        if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          const reuse = await resolvePendingMutationReuseDecision({
-            rpc,
-            walletName,
-            mutation: reconciled.mutation,
-            nextFeeSelection: feeSelection,
-          });
-
-          if (reuse.reuseExisting) {
-            return {
-              kind: "send",
-              txid: reconciled.mutation.attemptedTxid ?? "unknown",
-              status: reconciled.resolution,
-              reusedExisting: true,
-              amountCogtoshi,
-              recipientScriptPubKeyHex: recipient.scriptPubKeyHex,
-              resolved: operation.resolved,
-              fees: reuse.fees,
-            };
-          }
-
-          replacementFixedInputs = reuse.replacementFixedInputs;
-        }
-
-        if (reconciled.resolution === "repair-required") {
-          throw new Error("wallet_send_repair_required");
-        }
+    },
+    async resolveExistingMutation({ operation, existingMutation, execution }) {
+      if (existingMutation === null) {
+        return { state: operation.state, replacementFixedInputs: null, result: null };
       }
-
-      await confirmSend(options.prompter, operation.resolved, options.target, recipient, amountCogtoshi, options.assumeYes);
-
-      let nextState = upsertPendingMutation(
-        workingState,
-        createDraftMutation({
+      return resolveExistingWalletMutation({
+        existingMutation,
+        execution,
+        repairRequiredErrorCode: "wallet_send_repair_required",
+        reconcileExistingMutation: (mutation) => reconcilePendingCogMutation({
+          state: operation.state,
+          mutation,
+          provider: execution.provider,
+          nowUnixMs: execution.nowUnixMs,
+          paths: execution.paths,
+          rpc: execution.rpc,
+          walletName: execution.walletName,
+          context: execution.readContext,
+        }),
+        createReuseResult: ({ mutation, resolution, fees }) => ({
+          kind: "send",
+          txid: mutation.attemptedTxid ?? "unknown",
+          status: resolution,
+          reusedExisting: true,
+          amountCogtoshi: operation.amountCogtoshi,
+          recipientScriptPubKeyHex: operation.recipient.scriptPubKeyHex,
+          resolved: operation.resolved,
+          fees,
+        }),
+      });
+    },
+    confirm({ operation }) {
+      return confirmSend(
+        options.prompter,
+        operation.resolved,
+        options.target,
+        operation.recipient,
+        operation.amountCogtoshi,
+        options.assumeYes,
+      );
+    },
+    createDraftMutation({ operation, existingMutation, execution, intentFingerprintHex }) {
+      return {
+        mutation: createDraftMutation({
           kind: "send",
           sender: operation.sender,
-          recipientScriptPubKeyHex: recipient.scriptPubKeyHex,
-          amountCogtoshi,
+          recipientScriptPubKeyHex: operation.recipient.scriptPubKeyHex,
+          amountCogtoshi: operation.amountCogtoshi,
           intentFingerprintHex,
-          nowUnixMs,
-          feeSelection,
+          nowUnixMs: execution.nowUnixMs,
+          feeSelection: execution.feeSelection,
           existing: existingMutation,
         }),
-      );
-      nextState = {
-        ...nextState,
-        stateRevision: nextState.stateRevision + 1,
-        lastWrittenAtUnixMs: nowUnixMs,
+        prepared: null,
       };
-      await saveWalletStatePreservingUnlock({
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
-      });
-
+    },
+    async build({ operation, state, execution, replacementFixedInputs }) {
       const sendPlan = buildPlanForCogOperation({
-        state: nextState,
-        allUtxos: await rpc.listUnspent(walletName, 1),
+        state,
+        allUtxos: await execution.rpc.listUnspent(execution.walletName, 1),
         sender: operation.sender,
-        opReturnData: serializeCogTransfer(amountCogtoshi, Buffer.from(recipient.scriptPubKeyHex, "hex")).opReturnData,
+        opReturnData: serializeCogTransfer(
+          operation.amountCogtoshi,
+          Buffer.from(operation.recipient.scriptPubKeyHex, "hex"),
+        ).opReturnData,
         errorPrefix: "wallet_send",
       });
-      const built = await buildTransaction({
-        rpc,
-        walletName,
-        state: nextState,
+      return buildTransaction({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        state,
         plan: {
           ...sendPlan,
           fixedInputs: mergeFixedWalletInputs(sendPlan.fixedInputs, replacementFixedInputs),
         },
-        feeRateSatVb: feeSelection.feeRateSatVb,
+        feeRateSatVb: execution.feeSelection.feeRateSatVb,
       });
-
-      const final = await sendBuiltTransaction({
-        rpc,
-        walletName,
-        snapshotHeight: readContext.snapshot?.tip?.height ?? null,
+    },
+    publish({ state, execution, built, mutation }) {
+      return publishWalletMutation({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        snapshotHeight: execution.readContext.snapshot?.tip?.height ?? null,
         built,
-        mutation: nextState.pendingMutations!.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)!,
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
+        mutation,
+        state,
+        provider: execution.provider,
+        nowUnixMs: execution.nowUnixMs,
+        paths: execution.paths,
         errorPrefix: "wallet_send",
       });
-
+    },
+    createResult({ operation, mutation, built, status, reusedExisting, fees }) {
       return {
         kind: "send",
-        txid: final.mutation.attemptedTxid ?? built.txid,
-        status: "live",
-        reusedExisting: false,
-        amountCogtoshi,
-        recipientScriptPubKeyHex: recipient.scriptPubKeyHex,
+        txid: mutation.attemptedTxid ?? built?.txid ?? "unknown",
+        status: status as CogMutationResult["status"],
+        reusedExisting,
+        amountCogtoshi: operation.amountCogtoshi,
+        recipientScriptPubKeyHex: operation.recipient.scriptPubKeyHex,
         resolved: operation.resolved,
-        fees: createBuiltWalletMutationFeeSummary({
-          selection: feeSelection,
-          built,
-        }),
+        fees,
       };
-    } finally {
-      await readContext.close();
-      await miningPreemption.release();
-    }
-  } finally {
-    await controlLock.release();
-  }
+    },
+  });
+
+  return execution.result;
 }
 
 export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<CogMutationResult> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: "wallet-lock-cog",
-    walletRootId: null,
-  });
   const amountCogtoshi = normalizePositiveAmount(options.amountCogtoshi, "wallet_lock_invalid_amount");
   const normalizedRecipientDomainName = normalizeDomainName(options.recipientDomainName);
   const condition = parseHex32(options.conditionHex, "wallet_lock_invalid_condition");
   if (condition.equals(Buffer.alloc(32))) {
     throw new Error("wallet_lock_invalid_condition");
   }
-
-  try {
-    const miningPreemption = await pauseMiningForWalletMutation({
-      paths,
-      reason: "wallet-cog-lock",
-    });
-    const readContext = await (options.openReadContext ?? openWalletReadContext)({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      secretProvider: provider,
-      walletControlLockHeld: true,
-      paths,
-    });
-
-    try {
+  const execution = await executeWalletMutationOperation<
+    LockCogMutationOperation,
+    WalletCogRpcClient,
+    null,
+    BuiltCogMutationTransaction,
+    CogMutationResult
+  >({
+    ...options,
+    controlLockPurpose: "wallet-lock-cog",
+    preemptionReason: "wallet-cog-lock",
+    resolveOperation(readContext) {
       assertWalletMutationContextReady(readContext, "wallet_lock");
       const currentHeight = readContext.snapshot.state.history.currentHeight;
       if (currentHeight === null) {
@@ -1054,351 +933,280 @@ export async function lockCogToDomain(options: LockCogToDomainOptions): Promise<
         throw new Error("wallet_lock_id_space_exhausted");
       }
 
-      const operation = resolveIdentitySender(readContext, "wallet_lock", amountCogtoshi, options.fromIdentity);
-      const intentFingerprintHex = createIntentFingerprint([
+      return {
+        ...resolveIdentitySender(readContext, "wallet_lock", amountCogtoshi, options.fromIdentity),
+        amountCogtoshi,
+        normalizedRecipientDomainName,
+        recipientDomain,
+        timeoutHeight,
+        conditionHex: Buffer.from(condition).toString("hex"),
+      };
+    },
+    createIntentFingerprint(operation) {
+      return createIntentFingerprint([
         "lock",
         operation.state.walletRootId,
         operation.sender.scriptPubKeyHex,
-        normalizedRecipientDomainName,
-        amountCogtoshi,
-        timeoutHeight,
-        Buffer.from(condition).toString("hex"),
+        operation.normalizedRecipientDomainName,
+        operation.amountCogtoshi,
+        operation.timeoutHeight,
+        operation.conditionHex,
       ]);
-      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-        dataDir: options.dataDir,
-        chain: "main",
-        startHeight: 0,
-        walletRootId: operation.state.walletRootId,
-      });
-      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-      const walletName = operation.state.managedCoreWallet.walletName;
-      const feeSelection = await resolveWalletMutationFeeSelection({
-        rpc,
-        feeRateSatVb: options.feeRateSatVb ?? null,
-      });
-      const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
-      let workingState = operation.state;
-      let replacementFixedInputs: FixedWalletInput[] | null = null;
-
-      if (existingMutation !== null) {
-        const reconciled = await reconcilePendingCogMutation({
-          state: operation.state,
-          mutation: existingMutation,
-          provider,
-          nowUnixMs,
-          paths,
-          rpc,
-          walletName,
-          context: readContext,
-        });
-        workingState = reconciled.state;
-
-        if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          const reuse = await resolvePendingMutationReuseDecision({
-            rpc,
-            walletName,
-            mutation: reconciled.mutation,
-            nextFeeSelection: feeSelection,
-          });
-
-          if (reuse.reuseExisting) {
-            return {
-              kind: "lock",
-              txid: reconciled.mutation.attemptedTxid ?? "unknown",
-              status: reconciled.resolution,
-              reusedExisting: true,
-              amountCogtoshi,
-              recipientDomainName: normalizedRecipientDomainName,
-              resolved: operation.resolved,
-              fees: reuse.fees,
-            };
-          }
-
-          replacementFixedInputs = reuse.replacementFixedInputs;
-        }
-
-        if (reconciled.resolution === "repair-required") {
-          throw new Error("wallet_lock_repair_required");
-        }
+    },
+    async resolveExistingMutation({ operation, existingMutation, execution }) {
+      if (existingMutation === null) {
+        return { state: operation.state, replacementFixedInputs: null, result: null };
       }
-
-      await confirmLock(
+      return resolveExistingWalletMutation({
+        existingMutation,
+        execution,
+        repairRequiredErrorCode: "wallet_lock_repair_required",
+        reconcileExistingMutation: (mutation) => reconcilePendingCogMutation({
+          state: operation.state,
+          mutation,
+          provider: execution.provider,
+          nowUnixMs: execution.nowUnixMs,
+          paths: execution.paths,
+          rpc: execution.rpc,
+          walletName: execution.walletName,
+          context: execution.readContext,
+        }),
+        createReuseResult: ({ mutation, resolution, fees }) => ({
+          kind: "lock",
+          txid: mutation.attemptedTxid ?? "unknown",
+          status: resolution,
+          reusedExisting: true,
+          amountCogtoshi: operation.amountCogtoshi,
+          recipientDomainName: operation.normalizedRecipientDomainName,
+          resolved: operation.resolved,
+          fees,
+        }),
+      });
+    },
+    confirm({ operation }) {
+      return confirmLock(
         options.prompter,
         operation.resolved,
-        amountCogtoshi,
-        normalizedRecipientDomainName,
-        timeoutHeight,
+        operation.amountCogtoshi,
+        operation.normalizedRecipientDomainName,
+        operation.timeoutHeight,
         options.assumeYes,
       );
-
-      let nextState = upsertPendingMutation(
-        workingState,
-        createDraftMutation({
+    },
+    createDraftMutation({ operation, existingMutation, execution, intentFingerprintHex }) {
+      return {
+        mutation: createDraftMutation({
           kind: "lock",
           sender: operation.sender,
-          amountCogtoshi,
-          recipientDomainName: normalizedRecipientDomainName,
-          timeoutHeight,
-          conditionHex: Buffer.from(condition).toString("hex"),
+          amountCogtoshi: operation.amountCogtoshi,
+          recipientDomainName: operation.normalizedRecipientDomainName,
+          timeoutHeight: operation.timeoutHeight,
+          conditionHex: operation.conditionHex,
           intentFingerprintHex,
-          nowUnixMs,
-          feeSelection,
+          nowUnixMs: execution.nowUnixMs,
+          feeSelection: execution.feeSelection,
           existing: existingMutation,
         }),
-      );
-      nextState = {
-        ...nextState,
-        stateRevision: nextState.stateRevision + 1,
-        lastWrittenAtUnixMs: nowUnixMs,
+        prepared: null,
       };
-      await saveWalletStatePreservingUnlock({
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
-      });
-
+    },
+    async build({ operation, state, execution, replacementFixedInputs }) {
       const lockPlan = buildPlanForCogOperation({
-        state: nextState,
-        allUtxos: await rpc.listUnspent(walletName, 1),
+        state,
+        allUtxos: await execution.rpc.listUnspent(execution.walletName, 1),
         sender: operation.sender,
         opReturnData: serializeCogLock(
-          amountCogtoshi,
-          timeoutHeight,
-          recipientDomain.domainId,
-          condition,
+          operation.amountCogtoshi,
+          operation.timeoutHeight,
+          operation.recipientDomain.domainId,
+          Buffer.from(operation.conditionHex, "hex"),
         ).opReturnData,
         errorPrefix: "wallet_lock",
       });
-      const built = await buildTransaction({
-        rpc,
-        walletName,
-        state: nextState,
+      return buildTransaction({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        state,
         plan: {
           ...lockPlan,
           fixedInputs: mergeFixedWalletInputs(lockPlan.fixedInputs, replacementFixedInputs),
         },
-        feeRateSatVb: feeSelection.feeRateSatVb,
+        feeRateSatVb: execution.feeSelection.feeRateSatVb,
       });
-
-      const final = await sendBuiltTransaction({
-        rpc,
-        walletName,
-        snapshotHeight: readContext.snapshot?.tip?.height ?? null,
+    },
+    publish({ state, execution, built, mutation }) {
+      return publishWalletMutation({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        snapshotHeight: execution.readContext.snapshot?.tip?.height ?? null,
         built,
-        mutation: nextState.pendingMutations!.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)!,
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
+        mutation,
+        state,
+        provider: execution.provider,
+        nowUnixMs: execution.nowUnixMs,
+        paths: execution.paths,
         errorPrefix: "wallet_lock",
       });
-
+    },
+    createResult({ operation, mutation, built, status, reusedExisting, fees }) {
       return {
         kind: "lock",
-        txid: final.mutation.attemptedTxid ?? built.txid,
-        status: "live",
-        reusedExisting: false,
-        amountCogtoshi,
-        recipientDomainName: normalizedRecipientDomainName,
+        txid: mutation.attemptedTxid ?? built?.txid ?? "unknown",
+        status: status as CogMutationResult["status"],
+        reusedExisting,
+        amountCogtoshi: operation.amountCogtoshi,
+        recipientDomainName: operation.normalizedRecipientDomainName,
         resolved: operation.resolved,
-        fees: createBuiltWalletMutationFeeSummary({
-          selection: feeSelection,
-          built,
-        }),
+        fees,
       };
-    } finally {
-      await readContext.close();
-      await miningPreemption.release();
-    }
-  } finally {
-    await controlLock.release();
-  }
+    },
+  });
+
+  return execution.result;
 }
 
 async function runClaimLikeMutation(
   options: ClaimCogLockOptions,
   reclaim: boolean,
 ): Promise<CogMutationResult> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: reclaim ? "wallet-reclaim" : "wallet-claim",
-    walletRootId: null,
-  });
   const preimageHex = reclaim ? ZERO_PREIMAGE_HEX : options.preimageHex;
-
-  try {
-    const miningPreemption = await pauseMiningForWalletMutation({
-      paths,
-      reason: reclaim ? "wallet-reclaim" : "wallet-claim",
-    });
-    const readContext = await (options.openReadContext ?? openWalletReadContext)({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      secretProvider: provider,
-      walletControlLockHeld: true,
-      paths,
-    });
-
-    try {
-      const operation = resolveClaimSender(readContext, options.lockId, preimageHex, reclaim);
-      const errorPrefix = reclaim ? "wallet_reclaim" : "wallet_claim";
-      const intentFingerprintHex = createIntentFingerprint([
+  const errorPrefix = reclaim ? "wallet_reclaim" : "wallet_claim";
+  const execution = await executeWalletMutationOperation<
+    ClaimCogMutationOperation,
+    WalletCogRpcClient,
+    null,
+    BuiltCogMutationTransaction,
+    CogMutationResult
+  >({
+    ...options,
+    controlLockPurpose: reclaim ? "wallet-reclaim" : "wallet-claim",
+    preemptionReason: reclaim ? "wallet-reclaim" : "wallet-claim",
+    resolveOperation(readContext) {
+      return {
+        ...resolveClaimSender(readContext, options.lockId, preimageHex, reclaim),
+        preimageHex,
+        errorPrefix,
+      };
+    },
+    createIntentFingerprint(operation) {
+      return createIntentFingerprint([
         reclaim ? "reclaim" : "claim",
         operation.state.walletRootId,
         operation.sender.scriptPubKeyHex,
         operation.lockId,
-        preimageHex,
+        operation.preimageHex,
       ]);
-      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-        dataDir: options.dataDir,
-        chain: "main",
-        startHeight: 0,
-        walletRootId: operation.state.walletRootId,
-      });
-      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-      const walletName = operation.state.managedCoreWallet.walletName;
-      const feeSelection = await resolveWalletMutationFeeSelection({
-        rpc,
-        feeRateSatVb: options.feeRateSatVb ?? null,
-      });
-      const existingMutation = findPendingMutationByIntent(operation.state, intentFingerprintHex);
-      let workingState = operation.state;
-      let replacementFixedInputs: FixedWalletInput[] | null = null;
-
-      if (existingMutation !== null) {
-        const reconciled = await reconcilePendingCogMutation({
-          state: operation.state,
-          mutation: existingMutation,
-          provider,
-          nowUnixMs,
-          paths,
-          rpc,
-          walletName,
-          context: readContext,
-        });
-        workingState = reconciled.state;
-
-        if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          const reuse = await resolvePendingMutationReuseDecision({
-            rpc,
-            walletName,
-            mutation: reconciled.mutation,
-            nextFeeSelection: feeSelection,
-          });
-
-          if (reuse.reuseExisting) {
-            return {
-              kind: "claim",
-              txid: reconciled.mutation.attemptedTxid ?? "unknown",
-              status: reconciled.resolution,
-              reusedExisting: true,
-              amountCogtoshi: operation.amountCogtoshi,
-              recipientDomainName: operation.recipientDomainName,
-              lockId: options.lockId,
-              resolved: operation.resolved,
-              fees: reuse.fees,
-            };
-          }
-
-          replacementFixedInputs = reuse.replacementFixedInputs;
-        }
-
-        if (reconciled.resolution === "repair-required") {
-          throw new Error(`${errorPrefix}_repair_required`);
-        }
+    },
+    async resolveExistingMutation({ operation, existingMutation, execution }) {
+      if (existingMutation === null) {
+        return { state: operation.state, replacementFixedInputs: null, result: null };
       }
-
-      await confirmClaim(options.prompter, {
+      return resolveExistingWalletMutation({
+        existingMutation,
+        execution,
+        repairRequiredErrorCode: `${errorPrefix}_repair_required`,
+        reconcileExistingMutation: (mutation) => reconcilePendingCogMutation({
+          state: operation.state,
+          mutation,
+          provider: execution.provider,
+          nowUnixMs: execution.nowUnixMs,
+          paths: execution.paths,
+          rpc: execution.rpc,
+          walletName: execution.walletName,
+          context: execution.readContext,
+        }),
+        createReuseResult: ({ mutation, resolution, fees }) => ({
+          kind: "claim",
+          txid: mutation.attemptedTxid ?? "unknown",
+          status: resolution,
+          reusedExisting: true,
+          amountCogtoshi: operation.amountCogtoshi,
+          recipientDomainName: operation.recipientDomainName,
+          lockId: operation.lockId,
+          resolved: operation.resolved,
+          fees,
+        }),
+      });
+    },
+    confirm({ operation }) {
+      return confirmClaim(options.prompter, {
         kind: reclaim ? "reclaim" : "claim",
-        lockId: options.lockId,
+        lockId: operation.lockId,
         recipientDomainName: operation.recipientDomainName,
         amountCogtoshi: operation.amountCogtoshi,
         resolved: operation.resolved,
         assumeYes: options.assumeYes,
       });
-
-      let nextState = upsertPendingMutation(
-        workingState,
-        createDraftMutation({
+    },
+    createDraftMutation({ operation, existingMutation, execution, intentFingerprintHex }) {
+      return {
+        mutation: createDraftMutation({
           kind: "claim",
           sender: operation.sender,
           amountCogtoshi: operation.amountCogtoshi,
           recipientDomainName: operation.recipientDomainName,
-          lockId: options.lockId,
-          preimageHex,
+          lockId: operation.lockId,
+          preimageHex: operation.preimageHex,
           intentFingerprintHex,
-          nowUnixMs,
-          feeSelection,
+          nowUnixMs: execution.nowUnixMs,
+          feeSelection: execution.feeSelection,
           existing: existingMutation,
         }),
-      );
-      nextState = {
-        ...nextState,
-        stateRevision: nextState.stateRevision + 1,
-        lastWrittenAtUnixMs: nowUnixMs,
+        prepared: null,
       };
-      await saveWalletStatePreservingUnlock({
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
-      });
-
+    },
+    async build({ operation, state, execution, replacementFixedInputs }) {
       const claimPlan = buildPlanForCogOperation({
-        state: nextState,
-        allUtxos: await rpc.listUnspent(walletName, 1),
+        state,
+        allUtxos: await execution.rpc.listUnspent(execution.walletName, 1),
         sender: operation.sender,
-        opReturnData: serializeCogClaim(options.lockId, Buffer.from(preimageHex, "hex")).opReturnData,
+        opReturnData: serializeCogClaim(
+          operation.lockId,
+          Buffer.from(operation.preimageHex, "hex"),
+        ).opReturnData,
         errorPrefix,
       });
-      const built = await buildTransaction({
-        rpc,
-        walletName,
-        state: nextState,
+      return buildTransaction({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        state,
         plan: {
           ...claimPlan,
           fixedInputs: mergeFixedWalletInputs(claimPlan.fixedInputs, replacementFixedInputs),
         },
-        feeRateSatVb: feeSelection.feeRateSatVb,
+        feeRateSatVb: execution.feeSelection.feeRateSatVb,
       });
-
-      const final = await sendBuiltTransaction({
-        rpc,
-        walletName,
-        snapshotHeight: readContext.snapshot?.tip?.height ?? null,
+    },
+    publish({ state, execution, built, mutation }) {
+      return publishWalletMutation({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        snapshotHeight: execution.readContext.snapshot?.tip?.height ?? null,
         built,
-        mutation: nextState.pendingMutations!.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)!,
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
+        mutation,
+        state,
+        provider: execution.provider,
+        nowUnixMs: execution.nowUnixMs,
+        paths: execution.paths,
         errorPrefix,
       });
-
+    },
+    createResult({ operation, mutation, built, status, reusedExisting, fees }) {
       return {
         kind: "claim",
-        txid: final.mutation.attemptedTxid ?? built.txid,
-        status: "live",
-        reusedExisting: false,
+        txid: mutation.attemptedTxid ?? built?.txid ?? "unknown",
+        status: status as CogMutationResult["status"],
+        reusedExisting,
         amountCogtoshi: operation.amountCogtoshi,
         recipientDomainName: operation.recipientDomainName,
-        lockId: options.lockId,
+        lockId: operation.lockId,
         resolved: operation.resolved,
-        fees: createBuiltWalletMutationFeeSummary({
-          selection: feeSelection,
-          built,
-        }),
+        fees,
       };
-    } finally {
-      await readContext.close();
-      await miningPreemption.release();
-    }
-  } finally {
-    await controlLock.release();
-  }
+    },
+  });
+
+  return execution.result;
 }
 
 export async function claimCogLock(options: ClaimCogLockOptions): Promise<CogMutationResult> {

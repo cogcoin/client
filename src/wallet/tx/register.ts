@@ -14,11 +14,9 @@ import type {
   RpcWalletCreateFundedPsbtResult,
   RpcWalletProcessPsbtResult,
 } from "../../bitcoind/types.js";
-import { acquireFileLock } from "../fs/lock.js";
 import type { WalletPrompter } from "../lifecycle.js";
-import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../runtime.js";
+import { type WalletRuntimePaths } from "../runtime.js";
 import {
-  createDefaultWalletSecretProvider,
   type WalletSecretProvider,
 } from "../state/provider.js";
 import type {
@@ -35,19 +33,13 @@ import {
   assertFundingInputsAfterFixedPrefix,
   assertWalletMutationContextReady,
   buildWalletMutationTransactionWithReserveFallback,
-  createBuiltWalletMutationFeeSummary,
   createFundingMutationSender,
   createWalletMutationFeeMetadata,
   formatCogAmount,
   getDecodedInputScriptPubKeyHex,
   isLocalWalletScript,
-  isAlreadyAcceptedError,
-  isBroadcastUnknownError,
   mergeFixedWalletInputs,
   outpointKey,
-  pauseMiningForWalletMutation,
-  resolvePendingMutationReuseDecision,
-  resolveWalletMutationFeeSelection,
   saveWalletStatePreservingUnlock,
   unlockTemporaryBuilderLocks,
   updateMutationRecord,
@@ -59,10 +51,15 @@ import {
 } from "./common.js";
 import { confirmTypedAcknowledgement, confirmYesNo } from "./confirm.js";
 import {
+  executeWalletMutationOperation,
+  publishWalletMutation,
+  resolveExistingWalletMutation,
+} from "./executor.js";
+import {
   getCanonicalIdentitySelector,
   resolveIdentityBySelector,
 } from "./identity-selector.js";
-import { findPendingMutationByIntent, upsertPendingMutation } from "./journal.js";
+import { upsertPendingMutation } from "./journal.js";
 const SUBDOMAIN_REGISTRATION_FEE_COGTOSHI = 100n;
 
 interface WalletRegisterRpcClient extends WalletMutationRpcClient {
@@ -117,6 +114,15 @@ interface ResolvedRegisterSender {
   parentDomainName: string | null;
   sender: MutationSender;
   senderSelector: string;
+}
+
+interface RegisterMutationOperation {
+  state: WalletStateV1;
+  normalizedDomainName: string;
+  senderResolution: ResolvedRegisterSender;
+  rootPriceSats: bigint;
+  resolvedSummary: RegisterResolvedSummary;
+  genesis: Awaited<ReturnType<typeof loadBundledGenesisParameters>>;
 }
 
 export interface RegisterDomainResult {
@@ -827,111 +833,21 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
     throw new Error("wallet_register_requires_tty");
   }
 
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const nowUnixMs = options.nowUnixMs ?? Date.now();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.walletControlLockPath, {
-    purpose: "wallet-register",
-    walletRootId: null,
-  });
   const normalizedDomainName = normalizeDomainName(options.domainName);
-
-  try {
-    const miningPreemption = await pauseMiningForWalletMutation({
-      paths,
-      reason: "wallet-register",
-    });
-    const readContext = await (options.openReadContext ?? openWalletReadContext)({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      secretProvider: provider,
-      walletControlLockHeld: true,
-      paths,
-    });
-
-    try {
+  const execution = await executeWalletMutationOperation<
+    RegisterMutationOperation,
+    WalletRegisterRpcClient,
+    null,
+    BuiltRegisterTransaction,
+    RegisterDomainResult
+  >({
+    ...options,
+    controlLockPurpose: "wallet-register",
+    preemptionReason: "wallet-register",
+    async resolveOperation(readContext) {
       assertWalletMutationContextReady(readContext, "wallet_register");
       const state = readContext.localState.state!;
       const senderResolution = resolveRegisterSender(readContext, normalizedDomainName, options.fromIdentity);
-      const intentFingerprintHex = createRegisterIntentFingerprint({
-        walletRootId: state.walletRootId,
-        domainName: normalizedDomainName,
-        registerKind: senderResolution.registerKind,
-        senderScriptPubKeyHex: senderResolution.sender.scriptPubKeyHex,
-      });
-      const rootPriceSats = computeRootRegistrationPriceSats(normalizedDomainName);
-      const resolvedSummary = createRegisterResolvedSummary({
-        registerKind: senderResolution.registerKind,
-        parentDomainName: senderResolution.parentDomainName,
-        senderSelector: senderResolution.senderSelector,
-        sender: senderResolution.sender,
-        economicEffectKind: senderResolution.registerKind === "root" ? "treasury-payment" : "cog-burn",
-        economicEffectAmount: senderResolution.registerKind === "root" ? rootPriceSats : SUBDOMAIN_REGISTRATION_FEE_COGTOSHI,
-      });
-      const node = await (options.attachService ?? attachOrStartManagedBitcoindService)({
-        dataDir: options.dataDir,
-        chain: "main",
-        startHeight: 0,
-        walletRootId: state.walletRootId,
-      });
-      const rpc = (options.rpcFactory ?? createRpcClient)(node.rpc);
-      const walletName = state.managedCoreWallet.walletName;
-      const feeSelection = await resolveWalletMutationFeeSelection({
-        rpc,
-        feeRateSatVb: options.feeRateSatVb ?? null,
-      });
-      const existingMutation = findPendingMutationByIntent(state, intentFingerprintHex);
-      let workingState = state;
-      let replacementFixedInputs: FixedWalletInput[] | null = null;
-
-      if (existingMutation !== null) {
-        const reconciled = await reconcilePendingRegisterMutation({
-          state,
-          mutation: existingMutation,
-          provider,
-          nowUnixMs,
-          paths,
-          rpc,
-          walletName,
-          context: readContext,
-          sender: senderResolution.sender,
-        });
-        workingState = reconciled.state;
-
-        if (reconciled.resolution === "confirmed" || reconciled.resolution === "live") {
-          const reuse = await resolvePendingMutationReuseDecision({
-            rpc,
-            walletName,
-            mutation: reconciled.mutation,
-            nextFeeSelection: feeSelection,
-          });
-
-          if (reuse.reuseExisting) {
-            return {
-              domainName: normalizedDomainName,
-              registerKind: senderResolution.registerKind,
-              parentDomainName: senderResolution.parentDomainName,
-              senderSelector: senderResolution.senderSelector,
-              senderLocalIndex: senderResolution.sender.localIndex,
-              senderScriptPubKeyHex: senderResolution.sender.scriptPubKeyHex,
-              senderAddress: senderResolution.sender.address,
-              economicEffectKind: senderResolution.registerKind === "root" ? "treasury-payment" : "cog-burn",
-              economicEffectAmount: senderResolution.registerKind === "root" ? rootPriceSats : SUBDOMAIN_REGISTRATION_FEE_COGTOSHI,
-              resolved: resolvedSummary,
-              txid: reconciled.mutation.attemptedTxid ?? "unknown",
-              status: reconciled.resolution,
-              reusedExisting: true,
-              fees: reuse.fees,
-            };
-          }
-
-          replacementFixedInputs = reuse.replacementFixedInputs;
-        }
-
-        if (reconciled.resolution === "repair-required") {
-          throw new Error("wallet_register_repair_required");
-        }
-      }
 
       if (lookupDomain(readContext.snapshot!.state, normalizedDomainName) !== null) {
         throw new Error("wallet_register_domain_already_registered");
@@ -941,224 +857,197 @@ export async function registerDomain(options: RegisterDomainOptions): Promise<Re
         throw new Error("wallet_register_next_domain_id_exhausted");
       }
 
+      const rootPriceSats = computeRootRegistrationPriceSats(normalizedDomainName);
+      const resolvedSummary = createRegisterResolvedSummary({
+        registerKind: senderResolution.registerKind,
+        parentDomainName: senderResolution.parentDomainName,
+        senderSelector: senderResolution.senderSelector,
+        sender: senderResolution.sender,
+        economicEffectKind: senderResolution.registerKind === "root" ? "treasury-payment" : "cog-burn",
+        economicEffectAmount: senderResolution.registerKind === "root" ? rootPriceSats : SUBDOMAIN_REGISTRATION_FEE_COGTOSHI,
+      });
       const genesis = await (options.loadGenesisParameters ?? loadBundledGenesisParameters)();
-      const competingRootTxids = senderResolution.registerKind === "root"
-        ? await findCompetingRootRegistrationTxids(rpc, normalizedDomainName)
-        : [];
 
-      if (senderResolution.registerKind === "root") {
+      return {
+        state,
+        normalizedDomainName,
+        senderResolution,
+        rootPriceSats,
+        resolvedSummary,
+        genesis,
+      };
+    },
+    createIntentFingerprint(operation) {
+      return createRegisterIntentFingerprint({
+        walletRootId: operation.state.walletRootId,
+        domainName: operation.normalizedDomainName,
+        registerKind: operation.senderResolution.registerKind,
+        senderScriptPubKeyHex: operation.senderResolution.sender.scriptPubKeyHex,
+      });
+    },
+    async resolveExistingMutation({ operation, existingMutation, execution }) {
+      if (existingMutation === null) {
+        return { state: operation.state, replacementFixedInputs: null, result: null };
+      }
+
+      return resolveExistingWalletMutation({
+        existingMutation,
+        execution,
+        repairRequiredErrorCode: "wallet_register_repair_required",
+        reconcileExistingMutation: (mutation) => reconcilePendingRegisterMutation({
+          state: operation.state,
+          mutation,
+          provider: execution.provider,
+          nowUnixMs: execution.nowUnixMs,
+          paths: execution.paths,
+          rpc: execution.rpc,
+          walletName: execution.walletName,
+          context: execution.readContext,
+          sender: operation.senderResolution.sender,
+        }),
+        createReuseResult: ({ mutation, resolution, fees }) => ({
+          domainName: operation.normalizedDomainName,
+          registerKind: operation.senderResolution.registerKind,
+          parentDomainName: operation.senderResolution.parentDomainName,
+          senderSelector: operation.senderResolution.senderSelector,
+          senderLocalIndex: operation.senderResolution.sender.localIndex,
+          senderScriptPubKeyHex: operation.senderResolution.sender.scriptPubKeyHex,
+          senderAddress: operation.senderResolution.sender.address,
+          economicEffectKind: operation.senderResolution.registerKind === "root" ? "treasury-payment" : "cog-burn",
+          economicEffectAmount: operation.senderResolution.registerKind === "root"
+            ? operation.rootPriceSats
+            : SUBDOMAIN_REGISTRATION_FEE_COGTOSHI,
+          resolved: operation.resolvedSummary,
+          txid: mutation.attemptedTxid ?? "unknown",
+          status: resolution,
+          reusedExisting: true,
+          fees,
+        }),
+      });
+    },
+    async confirm({ operation, execution }) {
+      if (operation.senderResolution.registerKind === "root") {
+        const competingRootTxids = await findCompetingRootRegistrationTxids(
+          execution.rpc,
+          operation.normalizedDomainName,
+        );
         if (competingRootTxids.length > 0 && !options.forceRace) {
           throw new Error("wallet_register_root_race_detected");
         }
 
         await confirmRootRegistration(
           options.prompter,
-          normalizedDomainName,
-          resolvedSummary,
+          operation.normalizedDomainName,
+          operation.resolvedSummary,
           competingRootTxids.length > 0,
           options.assumeYes,
         );
-      } else {
-        await confirmSubdomainRegistration(
-          options.prompter,
-          normalizedDomainName,
-          resolvedSummary,
-          options.assumeYes,
-        );
+        return;
       }
 
-      let nextState = upsertPendingMutation(
-        workingState,
-        createDraftMutation({
-          domainName: normalizedDomainName,
-          parentDomainName: senderResolution.parentDomainName,
-          sender: senderResolution.sender,
-          registerKind: senderResolution.registerKind,
+      await confirmSubdomainRegistration(
+        options.prompter,
+        operation.normalizedDomainName,
+        operation.resolvedSummary,
+        options.assumeYes,
+      );
+    },
+    createDraftMutation({ operation, existingMutation, execution, intentFingerprintHex }) {
+      return {
+        mutation: createDraftMutation({
+          domainName: operation.normalizedDomainName,
+          parentDomainName: operation.senderResolution.parentDomainName,
+          sender: operation.senderResolution.sender,
+          registerKind: operation.senderResolution.registerKind,
           intentFingerprintHex,
-          nowUnixMs,
-          feeSelection,
+          nowUnixMs: execution.nowUnixMs,
+          feeSelection: execution.feeSelection,
           existing: existingMutation,
         }),
-      );
-      nextState = {
-        ...nextState,
-        stateRevision: nextState.stateRevision + 1,
-        lastWrittenAtUnixMs: nowUnixMs,
+        prepared: null,
       };
-      await saveWalletStatePreservingUnlock({
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
-      });
-
-      const allUtxos = await rpc.listUnspent(walletName, 1);
+    },
+    async build({ operation, state, execution, replacementFixedInputs }) {
       const plan = buildRegisterPlan({
-        context: readContext,
-        state: nextState,
-        allUtxos,
-        sender: senderResolution.sender,
-        registerKind: senderResolution.registerKind,
-        domainName: normalizedDomainName,
-        parentDomainName: senderResolution.parentDomainName,
-        treasuryAddress: genesis.treasuryAddress,
-        treasuryScriptPubKeyHex: Buffer.from(genesis.treasuryScriptPubKey).toString("hex"),
-        rootPriceSats,
+        context: execution.readContext,
+        state,
+        allUtxos: await execution.rpc.listUnspent(execution.walletName, 1),
+        sender: operation.senderResolution.sender,
+        registerKind: operation.senderResolution.registerKind,
+        domainName: operation.normalizedDomainName,
+        parentDomainName: operation.senderResolution.parentDomainName,
+        treasuryAddress: operation.genesis.treasuryAddress,
+        treasuryScriptPubKeyHex: Buffer.from(operation.genesis.treasuryScriptPubKey).toString("hex"),
+        rootPriceSats: operation.rootPriceSats,
       });
-      const built = await buildRegisterTransaction({
-        rpc,
-        walletName,
-        state: nextState,
+      return buildRegisterTransaction({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        state,
         plan: {
           ...plan,
           fixedInputs: mergeFixedWalletInputs(plan.fixedInputs, replacementFixedInputs),
         },
-        feeRateSatVb: feeSelection.feeRateSatVb,
+        feeRateSatVb: execution.feeSelection.feeRateSatVb,
       });
-
-      const currentMutation = nextState.pendingMutations?.find((mutation) => mutation.intentFingerprintHex === intentFingerprintHex)
-        ?? createDraftMutation({
-          domainName: normalizedDomainName,
-          parentDomainName: senderResolution.parentDomainName,
-          sender: senderResolution.sender,
-          registerKind: senderResolution.registerKind,
-          intentFingerprintHex,
-          nowUnixMs,
-          feeSelection,
-        });
-      const broadcastingMutation = updateMutationRecord(
-        currentMutation,
-        "broadcasting",
-        nowUnixMs,
-        {
-          attemptedTxid: built.txid,
-          attemptedWtxid: built.wtxid,
-          temporaryBuilderLockedOutpoints: built.temporaryBuilderLockedOutpoints,
-        },
-      );
-      nextState = {
-        ...upsertPendingMutation(nextState, broadcastingMutation),
-        stateRevision: nextState.stateRevision + 1,
-        lastWrittenAtUnixMs: nowUnixMs,
-      };
-      await saveWalletStatePreservingUnlock({
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
-      });
-
-      const bestHeight = (await rpc.getBlockchainInfo()).blocks;
-      if (readContext.snapshot?.tip?.height !== bestHeight) {
-        await unlockTemporaryBuilderLocks(rpc, walletName, built.temporaryBuilderLockedOutpoints);
-        throw new Error("wallet_register_tip_mismatch");
-      }
-
-      let accepted = false;
-
-      try {
-        await rpc.sendRawTransaction(built.rawHex);
-        accepted = true;
-      } catch (error) {
-        if (isAlreadyAcceptedError(error)) {
-          accepted = true;
-        } else if (isBroadcastUnknownError(error)) {
-          const unknownMutation = updateMutationRecord(broadcastingMutation, "broadcast-unknown", nowUnixMs, {
-            attemptedTxid: built.txid,
-            attemptedWtxid: built.wtxid,
-            temporaryBuilderLockedOutpoints: built.temporaryBuilderLockedOutpoints,
+    },
+    publish({ operation, state, execution, built, mutation }) {
+      return publishWalletMutation({
+        rpc: execution.rpc,
+        walletName: execution.walletName,
+        snapshotHeight: execution.readContext.snapshot?.tip?.height ?? null,
+        built,
+        mutation,
+        state,
+        provider: execution.provider,
+        nowUnixMs: execution.nowUnixMs,
+        paths: execution.paths,
+        errorPrefix: "wallet_register",
+        async afterAccepted({ state: acceptedState, broadcastingMutation, built, nowUnixMs }) {
+          const finalStatus = getMutationStatusAfterAcceptance({
+            snapshot: execution.readContext.snapshot,
+            domainName: operation.normalizedDomainName,
+            senderScriptPubKeyHex: operation.senderResolution.sender.scriptPubKeyHex,
           });
-          nextState = {
-            ...upsertPendingMutation(nextState, unknownMutation),
-            stateRevision: nextState.stateRevision + 1,
-            lastWrittenAtUnixMs: nowUnixMs,
-          };
-          await saveWalletStatePreservingUnlock({
-            state: nextState,
-            provider,
-            nowUnixMs,
-            paths,
-          });
-          throw new Error("wallet_register_broadcast_unknown");
-        } else {
-          await unlockTemporaryBuilderLocks(rpc, walletName, built.temporaryBuilderLockedOutpoints);
-          const canceledMutation = updateMutationRecord(broadcastingMutation, "canceled", nowUnixMs, {
+          const finalMutation = updateMutationRecord(broadcastingMutation, finalStatus, nowUnixMs, {
             attemptedTxid: built.txid,
             attemptedWtxid: built.wtxid,
             temporaryBuilderLockedOutpoints: [],
           });
-          nextState = {
-            ...upsertPendingMutation(nextState, canceledMutation),
-            stateRevision: nextState.stateRevision + 1,
-            lastWrittenAtUnixMs: nowUnixMs,
+          return {
+            state: reserveLocalDomainRecord({
+              state: upsertPendingMutation(acceptedState, finalMutation),
+              domainName: operation.normalizedDomainName,
+              sender: operation.senderResolution.sender,
+              nowUnixMs,
+            }),
+            mutation: finalMutation,
+            status: finalStatus,
           };
-          await saveWalletStatePreservingUnlock({
-            state: nextState,
-            provider,
-            nowUnixMs,
-            paths,
-          });
-          throw error;
-        }
-      }
-
-      if (!accepted) {
-        throw new Error("wallet_register_broadcast_failed");
-      }
-
-      await unlockTemporaryBuilderLocks(rpc, walletName, built.temporaryBuilderLockedOutpoints);
-      const finalStatus = getMutationStatusAfterAcceptance({
-        snapshot: readContext.snapshot,
-        domainName: normalizedDomainName,
-        senderScriptPubKeyHex: senderResolution.sender.scriptPubKeyHex,
+        },
       });
-      const finalMutation = updateMutationRecord(broadcastingMutation, finalStatus, nowUnixMs, {
-        attemptedTxid: built.txid,
-        attemptedWtxid: built.wtxid,
-        temporaryBuilderLockedOutpoints: [],
-      });
-      nextState = reserveLocalDomainRecord({
-        state: upsertPendingMutation(nextState, finalMutation),
-        domainName: normalizedDomainName,
-        sender: senderResolution.sender,
-        nowUnixMs,
-      });
-      nextState = {
-        ...nextState,
-        stateRevision: nextState.stateRevision + 1,
-        lastWrittenAtUnixMs: nowUnixMs,
-      };
-      await saveWalletStatePreservingUnlock({
-        state: nextState,
-        provider,
-        nowUnixMs,
-        paths,
-      });
-
+    },
+    createResult({ operation, mutation, built, status, reusedExisting, fees }) {
       return {
-        domainName: normalizedDomainName,
-        registerKind: senderResolution.registerKind,
-        parentDomainName: senderResolution.parentDomainName,
-        senderSelector: senderResolution.senderSelector,
-        senderLocalIndex: senderResolution.sender.localIndex,
-        senderScriptPubKeyHex: senderResolution.sender.scriptPubKeyHex,
-        senderAddress: senderResolution.sender.address,
-        economicEffectKind: senderResolution.registerKind === "root" ? "treasury-payment" : "cog-burn",
-        economicEffectAmount: senderResolution.registerKind === "root" ? rootPriceSats : SUBDOMAIN_REGISTRATION_FEE_COGTOSHI,
-        resolved: resolvedSummary,
-        txid: built.txid,
-        status: finalStatus,
-        reusedExisting: false,
-        fees: createBuiltWalletMutationFeeSummary({
-          selection: feeSelection,
-          built,
-        }),
+        domainName: operation.normalizedDomainName,
+        registerKind: operation.senderResolution.registerKind,
+        parentDomainName: operation.senderResolution.parentDomainName,
+        senderSelector: operation.senderResolution.senderSelector,
+        senderLocalIndex: operation.senderResolution.sender.localIndex,
+        senderScriptPubKeyHex: operation.senderResolution.sender.scriptPubKeyHex,
+        senderAddress: operation.senderResolution.sender.address,
+        economicEffectKind: operation.senderResolution.registerKind === "root" ? "treasury-payment" : "cog-burn",
+        economicEffectAmount: operation.senderResolution.registerKind === "root"
+          ? operation.rootPriceSats
+          : SUBDOMAIN_REGISTRATION_FEE_COGTOSHI,
+        resolved: operation.resolvedSummary,
+        txid: mutation.attemptedTxid ?? built?.txid ?? "unknown",
+        status: status as RegisterDomainResult["status"],
+        reusedExisting,
+        fees,
       };
-    } finally {
-      await readContext.close();
-      await miningPreemption.release();
-    }
-  } finally {
-    await controlLock.release();
-  }
+    },
+  });
+
+  return execution.result;
 }
