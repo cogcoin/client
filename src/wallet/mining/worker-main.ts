@@ -1,4 +1,5 @@
 import { runBackgroundMiningWorker } from "./runner.js";
+import { readClientPasswordSessionBootstrapFromFd } from "./session-bootstrap.js";
 
 function readFlag(name: string): string | null {
   const prefix = `--${name}=`;
@@ -14,8 +15,11 @@ if (dataDir === null || databasePath === null || runId === null) {
   throw new Error("mining_worker_missing_args");
 }
 
+const clientPasswordSessionBootstrap = await readClientPasswordSessionBootstrapFromFd();
+
 await runBackgroundMiningWorker({
   dataDir,
   databasePath,
   runId,
+  clientPasswordSessionBootstrap,
 });

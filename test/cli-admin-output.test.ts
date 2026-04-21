@@ -290,7 +290,7 @@ test("init text output describes process-local client password reuse after setup
   assert.equal(countOccurrences(rendered, WELCOME_ART_BLOCK), 2);
   assert.match(rendered, /Wallet already initialized\./);
   assert.match(rendered, /\nWallet\n✓ Client password: migrated\n✓ Wallet root: wallet-test-root\n✓ Funding address: bc1qinitoutput\n/);
-  assert.match(rendered, /Client password reuse stays active for up to 86400 seconds while this command keeps running\./);
+  assert.match(rendered, /Client password reuse stays active in memory for the rest of this long-running init command, up to about 24 hours\./);
   assert.match(rendered, /Future Cogcoin commands will prompt again when they need wallet-local secrets\./);
   assert.doesNotMatch(rendered, /cogcoin client unlock/);
   assert.doesNotMatch(rendered, /cogcoin client lock/);
@@ -431,7 +431,7 @@ test("init text output describes process-local client password reuse after resto
   assert.equal(stderr.read(), "");
   assert.equal(syncCalls, 1);
   assert.match(rendered, /Wallet restored\./);
-  assert.match(rendered, /Client password reuse stays active for up to 86400 seconds while this command keeps running\./);
+  assert.match(rendered, /Client password reuse stays active in memory for the rest of this long-running init command, up to about 24 hours\./);
   assert.match(rendered, /Future Cogcoin commands will prompt again when they need wallet-local secrets\./);
   assert.doesNotMatch(rendered, /cogcoin client unlock/);
   assert.doesNotMatch(rendered, /cogcoin client lock/);

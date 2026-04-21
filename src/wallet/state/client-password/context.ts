@@ -1,5 +1,6 @@
 import { join } from "node:path";
 
+import type { WalletRuntimePaths } from "../../runtime.js";
 import type {
   ClientPasswordResolvedContext,
   ClientPasswordStorageOptions,
@@ -39,6 +40,24 @@ export function resolveClientPasswordContext(
     legacyMacKeychainReader: options.legacyMacKeychainReader ?? null,
     passwordStatePath: resolveClientPasswordStatePath(options.directoryPath),
     rotationJournalPath: resolveClientPasswordRotationJournalPath(options.directoryPath),
+  };
+}
+
+export function resolveClientPasswordStorageOptionsForWalletPaths(
+  paths: Pick<WalletRuntimePaths, "stateRoot" | "runtimeRoot">,
+  platform: NodeJS.Platform = process.platform,
+): ClientPasswordStorageOptions {
+  return {
+    platform,
+    stateRoot: paths.stateRoot,
+    runtimeRoot: paths.runtimeRoot,
+    directoryPath: join(paths.stateRoot, "secrets"),
+    runtimeErrorCode: platform === "win32"
+      ? "wallet_secret_provider_windows_runtime_error"
+      : platform === "darwin"
+        ? "wallet_secret_provider_macos_runtime_error"
+        : "wallet_secret_provider_linux_runtime_error",
+    legacyMacKeychainReader: null,
   };
 }
 

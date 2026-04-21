@@ -14,6 +14,7 @@ import {
   readClientPasswordStatus,
   unlockClientPassword,
 } from "../src/wallet/state/provider.js";
+import { bindClientPasswordPromptSessionPolicy } from "../src/wallet/state/client-password/session-policy.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import {
   configureTestClientPassword,
@@ -216,7 +217,7 @@ test("Windows default secret provider reports missing secrets generically", asyn
   );
 });
 
-test("client password setup opens a 24-hour session", async (t) => {
+test("client password setup opens a default 60-minute session", async (t) => {
   const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-setup-session");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
@@ -231,7 +232,8 @@ test("client password setup opens a 24-hour session", async (t) => {
   const status = await readClientPasswordStatus(provider);
 
   assert.equal(status.unlocked, true);
-  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() > 80_000_000);
+  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() > 3_500_000);
+  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() < 3_700_000);
 });
 
 test("client unlock refreshes an active session without re-entering the password", async (t) => {
@@ -258,7 +260,8 @@ test("client unlock refreshes an active session without re-entering the password
   });
 
   assert.equal(status.unlocked, true);
-  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() > 80_000_000);
+  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() > 3_500_000);
+  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() < 3_700_000);
 });
 
 test("client unlock still prompts for password when the session is locked", async (t) => {
@@ -276,12 +279,12 @@ test("client unlock still prompts for password when the session is locked", asyn
 
   const status = await unlockClientPassword(
     provider,
-    createScriptedPrompter(["test-client-password", "120"]),
+    createScriptedPrompter(["test-client-password"]),
   );
 
   assert.equal(status.unlocked, true);
-  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() < 200_000);
-  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() > 90_000);
+  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() > 3_500_000);
+  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() < 3_700_000);
 });
 
 test("client change-password requires the current password even while unlocked and replaces the stored hint", async (t) => {
@@ -332,7 +335,6 @@ test("client change-password requires the current password even while unlocked a
   await lockClientPassword(provider);
   const unlockPrompt = createPromptRecorder({
     hiddenResponses: ["old-password", "new-password"],
-    promptResponses: ["120"],
   });
   const unlockedStatus = await unlockClientPassword(provider, unlockPrompt.prompter);
 
@@ -347,7 +349,7 @@ test("client change-password requires the current password even while unlocked a
   );
 });
 
-test("client change-password leaves a fresh 24-hour session when it starts locked", async (t) => {
+test("client change-password leaves a fresh default 60-minute session when it starts locked", async (t) => {
   const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-change-password-locked");
   const provider = createDefaultWalletSecretProviderForTesting({
     platform: "linux",
@@ -369,7 +371,40 @@ test("client change-password leaves a fresh 24-hour session when it starts locke
   );
 
   assert.equal(status.unlocked, true);
-  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() > 80_000_000);
+  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() > 3_500_000);
+  assert.ok((status.unlockUntilUnixMs ?? 0) - Date.now() < 3_700_000);
+});
+
+test("client unlock can refresh an active session to the mining indefinite policy without prompting", async (t) => {
+  const stateRoot = await createTempStateRoot(t, "cogcoin-wallet-provider-linux-mining-session");
+  const provider = createDefaultWalletSecretProviderForTesting({
+    platform: "linux",
+    stateRoot,
+  });
+
+  await configureTestClientPassword(provider);
+  t.after(async () => {
+    await lockClientPassword(provider);
+  });
+
+  const status = await unlockClientPassword(
+    provider,
+    bindClientPasswordPromptSessionPolicy({
+      isInteractive: false,
+      writeLine() {},
+      async prompt() {
+        throw new Error("duration prompt should not be requested");
+      },
+      async promptHidden() {
+        throw new Error("password should not be requested while already unlocked");
+      },
+    }, "mining-indefinite"),
+  );
+
+  assert.deepEqual(status, {
+    unlocked: true,
+    unlockUntilUnixMs: null,
+  });
 });
 
 test("client change-password requires an interactive terminal", async (t) => {

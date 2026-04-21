@@ -9,6 +9,7 @@ import { normalizeMiningStateRecord } from "../mining/state.js";
 import type { MiningRuntimeStatusV1 } from "../mining/types.js";
 import type { WalletRuntimePaths } from "../runtime.js";
 import { createWalletSecretReference, type WalletSecretProvider } from "../state/provider.js";
+import { bindClientPasswordPromptSessionPolicy } from "../state/client-password/session-policy.js";
 import { persistWalletStateUpdate } from "../descriptor-normalization.js";
 import type { WalletStateV1 } from "../types.js";
 import { isProcessAlive, stopRecordedManagedProcess } from "./repair-runtime.js";
@@ -357,7 +358,10 @@ export async function resumeBackgroundMiningAfterRepair(options: {
       databasePath: options.databasePath,
       provider: options.provider,
       paths: options.paths,
-      prompter: createSilentNonInteractivePrompter(),
+      prompter: bindClientPasswordPromptSessionPolicy(
+        createSilentNonInteractivePrompter(),
+        "mining-indefinite",
+      ),
     });
 
     if (resumed.snapshot?.runMode === "background") {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { Writable } from "node:stream";
 import test, { type TestContext } from "node:test";
 
 import {
@@ -11,9 +12,16 @@ import {
   takeOverMiningRuntime,
   waitForBackgroundHealthy,
 } from "../src/wallet/mining/supervisor.js";
+import { runBackgroundMiningWorker as runBackgroundMiningWorkerEntry } from "../src/wallet/mining/runner.js";
 import { loadMiningRuntimeStatus, saveMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
+import {
+  lockClientPasswordSessionResolved,
+  readClientPasswordSessionStatusResolved,
+  startClientPasswordSessionWithExpiryResolved,
+} from "../src/wallet/state/client-password/session.js";
+import { resolveClientPasswordContext } from "../src/wallet/state/client-password/context.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import {
   createMiningRuntimeStatus,
@@ -349,6 +357,53 @@ test("runForegroundMining reuses an injected visualizer without closing it", asy
   assert.deepEqual(events, ["run", "save-stop"]);
 });
 
+test("runForegroundMining clears client-password sessions after a SIGTERM-driven shutdown", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-mine-fg-sigterm");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const runtime = createSupervisorRuntime(paths, provider);
+  const sessionContext = resolveClientPasswordContext({
+    platform: "linux",
+    stateRoot: paths.stateRoot,
+    runtimeRoot: paths.runtimeRoot,
+    directoryPath: join(paths.stateRoot, "secrets"),
+    runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
+  });
+  const signalListenerCount = process.listenerCount("SIGTERM");
+
+  t.after(async () => {
+    await lockClientPasswordSessionResolved(sessionContext);
+  });
+
+  await startClientPasswordSessionWithExpiryResolved({
+    ...sessionContext,
+    derivedKey: Buffer.alloc(32, 43),
+    unlockUntilUnixMs: null,
+  });
+
+  await runForegroundMining({
+    dataDir: homeDirectory,
+    databasePath: join(homeDirectory, "indexer.sqlite"),
+    runtime,
+    visualizer: {
+      close() {},
+    } as any,
+    deps: {
+      runMiningLoop: async (options) => {
+        process.emit("SIGTERM");
+        assert.equal(options.signal?.aborted, true);
+      },
+      saveStopSnapshot: async () => undefined,
+    },
+  });
+
+  assert.equal(process.listenerCount("SIGTERM"), signalListenerCount);
+  assert.deepEqual(await readClientPasswordSessionStatusResolved(sessionContext), {
+    unlocked: false,
+    unlockUntilUnixMs: null,
+  });
+});
+
 test("startBackgroundMining replaces an existing background miner and returns started true", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-mine-start-bg");
   const paths = createRuntimePaths(homeDirectory);
@@ -452,6 +507,82 @@ test("startBackgroundMining replaces an existing foreground miner in the same ru
     killLog.calls.filter((call) => call.pid === 9_101 && call.signal === "SIGTERM").length,
     1,
   );
+});
+
+test("startBackgroundMining writes a one-shot client-password bootstrap for local-file providers", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-mine-start-bootstrap");
+  const paths = createRuntimePaths(homeDirectory);
+  const sessionContext = resolveClientPasswordContext({
+    platform: "linux",
+    stateRoot: paths.stateRoot,
+    runtimeRoot: paths.runtimeRoot,
+    directoryPath: join(paths.stateRoot, "secrets"),
+    runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
+  });
+  const runtime = {
+    provider: {
+      kind: "linux-local-file",
+    },
+    paths,
+    openReadContext: async () => createLoopReadContext(),
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    rpcFactory: () => createHealthyMiningRpc() as any,
+  };
+  const bootstrapChunks: Buffer[] = [];
+  const bootstrapStream = new Writable({
+    write(chunk, _encoding, callback) {
+      bootstrapChunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+
+  t.after(async () => {
+    for (const chunk of bootstrapChunks) {
+      chunk.fill(0);
+    }
+    await lockClientPasswordSessionResolved(sessionContext);
+  });
+
+  await startClientPasswordSessionWithExpiryResolved({
+    ...sessionContext,
+    derivedKey: Buffer.alloc(32, 37),
+    unlockUntilUnixMs: null,
+  });
+
+  await startBackgroundMining({
+    dataDir: homeDirectory,
+    databasePath: join(homeDirectory, "indexer.sqlite"),
+    runtime: runtime as any,
+    waitForBackgroundHealthy: async () => createMiningRuntimeStatus({
+      runMode: "background",
+      backgroundWorkerPid: 4_242,
+      backgroundWorkerRunId: "run-new",
+      backgroundWorkerHealth: "healthy",
+    }),
+    deps: {
+      spawnWorkerProcess: (() => ({
+        pid: 4_242,
+        stdio: [null, null, null, bootstrapStream],
+        unref() {},
+      })) as any,
+      sleep: async () => undefined,
+    },
+  });
+
+  const parsed = JSON.parse(Buffer.concat(bootstrapChunks).toString("utf8").trim()) as {
+    unlockUntilUnixMs: number | null;
+    derivedKeyBase64: string;
+  };
+
+  assert.equal(parsed.unlockUntilUnixMs, null);
+  assert.ok(parsed.derivedKeyBase64.length > 0);
 });
 
 test("takeOverMiningRuntime clears only the current runtime, dedupes pids, and preempts before termination", async (t) => {
@@ -751,4 +882,59 @@ test("runBackgroundMiningWorker writes the initial runtime snapshot, delegates t
   assert.equal(loopCall.backgroundWorkerPid, 7_707);
   assert.equal(loopCall.backgroundWorkerRunId, "run-worker");
   assert.deepEqual(stopNotes, ["Background mining worker stopped cleanly."]);
+});
+
+test("runner background worker imports one-shot client-password bootstrap and clears it on exit", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-worker-bootstrap");
+  const paths = createRuntimePaths(homeDirectory);
+  const sessionContext = resolveClientPasswordContext({
+    platform: "linux",
+    stateRoot: paths.stateRoot,
+    runtimeRoot: paths.runtimeRoot,
+    directoryPath: join(paths.stateRoot, "secrets"),
+    runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
+  });
+  let sessionSeenDuringOpen: Awaited<ReturnType<typeof readClientPasswordSessionStatusResolved>> | null = null;
+
+  t.after(async () => {
+    await lockClientPasswordSessionResolved(sessionContext);
+  });
+
+  await runBackgroundMiningWorkerEntry({
+    dataDir: homeDirectory,
+    databasePath: join(homeDirectory, "indexer.sqlite"),
+    runId: "run-bootstrap",
+    provider: {
+      kind: "linux-local-file",
+    } as any,
+    paths,
+    clientPasswordSessionBootstrap: {
+      unlockUntilUnixMs: null,
+      derivedKeyBase64: Buffer.alloc(32, 41).toString("base64"),
+    },
+    openReadContext: async () => {
+      sessionSeenDuringOpen = await readClientPasswordSessionStatusResolved(sessionContext);
+      return createLoopReadContext();
+    },
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    runMiningLoopImpl: async () => undefined,
+    saveStopSnapshotImpl: async () => undefined,
+  });
+
+  assert.deepEqual(sessionSeenDuringOpen, {
+    unlocked: true,
+    unlockUntilUnixMs: null,
+  });
+  assert.deepEqual(await readClientPasswordSessionStatusResolved(sessionContext), {
+    unlocked: false,
+    unlockUntilUnixMs: null,
+  });
 });

@@ -4,6 +4,7 @@ import {
   withInteractiveWalletSecretProvider,
   type WalletSecretProvider,
 } from "../state/provider.js";
+import { bindClientPasswordPromptSessionPolicy } from "../state/client-password/session-policy.js";
 import { loadWalletStateForAccess, mapWalletReadAccessError } from "./access.js";
 import {
   acquireWalletControlLock,
@@ -43,11 +44,12 @@ export async function initializeWallet(options: {
     throw new Error("wallet_init_requires_tty");
   }
 
-  const interactiveProvider = withInteractiveWalletSecretProvider(context.provider, context.prompter);
+  const initPrompter = bindClientPasswordPromptSessionPolicy(context.prompter, "init-24h");
+  const interactiveProvider = withInteractiveWalletSecretProvider(context.provider, initPrompter);
   const controlLock = await acquireWalletControlLock(context.paths, "wallet-init");
 
   try {
-    const passwordAction = await ensureClientPasswordConfigured(context.provider, context.prompter);
+    const passwordAction = await ensureClientPasswordConfigured(context.provider, initPrompter);
 
     if (await walletStateExists(context.paths)) {
       await clearPendingInitialization(context.paths, interactiveProvider);
@@ -68,7 +70,7 @@ export async function initializeWallet(options: {
       };
     }
 
-    const setupMode = await promptForInitializationMode(context.prompter);
+    const setupMode = await promptForInitializationMode(initPrompter);
     let material;
 
     if (setupMode === "generated") {
@@ -77,7 +79,7 @@ export async function initializeWallet(options: {
         paths: context.paths,
         nowUnixMs: context.nowUnixMs,
       });
-      writeMnemonicReveal(context.prompter, material.mnemonic.phrase, [
+      writeMnemonicReveal(initPrompter, material.mnemonic.phrase, [
         "Cogcoin Wallet Initialization",
         "Write down this 24-word recovery phrase.",
         "The same phrase will be shown again until confirmation succeeds:",
@@ -85,17 +87,17 @@ export async function initializeWallet(options: {
       ]);
 
       try {
-        await confirmMnemonic(context.prompter, material.mnemonic.words);
+        await confirmMnemonic(initPrompter, material.mnemonic.words);
       } finally {
-        await clearSensitiveDisplay(context.prompter, "mnemonic-reveal");
+        await clearSensitiveDisplay(initPrompter, "mnemonic-reveal");
       }
     } else {
       let mnemonicPhrase: string;
 
       try {
-        mnemonicPhrase = await promptForRestoreMnemonic(context.prompter);
+        mnemonicPhrase = await promptForRestoreMnemonic(initPrompter);
       } finally {
-        await clearSensitiveDisplay(context.prompter, "restore-mnemonic-entry");
+        await clearSensitiveDisplay(initPrompter, "restore-mnemonic-entry");
       }
 
       await clearPendingInitialization(context.paths, interactiveProvider);

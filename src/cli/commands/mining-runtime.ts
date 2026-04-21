@@ -9,6 +9,7 @@ import {
 } from "../../wallet/mining/visualizer.js";
 import { resolveWalletRootIdFromLocalArtifacts } from "../../wallet/root-resolution.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
+import { bindClientPasswordPromptSessionPolicy } from "../../wallet/state/client-password/session-policy.js";
 import {
   ManagedIndexerProgressObserver,
   assertManagedIndexerStatusRecoverable,
@@ -433,7 +434,10 @@ export async function runMiningRuntimeCommand(
     const runtimePaths = context.resolveWalletRuntimePaths();
 
     if (parsed.command === "mine") {
-      const prompter = context.createPrompter();
+      const prompter = bindClientPasswordPromptSessionPolicy(
+        context.createPrompter(),
+        "mining-indefinite",
+      );
       const provider = withInteractiveWalletSecretProvider(context.walletSecretProvider, prompter);
       const ttyProgressActive = usesTtyProgress(parsed.progressOutput, context.stderr);
       await ensureMiningProviderSetup({
@@ -523,7 +527,10 @@ export async function runMiningRuntimeCommand(
     }
 
     if (parsed.command === "mine-start") {
-      const prompter = createCommandPrompter(context);
+      const prompter = bindClientPasswordPromptSessionPolicy(
+        createCommandPrompter(context),
+        "mining-indefinite",
+      );
       const provider = withInteractiveWalletSecretProvider(
         context.walletSecretProvider,
         prompter,

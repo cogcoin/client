@@ -3,22 +3,23 @@ import {
   decryptWrappedSecretEnvelope,
   zeroizeBuffer,
 } from "./crypto.js";
+import { promptForVerifiedClientPassword } from "./prompts.js";
 import {
-  promptForUnlockDuration,
-  promptForUnlockDurationWithDefault,
-  promptForVerifiedClientPassword,
-  resolveRemainingUnlockSeconds,
-} from "./prompts.js";
+  resolveClientPasswordPromptSessionPolicy,
+  resolveClientPasswordSessionUnlockUntilUnixMs,
+  type ClientPasswordSessionPolicy,
+} from "./session-policy.js";
 import type {
   ClientPasswordPrompt,
   ClientPasswordResolvedContext,
+  ClientPasswordSessionBootstrapState,
   ClientPasswordSessionStatus,
   WrappedSecretEnvelopeV1,
 } from "./types.js";
 
 interface ActiveClientPasswordSession {
   derivedKey: Buffer;
-  unlockUntilUnixMs: number;
+  unlockUntilUnixMs: number | null;
   expiryTimer: NodeJS.Timeout | null;
 }
 
@@ -61,11 +62,23 @@ function scheduleSessionExpiry(
   session: ActiveClientPasswordSession,
 ): void {
   clearExpiryTimer(session);
+
+  if (session.unlockUntilUnixMs === null) {
+    return;
+  }
+
   const remainingMs = Math.max(0, session.unlockUntilUnixMs - Date.now());
   session.expiryTimer = setTimeout(() => {
     clearSessionByKey(cacheKey);
   }, remainingMs);
   session.expiryTimer.unref();
+}
+
+export function destroyAllClientPasswordSessionsResolved(): void {
+  for (const session of activeSessions.values()) {
+    destroySession(session);
+  }
+  activeSessions.clear();
 }
 
 function registerProcessCleanup(): void {
@@ -75,10 +88,7 @@ function registerProcessCleanup(): void {
 
   processCleanupRegistered = true;
   process.once("exit", () => {
-    for (const session of activeSessions.values()) {
-      destroySession(session);
-    }
-    activeSessions.clear();
+    destroyAllClientPasswordSessionsResolved();
   });
 }
 
@@ -92,7 +102,7 @@ function getActiveSession(
     return null;
   }
 
-  if (session.unlockUntilUnixMs <= Date.now()) {
+  if (session.unlockUntilUnixMs !== null && session.unlockUntilUnixMs <= Date.now()) {
     clearSessionByKey(cacheKey);
     return null;
   }
@@ -102,13 +112,13 @@ function getActiveSession(
 
 function putActiveSession(options: ClientPasswordResolvedContext & {
   derivedKey: Buffer;
-  unlockUntilUnixMs: number;
+  unlockUntilUnixMs: number | null;
 }): ClientPasswordSessionStatus {
   registerProcessCleanup();
   const cacheKey = resolveSessionCacheKey(options);
   clearSessionByKey(cacheKey);
 
-  if (options.unlockUntilUnixMs <= Date.now()) {
+  if (options.unlockUntilUnixMs !== null && options.unlockUntilUnixMs <= Date.now()) {
     return {
       unlocked: false,
       unlockUntilUnixMs: null,
@@ -153,18 +163,18 @@ export async function lockClientPasswordSessionResolved(
 
 export async function startClientPasswordSessionResolved(options: ClientPasswordResolvedContext & {
   derivedKey: Buffer;
-  unlockDurationSeconds: number;
+  sessionPolicy: ClientPasswordSessionPolicy;
 }): Promise<ClientPasswordSessionStatus> {
   return await startClientPasswordSessionWithExpiryResolved({
     ...options,
-    unlockUntilUnixMs: Date.now() + (options.unlockDurationSeconds * 1_000),
+    unlockUntilUnixMs: resolveClientPasswordSessionUnlockUntilUnixMs(options.sessionPolicy),
   });
 }
 
 export async function startClientPasswordSessionWithExpiryResolved(
   options: ClientPasswordResolvedContext & {
     derivedKey: Buffer;
-    unlockUntilUnixMs: number;
+    unlockUntilUnixMs: number | null;
   },
 ): Promise<ClientPasswordSessionStatus> {
   try {
@@ -174,9 +184,43 @@ export async function startClientPasswordSessionWithExpiryResolved(
   }
 }
 
+export function exportClientPasswordSessionBootstrapResolved(
+  context: ClientPasswordResolvedContext,
+): ClientPasswordSessionBootstrapState | null {
+  const session = getActiveSession(context);
+
+  if (session === null) {
+    return null;
+  }
+
+  return {
+    unlockUntilUnixMs: session.unlockUntilUnixMs,
+    derivedKeyBase64: session.derivedKey.toString("base64"),
+  };
+}
+
+export async function importClientPasswordSessionBootstrapResolved(
+  options: ClientPasswordResolvedContext & {
+    bootstrap: ClientPasswordSessionBootstrapState;
+  },
+): Promise<ClientPasswordSessionStatus> {
+  let derivedKey: Buffer | null = null;
+
+  try {
+    derivedKey = Buffer.from(options.bootstrap.derivedKeyBase64, "base64");
+    return await startClientPasswordSessionWithExpiryResolved({
+      ...options,
+      derivedKey,
+      unlockUntilUnixMs: options.bootstrap.unlockUntilUnixMs,
+    });
+  } finally {
+    zeroizeBuffer(derivedKey);
+  }
+}
+
 async function refreshClientPasswordSessionResolved(
   context: ClientPasswordResolvedContext & {
-    unlockUntilUnixMs: number;
+    unlockUntilUnixMs: number | null;
   },
 ): Promise<ClientPasswordSessionStatus | null> {
   const session = getActiveSession(context);
@@ -200,12 +244,11 @@ async function unlockClientPasswordSessionWithPromptResolved(options: {
     promptMessage: "Client password: ",
     ttyErrorCode: "wallet_client_password_unlock_requires_tty",
   });
-  const unlockDurationSeconds = await promptForUnlockDuration(options.prompt);
 
   return await startClientPasswordSessionResolved({
     ...options.context,
     derivedKey,
-    unlockDurationSeconds,
+    sessionPolicy: resolveClientPasswordPromptSessionPolicy(options.prompt),
   });
 }
 
@@ -213,25 +256,22 @@ export async function unlockClientPasswordSessionResolved(options: {
   context: ClientPasswordResolvedContext;
   prompt: ClientPasswordPrompt;
 }): Promise<ClientPasswordSessionStatus> {
-  if (!options.prompt.isInteractive) {
-    throw new Error("wallet_client_password_unlock_requires_tty");
-  }
-
+  const sessionPolicy = resolveClientPasswordPromptSessionPolicy(options.prompt);
   const currentStatus = await readClientPasswordSessionStatusResolved(options.context);
 
   if (currentStatus.unlocked) {
-    const unlockDurationSeconds = await promptForUnlockDurationWithDefault(
-      options.prompt,
-      resolveRemainingUnlockSeconds(currentStatus),
-    );
     const refreshed = await refreshClientPasswordSessionResolved({
       ...options.context,
-      unlockUntilUnixMs: Date.now() + (unlockDurationSeconds * 1_000),
+      unlockUntilUnixMs: resolveClientPasswordSessionUnlockUntilUnixMs(sessionPolicy),
     });
 
     if (refreshed !== null) {
       return refreshed;
     }
+  }
+
+  if (!options.prompt.isInteractive) {
+    throw new Error("wallet_client_password_unlock_requires_tty");
   }
 
   return await unlockClientPasswordSessionWithPromptResolved(options);

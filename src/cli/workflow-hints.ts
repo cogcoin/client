@@ -23,9 +23,9 @@ export function getRestoreNextSteps(): string[] {
   return ["cogcoin sync", "cogcoin address"];
 }
 
-export function getSetupUnlockGuidanceLines(unlockSeconds: number): string[] {
+export function getInitUnlockGuidanceLines(): string[] {
   return [
-    `Client password reuse stays active for up to ${unlockSeconds} seconds while this command keeps running.`,
+    "Client password reuse stays active in memory for the rest of this long-running init command, up to about 24 hours.",
     "Future Cogcoin commands will prompt again when they need wallet-local secrets.",
   ];
 }

@@ -18,8 +18,11 @@ import { collectReferencedSecretIds } from "./references.js";
 import {
   promptForNewPassword,
   promptForVerifiedClientPassword,
-  resolvePostChangeUnlockUntilUnixMs,
 } from "./prompts.js";
+import {
+  resolveClientPasswordPromptSessionPolicy,
+  resolvePostChangeClientPasswordUnlockUntilUnixMs,
+} from "./session-policy.js";
 import {
   readClientPasswordSessionStatusResolved,
   startClientPasswordSessionWithExpiryResolved,
@@ -141,7 +144,10 @@ export async function changeClientPasswordResolved(options: {
     const session = await startClientPasswordSessionWithExpiryResolved({
       ...options.context,
       derivedKey: newDerivedKey,
-      unlockUntilUnixMs: resolvePostChangeUnlockUntilUnixMs(previousSession),
+      unlockUntilUnixMs: resolvePostChangeClientPasswordUnlockUntilUnixMs(
+        previousSession,
+        resolveClientPasswordPromptSessionPolicy(options.prompt),
+      ),
     });
     newDerivedKey = null;
     return session;

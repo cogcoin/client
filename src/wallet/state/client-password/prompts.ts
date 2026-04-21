@@ -1,6 +1,5 @@
 import { loadClientPasswordStateOrNull } from "./files.js";
 import {
-  CLIENT_PASSWORD_MANUAL_UNLOCK_SECONDS,
   verifyPassword,
   zeroizeBuffer,
 } from "./crypto.js";
@@ -8,7 +7,6 @@ import { describeReadinessError, inspectClientPasswordReadinessResolved } from "
 import type {
   ClientPasswordPrompt,
   ClientPasswordResolvedContext,
-  ClientPasswordSessionStatus,
 } from "./types.js";
 
 export async function promptForHiddenValue(
@@ -20,49 +18,6 @@ export async function promptForHiddenValue(
     : await prompt.prompt(message);
 
   return value.trim();
-}
-
-export async function promptForUnlockDuration(
-  prompt: ClientPasswordPrompt,
-): Promise<number> {
-  return await promptForUnlockDurationWithDefault(prompt, CLIENT_PASSWORD_MANUAL_UNLOCK_SECONDS);
-}
-
-export async function promptForUnlockDurationWithDefault(
-  prompt: ClientPasswordPrompt,
-  defaultSeconds: number,
-): Promise<number> {
-  while (true) {
-    const answer = (await prompt.prompt(`Unlock duration in seconds [${defaultSeconds}]: `)).trim();
-
-    if (answer === "") {
-      return defaultSeconds;
-    }
-
-    if (/^[1-9]\d*$/.test(answer)) {
-      return Number(answer);
-    }
-
-    prompt.writeLine("Enter a whole-number duration in seconds.");
-  }
-}
-
-export function resolveRemainingUnlockSeconds(status: ClientPasswordSessionStatus): number {
-  if (status.unlockUntilUnixMs === null) {
-    return CLIENT_PASSWORD_MANUAL_UNLOCK_SECONDS;
-  }
-
-  return Math.max(1, Math.ceil((status.unlockUntilUnixMs - Date.now()) / 1_000));
-}
-
-export function resolvePostChangeUnlockUntilUnixMs(
-  status: ClientPasswordSessionStatus,
-): number {
-  if (status.unlocked && status.unlockUntilUnixMs != null) {
-    return status.unlockUntilUnixMs;
-  }
-
-  return Date.now() + 86_400_000;
 }
 
 export async function promptForVerifiedClientPassword(options: {

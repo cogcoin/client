@@ -17,6 +17,14 @@ import { openWalletReadContext } from "../read/index.js";
 import type { WalletRuntimePaths } from "../runtime.js";
 import type { WalletSecretProvider } from "../state/provider.js";
 import {
+  resolveClientPasswordContext,
+  resolveClientPasswordStorageOptionsForWalletPaths,
+} from "../state/client-password/context.js";
+import {
+  destroyAllClientPasswordSessionsResolved,
+  exportClientPasswordSessionBootstrapResolved,
+} from "../state/client-password/session.js";
+import {
   readMiningGenerationActivity,
   requestMiningGenerationPreemption,
 } from "./coordination.js";
@@ -31,6 +39,12 @@ import {
   loadMiningRuntimeStatus,
   saveMiningRuntimeStatus,
 } from "./runtime-artifacts.js";
+import {
+  MINING_CLIENT_PASSWORD_BOOTSTRAP_FD,
+  providerUsesLocalFileClientPassword,
+  resolveClientPasswordPlatformForProviderKind,
+  writeClientPasswordSessionBootstrap,
+} from "./session-bootstrap.js";
 import type { MiningRuntimeStatusV1 } from "./types.js";
 import { MiningFollowVisualizer } from "./visualizer.js";
 
@@ -112,6 +126,26 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       resolve();
     }, { once: true });
   });
+}
+
+function resolveMiningClientPasswordContext(paths: WalletRuntimePaths, providerKind: string) {
+  return resolveClientPasswordContext(resolveClientPasswordStorageOptionsForWalletPaths(
+    paths,
+    resolveClientPasswordPlatformForProviderKind(providerKind),
+  ));
+}
+
+function createOneShotClientPasswordSessionDestroyer(): () => void {
+  let destroyed = false;
+
+  return () => {
+    if (destroyed) {
+      return;
+    }
+
+    destroyed = true;
+    destroyAllClientPasswordSessionsResolved();
+  };
 }
 
 function resolveSupervisorDependencies(
@@ -498,6 +532,7 @@ export async function runForegroundMining(options: {
   const deps = resolveSupervisorDependencies(options.deps);
   let visualizer: MiningFollowVisualizer | null = options.visualizer ?? null;
   const ownsVisualizer = visualizer === null;
+  const destroyClientPasswordSessions = createOneShotClientPasswordSessionDestroyer();
   const controlLock = await acquireMiningStartControlLock({
     paths: options.runtime.paths,
     purpose: "mine-foreground",
@@ -510,7 +545,10 @@ export async function runForegroundMining(options: {
     abortController.abort();
   };
   const handleSigint = () => abortController.abort();
-  const handleSigterm = () => abortController.abort();
+  const handleSigterm = () => {
+    process.once("exit", destroyClientPasswordSessions);
+    abortController.abort();
+  };
 
   try {
     await takeOverMiningRuntime({
@@ -567,6 +605,7 @@ export async function runForegroundMining(options: {
       visualizer?.close();
     }
     await controlLock.release();
+    destroyClientPasswordSessions();
   }
 }
 
@@ -609,6 +648,19 @@ export async function startBackgroundMining(options: {
       deps,
     });
 
+    const needsClientPasswordBootstrap = providerUsesLocalFileClientPassword(
+      options.runtime.provider.kind,
+    );
+    const clientPasswordBootstrap = needsClientPasswordBootstrap
+      ? exportClientPasswordSessionBootstrapResolved(
+        resolveMiningClientPasswordContext(options.runtime.paths, options.runtime.provider.kind),
+      )
+      : null;
+
+    if (needsClientPasswordBootstrap && clientPasswordBootstrap === null) {
+      throw new Error("wallet_client_password_locked");
+    }
+
     const runId = randomBytes(16).toString("hex");
     const child = deps.spawnWorkerProcess(deps.processExecPath, [
       deps.resolveWorkerMainPath(),
@@ -617,8 +669,34 @@ export async function startBackgroundMining(options: {
       `--run-id=${runId}`,
     ], {
       detached: true,
-      stdio: "ignore",
+      stdio: needsClientPasswordBootstrap
+        ? ["ignore", "ignore", "ignore", "pipe"]
+        : "ignore",
     });
+
+    try {
+      if (clientPasswordBootstrap !== null) {
+        const bootstrapStream = child.stdio?.[MINING_CLIENT_PASSWORD_BOOTSTRAP_FD];
+
+        if (
+          bootstrapStream === null
+          || bootstrapStream === undefined
+          || !("write" in bootstrapStream)
+          || typeof bootstrapStream.write !== "function"
+        ) {
+          throw new Error("mining_client_password_bootstrap_missing_pipe");
+        }
+
+        await writeClientPasswordSessionBootstrap(
+          bootstrapStream as NodeJS.WritableStream,
+          clientPasswordBootstrap,
+        );
+      }
+    } catch (error) {
+      child.kill?.("SIGTERM");
+      throw error;
+    }
+
     child.unref();
 
     const snapshot = await waitForHealthy(options.runtime.paths);
@@ -714,66 +792,78 @@ export async function runBackgroundMiningWorker(options: {
 }): Promise<void> {
   const deps = resolveSupervisorDependencies(options.deps);
   const abortController = new AbortController();
+  const destroyClientPasswordSessions = createOneShotClientPasswordSessionDestroyer();
+  const handleSigint = () => abortController.abort();
+  const handleSigterm = () => {
+    process.once("exit", destroyClientPasswordSessions);
+    abortController.abort();
+  };
 
-  process.on("SIGINT", () => abortController.abort());
-  process.on("SIGTERM", () => abortController.abort());
-
-  const initialContext = await options.runtime.openReadContext({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
-    secretProvider: options.runtime.provider,
-    paths: options.runtime.paths,
-  });
+  process.on("SIGINT", handleSigint);
+  process.on("SIGTERM", handleSigterm);
 
   try {
-    const initialView = await deps.inspectMiningControlPlane({
-      provider: options.runtime.provider,
-      localState: initialContext.localState,
-      bitcoind: initialContext.bitcoind,
-      nodeStatus: initialContext.nodeStatus,
-      nodeHealth: initialContext.nodeHealth,
-      indexer: initialContext.indexer,
+    const initialContext = await options.runtime.openReadContext({
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      secretProvider: options.runtime.provider,
       paths: options.runtime.paths,
     });
-    await deps.saveRuntimeStatus(options.runtime.paths.miningStatusPath, {
-      ...initialView.runtime,
-      walletRootId: initialContext.localState.walletRootId,
-      workerApiVersion: MINING_WORKER_API_VERSION,
-      workerBinaryVersion: process.version,
-      workerBuildId: options.runId,
+
+    try {
+      const initialView = await deps.inspectMiningControlPlane({
+        provider: options.runtime.provider,
+        localState: initialContext.localState,
+        bitcoind: initialContext.bitcoind,
+        nodeStatus: initialContext.nodeStatus,
+        nodeHealth: initialContext.nodeHealth,
+        indexer: initialContext.indexer,
+        paths: options.runtime.paths,
+      });
+      await deps.saveRuntimeStatus(options.runtime.paths.miningStatusPath, {
+        ...initialView.runtime,
+        walletRootId: initialContext.localState.walletRootId,
+        workerApiVersion: MINING_WORKER_API_VERSION,
+        workerBinaryVersion: process.version,
+        workerBuildId: options.runId,
+        runMode: "background",
+        backgroundWorkerPid: deps.processPid,
+        backgroundWorkerRunId: options.runId,
+        backgroundWorkerHeartbeatAtUnixMs: deps.nowUnixMs(),
+        currentPhase: "idle",
+        updatedAtUnixMs: deps.nowUnixMs(),
+      });
+    } finally {
+      await initialContext.close();
+    }
+
+    await deps.runMiningLoop({
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      provider: options.runtime.provider,
+      paths: options.runtime.paths,
       runMode: "background",
       backgroundWorkerPid: deps.processPid,
       backgroundWorkerRunId: options.runId,
-      backgroundWorkerHeartbeatAtUnixMs: deps.nowUnixMs(),
-      currentPhase: "idle",
-      updatedAtUnixMs: deps.nowUnixMs(),
+      signal: abortController.signal,
+      fetchImpl: options.fetchImpl,
+      openReadContext: options.runtime.openReadContext,
+      attachService: options.runtime.attachService,
+      rpcFactory: options.runtime.rpcFactory,
+    });
+    await deps.saveStopSnapshot({
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      provider: options.runtime.provider,
+      paths: options.runtime.paths,
+      runMode: "background",
+      backgroundWorkerPid: deps.processPid,
+      backgroundWorkerRunId: options.runId,
+      note: "Background mining worker stopped cleanly.",
     });
   } finally {
-    await initialContext.close();
+    process.off("SIGINT", handleSigint);
+    process.off("SIGTERM", handleSigterm);
+    destroyClientPasswordSessions();
   }
-
-  await deps.runMiningLoop({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
-    provider: options.runtime.provider,
-    paths: options.runtime.paths,
-    runMode: "background",
-    backgroundWorkerPid: deps.processPid,
-    backgroundWorkerRunId: options.runId,
-    signal: abortController.signal,
-    fetchImpl: options.fetchImpl,
-    openReadContext: options.runtime.openReadContext,
-    attachService: options.runtime.attachService,
-    rpcFactory: options.runtime.rpcFactory,
-  });
-  await deps.saveStopSnapshot({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
-    provider: options.runtime.provider,
-    paths: options.runtime.paths,
-    runMode: "background",
-    backgroundWorkerPid: deps.processPid,
-    backgroundWorkerRunId: options.runId,
-    note: "Background mining worker stopped cleanly.",
-  });
 }

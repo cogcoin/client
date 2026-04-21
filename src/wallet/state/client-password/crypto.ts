@@ -25,7 +25,7 @@ const CLIENT_PASSWORD_KDF = {
   parallelism: 1,
 };
 
-export const CLIENT_PASSWORD_MANUAL_UNLOCK_SECONDS = 60;
+export const CLIENT_PASSWORD_DEFAULT_UNLOCK_SECONDS = 3_600;
 export const CLIENT_PASSWORD_SETUP_AUTO_UNLOCK_SECONDS = 86_400;
 
 export function zeroizeBuffer(buffer: Uint8Array | null | undefined): void {

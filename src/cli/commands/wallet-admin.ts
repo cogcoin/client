@@ -4,8 +4,8 @@ import { loadWelcomeArtText } from "../art.js";
 import {
   formatNextStepLines,
   getFundingQuickstartGuidance,
+  getInitUnlockGuidanceLines,
   getInitNextSteps,
-  getSetupUnlockGuidanceLines,
 } from "../workflow-hints.js";
 import {
   createOwnedLockCleanupSignalWatcher,
@@ -14,7 +14,6 @@ import {
 import { runSyncCommand } from "./sync.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import type { WalletRepairResult, WalletResetResult } from "../../wallet/lifecycle.js";
-import { CLIENT_PASSWORD_SETUP_AUTO_UNLOCK_SECONDS } from "../../wallet/state/client-password.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
 
 function createCommandPrompter(
@@ -36,7 +35,7 @@ function getResetWarnings(result: WalletResetResult): string[] {
 }
 
 function writeSetupUnlockGuidance(stdout: RequiredCliRunnerContext["stdout"]): void {
-  for (const line of getSetupUnlockGuidanceLines(CLIENT_PASSWORD_SETUP_AUTO_UNLOCK_SECONDS)) {
+  for (const line of getInitUnlockGuidanceLines()) {
     writeLine(stdout, line);
   }
 }

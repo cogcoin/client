@@ -50,9 +50,22 @@ import {
 } from "../read/index.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../runtime.js";
 import {
+  resolveClientPasswordContext,
+  resolveClientPasswordStorageOptionsForWalletPaths,
+} from "../state/client-password/context.js";
+import { importClientPasswordSessionBootstrapResolved } from "../state/client-password/session.js";
+import {
   createDefaultWalletSecretProvider,
+  unlockClientPassword,
+  withInteractiveWalletSecretProvider,
   type WalletSecretProvider,
 } from "../state/provider.js";
+import { bindClientPasswordPromptSessionPolicy } from "../state/client-password/session-policy.js";
+import {
+  providerUsesLocalFileClientPassword,
+  resolveClientPasswordPlatformForProviderKind,
+} from "./session-bootstrap.js";
+import type { ClientPasswordSessionBootstrapState } from "../state/client-password/types.js";
 import type {
   MiningStateRecord,
   OutpointRecord,
@@ -923,7 +936,14 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
     throw new Error("mine_requires_tty");
   }
 
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
+  const miningPrompter = bindClientPasswordPromptSessionPolicy(
+    options.prompter,
+    "mining-indefinite",
+  );
+  const provider = withInteractiveWalletSecretProvider(
+    options.provider ?? createDefaultWalletSecretProvider(),
+    miningPrompter,
+  );
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
   const openReadContext = options.openReadContext ?? openWalletReadContext;
   const attachService = options.attachService ?? attachOrStartManagedBitcoindService;
@@ -934,12 +954,14 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
     ? true
     : await ensureBuiltInMiningSetupIfNeeded({
       provider,
-      prompter: options.prompter,
+      prompter: miningPrompter,
       paths,
     });
   if (!setupReady) {
     throw new Error("Built-in mining provider is not configured. Run `cogcoin mine setup`.");
   }
+
+  await unlockClientPassword(provider, miningPrompter);
 
   await runForegroundMiningSupervisor({
     dataDir: options.dataDir,
@@ -970,7 +992,14 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
 }
 
 export async function startBackgroundMining(options: StartBackgroundMiningOptions): Promise<MiningStartResult> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
+  const miningPrompter = bindClientPasswordPromptSessionPolicy(
+    options.prompter,
+    "mining-indefinite",
+  );
+  const provider = withInteractiveWalletSecretProvider(
+    options.provider ?? createDefaultWalletSecretProvider(),
+    miningPrompter,
+  );
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
   const requestMiningPreemption = options.requestMiningPreemption ?? requestMiningGenerationPreemption;
   const waitForBackgroundHealthyImpl = options.waitForBackgroundHealthyImpl ?? waitForBackgroundHealthy;
@@ -981,12 +1010,14 @@ export async function startBackgroundMining(options: StartBackgroundMiningOption
     ? true
     : await ensureBuiltInMiningSetupIfNeeded({
       provider,
-      prompter: options.prompter,
+      prompter: miningPrompter,
       paths,
     });
   if (!setupReady) {
     throw new Error("Built-in mining provider is not configured. Run `cogcoin mine setup`.");
   }
+
+  await unlockClientPassword(provider, miningPrompter);
 
   return await startBackgroundMiningSupervisor({
     dataDir: options.dataDir,
@@ -1040,12 +1071,26 @@ export async function runBackgroundMiningWorker(options: RunnerDependencies & {
   runId: string;
   provider?: WalletSecretProvider;
   paths?: WalletRuntimePaths;
+  clientPasswordSessionBootstrap?: ClientPasswordSessionBootstrapState | null;
 }): Promise<void> {
   const provider = options.provider ?? createDefaultWalletSecretProvider();
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
   const openReadContext = options.openReadContext ?? openWalletReadContext;
   const attachService = options.attachService ?? attachOrStartManagedBitcoindService;
   const rpcFactory = options.rpcFactory ?? createRpcClient as (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
+
+  if (
+    options.clientPasswordSessionBootstrap != null
+    && providerUsesLocalFileClientPassword(provider.kind)
+  ) {
+    await importClientPasswordSessionBootstrapResolved({
+      ...resolveClientPasswordContext(resolveClientPasswordStorageOptionsForWalletPaths(
+        paths,
+        resolveClientPasswordPlatformForProviderKind(provider.kind),
+      )),
+      bootstrap: options.clientPasswordSessionBootstrap,
+    });
+  }
 
   await runBackgroundMiningWorkerSupervisor({
     dataDir: options.dataDir,

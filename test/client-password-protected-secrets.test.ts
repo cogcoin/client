@@ -14,7 +14,7 @@ import {
 } from "../src/wallet/state/client-password/protected-secrets.js";
 import {
   lockClientPasswordSessionResolved,
-  startClientPasswordSessionResolved,
+  startClientPasswordSessionWithExpiryResolved,
 } from "../src/wallet/state/client-password/session.js";
 
 test("client-password protected secrets round-trip through the shared secret owner", async (t) => {
@@ -38,10 +38,10 @@ test("client-password protected secrets round-trip through the shared secret own
   t.after(async () => {
     await lockClientPasswordSessionResolved(context);
   });
-  await startClientPasswordSessionResolved({
+  await startClientPasswordSessionWithExpiryResolved({
     ...context,
     derivedKey: created.derivedKey,
-    unlockDurationSeconds: 120,
+    unlockUntilUnixMs: Date.now() + 120_000,
   });
 
   await storeClientProtectedSecretResolved({

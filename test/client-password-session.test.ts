@@ -98,3 +98,30 @@ test("client-password session status does not carry into a fresh process", async
     unlockUntilUnixMs: null,
   });
 });
+
+test("client-password session owner preserves indefinite in-process sessions", async (t) => {
+  const stateRoot = await createTrackedTempDirectory(t, "cogcoin-client-password-session-indefinite");
+  const context = resolveClientPasswordContext({
+    platform: "linux",
+    stateRoot,
+    runtimeRoot: join(stateRoot, "runtime"),
+    directoryPath: join(stateRoot, "secrets"),
+    runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
+  });
+
+  t.after(async () => {
+    await lockClientPasswordSessionResolved(context);
+  });
+
+  const session = await startClientPasswordSessionWithExpiryResolved({
+    ...context,
+    derivedKey: Buffer.alloc(32, 19),
+    unlockUntilUnixMs: null,
+  });
+
+  assert.deepEqual(session, {
+    unlocked: true,
+    unlockUntilUnixMs: null,
+  });
+  assert.deepEqual(await readClientPasswordSessionStatusResolved(context), session);
+});

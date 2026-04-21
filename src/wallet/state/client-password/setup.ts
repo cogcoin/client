@@ -1,7 +1,6 @@
 import { mkdir } from "node:fs/promises";
 
 import {
-  CLIENT_PASSWORD_SETUP_AUTO_UNLOCK_SECONDS,
   createClientPasswordState,
   zeroizeBuffer,
 } from "./crypto.js";
@@ -9,6 +8,7 @@ import { writeClientPasswordState } from "./files.js";
 import { migrateReferencedSecrets } from "./migration.js";
 import { promptForNewPassword } from "./prompts.js";
 import { inspectClientPasswordReadinessResolved } from "./readiness.js";
+import { resolveClientPasswordPromptSessionPolicy } from "./session-policy.js";
 import { finalizePendingClientPasswordRotationIfNeeded } from "./rotation.js";
 import { startClientPasswordSessionResolved } from "./session.js";
 import type {
@@ -54,7 +54,7 @@ export async function ensureClientPasswordConfiguredResolved(options: {
     const session = await startClientPasswordSessionResolved({
       ...options.context,
       derivedKey,
-      unlockDurationSeconds: CLIENT_PASSWORD_SETUP_AUTO_UNLOCK_SECONDS,
+      sessionPolicy: resolveClientPasswordPromptSessionPolicy(options.prompt),
     });
     derivedKey = null;
 
