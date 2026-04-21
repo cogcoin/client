@@ -962,7 +962,7 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
     },
     deps: {
       requestMiningPreemption,
-      runMiningLoop: options.runMiningLoopImpl,
+      runMiningLoop: options.runMiningLoopImpl ?? runMiningLoop,
       saveStopSnapshot: options.saveStopSnapshotImpl,
       sleep: options.sleepImpl,
     },
@@ -1060,7 +1060,7 @@ export async function runBackgroundMiningWorker(options: RunnerDependencies & {
       rpcFactory,
     },
     deps: {
-      runMiningLoop: options.runMiningLoopImpl,
+      runMiningLoop: options.runMiningLoopImpl ?? runMiningLoop,
       saveStopSnapshot: options.saveStopSnapshotImpl,
     },
   });

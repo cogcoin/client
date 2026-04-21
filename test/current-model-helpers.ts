@@ -90,7 +90,7 @@ export function createMiningRuntimeStatus(
     schemaVersion: 1,
     walletRootId: "wallet-root",
     workerApiVersion: "cogcoin/mining-worker/v1",
-    workerBinaryVersion: "1.1.4",
+    workerBinaryVersion: "1.1.5",
     workerBuildId: "build-1",
     updatedAtUnixMs: 1,
     runMode: "stopped",

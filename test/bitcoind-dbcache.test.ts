@@ -30,11 +30,11 @@ function createRuntimeConfig(dbcacheMiB: number): ManagedBitcoindRuntimeConfig {
 test("resolveManagedBitcoindDbcacheMiB uses the requested RAM tiers", () => {
   const GiB = 1024 ** 3;
 
-  assert.equal(resolveManagedBitcoindDbcacheMiB(0), 4096);
-  assert.equal(resolveManagedBitcoindDbcacheMiB(8 * GiB - 1), 4096);
-  assert.equal(resolveManagedBitcoindDbcacheMiB(8 * GiB), 4096);
-  assert.equal(resolveManagedBitcoindDbcacheMiB(16 * GiB), 4096);
-  assert.equal(resolveManagedBitcoindDbcacheMiB(32 * GiB), 4096);
+  assert.equal(resolveManagedBitcoindDbcacheMiB(0), 2048);
+  assert.equal(resolveManagedBitcoindDbcacheMiB(8 * GiB - 1), 2048);
+  assert.equal(resolveManagedBitcoindDbcacheMiB(8 * GiB), 2048);
+  assert.equal(resolveManagedBitcoindDbcacheMiB(16 * GiB), 2048);
+  assert.equal(resolveManagedBitcoindDbcacheMiB(32 * GiB), 2048);
 });
 
 test("writeBitcoinConfForTesting writes dbcache into managed bitcoin.conf", async () => {
@@ -46,11 +46,11 @@ test("writeBitcoinConfForTesting writes dbcache into managed bitcoin.conf", asyn
       dataDir: root,
       chain: "main",
       startHeight: 937_337,
-    }, createRuntimeConfig(4096));
+    }, createRuntimeConfig(2048));
 
     const text = await readFile(filePath, "utf8");
     assert.match(text, /^listen=0$/m);
-    assert.match(text, /^dbcache=4096$/m);
+    assert.match(text, /^dbcache=2048$/m);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -61,10 +61,10 @@ test("buildManagedServiceArgsForTesting includes dbcache in the managed bitcoind
     dataDir: "/tmp/cogcoin-bitcoind",
     chain: "main",
     startHeight: 937_337,
-  }, createRuntimeConfig(4096));
+  }, createRuntimeConfig(2048));
 
   assert.ok(args.includes("-listen=0"));
-  assert.ok(args.includes("-dbcache=4096"));
+  assert.ok(args.includes("-dbcache=2048"));
 });
 
 test("buildManagedServiceArgsForTesting includes loadblock when a getblock archive is ready", () => {
@@ -76,7 +76,7 @@ test("buildManagedServiceArgsForTesting includes loadblock when a getblock archi
     getblockArchiveEndHeight: 945_188,
     getblockArchiveSha256: "ab".repeat(32),
   }, {
-    ...createRuntimeConfig(4096),
+    ...createRuntimeConfig(2048),
     getblockArchiveEndHeight: 945_188,
     getblockArchiveSha256: "ab".repeat(32),
   });

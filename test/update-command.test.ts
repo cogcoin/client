@@ -11,8 +11,8 @@ import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createWalletReadContext } from "./current-model-helpers.js";
 
-const CURRENT_VERSION = "1.1.4";
-const NEXT_VERSION = "1.1.5";
+const CURRENT_VERSION = "1.1.5";
+const NEXT_VERSION = "1.1.6";
 
 function createStringWriter(isTTY = false) {
   let text = "";
@@ -151,8 +151,8 @@ test("update text output reports already up-to-date without invoking npm", async
   assert.equal(exitCode, 0);
   assert.equal(harness.installCalls.count, 0);
   assert.equal(harness.prompt.prompts.length, 0);
-  assert.match(harness.stdout.read(), /Current version: 1\.1\.4/);
-  assert.match(harness.stdout.read(), /Latest version: 1\.1\.4/);
+  assert.match(harness.stdout.read(), /Current version: 1\.1\.5/);
+  assert.match(harness.stdout.read(), /Latest version: 1\.1\.5/);
   assert.match(harness.stdout.read(), /Cogcoin is already up to date\./);
   assert.equal(harness.stderr.read(), "");
 });
@@ -173,8 +173,8 @@ test("update text output prompts and invokes npm when a newer version is availab
   assert.equal(exitCode, 0);
   assert.equal(harness.installCalls.count, 1);
   assert.deepEqual(harness.prompt.prompts, ["Install update now? [Y/n]: "]);
-  assert.match(harness.stdout.read(), /Current version: 1\.1\.4/);
-  assert.match(harness.stdout.read(), /Latest version: 1\.1\.5/);
+  assert.match(harness.stdout.read(), /Current version: 1\.1\.5/);
+  assert.match(harness.stdout.read(), /Latest version: 1\.1\.6/);
   assert.match(harness.stdout.read(), /Installing update\.\.\./);
   assert.match(harness.stdout.read(), /npm install output/);
   assert.match(harness.stdout.read(), /Update completed\. The next cogcoin invocation will use the new install\./);
@@ -307,7 +307,7 @@ test("passive update notifications still run for ordinary commands", async (t) =
 
   assert.equal(exitCode, 0);
   assert.equal(fetchCalls.count, 1);
-  assert.match(stderr.read(), /Update available: Cogcoin 1\.1\.4 -> 1\.1\.5/);
+  assert.match(stderr.read(), /Update available: Cogcoin 1\.1\.5 -> 1\.1\.6/);
 });
 
 test("cogcoin update skips the passive notifier and performs only the explicit lookup", async (t) => {

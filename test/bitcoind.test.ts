@@ -2060,7 +2060,7 @@ test("attach restarts a compatible stale daemon when expectedBinaryVersion is ne
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.1.4",
+      expectedBinaryVersion: "1.1.5",
       startupTimeoutMs: 5_000,
     });
 
@@ -2101,7 +2101,7 @@ test("attach restarts a compatible unparseable daemon when expectedBinaryVersion
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.1.4",
+      expectedBinaryVersion: "1.1.5",
       startupTimeoutMs: 5_000,
     });
 
@@ -2124,7 +2124,7 @@ test("attach restarts a compatible unparseable daemon when expectedBinaryVersion
 
 test("attach keeps compatible equal and newer daemon versions running", async () => {
   const cases = [
-    { name: "equal", binaryVersion: "1.1.4" },
+    { name: "equal", binaryVersion: "1.1.5" },
     { name: "newer", binaryVersion: "1.1.5" },
   ];
 
@@ -2148,7 +2148,7 @@ test("attach keeps compatible equal and newer daemon versions running", async ()
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.1.4",
+        expectedBinaryVersion: "1.1.5",
         startupTimeoutMs: 1_000,
       });
 
@@ -2201,7 +2201,7 @@ test("attach rejects a live daemon with incompatible service metadata without sp
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.1.4",
+        expectedBinaryVersion: "1.1.5",
         startupTimeoutMs: 1_000,
       }),
       /indexer_daemon_service_version_mismatch/,
@@ -2230,7 +2230,7 @@ test("attach accepts a live daemon for a different wallet root when the daemon i
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.1.4",
+      expectedBinaryVersion: "1.1.5",
       startupTimeoutMs: 1_000,
     });
     await daemon.close();
@@ -2258,7 +2258,7 @@ test("attach rejects a live daemon with an incompatible schema version", async (
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.1.4",
+        expectedBinaryVersion: "1.1.5",
         startupTimeoutMs: 1_000,
       }),
       /indexer_daemon_schema_mismatch/,

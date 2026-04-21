@@ -33,7 +33,7 @@ const LOCAL_HOST = "127.0.0.1";
 const SUPPORTED_BITCOIND_VERSION = "30.2.0";
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15_000;
-const DEFAULT_DBCACHE_MIB = 4096;
+const DEFAULT_DBCACHE_MIB = 2048;
 const claimedUninitializedRuntimeKeys = new Set<string>();
 
 export function resolveManagedBitcoindDbcacheMiB(totalRamBytes: number): number {
