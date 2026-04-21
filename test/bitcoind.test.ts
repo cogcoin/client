@@ -421,6 +421,143 @@ test("BitcoinRpcClient keeps fetch for standard RPC methods", async () => {
   }
 });
 
+test("BitcoinRpcClient uses a 30-second default timeout and honors explicit overrides", async (t) => {
+  const rootDir = createTempDirectory("cogcoin-client-rpc-timeout-default");
+  const originalTimeout = AbortSignal.timeout;
+  const timeoutCalls: number[] = [];
+
+  (AbortSignal as typeof AbortSignal & {
+    timeout: typeof AbortSignal.timeout;
+  }).timeout = ((delayMs: number) => {
+    timeoutCalls.push(delayMs);
+    return new AbortController().signal;
+  }) as typeof AbortSignal.timeout;
+
+  t.after(() => {
+    (AbortSignal as typeof AbortSignal & {
+      timeout: typeof AbortSignal.timeout;
+    }).timeout = originalTimeout;
+  });
+
+  try {
+    const cookieFile = join(rootDir, ".cookie");
+    await writeFile(cookieFile, "user:password\n");
+    const fetchImpl: typeof fetch = async () => new Response(JSON.stringify({
+      result: {
+        chain: "main",
+        blocks: 910_000,
+        headers: 910_000,
+        bestblockhash: "aa".repeat(32),
+        pruned: false,
+      },
+      error: null,
+    }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+      },
+    });
+    const defaultRpc = new BitcoinRpcClient("http://127.0.0.1:8332", cookieFile, {
+      fetchImpl,
+    });
+    const overrideRpc = new BitcoinRpcClient("http://127.0.0.1:8332", cookieFile, {
+      fetchImpl,
+      requestTimeoutMs: 12_345,
+    });
+
+    await defaultRpc.getBlockchainInfo();
+    await overrideRpc.getBlockchainInfo();
+
+    assert.deepEqual(timeoutCalls, [30_000, 12_345]);
+  } finally {
+    await removeTempDirectory(rootDir);
+  }
+});
+
+test("BitcoinRpcClient default timeout allows responses that exceed the old 15-second budget", async (t) => {
+  const rootDir = createTempDirectory("cogcoin-client-rpc-timeout-window");
+  const originalTimeout = AbortSignal.timeout;
+
+  (AbortSignal as typeof AbortSignal & {
+    timeout: typeof AbortSignal.timeout;
+  }).timeout = ((delayMs: number) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+    }, Math.ceil(delayMs / 1_000));
+    controller.signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+    }, { once: true });
+    return controller.signal;
+  }) as typeof AbortSignal.timeout;
+
+  t.after(() => {
+    (AbortSignal as typeof AbortSignal & {
+      timeout: typeof AbortSignal.timeout;
+    }).timeout = originalTimeout;
+  });
+
+  try {
+    const cookieFile = join(rootDir, ".cookie");
+    await writeFile(cookieFile, "user:password\n");
+    const delayedFetch: typeof fetch = async (_input, init) => {
+      const signal = init?.signal;
+
+      return await new Promise<Response>((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+
+        const timer = setTimeout(() => {
+          resolve(new Response(JSON.stringify({
+            result: {
+              chain: "main",
+              blocks: 910_000,
+              headers: 910_000,
+              bestblockhash: "aa".repeat(32),
+              pruned: false,
+            },
+            error: null,
+          }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+            },
+          }));
+        }, 20);
+
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        }, { once: true });
+      });
+    };
+    const defaultRpc = new BitcoinRpcClient("http://127.0.0.1:8332", cookieFile, {
+      fetchImpl: delayedFetch,
+    });
+    const oldBudgetRpc = new BitcoinRpcClient("http://127.0.0.1:8332", cookieFile, {
+      fetchImpl: delayedFetch,
+      requestTimeoutMs: 15_000,
+    });
+
+    const info = await defaultRpc.getBlockchainInfo();
+
+    assert.equal(info.chain, "main");
+    await assert.rejects(
+      async () => oldBudgetRpc.getBlockchainInfo(),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /getblockchaininfo failed/);
+        assert.match(error.message, /The operation was aborted due to timeout/);
+        return true;
+      },
+    );
+  } finally {
+    await removeTempDirectory(rootDir);
+  }
+});
+
 test("BitcoinRpcClient uses the raw request transport for loadtxoutset and preserves the actual cause", async () => {
   const rootDir = createTempDirectory("cogcoin-client-rpc-loadtxoutset");
 

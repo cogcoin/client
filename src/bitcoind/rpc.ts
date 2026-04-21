@@ -55,6 +55,8 @@ interface RpcTransportOptions {
   }) => Promise<RpcResponsePayload>;
 }
 
+const DEFAULT_MANAGED_RPC_REQUEST_TIMEOUT_MS = 30_000;
+
 export class BitcoinRpcClient {
   readonly #url: string;
   readonly #cookieFile: string;
@@ -69,7 +71,7 @@ export class BitcoinRpcClient {
     this.#url = url;
     this.#cookieFile = cookieFile;
     this.#fetchImpl = options.fetchImpl ?? fetch;
-    this.#requestTimeoutMs = options.requestTimeoutMs ?? 15_000;
+    this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_MANAGED_RPC_REQUEST_TIMEOUT_MS;
     this.#requestImpl = options.requestImpl ?? this.#sendNodeRequest.bind(this);
   }
 
