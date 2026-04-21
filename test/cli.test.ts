@@ -26,6 +26,8 @@ test("help text reflects the one-address model", () => {
   assert.doesNotMatch(HELP_TEXT, /wallet export <path>/);
   assert.doesNotMatch(HELP_TEXT, /wallet import <path>/);
   assert.doesNotMatch(HELP_TEXT, /--seed/);
+  assert.doesNotMatch(HELP_TEXT, /mine start/i);
+  assert.doesNotMatch(HELP_TEXT, /mine stop/i);
   assert.doesNotMatch(HELP_TEXT, /client unlock/i);
   assert.doesNotMatch(HELP_TEXT, /client lock/i);
 });
@@ -116,6 +118,17 @@ test("parser accepts mine prompt and mine prompt list", () => {
   assert.equal(parseCliArgs(["mine", "prompt"]).command, "mine-prompt-list");
   assert.equal(parseCliArgs(["mine", "prompt", "alpha"]).command, "mine-prompt");
   assert.equal(parseCliArgs(["mine", "prompt", "list"]).command, "mine-prompt-list");
+});
+
+test("parser routes removed mining background commands through generic unknown-command handling", () => {
+  assert.throws(
+    () => parseCliArgs(["mine", "start"]),
+    /cli_unknown_command_mine_start/,
+  );
+  assert.throws(
+    () => parseCliArgs(["mine", "stop"]),
+    /cli_unknown_command_mine_stop/,
+  );
 });
 
 test("parser still routes bare field to the canonical field command before arity validation", () => {

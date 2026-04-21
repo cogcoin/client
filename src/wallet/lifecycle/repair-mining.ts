@@ -9,21 +9,10 @@ import { normalizeMiningStateRecord } from "../mining/state.js";
 import type { MiningRuntimeStatusV1 } from "../mining/types.js";
 import type { WalletRuntimePaths } from "../runtime.js";
 import { createWalletSecretReference, type WalletSecretProvider } from "../state/provider.js";
-import { bindClientPasswordPromptSessionPolicy } from "../state/client-password/session-policy.js";
 import { persistWalletStateUpdate } from "../descriptor-normalization.js";
 import type { WalletStateV1 } from "../types.js";
 import { isProcessAlive, stopRecordedManagedProcess } from "./repair-runtime.js";
-import type { WalletPrompter, WalletRepairResult } from "./types.js";
-
-export function createSilentNonInteractivePrompter(): WalletPrompter {
-  return {
-    isInteractive: false,
-    writeLine() {},
-    async prompt(): Promise<string> {
-      return "";
-    },
-  };
-}
+import type { WalletRepairResult } from "./types.js";
 
 export function applyRepairStoppedMiningState(state: WalletStateV1): WalletStateV1 {
   const miningState = normalizeMiningStateRecord(state.miningState);
@@ -307,9 +296,6 @@ export async function resumeBackgroundMiningAfterRepair(options: {
   repairedState: WalletStateV1;
   bitcoindPostRepairHealth: WalletRepairResult["bitcoindPostRepairHealth"];
   indexerPostRepairHealth: WalletRepairResult["indexerPostRepairHealth"];
-  dataDir: string;
-  databasePath: string;
-  startBackgroundMining?: typeof import("../mining/runner.js").startBackgroundMining;
 }): Promise<{
   miningResumeAction: WalletRepairResult["miningResumeAction"];
   miningPostRepairRunMode: WalletRepairResult["miningPostRepairRunMode"];
@@ -350,38 +336,9 @@ export async function resumeBackgroundMiningAfterRepair(options: {
     };
   }
 
-  try {
-    const startBackgroundMining = options.startBackgroundMining
-      ?? (await import("../mining/runner.js")).startBackgroundMining;
-    const resumed = await startBackgroundMining({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      provider: options.provider,
-      paths: options.paths,
-      prompter: bindClientPasswordPromptSessionPolicy(
-        createSilentNonInteractivePrompter(),
-        "mining-indefinite",
-      ),
-    });
-
-    if (resumed.snapshot?.runMode === "background") {
-      return {
-        miningResumeAction: "resumed-background",
-        miningPostRepairRunMode: "background",
-        miningResumeError: null,
-      };
-    }
-
-    return {
-      miningResumeAction: "resume-failed",
-      miningPostRepairRunMode: "stopped",
-      miningResumeError: "Background mining did not report a background runtime after repair.",
-    };
-  } catch (error) {
-    return {
-      miningResumeAction: "resume-failed",
-      miningPostRepairRunMode: "stopped",
-      miningResumeError: error instanceof Error ? error.message : String(error),
-    };
-  }
+  return {
+    miningResumeAction: "skipped-background-mode-removed",
+    miningPostRepairRunMode: "stopped",
+    miningResumeError: null,
+  };
 }

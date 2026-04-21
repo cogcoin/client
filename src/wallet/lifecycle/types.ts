@@ -3,7 +3,6 @@ import type { createRpcClient } from "../../bitcoind/node.js";
 import type { attachOrStartManagedBitcoindService, probeManagedBitcoindService } from "../../bitcoind/service.js";
 import type { RpcListUnspentEntry } from "../../bitcoind/types.js";
 import type { requestMiningGenerationPreemption } from "../mining/coordination.js";
-import type { startBackgroundMining } from "../mining/runner.js";
 import type { WalletRuntimePaths } from "../runtime.js";
 import type { WalletSecretProvider } from "../state/provider.js";
 import type { WalletStateV1 } from "../types.js";
@@ -48,7 +47,7 @@ export interface WalletRepairResult {
   indexerCompatibilityIssue: "none" | "service-version-mismatch" | "wallet-root-mismatch" | "schema-mismatch";
   indexerPostRepairHealth: "starting" | "catching-up" | "synced" | "failed";
   miningPreRepairRunMode: "stopped" | "foreground" | "background";
-  miningResumeAction: "none" | "skipped-not-resumable" | "skipped-post-repair-blocked" | "resumed-background" | "resume-failed";
+  miningResumeAction: "none" | "skipped-not-resumable" | "skipped-post-repair-blocked" | "skipped-background-mode-removed";
   miningPostRepairRunMode: "stopped" | "background";
   miningResumeError: string | null;
   note: string | null;
@@ -131,7 +130,6 @@ export interface WalletRepairDependencies extends WalletManagedCoreDependencies 
   attachIndexerDaemon?: typeof attachOrStartIndexerDaemon;
   probeIndexerDaemon?: typeof probeIndexerDaemon;
   requestMiningPreemption?: typeof requestMiningGenerationPreemption;
-  startBackgroundMining?: typeof startBackgroundMining;
 }
 
 export interface WalletRepairContext extends WalletManagedCoreContext {
@@ -142,7 +140,6 @@ export interface WalletRepairContext extends WalletManagedCoreContext {
   attachIndexerDaemon: NonNullable<WalletRepairDependencies["attachIndexerDaemon"]>;
   probeIndexerDaemon: NonNullable<WalletRepairDependencies["probeIndexerDaemon"]>;
   requestMiningPreemption?: WalletRepairDependencies["requestMiningPreemption"];
-  startBackgroundMining?: WalletRepairDependencies["startBackgroundMining"];
 }
 
 export interface WalletBitcoindRepairStageResult {

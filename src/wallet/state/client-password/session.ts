@@ -12,7 +12,6 @@ import {
 import type {
   ClientPasswordPrompt,
   ClientPasswordResolvedContext,
-  ClientPasswordSessionBootstrapState,
   ClientPasswordSessionStatus,
   WrappedSecretEnvelopeV1,
 } from "./types.js";
@@ -181,40 +180,6 @@ export async function startClientPasswordSessionWithExpiryResolved(
     return putActiveSession(options);
   } finally {
     zeroizeBuffer(options.derivedKey);
-  }
-}
-
-export function exportClientPasswordSessionBootstrapResolved(
-  context: ClientPasswordResolvedContext,
-): ClientPasswordSessionBootstrapState | null {
-  const session = getActiveSession(context);
-
-  if (session === null) {
-    return null;
-  }
-
-  return {
-    unlockUntilUnixMs: session.unlockUntilUnixMs,
-    derivedKeyBase64: session.derivedKey.toString("base64"),
-  };
-}
-
-export async function importClientPasswordSessionBootstrapResolved(
-  options: ClientPasswordResolvedContext & {
-    bootstrap: ClientPasswordSessionBootstrapState;
-  },
-): Promise<ClientPasswordSessionStatus> {
-  let derivedKey: Buffer | null = null;
-
-  try {
-    derivedKey = Buffer.from(options.bootstrap.derivedKeyBase64, "base64");
-    return await startClientPasswordSessionWithExpiryResolved({
-      ...options,
-      derivedKey,
-      unlockUntilUnixMs: options.bootstrap.unlockUntilUnixMs,
-    });
-  } finally {
-    zeroizeBuffer(derivedKey);
   }
 }
 

@@ -69,5 +69,5 @@ test("registry helpers preserve command capability metadata", () => {
   assert.equal(commandSupportsYesFlag("register"), true);
   assert.equal(commandSupportsYesFlag("reset"), false);
   assert.equal(commandSupportsSatvb("register"), true);
-  assert.equal(commandSupportsSatvb("mine-start"), false);
+  assert.equal(commandSupportsSatvb("mine"), false);
 });

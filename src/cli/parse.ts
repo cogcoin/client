@@ -373,8 +373,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
       || command === "sync"
       || command === "follow"
       || command === "mine"
-      || command === "mine-start"
-      || command === "mine-stop"
       || command === "mine-setup"
       || command === "mine-prompt-list"
       || command === "mine-status"

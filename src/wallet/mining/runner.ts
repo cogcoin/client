@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
 
 import {
   getBalance,
@@ -50,22 +49,12 @@ import {
 } from "../read/index.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../runtime.js";
 import {
-  resolveClientPasswordContext,
-  resolveClientPasswordStorageOptionsForWalletPaths,
-} from "../state/client-password/context.js";
-import { importClientPasswordSessionBootstrapResolved } from "../state/client-password/session.js";
-import {
   createDefaultWalletSecretProvider,
   unlockClientPassword,
   withInteractiveWalletSecretProvider,
   type WalletSecretProvider,
 } from "../state/provider.js";
 import { bindClientPasswordPromptSessionPolicy } from "../state/client-password/session-policy.js";
-import {
-  providerUsesLocalFileClientPassword,
-  resolveClientPasswordPlatformForProviderKind,
-} from "./session-bootstrap.js";
-import type { ClientPasswordSessionBootstrapState } from "../state/client-password/types.js";
 import type {
   MiningStateRecord,
   OutpointRecord,
@@ -164,11 +153,7 @@ import {
   normalizeMiningStateRecord,
 } from "./state.js";
 import {
-  runBackgroundMiningWorker as runBackgroundMiningWorkerSupervisor,
   runForegroundMining as runForegroundMiningSupervisor,
-  startBackgroundMining as startBackgroundMiningSupervisor,
-  stopBackgroundMining as stopBackgroundMiningSupervisor,
-  waitForBackgroundHealthy as waitForBackgroundHealthySupervisor,
 } from "./supervisor.js";
 import { createMiningSentenceRequestLimits } from "./sentence-protocol.js";
 import { generateMiningSentences, MiningProviderRequestError, type MiningSentenceGenerationRequest } from "./sentences.js";
@@ -204,8 +189,6 @@ interface RunnerDependencies {
   requestMiningPreemption?: typeof requestMiningGenerationPreemption;
   runMiningLoopImpl?: typeof runMiningLoop;
   saveStopSnapshotImpl?: typeof saveStopSnapshot;
-  spawnWorkerProcess?: typeof spawn;
-  waitForBackgroundHealthyImpl?: typeof waitForBackgroundHealthy;
   shutdownGraceMs?: number;
   sleepImpl?: typeof sleep;
 }
@@ -339,27 +322,6 @@ export interface RunForegroundMiningOptions extends RunnerDependencies {
   progressOutput?: ProgressOutputMode;
   paths?: WalletRuntimePaths;
   visualizer?: MiningFollowVisualizer;
-}
-
-export interface StartBackgroundMiningOptions extends RunnerDependencies {
-  dataDir: string;
-  databasePath: string;
-  provider?: WalletSecretProvider;
-  prompter: WalletPrompter;
-  builtInSetupEnsured?: boolean;
-  paths?: WalletRuntimePaths;
-}
-
-export interface StopBackgroundMiningOptions extends RunnerDependencies {
-  dataDir: string;
-  databasePath: string;
-  provider?: WalletSecretProvider;
-  paths?: WalletRuntimePaths;
-}
-
-export interface MiningStartResult {
-  started: boolean;
-  snapshot: MiningRuntimeStatusV1 | null;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -927,10 +889,6 @@ async function runMiningLoop(options: {
   }
 }
 
-async function waitForBackgroundHealthy(paths: WalletRuntimePaths): Promise<MiningRuntimeStatusV1 | null> {
-  return await waitForBackgroundHealthySupervisor(paths);
-}
-
 export async function runForegroundMining(options: RunForegroundMiningOptions): Promise<void> {
   if (!options.prompter.isInteractive) {
     throw new Error("mine_requires_tty");
@@ -987,126 +945,6 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
       runMiningLoop: options.runMiningLoopImpl ?? runMiningLoop,
       saveStopSnapshot: options.saveStopSnapshotImpl,
       sleep: options.sleepImpl,
-    },
-  });
-}
-
-export async function startBackgroundMining(options: StartBackgroundMiningOptions): Promise<MiningStartResult> {
-  const miningPrompter = bindClientPasswordPromptSessionPolicy(
-    options.prompter,
-    "mining-indefinite",
-  );
-  const provider = withInteractiveWalletSecretProvider(
-    options.provider ?? createDefaultWalletSecretProvider(),
-    miningPrompter,
-  );
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const requestMiningPreemption = options.requestMiningPreemption ?? requestMiningGenerationPreemption;
-  const waitForBackgroundHealthyImpl = options.waitForBackgroundHealthyImpl ?? waitForBackgroundHealthy;
-  const openReadContext = options.openReadContext ?? openWalletReadContext;
-  const attachService = options.attachService ?? attachOrStartManagedBitcoindService;
-  const rpcFactory = options.rpcFactory ?? createRpcClient as (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
-  const setupReady = options.builtInSetupEnsured === true
-    ? true
-    : await ensureBuiltInMiningSetupIfNeeded({
-      provider,
-      prompter: miningPrompter,
-      paths,
-    });
-  if (!setupReady) {
-    throw new Error("Built-in mining provider is not configured. Run `cogcoin mine setup`.");
-  }
-
-  await unlockClientPassword(provider, miningPrompter);
-
-  return await startBackgroundMiningSupervisor({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
-    shutdownGraceMs: options.shutdownGraceMs,
-    waitForBackgroundHealthy: waitForBackgroundHealthyImpl,
-    runtime: {
-      provider,
-      paths,
-      openReadContext,
-      attachService,
-      rpcFactory,
-    },
-    deps: {
-      requestMiningPreemption,
-      spawnWorkerProcess: options.spawnWorkerProcess,
-      sleep: options.sleepImpl,
-    },
-  });
-}
-
-export async function stopBackgroundMining(options: StopBackgroundMiningOptions): Promise<MiningRuntimeStatusV1 | null> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const openReadContext = options.openReadContext ?? openWalletReadContext;
-  const attachService = options.attachService ?? attachOrStartManagedBitcoindService;
-  const rpcFactory = options.rpcFactory ?? createRpcClient as (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
-
-  return await stopBackgroundMiningSupervisor({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
-    shutdownGraceMs: options.shutdownGraceMs,
-    runtime: {
-      provider,
-      paths,
-      openReadContext,
-      attachService,
-      rpcFactory,
-    },
-    deps: {
-      requestMiningPreemption: options.requestMiningPreemption,
-      saveStopSnapshot: options.saveStopSnapshotImpl,
-      sleep: options.sleepImpl,
-    },
-  });
-}
-
-export async function runBackgroundMiningWorker(options: RunnerDependencies & {
-  dataDir: string;
-  databasePath: string;
-  runId: string;
-  provider?: WalletSecretProvider;
-  paths?: WalletRuntimePaths;
-  clientPasswordSessionBootstrap?: ClientPasswordSessionBootstrapState | null;
-}): Promise<void> {
-  const provider = options.provider ?? createDefaultWalletSecretProvider();
-  const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const openReadContext = options.openReadContext ?? openWalletReadContext;
-  const attachService = options.attachService ?? attachOrStartManagedBitcoindService;
-  const rpcFactory = options.rpcFactory ?? createRpcClient as (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
-
-  if (
-    options.clientPasswordSessionBootstrap != null
-    && providerUsesLocalFileClientPassword(provider.kind)
-  ) {
-    await importClientPasswordSessionBootstrapResolved({
-      ...resolveClientPasswordContext(resolveClientPasswordStorageOptionsForWalletPaths(
-        paths,
-        resolveClientPasswordPlatformForProviderKind(provider.kind),
-      )),
-      bootstrap: options.clientPasswordSessionBootstrap,
-    });
-  }
-
-  await runBackgroundMiningWorkerSupervisor({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
-    runId: options.runId,
-    fetchImpl: options.fetchImpl,
-    runtime: {
-      provider,
-      paths,
-      openReadContext,
-      attachService,
-      rpcFactory,
-    },
-    deps: {
-      runMiningLoop: options.runMiningLoopImpl ?? runMiningLoop,
-      saveStopSnapshot: options.saveStopSnapshotImpl,
     },
   });
 }

@@ -348,24 +348,3 @@ export function buildMineSetupPreviewData(view: MiningControlPlaneView) {
     },
   });
 }
-
-export function buildMineStartPreviewData(result: { started: boolean; snapshot: MiningRuntimeStatusV1 | null }) {
-  return buildStateChangePreviewData({
-    kind: "mine-start",
-    state: {
-      started: result.started,
-      runtime: summarizeRuntime(result.snapshot),
-    },
-  });
-}
-
-export function buildMineStopPreviewData(snapshot: MiningRuntimeStatusV1 | null) {
-  return buildStateChangePreviewData({
-    kind: "mine-stop",
-    state: {
-      stopped: snapshot !== null,
-      runtime: summarizeRuntime(snapshot),
-      note: snapshot?.note ?? "Background mining was not active.",
-    },
-  });
-}

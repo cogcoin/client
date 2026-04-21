@@ -1,18 +1,12 @@
 import assert from "node:assert/strict";
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { Writable } from "node:stream";
 import test, { type TestContext } from "node:test";
 
 import {
-  runBackgroundMiningWorker,
   runForegroundMining,
-  startBackgroundMining,
-  stopBackgroundMining,
   takeOverMiningRuntime,
-  waitForBackgroundHealthy,
 } from "../src/wallet/mining/supervisor.js";
-import { runBackgroundMiningWorker as runBackgroundMiningWorkerEntry } from "../src/wallet/mining/runner.js";
 import { loadMiningRuntimeStatus, saveMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
@@ -404,187 +398,6 @@ test("runForegroundMining clears client-password sessions after a SIGTERM-driven
   });
 });
 
-test("startBackgroundMining replaces an existing background miner and returns started true", async (t) => {
-  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-mine-start-bg");
-  const paths = createRuntimePaths(homeDirectory);
-  const provider = createMemoryWalletSecretProviderForTesting();
-  const runtime = createSupervisorRuntime(paths, provider);
-  const killLog = installProcessKillMock(t, {
-    livePids: [9_001],
-  });
-  const spawned: string[][] = [];
-  const healthySnapshot = createMiningRuntimeStatus({
-    runMode: "background",
-    backgroundWorkerPid: 4_242,
-    backgroundWorkerRunId: "run-new",
-    backgroundWorkerHealth: "healthy",
-  });
-
-  await saveMiningRuntimeStatus(
-    paths.miningStatusPath,
-    createMiningRuntimeStatus({
-      runMode: "background",
-      backgroundWorkerPid: 9_001,
-      backgroundWorkerRunId: "run-old",
-      backgroundWorkerHealth: "healthy",
-    }),
-  );
-
-  const result = await startBackgroundMining({
-    dataDir: homeDirectory,
-    databasePath: join(homeDirectory, "indexer.sqlite"),
-    runtime,
-    shutdownGraceMs: 1,
-    waitForBackgroundHealthy: async () => healthySnapshot,
-    deps: {
-      spawnWorkerProcess: ((...args: unknown[]) => {
-        spawned.push(args[1] as string[]);
-        return {
-          pid: 4_242,
-          unref() {},
-        } as any;
-      }) as any,
-      sleep: async () => undefined,
-    },
-  });
-
-  assert.equal(result.started, true);
-  assert.equal(result.snapshot?.backgroundWorkerPid, 4_242);
-  assert.equal(spawned.length, 1);
-  assert.equal(
-    killLog.calls.filter((call) => call.pid === 9_001 && call.signal === "SIGTERM").length,
-    1,
-  );
-});
-
-test("startBackgroundMining replaces an existing foreground miner in the same runtime", async (t) => {
-  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-mine-start-fg");
-  const paths = createRuntimePaths(homeDirectory);
-  const provider = createMemoryWalletSecretProviderForTesting();
-  const runtime = createSupervisorRuntime(paths, provider);
-  const killLog = installProcessKillMock(t, {
-    livePids: [9_101],
-  });
-  const healthySnapshot = createMiningRuntimeStatus({
-    runMode: "background",
-    backgroundWorkerPid: 5_151,
-    backgroundWorkerRunId: "run-new",
-    backgroundWorkerHealth: "healthy",
-  });
-
-  await writeJsonFile(paths.miningControlLockPath, {
-    processId: 9_101,
-    acquiredAtUnixMs: 1,
-    purpose: "mine-foreground",
-    walletRootId: "wallet-root",
-  });
-  await saveMiningRuntimeStatus(
-    paths.miningStatusPath,
-    createMiningRuntimeStatus({
-      runMode: "foreground",
-      note: "existing foreground miner",
-    }),
-  );
-
-  const result = await startBackgroundMining({
-    dataDir: homeDirectory,
-    databasePath: join(homeDirectory, "indexer.sqlite"),
-    runtime,
-    shutdownGraceMs: 1,
-    waitForBackgroundHealthy: async () => healthySnapshot,
-    deps: {
-      spawnWorkerProcess: (() => ({
-        pid: 5_151,
-        unref() {},
-      })) as any,
-      sleep: async () => undefined,
-    },
-  });
-
-  assert.equal(result.started, true);
-  assert.equal(result.snapshot?.backgroundWorkerPid, 5_151);
-  assert.equal(
-    killLog.calls.filter((call) => call.pid === 9_101 && call.signal === "SIGTERM").length,
-    1,
-  );
-});
-
-test("startBackgroundMining writes a one-shot client-password bootstrap for local-file providers", async (t) => {
-  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-mine-start-bootstrap");
-  const paths = createRuntimePaths(homeDirectory);
-  const sessionContext = resolveClientPasswordContext({
-    platform: "linux",
-    stateRoot: paths.stateRoot,
-    runtimeRoot: paths.runtimeRoot,
-    directoryPath: join(paths.stateRoot, "secrets"),
-    runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
-  });
-  const runtime = {
-    provider: {
-      kind: "linux-local-file",
-    },
-    paths,
-    openReadContext: async () => createLoopReadContext(),
-    attachService: async () => ({
-      rpc: {},
-      pid: 9_001,
-      refreshServiceStatus: async () => ({
-        serviceInstanceId: "svc-1",
-        processId: 9_001,
-      }),
-    }) as any,
-    rpcFactory: () => createHealthyMiningRpc() as any,
-  };
-  const bootstrapChunks: Buffer[] = [];
-  const bootstrapStream = new Writable({
-    write(chunk, _encoding, callback) {
-      bootstrapChunks.push(Buffer.from(chunk));
-      callback();
-    },
-  });
-
-  t.after(async () => {
-    for (const chunk of bootstrapChunks) {
-      chunk.fill(0);
-    }
-    await lockClientPasswordSessionResolved(sessionContext);
-  });
-
-  await startClientPasswordSessionWithExpiryResolved({
-    ...sessionContext,
-    derivedKey: Buffer.alloc(32, 37),
-    unlockUntilUnixMs: null,
-  });
-
-  await startBackgroundMining({
-    dataDir: homeDirectory,
-    databasePath: join(homeDirectory, "indexer.sqlite"),
-    runtime: runtime as any,
-    waitForBackgroundHealthy: async () => createMiningRuntimeStatus({
-      runMode: "background",
-      backgroundWorkerPid: 4_242,
-      backgroundWorkerRunId: "run-new",
-      backgroundWorkerHealth: "healthy",
-    }),
-    deps: {
-      spawnWorkerProcess: (() => ({
-        pid: 4_242,
-        stdio: [null, null, null, bootstrapStream],
-        unref() {},
-      })) as any,
-      sleep: async () => undefined,
-    },
-  });
-
-  const parsed = JSON.parse(Buffer.concat(bootstrapChunks).toString("utf8").trim()) as {
-    unlockUntilUnixMs: number | null;
-    derivedKeyBase64: string;
-  };
-
-  assert.equal(parsed.unlockUntilUnixMs, null);
-  assert.ok(parsed.derivedKeyBase64.length > 0);
-});
-
 test("takeOverMiningRuntime clears only the current runtime, dedupes pids, and preempts before termination", async (t) => {
   const currentHomeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-takeover-current");
   const otherHomeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-takeover-other");
@@ -598,7 +411,7 @@ test("takeOverMiningRuntime clears only the current runtime, dedupes pids, and p
   await writeJsonFile(currentPaths.miningControlLockPath, {
     processId: 9_201,
     acquiredAtUnixMs: 1,
-    purpose: "mine-start",
+    purpose: "mine-foreground",
     walletRootId: "wallet-a",
   });
   await writeJsonFile(join(currentPaths.miningRoot, "generation-request.json"), {
@@ -648,7 +461,7 @@ test("takeOverMiningRuntime clears only the current runtime, dedupes pids, and p
 
   const result = await takeOverMiningRuntime({
     paths: currentPaths,
-    reason: "mine-start-replace",
+    reason: "mine-foreground-replace",
     clearControlLockFile: true,
     shutdownGraceMs: 1,
     deps: {
@@ -711,7 +524,7 @@ test("takeOverMiningRuntime uses SIGKILL only when SIGTERM does not stop the min
 
   const result = await takeOverMiningRuntime({
     paths,
-    reason: "mine-start-replace",
+    reason: "mine-foreground-replace",
     shutdownGraceMs: 1,
     deps: {
       sleep: async () => undefined,
@@ -724,217 +537,4 @@ test("takeOverMiningRuntime uses SIGKILL only when SIGTERM does not stop the min
     killLog.calls.filter((call) => call.pid === 9_301 && call.signal === "SIGKILL").length,
     1,
   );
-});
-
-test("waitForBackgroundHealthy returns a healthy background snapshot before timeout", async (t) => {
-  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-wait-healthy");
-  const paths = createRuntimePaths(homeDirectory);
-  const healthySnapshot = createMiningRuntimeStatus({
-    runMode: "background",
-    backgroundWorkerPid: 4_242,
-    backgroundWorkerRunId: "run-new",
-    backgroundWorkerHealth: "healthy",
-  });
-  const startingSnapshot = createMiningRuntimeStatus({
-    runMode: "background",
-    backgroundWorkerPid: 4_242,
-    backgroundWorkerRunId: "run-new",
-    backgroundWorkerHealth: "stale-heartbeat",
-  });
-  let nowUnixMs = 0;
-  let reads = 0;
-
-  const snapshot = await waitForBackgroundHealthy(paths, {
-    nowUnixMs: () => nowUnixMs,
-    loadRuntimeStatus: async () => {
-      reads += 1;
-      return reads >= 3 ? healthySnapshot : startingSnapshot;
-    },
-    sleep: async (ms: number) => {
-      nowUnixMs += ms;
-    },
-  });
-
-  assert.equal(snapshot, healthySnapshot);
-  assert.equal(reads, 3);
-});
-
-test("waitForBackgroundHealthy falls back to the latest snapshot after timeout", async (t) => {
-  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-wait-timeout");
-  const paths = createRuntimePaths(homeDirectory);
-  const lastSnapshot = createMiningRuntimeStatus({
-    runMode: "background",
-    backgroundWorkerPid: 4_242,
-    backgroundWorkerRunId: "run-new",
-    backgroundWorkerHealth: "stale-heartbeat",
-  });
-  let nowUnixMs = 0;
-
-  const snapshot = await waitForBackgroundHealthy(paths, {
-    nowUnixMs: () => nowUnixMs,
-    loadRuntimeStatus: async () => lastSnapshot,
-    sleep: async (ms: number) => {
-      nowUnixMs += ms;
-    },
-  });
-
-  assert.equal(snapshot, lastSnapshot);
-});
-
-test("stopBackgroundMining requests generation preemption and preserves the live-publish stop note", async (t) => {
-  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-stop-bg");
-  const paths = createRuntimePaths(homeDirectory);
-  const provider = createMemoryWalletSecretProviderForTesting();
-  const runtime = createSupervisorRuntime(paths, provider);
-  const killLog = installProcessKillMock(t, {
-    livePids: [6_606],
-  });
-  const events: string[] = [];
-
-  await saveMiningRuntimeStatus(
-    paths.miningStatusPath,
-    createMiningRuntimeStatus({
-      runMode: "background",
-      backgroundWorkerPid: 6_606,
-      backgroundWorkerRunId: "run-live",
-      backgroundWorkerHealth: "healthy",
-      livePublishInMempool: true,
-    }),
-  );
-
-  const snapshot = await stopBackgroundMining({
-    dataDir: homeDirectory,
-    databasePath: join(homeDirectory, "indexer.sqlite"),
-    runtime,
-    shutdownGraceMs: 1,
-    deps: {
-      requestMiningPreemption: async () => {
-        events.push("preempt");
-        return {
-          requestId: "mine-stop",
-          async release() {
-            events.push("release");
-          },
-        };
-      },
-      saveStopSnapshot: async (options) => {
-        events.push(`save:${options.note ?? ""}`);
-        await saveMiningRuntimeStatus(
-          paths.miningStatusPath,
-          createMiningRuntimeStatus({
-            runMode: "stopped",
-            backgroundWorkerPid: null,
-            backgroundWorkerRunId: null,
-            note: options.note,
-          }),
-        );
-      },
-      sleep: async () => undefined,
-    },
-  });
-
-  assert.deepEqual(events, [
-    "preempt",
-    "release",
-    "save:Background mining stopped. The last mining transaction may still confirm from mempool.",
-  ]);
-  assert.deepEqual(killLog.timeline, ["SIGTERM:6606"]);
-  assert.equal(
-    snapshot?.note,
-    "Background mining stopped. The last mining transaction may still confirm from mempool.",
-  );
-});
-
-test("runBackgroundMiningWorker writes the initial runtime snapshot, delegates to the loop, and saves a clean stop snapshot", async (t) => {
-  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-worker");
-  const paths = createRuntimePaths(homeDirectory);
-  const provider = createMemoryWalletSecretProviderForTesting();
-  const runtime = createSupervisorRuntime(paths, provider);
-  let initialSnapshot: Record<string, unknown> = {};
-  let loopCall: Record<string, unknown> = {};
-  const stopNotes: string[] = [];
-
-  await runBackgroundMiningWorker({
-    dataDir: homeDirectory,
-    databasePath: join(homeDirectory, "indexer.sqlite"),
-    runId: "run-worker",
-    runtime,
-    deps: {
-      processPid: 7_707,
-      nowUnixMs: () => 123_000,
-      saveRuntimeStatus: async (_path, snapshot) => {
-        initialSnapshot = snapshot as unknown as Record<string, unknown>;
-      },
-      runMiningLoop: async (options) => {
-        loopCall = options as unknown as Record<string, unknown>;
-      },
-      saveStopSnapshot: async (options) => {
-        stopNotes.push(options.note ?? "");
-      },
-    },
-  });
-
-  assert.equal(initialSnapshot.runMode, "background");
-  assert.equal(initialSnapshot.backgroundWorkerPid, 7_707);
-  assert.equal(initialSnapshot.backgroundWorkerRunId, "run-worker");
-  assert.equal(initialSnapshot.workerBuildId, "run-worker");
-  assert.equal(loopCall.runMode, "background");
-  assert.equal(loopCall.backgroundWorkerPid, 7_707);
-  assert.equal(loopCall.backgroundWorkerRunId, "run-worker");
-  assert.deepEqual(stopNotes, ["Background mining worker stopped cleanly."]);
-});
-
-test("runner background worker imports one-shot client-password bootstrap and clears it on exit", async (t) => {
-  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-worker-bootstrap");
-  const paths = createRuntimePaths(homeDirectory);
-  const sessionContext = resolveClientPasswordContext({
-    platform: "linux",
-    stateRoot: paths.stateRoot,
-    runtimeRoot: paths.runtimeRoot,
-    directoryPath: join(paths.stateRoot, "secrets"),
-    runtimeErrorCode: "wallet_secret_provider_linux_runtime_error",
-  });
-  let sessionSeenDuringOpen: Awaited<ReturnType<typeof readClientPasswordSessionStatusResolved>> | null = null;
-
-  t.after(async () => {
-    await lockClientPasswordSessionResolved(sessionContext);
-  });
-
-  await runBackgroundMiningWorkerEntry({
-    dataDir: homeDirectory,
-    databasePath: join(homeDirectory, "indexer.sqlite"),
-    runId: "run-bootstrap",
-    provider: {
-      kind: "linux-local-file",
-    } as any,
-    paths,
-    clientPasswordSessionBootstrap: {
-      unlockUntilUnixMs: null,
-      derivedKeyBase64: Buffer.alloc(32, 41).toString("base64"),
-    },
-    openReadContext: async () => {
-      sessionSeenDuringOpen = await readClientPasswordSessionStatusResolved(sessionContext);
-      return createLoopReadContext();
-    },
-    attachService: async () => ({
-      rpc: {},
-      pid: 9_001,
-      refreshServiceStatus: async () => ({
-        serviceInstanceId: "svc-1",
-        processId: 9_001,
-      }),
-    }) as any,
-    rpcFactory: () => createHealthyMiningRpc() as any,
-    runMiningLoopImpl: async () => undefined,
-    saveStopSnapshotImpl: async () => undefined,
-  });
-
-  assert.deepEqual(sessionSeenDuringOpen, {
-    unlocked: true,
-    unlockUntilUnixMs: null,
-  });
-  assert.deepEqual(await readClientPasswordSessionStatusResolved(sessionContext), {
-    unlocked: false,
-    unlockUntilUnixMs: null,
-  });
 });

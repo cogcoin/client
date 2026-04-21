@@ -45,36 +45,6 @@ export function buildMineSetupData(view: MiningControlPlaneView) {
   });
 }
 
-export function buildMineStartData(result: {
-  started: boolean;
-  snapshot: MiningRuntimeStatusV1 | null;
-}) {
-  const after = {
-    started: result.started,
-    runtime: summarizeRuntime(result.snapshot),
-  };
-
-  return buildStateChangeData({
-    kind: "mine-start",
-    state: after,
-    after,
-  });
-}
-
-export function buildMineStopData(snapshot: MiningRuntimeStatusV1 | null) {
-  const after = {
-    stopped: snapshot !== null,
-    runtime: summarizeRuntime(snapshot),
-    note: snapshot?.note ?? "Background mining was not active.",
-  };
-
-  return buildStateChangeData({
-    kind: "mine-stop",
-    state: after,
-    after,
-  });
-}
-
 export function buildMinePromptData(result: MiningDomainPromptMutationResult) {
   return {
     domain: result.domain,

@@ -154,12 +154,11 @@ test("cleanupMiningForRepair removes live mining artifacts and writes a stopped 
   assert.equal(runtime?.backgroundWorkerPid, null);
 });
 
-test("resumeBackgroundMiningAfterRepair restarts background mining when post-repair health is ready", async (t) => {
+test("resumeBackgroundMiningAfterRepair reports manual restart when background mode was removed", async (t) => {
   const fixture = await createWalletLifecycleFixture(t, {
     state: createDerivedWalletState(),
   });
   const secretReference = createWalletSecretReference(fixture.state!.walletRootId);
-  let startCalls = 0;
 
   await saveClientConfig({
     path: fixture.paths.clientConfigPath,
@@ -188,23 +187,11 @@ test("resumeBackgroundMiningAfterRepair restarts background mining when post-rep
     repairedState: fixture.state!,
     bitcoindPostRepairHealth: "ready",
     indexerPostRepairHealth: "synced",
-    dataDir: fixture.dataDir,
-    databasePath: fixture.databasePath,
-    startBackgroundMining: async () => {
-      startCalls += 1;
-      return {
-        started: true,
-        snapshot: createMiningRuntimeStatus({
-          runMode: "background",
-        }),
-      } as any;
-    },
   });
 
-  assert.equal(startCalls, 1);
   assert.deepEqual(result, {
-    miningResumeAction: "resumed-background",
-    miningPostRepairRunMode: "background",
+    miningResumeAction: "skipped-background-mode-removed",
+    miningPostRepairRunMode: "stopped",
     miningResumeError: null,
   });
 });

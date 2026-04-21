@@ -135,7 +135,7 @@ The installed `cogcoin` command covers the first-party local wallet and node wor
 - sync and service commands such as `status`, `sync`, `follow`, `bitcoin start`, `bitcoin stop`, `bitcoin status`, `indexer start`, `indexer stop`, and `indexer status`
 - domain and field commands such as `register`, `anchor`, `show`, `domains`, `fields`, `buy`, `sell`, and `transfer`
 - COG and reputation commands such as `send`, `cog lock`, `claim`, `reclaim`, `rep give`, and `rep revoke`
-- mining commands such as `mine`, `mine start`, `mine stop`, `mine status`, `mine log`, `mine setup`, `mine prompt`, and `mine prompt list`
+- mining commands such as `mine`, `mine status`, `mine log`, `mine setup`, `mine prompt`, and `mine prompt list`
 
 Use `cogcoin mine prompt <domain>` to set or clear a per-domain mining prompt override for one anchored root domain, and `cogcoin mine prompt list` to inspect the current per-domain prompt state alongside the global fallback prompt.
 Interactive text invocations periodically check the npm registry for newer `@cogcoin/client` releases and print `npm install -g @cogcoin/client` when a newer version is available.

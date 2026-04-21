@@ -75,18 +75,14 @@ export function getAnchorNextSteps(domainName: string): string[] {
   const nextSteps = [`cogcoin show ${domainName}`];
 
   if (isRootDomainName(domainName)) {
-    nextSteps.push("cogcoin mine", "cogcoin mine start");
+    nextSteps.push("cogcoin mine");
   }
 
   return nextSteps;
 }
 
 export function getMineSetupNextSteps(): string[] {
-  return ["cogcoin mine", "cogcoin mine start"];
-}
-
-export function getMineStopNextSteps(): string[] {
-  return ["cogcoin mine log"];
+  return ["cogcoin mine"];
 }
 
 export function getAddressNextSteps(

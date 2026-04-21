@@ -26,11 +26,6 @@ export interface ClientPasswordSessionStatus {
   unlockUntilUnixMs: number | null;
 }
 
-export interface ClientPasswordSessionBootstrapState {
-  unlockUntilUnixMs: number | null;
-  derivedKeyBase64: string;
-}
-
 export interface ClientPasswordLegacyKeychainReader {
   loadSecret(keyId: string): Promise<Uint8Array>;
 }

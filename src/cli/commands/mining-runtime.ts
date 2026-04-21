@@ -18,10 +18,6 @@ import {
 } from "../managed-indexer-observer.js";
 import { usesTtyProgress, writeLine } from "../io.js";
 import { writeHandledCliError } from "../output.js";
-import {
-  formatNextStepLines,
-  getMineStopNextSteps,
-} from "../workflow-hints.js";
 import { createCloseSignalWatcher, waitForCompletionOrStop } from "../signals.js";
 import { createSyncProgressReporter } from "../sync-progress.js";
 import {
@@ -523,76 +519,6 @@ export async function runMiningRuntimeCommand(
         visualizer?.close();
       }
 
-      return 0;
-    }
-
-    if (parsed.command === "mine-start") {
-      const prompter = bindClientPasswordPromptSessionPolicy(
-        createCommandPrompter(context),
-        "mining-indefinite",
-      );
-      const provider = withInteractiveWalletSecretProvider(
-        context.walletSecretProvider,
-        prompter,
-      );
-      await ensureMiningProviderSetup({
-        context,
-        provider,
-        prompter,
-        runtimePaths,
-      });
-      const preflightCode = await syncManagedMiningReadiness({
-        parsed,
-        context,
-        dataDir,
-        databasePath: dbPath,
-        expectedBinaryVersion: packageVersion,
-        provider,
-        runtimePaths,
-      });
-      if (preflightCode !== null) {
-        return preflightCode;
-      }
-      const result = await context.startBackgroundMining({
-        dataDir,
-        databasePath: dbPath,
-        provider,
-        prompter,
-        builtInSetupEnsured: true,
-        paths: runtimePaths,
-      });
-
-      if (!result.started) {
-        writeLine(context.stdout, "Background mining is already active.");
-        if (result.snapshot?.backgroundWorkerPid !== null && result.snapshot?.backgroundWorkerPid !== undefined) {
-          writeLine(context.stdout, `Worker pid: ${result.snapshot.backgroundWorkerPid}`);
-        }
-        return 0;
-      }
-
-      writeLine(context.stdout, "Started background mining.");
-      if (result.snapshot?.backgroundWorkerPid !== null && result.snapshot?.backgroundWorkerPid !== undefined) {
-        writeLine(context.stdout, `Worker pid: ${result.snapshot.backgroundWorkerPid}`);
-      }
-      return 0;
-    }
-
-    if (parsed.command === "mine-stop") {
-      const provider = withInteractiveWalletSecretProvider(
-        context.walletSecretProvider,
-        context.createPrompter(),
-      );
-      const snapshot = await context.stopBackgroundMining({
-        dataDir,
-        databasePath: dbPath,
-        provider,
-        paths: runtimePaths,
-      });
-      const nextSteps = getMineStopNextSteps();
-      writeLine(context.stdout, snapshot?.note ?? "Background mining was not active.");
-      for (const line of formatNextStepLines(nextSteps)) {
-        writeLine(context.stdout, line);
-      }
       return 0;
     }
 

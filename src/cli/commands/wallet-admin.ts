@@ -23,8 +23,8 @@ function createCommandPrompter(
 }
 
 function getRepairWarnings(result: WalletRepairResult): string[] {
-  return result.miningResumeAction === "resume-failed"
-    ? [`Wallet repair succeeded, but background mining did not resume automatically: ${result.miningResumeError ?? "unknown error"}`]
+  return result.miningResumeAction === "skipped-background-mode-removed"
+    ? ["Background mining no longer resumes automatically after repair. Run `cogcoin mine` if you want mining resumed."]
     : [];
 }
 
@@ -154,7 +154,8 @@ function formatResetResultText(result: WalletResetResult): string {
 function isRepairMiningResumeActionOk(action: WalletRepairResult["miningResumeAction"]): boolean {
   return action === "none"
     || action === "skipped-not-resumable"
-    || action === "resumed-background";
+    || action === "skipped-post-repair-blocked"
+    || action === "skipped-background-mode-removed";
 }
 
 function buildRepairWarningEntries(result: WalletRepairResult): SectionTextEntry[] {

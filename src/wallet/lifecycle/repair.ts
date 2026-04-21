@@ -128,9 +128,6 @@ export async function repairWallet(options: {
       repairedState,
       bitcoindPostRepairHealth: bitcoindStage.bitcoindPostRepairHealth,
       indexerPostRepairHealth: indexerStage.indexerPostRepairHealth,
-      dataDir: context.dataDir,
-      databasePath: context.databasePath,
-      startBackgroundMining: context.startBackgroundMining,
     });
 
     await clearLegacyWalletLockArtifacts(context.paths.walletRuntimeRoot);

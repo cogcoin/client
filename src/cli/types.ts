@@ -36,8 +36,6 @@ import type {
   readMiningLog,
   runForegroundMining,
   setupBuiltInMining,
-  startBackgroundMining,
-  stopBackgroundMining,
   updateMiningDomainPrompt,
 } from "../wallet/mining/index.js";
 import type {
@@ -213,8 +211,6 @@ export interface CliRunnerContext {
   inspectMiningDomainPromptState?: typeof inspectMiningDomainPromptState;
   ensureBuiltInMiningSetupIfNeeded?: typeof ensureBuiltInMiningSetupIfNeeded;
   runForegroundMining?: typeof runForegroundMining;
-  startBackgroundMining?: typeof startBackgroundMining;
-  stopBackgroundMining?: typeof stopBackgroundMining;
   setupBuiltInMining?: typeof setupBuiltInMining;
   updateMiningDomainPrompt?: typeof updateMiningDomainPrompt;
   readMiningLog?: typeof readMiningLog;

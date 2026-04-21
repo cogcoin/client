@@ -41,8 +41,6 @@ import {
   readMiningLog,
   runForegroundMining,
   setupBuiltInMining,
-  startBackgroundMining,
-  stopBackgroundMining,
   updateMiningDomainPrompt,
 } from "../wallet/mining/index.js";
 import { createLazyDefaultWalletSecretProvider } from "../wallet/state/provider.js";
@@ -160,8 +158,6 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     inspectMiningDomainPromptState: overrides.inspectMiningDomainPromptState ?? inspectMiningDomainPromptState,
     ensureBuiltInMiningSetupIfNeeded: overrides.ensureBuiltInMiningSetupIfNeeded ?? ensureBuiltInMiningSetupIfNeeded,
     runForegroundMining: overrides.runForegroundMining ?? runForegroundMining,
-    startBackgroundMining: overrides.startBackgroundMining ?? startBackgroundMining,
-    stopBackgroundMining: overrides.stopBackgroundMining ?? stopBackgroundMining,
     setupBuiltInMining: overrides.setupBuiltInMining ?? setupBuiltInMining,
     updateMiningDomainPrompt: overrides.updateMiningDomainPrompt ?? updateMiningDomainPrompt,
     readMiningLog: overrides.readMiningLog ?? readMiningLog,

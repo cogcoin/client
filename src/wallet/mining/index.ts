@@ -20,11 +20,7 @@ export {
 } from "./control.js";
 export {
   ensureBuiltInMiningSetupIfNeeded,
-  runBackgroundMiningWorker,
   runForegroundMining,
-  startBackgroundMining,
-  stopBackgroundMining,
-  type MiningStartResult,
 } from "./runner.js";
 export {
   appendMiningEvent,

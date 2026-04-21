@@ -53,8 +53,6 @@ export type CommandName =
   | "rep-give"
   | "rep-revoke"
   | "mine"
-  | "mine-start"
-  | "mine-stop"
   | "mine-setup"
   | "mine-prompt"
   | "mine-prompt-list"
@@ -383,38 +381,6 @@ const commandSpecs = [
     ],
     describeCommand() {
       return "cogcoin mine";
-    },
-  },
-  {
-    id: "mine-start",
-    handlerFamily: "mining-runtime",
-    supportsYes: false,
-    supportsSatvb: false,
-    aliases: [{ tokens: ["mine", "start"] }],
-    helpEntries: [
-      {
-        usage: "mine start",
-        description: "Start the miner as a background worker",
-      },
-    ],
-    describeCommand() {
-      return "cogcoin mine start";
-    },
-  },
-  {
-    id: "mine-stop",
-    handlerFamily: "mining-runtime",
-    supportsYes: false,
-    supportsSatvb: false,
-    aliases: [{ tokens: ["mine", "stop"] }],
-    helpEntries: [
-      {
-        usage: "mine stop",
-        description: "Stop the active background miner",
-      },
-    ],
-    describeCommand() {
-      return "cogcoin mine stop";
     },
   },
   {

@@ -66,9 +66,9 @@ test("repair text output uses the sectioned checkmarked layout for a healthy res
       recreatedManagedCoreWallet: true,
       resetIndexerDatabase: true,
       managedCoreReplicaAction: "recreated",
-      miningPreRepairRunMode: "background",
-      miningResumeAction: "resumed-background",
-      miningPostRepairRunMode: "background",
+      miningPreRepairRunMode: "stopped",
+      miningResumeAction: "none",
+      miningPostRepairRunMode: "stopped",
     }),
   });
 
@@ -77,7 +77,7 @@ test("repair text output uses the sectioned checkmarked layout for a healthy res
   assert.match(output, /^\n⛭ Cogcoin Repair ⛭\n\nWallet\n✓ Wallet root: wallet-root-healthy\n✓ Recovered from backup: no\n✓ Managed Core wallet recreated: yes/u);
   assert.match(output, /\n\nManaged Bitcoind\n✓ Managed bitcoind action: none\n✓ Managed bitcoind compatibility issue: none\n✓ Managed Core replica action: recreated\n✓ Managed bitcoind post-repair health: ready/u);
   assert.match(output, /\n\nIndexer\n✓ Indexer database reset: yes\n✓ Indexer daemon action: none\n✓ Indexer compatibility issue: none\n✓ Indexer post-repair health: synced/u);
-  assert.match(output, /\n\nMining\n✓ Mining mode before repair: background\n✓ Mining resume action: resumed-background\n✓ Mining mode after repair: background/u);
+  assert.match(output, /\n\nMining\n✓ Mining mode before repair: stopped\n✓ Mining resume action: none\n✓ Mining mode after repair: stopped/u);
   assert.doesNotMatch(output, /\n\nNotes\n/u);
   assert.doesNotMatch(output, /\n\nWarnings\n/u);
   assert.match(output, /\n\nNext step: Run `cogcoin status` to review the repaired local state\.\n$/u);
@@ -105,9 +105,8 @@ test("repair text output marks degraded repair states with sectioned warnings an
       indexerCompatibilityIssue: "schema-mismatch",
       indexerPostRepairHealth: "failed",
       miningPreRepairRunMode: "background",
-      miningResumeAction: "resume-failed",
+      miningResumeAction: "skipped-background-mode-removed",
       miningPostRepairRunMode: "stopped",
-      miningResumeError: "background worker exited unexpectedly",
       note: "Repair preserved the existing wallet root.",
     }),
   });
@@ -122,9 +121,9 @@ test("repair text output marks degraded repair states with sectioned warnings an
   assert.match(output, /✗ Managed bitcoind post-repair health: catching-up/u);
   assert.match(output, /✗ Indexer compatibility issue: schema-mismatch/u);
   assert.match(output, /✗ Indexer post-repair health: failed/u);
-  assert.match(output, /✗ Mining resume action: resume-failed/u);
+  assert.match(output, /✓ Mining resume action: skipped-background-mode-removed/u);
   assert.match(output, /✓ Note: Repair preserved the existing wallet root\./u);
-  assert.match(output, /✗ Mining resume error: background worker exited unexpectedly/u);
+  assert.match(output, /✗ Warning: Background mining no longer resumes automatically after repair\. Run `cogcoin mine` if you want mining resumed\./u);
   assert.match(output, /\n\nNext step: Run `cogcoin status` to review the repaired local state\.\n$/u);
   assert.equal(stderr.toString(), "");
 });

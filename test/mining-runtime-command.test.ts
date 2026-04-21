@@ -351,78 +351,6 @@ test("mine text marks updateAvailable when tty mining sees a newer npm version",
   );
 });
 
-test("mine start text ensures provider setup, syncs managed services, then starts background mining", async (t) => {
-  const stdout = createStringWriter();
-  const stderr = createStringWriter();
-  const provider = createMemoryWalletSecretProviderForTesting();
-  const prompter = createPrompter();
-  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-start-runtime"));
-  const runtimePaths = resolvePaths();
-  const events: string[] = [];
-  let startOptions: {
-    dataDir: string;
-    databasePath: string;
-    provider: unknown;
-    builtInSetupEnsured: boolean | undefined;
-    paths: unknown;
-  } | null = null;
-  const snapshot = createMiningRuntimeStatus({
-    runMode: "background",
-    backgroundWorkerPid: 4242,
-    backgroundWorkerRunId: "run-1",
-    backgroundWorkerHealth: "healthy",
-  });
-  const context = createDefaultContext({
-    stdout: stdout.stream,
-    stderr: stderr.stream,
-    signalSource: QUIET_SIGNAL_SOURCE,
-    walletSecretProvider: provider,
-    createPrompter: () => prompter,
-    resolveWalletRuntimePaths: () => resolvePaths(),
-    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
-    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
-    ensureBuiltInMiningSetupIfNeeded: async () => {
-      events.push("setup");
-      return true;
-    },
-    loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
-    openManagedIndexerMonitor: async () => createCompletedSyncMonitor(events) as any,
-    startBackgroundMining: async (options) => {
-      startOptions = {
-        dataDir: options.dataDir,
-        databasePath: options.databasePath,
-        provider: options.provider,
-        builtInSetupEnsured: options.builtInSetupEnsured,
-        paths: options.paths,
-      };
-      events.push("start");
-      return {
-        started: true,
-        snapshot,
-      };
-    },
-  });
-
-  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine", "start"]), context);
-
-  assert.equal(exitCode, 0);
-  assert.equal(stdout.read(), "Started background mining.\nWorker pid: 4242\n");
-  assert.match(stderr.read(), /Bitcoin sync is catching up\./);
-  assert.deepEqual(events, [
-    "setup",
-    "status",
-    "close-monitor",
-    "start",
-  ]);
-  assert.notEqual(startOptions, null);
-  const actualStartOptions = startOptions!;
-  assert.equal(actualStartOptions.dataDir, "/tmp/bitcoind");
-  assert.equal(actualStartOptions.databasePath, "/tmp/cogcoin.db");
-  assert.equal(actualStartOptions.provider, provider);
-  assert.equal(actualStartOptions.builtInSetupEnsured, true);
-  assert.deepEqual(actualStartOptions.paths, runtimePaths);
-});
-
 test("mine reports a handled error and skips foreground mining when sync preflight fails", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
@@ -455,47 +383,6 @@ test("mine reports a handled error and skips foreground mining when sync preflig
   assert.notEqual(exitCode, 0);
   assert.equal(stdout.read(), "");
   assert.equal(runCalls, 0);
-  assert.ok(stderr.read().length > 0);
-});
-
-test("mine start reports a handled error and skips background mining when sync preflight fails", async (t) => {
-  const stdout = createStringWriter();
-  const stderr = createStringWriter();
-  const resolvePaths = createTestRuntimePaths(
-    await createTrackedTempDirectory(t, "cogcoin-mine-start-preflight-fail"),
-  );
-  let startCalls = 0;
-  const context = createDefaultContext({
-    stdout: stdout.stream,
-    stderr: stderr.stream,
-    signalSource: QUIET_SIGNAL_SOURCE,
-    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
-    createPrompter,
-    resolveWalletRuntimePaths: () => resolvePaths(),
-    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
-    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
-    ensureBuiltInMiningSetupIfNeeded: async () => true,
-    loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
-    openManagedIndexerMonitor: async () => ({
-      async getStatus() {
-        throw new Error("indexer_daemon_protocol_error");
-      },
-      async close() {},
-    }) as any,
-    startBackgroundMining: async () => {
-      startCalls += 1;
-      return {
-        started: true,
-        snapshot: null,
-      };
-    },
-  });
-
-  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine", "start"]), context);
-
-  assert.notEqual(exitCode, 0);
-  assert.equal(stdout.read(), "");
-  assert.equal(startCalls, 0);
   assert.ok(stderr.read().length > 0);
 });
 
