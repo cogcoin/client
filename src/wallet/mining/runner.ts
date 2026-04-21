@@ -1,8 +1,5 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   getBalance,
@@ -45,12 +42,6 @@ import {
   type MutationSender,
   type WalletMutationRpcClient,
 } from "../tx/common.js";
-import {
-  FileLockBusyError,
-  acquireFileLock,
-  clearOrphanedFileLock,
-  readLockMetadata,
-} from "../fs/lock.js";
 import type { WalletPrompter } from "../lifecycle.js";
 import {
   isMineableWalletDomain,
@@ -68,20 +59,14 @@ import type {
   WalletStateV1,
 } from "../types.js";
 import { serializeMine } from "../cogop/index.js";
-import {
-  appendMiningEvent,
-  loadMiningRuntimeStatus,
-  saveMiningRuntimeStatus,
-} from "./runtime-artifacts.js";
+import { appendMiningEvent } from "./runtime-artifacts.js";
 import { loadClientConfig } from "./config.js";
 import {
   MINING_LOOP_INTERVAL_MS,
-  MINING_SHUTDOWN_GRACE_MS,
   MINING_STATUS_HEARTBEAT_INTERVAL_MS,
   MINING_SUSPEND_GAP_THRESHOLD_MS,
-  MINING_WORKER_API_VERSION,
 } from "./constants.js";
-import { inspectMiningControlPlane, setupBuiltInMining } from "./control.js";
+import { setupBuiltInMining } from "./control.js";
 import {
   applyMiningRuntimeStatusOverrides,
   buildPrePublishStatusOverrides,
@@ -165,6 +150,13 @@ import {
   normalizeMiningPublishState,
   normalizeMiningStateRecord,
 } from "./state.js";
+import {
+  runBackgroundMiningWorker as runBackgroundMiningWorkerSupervisor,
+  runForegroundMining as runForegroundMiningSupervisor,
+  startBackgroundMining as startBackgroundMiningSupervisor,
+  stopBackgroundMining as stopBackgroundMiningSupervisor,
+  waitForBackgroundHealthy as waitForBackgroundHealthySupervisor,
+} from "./supervisor.js";
 import { createMiningSentenceRequestLimits } from "./sentence-protocol.js";
 import { generateMiningSentences, MiningProviderRequestError, type MiningSentenceGenerationRequest } from "./sentences.js";
 import type { MiningControlPlaneView, MiningEventRecord, MiningRuntimeStatusV1 } from "./types.js";
@@ -187,7 +179,6 @@ import {
 } from "./visualizer-sync.js";
 
 const BEST_BLOCK_POLL_INTERVAL_MS = 500;
-const BACKGROUND_START_TIMEOUT_MS = 15_000;
 const MINING_SUSPEND_HEARTBEAT_INTERVAL_MS = 1_000;
 
 type MiningRunnerStatusOverrides = MiningRuntimeStatusOverrides;
@@ -358,13 +349,6 @@ export interface MiningStartResult {
   snapshot: MiningRuntimeStatusV1 | null;
 }
 
-interface MiningRuntimeTakeoverResult {
-  controlLockCleared: boolean;
-  replaced: boolean;
-  snapshot: MiningRuntimeStatusV1 | null;
-  terminatedPids: number[];
-}
-
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, ms);
@@ -373,320 +357,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       resolve();
     }, { once: true });
   });
-}
-
-async function isProcessAlive(pid: number | null): Promise<boolean> {
-  if (pid === null) {
-    return false;
-  }
-
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH") {
-      return false;
-    }
-
-    return true;
-  }
-}
-
-function normalizeMiningPid(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value > 0
-    ? value
-    : null;
-}
-
-function resolveMiningGenerationRequestPath(paths: WalletRuntimePaths): string {
-  return join(paths.miningRoot, "generation-request.json");
-}
-
-function resolveMiningGenerationActivityPath(paths: WalletRuntimePaths): string {
-  return join(paths.miningRoot, "generation-activity.json");
-}
-
-function createTakeoverStoppedMiningNote(livePublishInMempool: boolean | null | undefined): string {
-  return livePublishInMempool
-    ? "Mining runtime replaced. The last mining transaction may still confirm from mempool."
-    : "Mining runtime replaced.";
-}
-
-function createStoppedMiningRuntimeSnapshotForTakeover(options: {
-  snapshot: MiningRuntimeStatusV1 | null;
-  walletRootId: string | null;
-  nowUnixMs: number;
-}): MiningRuntimeStatusV1 {
-  const note = createTakeoverStoppedMiningNote(options.snapshot?.livePublishInMempool);
-
-  if (options.snapshot !== null) {
-    return {
-      ...options.snapshot,
-      updatedAtUnixMs: options.nowUnixMs,
-      runMode: "stopped",
-      backgroundWorkerPid: null,
-      backgroundWorkerRunId: null,
-      backgroundWorkerHeartbeatAtUnixMs: null,
-      backgroundWorkerHealth: null,
-      currentPhase: "idle",
-      note,
-    };
-  }
-
-  return {
-    schemaVersion: 1,
-    walletRootId: options.walletRootId,
-    workerApiVersion: null,
-    workerBinaryVersion: null,
-    workerBuildId: null,
-    updatedAtUnixMs: options.nowUnixMs,
-    runMode: "stopped",
-    backgroundWorkerPid: null,
-    backgroundWorkerRunId: null,
-    backgroundWorkerHeartbeatAtUnixMs: null,
-    backgroundWorkerHealth: null,
-    indexerDaemonState: null,
-    indexerDaemonInstanceId: null,
-    indexerSnapshotSeq: null,
-    indexerSnapshotOpenedAtUnixMs: null,
-    indexerTruthSource: undefined,
-    indexerHeartbeatAtUnixMs: null,
-    coreBestHeight: null,
-    coreBestHash: null,
-    indexerTipHeight: null,
-    indexerTipHash: null,
-    indexerReorgDepth: null,
-    indexerTipAligned: null,
-    corePublishState: null,
-    providerState: null,
-    lastSuspendDetectedAtUnixMs: null,
-    reconnectSettledUntilUnixMs: null,
-    tipSettledUntilUnixMs: null,
-    miningState: "idle",
-    currentPhase: "idle",
-    currentPublishState: "none",
-    targetBlockHeight: null,
-    referencedBlockHashDisplay: null,
-    currentDomainId: null,
-    currentDomainName: null,
-    currentSentenceDisplay: null,
-    currentCanonicalBlend: null,
-    currentTxid: null,
-    currentWtxid: null,
-    livePublishInMempool: null,
-    currentFeeRateSatVb: null,
-    currentAbsoluteFeeSats: null,
-    currentBlockFeeSpentSats: "0",
-    sessionFeeSpentSats: "0",
-    lifetimeFeeSpentSats: "0",
-    sameDomainCompetitorSuppressed: null,
-    higherRankedCompetitorDomainCount: null,
-    dedupedCompetitorDomainCount: null,
-    competitivenessGateIndeterminate: null,
-    mempoolSequenceCacheStatus: null,
-    currentPublishDecision: null,
-    lastMempoolSequence: null,
-    lastCompetitivenessGateAtUnixMs: null,
-    pauseReason: null,
-    providerConfigured: false,
-    providerKind: null,
-    bitcoindHealth: "unavailable",
-    bitcoindServiceState: null,
-    bitcoindReplicaStatus: null,
-    nodeHealth: "unavailable",
-    indexerHealth: "unavailable",
-    tipsAligned: null,
-    lastEventAtUnixMs: null,
-    lastError: null,
-    note,
-  };
-}
-
-async function waitForMiningProcessExit(
-  pid: number,
-  timeoutMs: number,
-  sleepImpl: typeof sleep = sleep,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() < deadline) {
-    if (!await isProcessAlive(pid)) {
-      return true;
-    }
-
-    await sleepImpl(Math.min(250, Math.max(timeoutMs, 1)));
-  }
-
-  return !await isProcessAlive(pid);
-}
-
-async function terminateMiningRuntimePid(options: {
-  pid: number;
-  shutdownGraceMs: number;
-  sleepImpl?: typeof sleep;
-}): Promise<boolean> {
-  if (!await isProcessAlive(options.pid)) {
-    return false;
-  }
-
-  try {
-    process.kill(options.pid, "SIGTERM");
-  } catch (error) {
-    if (!(error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH")) {
-      throw error;
-    }
-  }
-
-  if (await waitForMiningProcessExit(options.pid, options.shutdownGraceMs, options.sleepImpl)) {
-    return true;
-  }
-
-  try {
-    process.kill(options.pid, "SIGKILL");
-  } catch (error) {
-    if (!(error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH")) {
-      throw error;
-    }
-  }
-
-  if (await waitForMiningProcessExit(options.pid, options.shutdownGraceMs, options.sleepImpl)) {
-    return true;
-  }
-
-  throw new Error("mining_process_stop_timeout");
-}
-
-async function takeOverMiningRuntime(options: {
-  paths: WalletRuntimePaths;
-  reason: string;
-  clearControlLockFile?: boolean;
-  controlLockMetadata?: Awaited<ReturnType<typeof readLockMetadata>>;
-  requestMiningPreemption?: typeof requestMiningGenerationPreemption;
-  shutdownGraceMs?: number;
-  sleepImpl?: typeof sleep;
-}): Promise<MiningRuntimeTakeoverResult> {
-  const snapshot = await loadMiningRuntimeStatus(options.paths.miningStatusPath).catch(() => null);
-  const controlLockMetadata = options.controlLockMetadata ?? (
-    options.clearControlLockFile === true
-      ? await readLockMetadata(options.paths.miningControlLockPath).catch(() => null)
-      : null
-  );
-  const generationActivity = await readMiningGenerationActivity(options.paths).catch(() => null);
-  const shutdownGraceMs = options.shutdownGraceMs ?? MINING_SHUTDOWN_GRACE_MS;
-  const requestPreemption = options.requestMiningPreemption ?? requestMiningGenerationPreemption;
-  const controlLockPid = normalizeMiningPid(controlLockMetadata?.processId);
-  const backgroundWorkerPid = normalizeMiningPid(snapshot?.backgroundWorkerPid);
-  const generationOwnerPid = normalizeMiningPid(generationActivity?.generationOwnerPid);
-  const terminatedPids: number[] = [];
-  const discoveredPids = new Set<number>();
-
-  for (const pid of [controlLockPid, backgroundWorkerPid, generationOwnerPid]) {
-    if (
-      pid === null
-      || pid === process.pid
-      || discoveredPids.has(pid)
-      || !await isProcessAlive(pid)
-    ) {
-      continue;
-    }
-
-    discoveredPids.add(pid);
-  }
-
-  const shouldPreemptGeneration = discoveredPids.size > 0 && (
-    generationActivity?.generationActive === true
-    || snapshot?.currentPhase === "generating"
-    || snapshot?.currentPhase === "scoring"
-  );
-
-  const preemption = shouldPreemptGeneration
-    ? await requestPreemption({
-      paths: options.paths,
-      reason: options.reason,
-      timeoutMs: Math.min(shutdownGraceMs, 15_000),
-    }).catch(() => null)
-    : null;
-
-  try {
-    for (const pid of discoveredPids) {
-      if (await terminateMiningRuntimePid({
-        pid,
-        shutdownGraceMs,
-        sleepImpl: options.sleepImpl,
-      })) {
-        terminatedPids.push(pid);
-      }
-    }
-  } finally {
-    await preemption?.release().catch(() => undefined);
-  }
-
-  const controlLockCleared = options.clearControlLockFile === true
-    ? await clearOrphanedFileLock(options.paths.miningControlLockPath, isProcessAlive).catch(() => false)
-    : false;
-
-  await rm(resolveMiningGenerationRequestPath(options.paths), { force: true }).catch(() => undefined);
-  await rm(resolveMiningGenerationActivityPath(options.paths), { force: true }).catch(() => undefined);
-
-  const walletRootId = snapshot?.walletRootId
-    ?? (typeof controlLockMetadata?.walletRootId === "string" ? controlLockMetadata.walletRootId : null);
-
-  if (snapshot !== null || walletRootId !== null || terminatedPids.length > 0 || controlLockCleared) {
-    await saveMiningRuntimeStatus(
-      options.paths.miningStatusPath,
-      createStoppedMiningRuntimeSnapshotForTakeover({
-        snapshot,
-        walletRootId,
-        nowUnixMs: Date.now(),
-      }),
-    );
-  }
-
-  return {
-    controlLockCleared,
-    replaced: terminatedPids.length > 0,
-    snapshot,
-    terminatedPids,
-  };
-}
-
-async function acquireMiningStartControlLock(options: {
-  paths: WalletRuntimePaths;
-  purpose: string;
-  takeoverReason: string;
-  requestMiningPreemption?: typeof requestMiningGenerationPreemption;
-  shutdownGraceMs?: number;
-  sleepImpl?: typeof sleep;
-}) {
-  while (true) {
-    try {
-      return await acquireFileLock(options.paths.miningControlLockPath, {
-        purpose: options.purpose,
-      });
-    } catch (error) {
-      if (!(error instanceof FileLockBusyError)) {
-        throw error;
-      }
-
-      if (error.existingMetadata?.processId === process.pid) {
-        throw error;
-      }
-
-      const takeover = await takeOverMiningRuntime({
-        paths: options.paths,
-        reason: options.takeoverReason,
-        clearControlLockFile: true,
-        controlLockMetadata: error.existingMetadata,
-        requestMiningPreemption: options.requestMiningPreemption,
-        shutdownGraceMs: options.shutdownGraceMs,
-        sleepImpl: options.sleepImpl,
-      });
-
-      if (!takeover.replaced && !takeover.controlLockCleared) {
-        throw error;
-      }
-    }
-  }
 }
 
 function writeStdout(stream: { write(chunk: string): void } | undefined, line: string): void {
@@ -1245,21 +915,7 @@ async function runMiningLoop(options: {
 }
 
 async function waitForBackgroundHealthy(paths: WalletRuntimePaths): Promise<MiningRuntimeStatusV1 | null> {
-  const deadline = Date.now() + BACKGROUND_START_TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
-    const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath).catch(() => null);
-    if (
-      snapshot !== null
-      && snapshot.runMode === "background"
-      && snapshot.backgroundWorkerHealth === "healthy"
-    ) {
-      return snapshot;
-    }
-    await sleep(250);
-  }
-
-  return loadMiningRuntimeStatus(paths.miningStatusPath).catch(() => null);
+  return await waitForBackgroundHealthySupervisor(paths);
 }
 
 export async function runForegroundMining(options: RunForegroundMiningOptions): Promise<void> {
@@ -1273,10 +929,6 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
   const attachService = options.attachService ?? attachOrStartManagedBitcoindService;
   const rpcFactory = options.rpcFactory ?? createRpcClient as (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
   const requestMiningPreemption = options.requestMiningPreemption ?? requestMiningGenerationPreemption;
-  const runMiningLoopImpl = options.runMiningLoopImpl ?? runMiningLoop;
-  const saveStopSnapshotImpl = options.saveStopSnapshotImpl ?? saveStopSnapshot;
-  let visualizer: MiningFollowVisualizer | null = options.visualizer ?? null;
-  const ownsVisualizer = visualizer === null;
 
   const setupReady = options.builtInSetupEnsured === true
     ? true
@@ -1289,86 +941,42 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
     throw new Error("Built-in mining provider is not configured. Run `cogcoin mine setup`.");
   }
 
-  const controlLock = await acquireMiningStartControlLock({
-    paths,
-    purpose: "mine-foreground",
-    takeoverReason: "mine-foreground-replace",
-    requestMiningPreemption,
+  await runForegroundMiningSupervisor({
+    dataDir: options.dataDir,
+    databasePath: options.databasePath,
+    clientVersion: options.clientVersion,
+    updateAvailable: options.updateAvailable,
+    stdout: options.stdout,
+    stderr: options.stderr,
+    signal: options.signal,
+    progressOutput: options.progressOutput,
+    visualizer: options.visualizer,
+    fetchImpl: options.fetchImpl,
     shutdownGraceMs: options.shutdownGraceMs,
-    sleepImpl: options.sleepImpl,
-  });
-  const abortController = new AbortController();
-  const abortListener = () => {
-    abortController.abort();
-  };
-  const handleSigint = () => abortController.abort();
-  const handleSigterm = () => abortController.abort();
-
-  try {
-    await takeOverMiningRuntime({
-      paths,
-      reason: "mine-foreground-replace",
-      requestMiningPreemption,
-      shutdownGraceMs: options.shutdownGraceMs,
-      sleepImpl: options.sleepImpl,
-    });
-
-    if (visualizer === null) {
-      visualizer = new MiningFollowVisualizer({
-        clientVersion: options.clientVersion,
-        updateAvailable: options.updateAvailable,
-        progressOutput: options.progressOutput ?? "auto",
-        stream: options.stderr,
-      });
-    }
-
-    options.signal?.addEventListener("abort", abortListener, { once: true });
-    process.on("SIGINT", handleSigint);
-    process.on("SIGTERM", handleSigterm);
-
-    await runMiningLoopImpl({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
+    runtime: {
       provider,
       paths,
-      runMode: "foreground",
-      backgroundWorkerPid: null,
-      backgroundWorkerRunId: null,
-      signal: abortController.signal,
-      fetchImpl: options.fetchImpl,
       openReadContext,
       attachService,
       rpcFactory,
-      stdout: options.stdout,
-      visualizer,
-    });
-    await saveStopSnapshotImpl({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      provider,
-      paths,
-      runMode: "foreground",
-      backgroundWorkerPid: null,
-      backgroundWorkerRunId: null,
-      note: "Foreground mining stopped cleanly.",
-    });
-  } finally {
-    options.signal?.removeEventListener("abort", abortListener);
-    process.off("SIGINT", handleSigint);
-    process.off("SIGTERM", handleSigterm);
-    if (ownsVisualizer) {
-      visualizer?.close();
-    }
-    await controlLock.release();
-  }
+    },
+    deps: {
+      requestMiningPreemption,
+      runMiningLoop: options.runMiningLoopImpl,
+      saveStopSnapshot: options.saveStopSnapshotImpl,
+      sleep: options.sleepImpl,
+    },
+  });
 }
 
 export async function startBackgroundMining(options: StartBackgroundMiningOptions): Promise<MiningStartResult> {
   const provider = options.provider ?? createDefaultWalletSecretProvider();
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
   const requestMiningPreemption = options.requestMiningPreemption ?? requestMiningGenerationPreemption;
-  const spawnWorkerProcess = options.spawnWorkerProcess ?? spawn;
   const waitForBackgroundHealthyImpl = options.waitForBackgroundHealthyImpl ?? waitForBackgroundHealthy;
+  const openReadContext = options.openReadContext ?? openWalletReadContext;
+  const attachService = options.attachService ?? attachOrStartManagedBitcoindService;
+  const rpcFactory = options.rpcFactory ?? createRpcClient as (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
   const setupReady = options.builtInSetupEnsured === true
     ? true
     : await ensureBuiltInMiningSetupIfNeeded({
@@ -1380,115 +988,50 @@ export async function startBackgroundMining(options: StartBackgroundMiningOption
     throw new Error("Built-in mining provider is not configured. Run `cogcoin mine setup`.");
   }
 
-  let controlLock;
-  try {
-    controlLock = await acquireMiningStartControlLock({
+  return await startBackgroundMiningSupervisor({
+    dataDir: options.dataDir,
+    databasePath: options.databasePath,
+    shutdownGraceMs: options.shutdownGraceMs,
+    waitForBackgroundHealthy: waitForBackgroundHealthyImpl,
+    runtime: {
+      provider,
       paths,
-      purpose: "mine-start",
-      takeoverReason: "mine-start-replace",
+      openReadContext,
+      attachService,
+      rpcFactory,
+    },
+    deps: {
       requestMiningPreemption,
-      shutdownGraceMs: options.shutdownGraceMs,
-      sleepImpl: options.sleepImpl,
-    });
-  } catch (error) {
-    if (error instanceof FileLockBusyError && error.existingMetadata?.processId === process.pid) {
-      return {
-        started: false,
-        snapshot: await loadMiningRuntimeStatus(paths.miningStatusPath).catch(() => null),
-      };
-    }
-    throw error;
-  }
-
-  try {
-    await takeOverMiningRuntime({
-      paths,
-      reason: "mine-start-replace",
-      requestMiningPreemption,
-      shutdownGraceMs: options.shutdownGraceMs,
-      sleepImpl: options.sleepImpl,
-    });
-
-    const runId = randomBytes(16).toString("hex");
-    const workerMainPath = fileURLToPath(new URL("./worker-main.js", import.meta.url));
-    const child = spawnWorkerProcess(process.execPath, [
-      workerMainPath,
-      `--data-dir=${options.dataDir}`,
-      `--database-path=${options.databasePath}`,
-      `--run-id=${runId}`,
-    ], {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-
-    const snapshot = await waitForBackgroundHealthyImpl(paths);
-
-    return {
-      started: true,
-      snapshot,
-    };
-  } finally {
-    await controlLock.release();
-  }
+      spawnWorkerProcess: options.spawnWorkerProcess,
+      sleep: options.sleepImpl,
+    },
+  });
 }
 
 export async function stopBackgroundMining(options: StopBackgroundMiningOptions): Promise<MiningRuntimeStatusV1 | null> {
   const provider = options.provider ?? createDefaultWalletSecretProvider();
   const paths = options.paths ?? resolveWalletRuntimePathsForTesting();
-  const controlLock = await acquireFileLock(paths.miningControlLockPath, {
-    purpose: "mine-stop",
-  });
+  const openReadContext = options.openReadContext ?? openWalletReadContext;
+  const attachService = options.attachService ?? attachOrStartManagedBitcoindService;
+  const rpcFactory = options.rpcFactory ?? createRpcClient as (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
 
-  try {
-    const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath).catch(() => null);
-    if (snapshot === null || snapshot.runMode !== "background" || snapshot.backgroundWorkerPid === null) {
-      return snapshot;
-    }
-
-    const preemption = await requestMiningGenerationPreemption({
-      paths,
-      reason: "mine-stop",
-      timeoutMs: Math.min(MINING_SHUTDOWN_GRACE_MS, 15_000),
-    }).catch(() => null);
-
-    process.kill(snapshot.backgroundWorkerPid, "SIGTERM");
-    const deadline = Date.now() + MINING_SHUTDOWN_GRACE_MS;
-
-    while (Date.now() < deadline) {
-      try {
-        process.kill(snapshot.backgroundWorkerPid, 0);
-        await sleep(250);
-      } catch (error) {
-        if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH") {
-          break;
-        }
-      }
-    }
-
-    try {
-      process.kill(snapshot.backgroundWorkerPid, "SIGKILL");
-    } catch {
-      // ignore
-    }
-
-    await saveStopSnapshot({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
+  return await stopBackgroundMiningSupervisor({
+    dataDir: options.dataDir,
+    databasePath: options.databasePath,
+    shutdownGraceMs: options.shutdownGraceMs,
+    runtime: {
       provider,
       paths,
-      runMode: "background",
-      backgroundWorkerPid: snapshot.backgroundWorkerPid,
-      backgroundWorkerRunId: snapshot.backgroundWorkerRunId,
-      note: snapshot.livePublishInMempool
-        ? "Background mining stopped. The last mining transaction may still confirm from mempool."
-        : "Background mining stopped.",
-    });
-    await preemption?.release().catch(() => undefined);
-    return loadMiningRuntimeStatus(paths.miningStatusPath);
-  } finally {
-    await controlLock.release();
-  }
+      openReadContext,
+      attachService,
+      rpcFactory,
+    },
+    deps: {
+      requestMiningPreemption: options.requestMiningPreemption,
+      saveStopSnapshot: options.saveStopSnapshotImpl,
+      sleep: options.sleepImpl,
+    },
+  });
 }
 
 export async function runBackgroundMiningWorker(options: RunnerDependencies & {
@@ -1503,81 +1046,24 @@ export async function runBackgroundMiningWorker(options: RunnerDependencies & {
   const openReadContext = options.openReadContext ?? openWalletReadContext;
   const attachService = options.attachService ?? attachOrStartManagedBitcoindService;
   const rpcFactory = options.rpcFactory ?? createRpcClient as (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
-  const abortController = new AbortController();
 
-  process.on("SIGINT", () => abortController.abort());
-  process.on("SIGTERM", () => abortController.abort());
-
-  const initialContext = await openReadContext({
+  await runBackgroundMiningWorkerSupervisor({
     dataDir: options.dataDir,
     databasePath: options.databasePath,
-    secretProvider: provider,
-    paths,
-  });
-
-  try {
-    const initialView = await inspectMiningControlPlane({
-      provider,
-      localState: initialContext.localState,
-      bitcoind: initialContext.bitcoind,
-      nodeStatus: initialContext.nodeStatus,
-      nodeHealth: initialContext.nodeHealth,
-      indexer: initialContext.indexer,
-      paths,
-    });
-    await saveMiningRuntimeStatus(paths.miningStatusPath, {
-      ...initialView.runtime,
-      walletRootId: initialContext.localState.walletRootId,
-      workerApiVersion: MINING_WORKER_API_VERSION,
-      workerBinaryVersion: process.version,
-      workerBuildId: options.runId,
-      runMode: "background",
-      backgroundWorkerPid: process.pid,
-      backgroundWorkerRunId: options.runId,
-      backgroundWorkerHeartbeatAtUnixMs: Date.now(),
-      currentPhase: "idle",
-      updatedAtUnixMs: Date.now(),
-    });
-  } finally {
-    await initialContext.close();
-  }
-
-  await runMiningLoop({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
-    provider,
-    paths,
-    runMode: "background",
-    backgroundWorkerPid: process.pid,
-    backgroundWorkerRunId: options.runId,
-    signal: abortController.signal,
+    runId: options.runId,
     fetchImpl: options.fetchImpl,
-    openReadContext,
-    attachService,
-    rpcFactory,
+    runtime: {
+      provider,
+      paths,
+      openReadContext,
+      attachService,
+      rpcFactory,
+    },
+    deps: {
+      runMiningLoop: options.runMiningLoopImpl,
+      saveStopSnapshot: options.saveStopSnapshotImpl,
+    },
   });
-  await saveStopSnapshot({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
-    provider,
-    paths,
-    runMode: "background",
-    backgroundWorkerPid: process.pid,
-    backgroundWorkerRunId: options.runId,
-    note: "Background mining worker stopped cleanly.",
-  });
-}
-
-export async function takeOverMiningRuntimeForTesting(options: {
-  paths: WalletRuntimePaths;
-  reason: string;
-  clearControlLockFile?: boolean;
-  controlLockMetadata?: Awaited<ReturnType<typeof readLockMetadata>>;
-  requestMiningPreemption?: typeof requestMiningGenerationPreemption;
-  shutdownGraceMs?: number;
-  sleepImpl?: typeof sleep;
-}): Promise<MiningRuntimeTakeoverResult> {
-  return await takeOverMiningRuntime(options);
 }
 
 export async function performMiningCycleForTesting(options: {
