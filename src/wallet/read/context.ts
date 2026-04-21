@@ -42,7 +42,7 @@ import type {
 } from "./types.js";
 import type { WalletRuntimePaths } from "../runtime.js";
 
-const DEFAULT_SERVICE_START_TIMEOUT_MS = 10_000;
+const DEFAULT_SERVICE_START_TIMEOUT_MS = 60_000;
 
 function btcAmountToSats(value: number): bigint {
   return BigInt(Math.round(value * 100_000_000));

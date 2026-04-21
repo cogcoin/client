@@ -50,7 +50,7 @@ import {
 const execFileAsync = promisify(execFile);
 const LOCAL_HOST = "127.0.0.1";
 const SUPPORTED_BITCOIND_VERSION = "30.2.0";
-const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
+const DEFAULT_STARTUP_TIMEOUT_MS = 60_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15_000;
 const DEFAULT_DBCACHE_MIB = 450;
 const claimedUninitializedRuntimeKeys = new Set<string>();

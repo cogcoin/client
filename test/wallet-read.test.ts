@@ -108,7 +108,7 @@ test("status output keeps a tolerated header lead synced while surfacing the exp
     },
   });
   const json = buildStatusJson(context);
-  const report = formatWalletOverviewReport(context, "1.1.7");
+  const report = formatWalletOverviewReport(context, "1.1.8");
 
   assert.deepEqual(json.warnings, []);
   assert.equal(json.data.btc.bestHeight, 100);
