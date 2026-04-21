@@ -738,6 +738,8 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
   feeRate?: number;
   availableFundingMinConf?: number;
   temporarilyUnlockedPolicyOutpoints?: readonly OutpointRecord[];
+  recoverManagedCoreWalletLockedOnce?: boolean;
+  onManagedCoreWalletLockedRecoveryOutcome?: (outcome: "recovered" | "still-locked") => void;
 }): Promise<BuiltWalletMutationTransaction> {
   const temporaryBuilderLockedOutpoints: OutpointRecord[] = [];
 
@@ -759,6 +761,8 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
       walletName: options.walletName,
       internalPassphrase: options.state.managedCoreWallet.internalPassphrase,
       timeoutSeconds: MANAGED_CORE_WALLET_UNLOCK_TIMEOUT_SECONDS,
+      recoverLockedWalletOnce: options.recoverManagedCoreWalletLockedOnce,
+      onLockedWalletRecoveryOutcome: options.onManagedCoreWalletLockedRecoveryOutcome,
       run: async () => {
         const signed = await options.rpc.walletProcessPsbt(options.walletName, funded.psbt, true, "DEFAULT");
         const finalized = await options.rpc.finalizePsbt(signed.psbt, true);

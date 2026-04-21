@@ -96,6 +96,7 @@ export interface MiningPublishRetryResult {
   txid: null;
   decision: "publish-retry-pending";
   note: string;
+  lastError?: string | null;
   skipped?: false;
   retryable: true;
   candidate: MiningCandidate;

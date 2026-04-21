@@ -637,6 +637,7 @@ export async function runMiningPhaseMachine(options: {
               mempoolSequenceCacheStatus: state.gateSnapshot.mempoolSequenceCacheStatus,
               lastMempoolSequence: state.gateSnapshot.lastMempoolSequence,
               lastCompetitivenessGateAtUnixMs: now(),
+              lastError: published.lastError ?? null,
               note: published.note,
               livePublishInMempool: published.state.miningState.livePublishInMempool,
             });
@@ -652,7 +653,7 @@ export async function runMiningPhaseMachine(options: {
             options.loopState.waitingNote = published.note;
             const lastError = published.decision === "publish-paused-insufficient-funds"
               ? published.lastError ?? createInsufficientFundsMiningPublishErrorMessage()
-              : undefined;
+              : null;
             await options.saveCycleStatus({
               ...options.readContext,
               localState: {
@@ -710,6 +711,7 @@ export async function runMiningPhaseMachine(options: {
             mempoolSequenceCacheStatus: state.gateSnapshot.mempoolSequenceCacheStatus,
             lastMempoolSequence: state.gateSnapshot.lastMempoolSequence,
             lastCompetitivenessGateAtUnixMs: now(),
+            lastError: null,
             note: options.loopState.waitingNote,
             livePublishInMempool: published.state.miningState.livePublishInMempool,
           });

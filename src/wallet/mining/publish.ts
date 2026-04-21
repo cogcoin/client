@@ -65,12 +65,23 @@ export class MiningPublishRejectedError extends Error {
   }
 }
 
+class ManagedCoreWalletRelockPendingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ManagedCoreWalletRelockPendingError";
+  }
+}
+
 export function createStaleMiningCandidateWaitingNote(): string {
   return "Mining candidate changed before broadcast: the selected root domain is no longer locally mineable. Skipping this tip and waiting for the next block.";
 }
 
 export function createRetryableMiningPublishWaitingNote(): string {
   return "Selected mining candidate did not reach mempool and will be retried on the current tip with refreshed wallet state.";
+}
+
+export function createManagedCoreWalletRelockRetryWaitingNote(): string {
+  return "Mining temporarily lost the managed Bitcoin wallet unlock and is retrying.";
 }
 
 export function createInsufficientFundsMiningPublishWaitingNote(): string {
@@ -207,6 +218,8 @@ async function buildMiningTransaction(options: {
   walletName: string;
   state: WalletStateV1;
   plan: MiningMutationPlan;
+  recoverManagedCoreWalletLockedOnce?: boolean;
+  onManagedCoreWalletLockedRecoveryOutcome?: (outcome: "recovered" | "still-locked") => void;
 }) {
   return buildWalletMutationTransaction({
     rpc: options.rpc,
@@ -218,6 +231,8 @@ async function buildMiningTransaction(options: {
     mempoolRejectPrefix: "wallet_mining_mempool_rejected",
     feeRate: options.plan.feeRateSatVb,
     availableFundingMinConf: MINING_FUNDING_MIN_CONF,
+    recoverManagedCoreWalletLockedOnce: options.recoverManagedCoreWalletLockedOnce,
+    onManagedCoreWalletLockedRecoveryOutcome: options.onManagedCoreWalletLockedRecoveryOutcome,
   });
 }
 
@@ -497,12 +512,43 @@ export async function publishCandidateOnce(options: {
     allUtxos,
     feeRateSatVb: nextFeeRate,
   });
-  const built = await buildMiningTransaction({
-    rpc,
-    walletName: state.managedCoreWallet.walletName,
-    state,
-    plan,
-  });
+  let managedCoreWalletRelockOutcome: "recovered" | "still-locked" | null = null;
+  let built: Awaited<ReturnType<typeof buildMiningTransaction>>;
+  try {
+    built = await buildMiningTransaction({
+      rpc,
+      walletName: state.managedCoreWallet.walletName,
+      state,
+      plan,
+      recoverManagedCoreWalletLockedOnce: true,
+      onManagedCoreWalletLockedRecoveryOutcome: (outcome: "recovered" | "still-locked") => {
+        managedCoreWalletRelockOutcome = outcome;
+      },
+    });
+  } catch (error) {
+    if (managedCoreWalletRelockOutcome === "still-locked" && error instanceof Error) {
+      throw new ManagedCoreWalletRelockPendingError(error.message);
+    }
+
+    throw error;
+  }
+  if (managedCoreWalletRelockOutcome === "recovered" && appendEventFn !== undefined) {
+    await appendEventFn(options.paths, createMiningEventRecord(
+      "managed-core-wallet-relock-recovered",
+      "Managed Bitcoin Core wallet relocked during signing and was recovered automatically.",
+      {
+        level: "warn",
+        runId: options.runId,
+        targetBlockHeight: options.candidate.targetBlockHeight,
+        referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+        domainId: options.candidate.domainId,
+        domainName: options.candidate.domainName,
+        feeRateSatVb: nextFeeRate,
+        score: options.candidate.canonicalBlend.toString(),
+        reason: "managed-core-wallet-locked",
+      },
+    ));
+  }
   const intentFingerprintHex = computeIntentFingerprint(state, options.candidate);
   state = defaultMiningStatePatch(state, {
     state: "live",
@@ -761,6 +807,34 @@ export async function publishCandidate(options: {
         candidate: refreshedCandidate,
       };
     } catch (error) {
+      if (error instanceof ManagedCoreWalletRelockPendingError) {
+        const note = createManagedCoreWalletRelockRetryWaitingNote();
+        const lastError = error.message;
+        await options.appendEventFn(options.paths, createMiningEventRecord(
+          "publish-retry-pending",
+          "Managed Bitcoin Core wallet relocked during mining publish and will be retried on the current tip.",
+          {
+            level: "warn",
+            runId: options.runId,
+            targetBlockHeight: refreshedCandidate.targetBlockHeight,
+            referencedBlockHashDisplay: refreshedCandidate.referencedBlockHashDisplay,
+            domainId: refreshedCandidate.domainId,
+            domainName: refreshedCandidate.domainName,
+            score: refreshedCandidate.canonicalBlend.toString(),
+            reason: "managed-core-wallet-locked",
+          },
+        ));
+        return {
+          state: readyReadContext.localState.state,
+          txid: null,
+          decision: "publish-retry-pending",
+          note,
+          lastError,
+          retryable: true,
+          candidate: refreshedCandidate,
+        };
+      }
+
       if (error instanceof Error && error.message === "wallet_mining_mempool_rejected_missing-inputs") {
         const note = createRetryableMiningPublishWaitingNote();
         const revertedState = error instanceof MiningPublishRejectedError

@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { rm } from "node:fs/promises";
+import net from "node:net";
+import test, { type TestContext } from "node:test";
 import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english.js";
 import { displayToInternalBlockhash, getWords } from "@cogcoin/scoring";
 
+import { INDEXER_DAEMON_SCHEMA_VERSION, INDEXER_DAEMON_SERVICE_API_VERSION } from "../src/bitcoind/types.js";
+import { resolveManagedServicePaths } from "../src/bitcoind/service-paths.js";
 import {
   clearMiningPublishState,
   miningPublishIsInMempool,
@@ -65,6 +69,101 @@ import {
 } from "./current-model-helpers.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createHealthyMiningRpc } from "./mining-rpc-test-helpers.js";
+
+const MANAGED_CORE_WALLET_LOCKED_ERROR =
+  "bitcoind_rpc_walletprocesspsbt_-13_Please enter the wallet passphrase with walletpassphrase first.";
+
+async function startFakeIndexerDaemonStatusServer(
+  t: TestContext,
+  options: {
+    dataDir: string;
+    walletRootId: string;
+    daemonInstanceId: string;
+    snapshotSeq: string;
+  },
+): Promise<void> {
+  const paths = resolveManagedServicePaths(options.dataDir, options.walletRootId);
+  await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
+
+  const server = net.createServer((socket) => {
+    let buffer = "";
+
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+
+      while (true) {
+        const newlineIndex = buffer.indexOf("\n");
+        if (newlineIndex === -1) {
+          break;
+        }
+
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line.length === 0) {
+          continue;
+        }
+
+        const request = JSON.parse(line) as { id: string; method: string };
+        if (request.method !== "GetStatus") {
+          socket.write(`${JSON.stringify({
+            id: request.id,
+            ok: false,
+            error: "unsupported_method",
+          })}\n`);
+          continue;
+        }
+
+        socket.write(`${JSON.stringify({
+          id: request.id,
+          ok: true,
+          result: {
+            serviceApiVersion: INDEXER_DAEMON_SERVICE_API_VERSION,
+            schemaVersion: INDEXER_DAEMON_SCHEMA_VERSION,
+            walletRootId: options.walletRootId,
+            daemonInstanceId: options.daemonInstanceId,
+            binaryVersion: "1.1.7",
+            buildId: "test-build",
+            processId: 9_001,
+            startedAtUnixMs: 1,
+            state: "synced",
+            heartbeatAtUnixMs: 1,
+            rpcReachable: true,
+            coreBestHeight: 100,
+            coreBestHash: "11".repeat(32),
+            appliedTipHeight: 100,
+            appliedTipHash: "11".repeat(32),
+            snapshotSeq: options.snapshotSeq,
+            backlogBlocks: 0,
+            reorgDepth: null,
+            lastAppliedAtUnixMs: 1,
+            activeSnapshotCount: 0,
+            lastError: null,
+            backgroundFollowActive: true,
+            bootstrapPhase: null,
+            bootstrapProgress: null,
+            cogcoinSyncHeight: 100,
+            cogcoinSyncTargetHeight: 100,
+          },
+        })}\n`);
+      }
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(paths.indexerDaemonSocketPath, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+
+  t.after(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+    await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
+  });
+}
 
 function buildStatusSnapshotForTesting(
   view: any,
@@ -1810,6 +1909,214 @@ test("performMiningCycle keeps the insufficient-funding blocker active across re
   assert.equal(snapshot?.lastError, "Bitcoin Core could not fund the next mining publish with safe BTC.");
 });
 
+test("performMiningCycle retries managed Core wallet relocks on later ticks without regenerating candidates", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-managed-core-relock-cycle");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const readContextOverrides = {
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    snapshot: {
+      daemonInstanceId: "daemon-1",
+      snapshotSeq: "seq-100",
+      tip: {
+        height: 100,
+        blockHashHex: "11".repeat(32),
+        previousHashHex: "00".repeat(32),
+        stateHashHex: null,
+      },
+      state: {
+        consensus: {
+          domainIdsByName: new Map([["cogdemo", 7]]),
+          domainsById: new Map([[7, {
+            domainId: 7,
+            name: "cogdemo",
+            anchored: true,
+            anchorHeight: 100,
+            endpoint: null,
+          }]]),
+          balances: new Map(),
+        },
+        history: {
+          foundingMessageByDomain: new Map(),
+          blockWinnersByHeight: new Map(),
+        },
+      },
+    },
+    indexer: {
+      health: "synced",
+      message: null,
+      status: null,
+      source: "lease",
+      daemonInstanceId: "daemon-1",
+      snapshotSeq: "seq-100",
+      openedAtUnixMs: 1,
+      snapshotTip: {
+        height: 100,
+        blockHashHex: "11".repeat(32),
+        previousHashHex: "00".repeat(32),
+        stateHashHex: null,
+      },
+    },
+    nodeStatus: {
+      chain: "mainnet",
+      nodeBestHeight: 100,
+      nodeBestHashHex: "11".repeat(32),
+      walletReplica: {
+        proofStatus: "ready",
+      },
+      serviceStatus: {
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      },
+    },
+    nodeHealth: "synced",
+  };
+  const readContext = createReadyMiningReadContext({
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+    readContextOverrides,
+  });
+  const publishableSentence = "a".repeat(60);
+  const candidate = createTestMiningCandidate({
+    sentence: publishableSentence,
+    encodedSentenceBytes: Buffer.from(publishableSentence, "utf8"),
+  });
+  let generateCalls = 0;
+  let gateCalls = 0;
+  let walletPassphraseCalls = 0;
+  let walletProcessPsbtCalls = 0;
+  let walletLockCalls = 0;
+
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: readContext.localState.state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+  });
+
+  await provider.storeSecret(
+    createWalletSecretReference(readContext.localState.state.walletRootId).keyId,
+    new Uint8Array(32).fill(7),
+  );
+
+  const runCycle = async (nowUnixMs: number) => {
+    await performMiningCycleForTesting({
+      dataDir: homeDirectory,
+      databasePath: `${homeDirectory}/client.sqlite`,
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      openReadContext: async () => createReadyMiningReadContext({
+        miningState: createMiningState({
+          livePublishInMempool: false,
+        }),
+        readContextOverrides,
+      }),
+      attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+      rpcFactory: () => createHealthyMiningRpc({
+        async walletPassphrase() {
+          walletPassphraseCalls += 1;
+          return null;
+        },
+        async walletProcessPsbt() {
+          walletProcessPsbtCalls += 1;
+          if (walletProcessPsbtCalls <= 4) {
+            throw new Error(MANAGED_CORE_WALLET_LOCKED_ERROR);
+          }
+
+          return {
+            psbt: "signed-psbt",
+            complete: true,
+          };
+        },
+        async walletLock() {
+          walletLockCalls += 1;
+          return null;
+        },
+        async finalizePsbt() {
+          return {
+            complete: true,
+            hex: "raw-hex",
+          };
+        },
+        async decodeRawTransaction() {
+          return {
+            txid: "bb".repeat(32),
+            hash: "cc".repeat(32),
+          } as never;
+        },
+        async testMempoolAccept() {
+          return [{ allowed: true }];
+        },
+        async sendRawTransaction() {
+          return "bb".repeat(32);
+        },
+      }, {
+        fundingScriptPubKeyHex: readContext.localState.state.funding.scriptPubKeyHex,
+      }) as any,
+      loopState,
+      nowImpl: () => nowUnixMs,
+      generateCandidatesForDomainsImpl: async () => {
+        generateCalls += 1;
+        return [candidate];
+      },
+      runCompetitivenessGateImpl: async () => {
+        gateCalls += 1;
+        return {
+          allowed: true,
+          decision: "allowed",
+          sameDomainCompetitorSuppressed: false,
+          higherRankedCompetitorDomainCount: 0,
+          dedupedCompetitorDomainCount: 0,
+          competitivenessGateIndeterminate: false,
+          mempoolSequenceCacheStatus: null,
+          lastMempoolSequence: null,
+          visibleBoardEntries: [],
+          candidateRank: 1,
+        } as any;
+      },
+    });
+  };
+
+  await runCycle(1_000);
+  let snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting");
+  assert.equal(snapshot?.currentPublishDecision, "publish-retry-pending");
+  assert.equal(snapshot?.note, "Mining temporarily lost the managed Bitcoin wallet unlock and is retrying.");
+  assert.equal(snapshot?.lastError, MANAGED_CORE_WALLET_LOCKED_ERROR);
+  assert.equal(generateCalls, 1);
+  assert.equal(gateCalls, 1);
+
+  await runCycle(2_000);
+  snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting");
+  assert.equal(snapshot?.currentPublishDecision, "publish-retry-pending");
+  assert.equal(snapshot?.note, "Mining temporarily lost the managed Bitcoin wallet unlock and is retrying.");
+  assert.equal(snapshot?.lastError, MANAGED_CORE_WALLET_LOCKED_ERROR);
+  assert.equal(generateCalls, 1);
+  assert.equal(gateCalls, 1);
+
+  await runCycle(3_000);
+  snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting");
+  assert.equal(snapshot?.currentPublishDecision, "broadcast");
+  assert.equal(snapshot?.lastError, null);
+  assert.match(snapshot?.note ?? "", /Waiting for the next block/i);
+  assert.equal(generateCalls, 1);
+  assert.equal(gateCalls, 1);
+  assert.equal(walletPassphraseCalls, 5);
+  assert.equal(walletProcessPsbtCalls, 5);
+  assert.equal(walletLockCalls, 3);
+});
+
 test("performMiningCycle backs off transient provider failures and retries without marking the tip attempted", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-provider-backoff");
   const paths = resolveWalletRuntimePathsForTesting({
@@ -2569,6 +2876,180 @@ test("publish candidate broadcasts when only safe 0-conf BTC funding is availabl
   assert.equal(result.decision, "broadcast");
   assert.equal(result.txid, "bb".repeat(32));
   assert.equal(result.candidate?.sentence, candidate.sentence);
+});
+
+test("publish candidate recovers a managed Core wallet relock and continues broadcasting", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-managed-core-relock-recover");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const publishableSentence = "a".repeat(60);
+  const candidate = createTestMiningCandidate({
+    sentence: publishableSentence,
+    encodedSentenceBytes: Buffer.from(publishableSentence, "utf8"),
+  });
+  const readContext = createReadyMiningReadContext({});
+  const state = readContext.localState.state;
+  const events: any[] = [];
+  let walletPassphraseCalls = 0;
+  let walletProcessPsbtCalls = 0;
+  let walletLockCalls = 0;
+
+  await provider.storeSecret(
+    createWalletSecretReference(state.walletRootId).keyId,
+    new Uint8Array(32).fill(7),
+  );
+
+  const result = await publishCandidateForTesting({
+    candidate,
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    fallbackState: state,
+    openReadContext: async () => readContext,
+    attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+    rpcFactory: () => createHealthyMiningRpc({
+      async walletPassphrase() {
+        walletPassphraseCalls += 1;
+        return null;
+      },
+      async walletProcessPsbt() {
+        walletProcessPsbtCalls += 1;
+        if (walletProcessPsbtCalls === 1) {
+          throw new Error(MANAGED_CORE_WALLET_LOCKED_ERROR);
+        }
+
+        return {
+          psbt: "signed-psbt",
+          complete: true,
+        };
+      },
+      async walletLock() {
+        walletLockCalls += 1;
+        return null;
+      },
+      async finalizePsbt() {
+        return {
+          complete: true,
+          hex: "raw-hex",
+        };
+      },
+      async decodeRawTransaction() {
+        return {
+          txid: "bb".repeat(32),
+          hash: "cc".repeat(32),
+        } as never;
+      },
+      async testMempoolAccept() {
+        return [{ allowed: true }];
+      },
+      async sendRawTransaction() {
+        return "bb".repeat(32);
+      },
+    }, {
+      fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    }) as any,
+    runId: "run-1",
+    appendEventFn: async (_paths, event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(result.decision, "broadcast");
+  assert.equal(result.txid, "bb".repeat(32));
+  assert.equal(result.retryable, undefined);
+  assert.equal(result.candidate?.sentence, candidate.sentence);
+  assert.equal(walletPassphraseCalls, 2);
+  assert.equal(walletProcessPsbtCalls, 2);
+  assert.equal(walletLockCalls, 1);
+  assert.equal(events.some((event) =>
+    event.kind === "managed-core-wallet-relock-recovered"
+    && event.level === "warn"
+    && event.reason === "managed-core-wallet-locked"
+  ), true);
+  assert.equal(events.some((event) => event.kind === "tx-broadcast"), true);
+});
+
+test("publish candidate retries when the managed Core wallet stays locked after the immediate retry", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-managed-core-relock-retry");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const publishableSentence = "a".repeat(60);
+  const candidate = createTestMiningCandidate({
+    sentence: publishableSentence,
+    encodedSentenceBytes: Buffer.from(publishableSentence, "utf8"),
+  });
+  const readContext = createReadyMiningReadContext({});
+  const state = readContext.localState.state;
+  const events: any[] = [];
+  let walletPassphraseCalls = 0;
+  let walletProcessPsbtCalls = 0;
+  let walletLockCalls = 0;
+
+  const result = await publishCandidateForTesting({
+    candidate,
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    fallbackState: state,
+    openReadContext: async () => readContext,
+    attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+    rpcFactory: () => createHealthyMiningRpc({
+      async walletPassphrase() {
+        walletPassphraseCalls += 1;
+        return null;
+      },
+      async walletProcessPsbt() {
+        walletProcessPsbtCalls += 1;
+        throw new Error(MANAGED_CORE_WALLET_LOCKED_ERROR);
+      },
+      async walletLock() {
+        walletLockCalls += 1;
+        return null;
+      },
+      async finalizePsbt() {
+        throw new Error("finalizePsbt should not run when signing never succeeds");
+      },
+      async decodeRawTransaction() {
+        throw new Error("decodeRawTransaction should not run when signing never succeeds");
+      },
+      async testMempoolAccept() {
+        throw new Error("testMempoolAccept should not run when signing never succeeds");
+      },
+      async sendRawTransaction() {
+        throw new Error("sendRawTransaction should not run when signing never succeeds");
+      },
+    }, {
+      fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    }) as any,
+    runId: "run-1",
+    appendEventFn: async (_paths, event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(result.retryable, true);
+  if (result.retryable !== true) {
+    assert.fail("expected managed Core relock result to stay on the retryable publish path");
+  }
+  assert.equal(result.txid, null);
+  assert.equal(result.decision, "publish-retry-pending");
+  assert.equal(result.note, "Mining temporarily lost the managed Bitcoin wallet unlock and is retrying.");
+  assert.equal(result.lastError, MANAGED_CORE_WALLET_LOCKED_ERROR);
+  assert.equal(result.candidate.sentence, candidate.sentence);
+  assert.equal(walletPassphraseCalls, 2);
+  assert.equal(walletProcessPsbtCalls, 2);
+  assert.equal(walletLockCalls, 1);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.kind, "publish-retry-pending");
+  assert.equal(events[0]?.reason, "managed-core-wallet-locked");
 });
 
 test("pre-publish status on a new tip shows the pending candidate instead of stale prior-tip tx metadata", () => {
