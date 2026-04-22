@@ -64,21 +64,21 @@ function createBuiltInProviderTimeoutError(options: {
   );
 }
 
-function buildSystemPrompt(extraPrompt: string | null): string {
+function buildSystemPrompt(fallbackInstruction: string | null): string {
   const lines = [
     "You are helping generate candidate Cogcoin mining sentences.",
     "Return only JSON matching the requested response schema.",
     "Every sentence must be a single natural-language sentence.",
     "Do not add commentary, markdown, or code fences.",
     "Do not invent domain IDs or request IDs.",
-    "Each rootDomains entry may include an extraPrompt that applies only to that domain.",
-    "If rootDomains[i].extraPrompt is present, use it only for candidates for that domainId.",
-    "If rootDomains[i].extraPrompt is null, fall back to the request-level extraPrompt when it is present.",
+    "Each rootDomains entry may include a domainInstruction that applies only to that domain.",
+    "If rootDomains[i].domainInstruction is present, use it only for candidates for that domainId.",
+    "If rootDomains[i].domainInstruction is null, fall back to the request-level fallbackInstruction when it is present.",
     "Never apply one domain's prompt to another domain's candidates.",
   ];
 
-  if (extraPrompt !== null && extraPrompt.trim().length > 0) {
-    lines.push(`Request-level fallback instruction: ${extraPrompt.trim()}`);
+  if (fallbackInstruction !== null && fallbackInstruction.trim().length > 0) {
+    lines.push(`Request-level fallback instruction: ${fallbackInstruction.trim()}`);
   }
 
   return lines.join("\n");
@@ -241,7 +241,7 @@ async function requestBuiltInSentences(options: {
           input: [
             {
               role: "system",
-              content: buildSystemPrompt(options.request.extraPrompt),
+              content: buildSystemPrompt(options.request.fallbackInstruction),
             },
             {
               role: "user",
@@ -297,7 +297,7 @@ async function requestBuiltInSentences(options: {
       body: JSON.stringify({
         model,
         max_tokens: 1_200,
-        system: buildSystemPrompt(options.request.extraPrompt),
+        system: buildSystemPrompt(options.request.fallbackInstruction),
         messages: [
           {
             role: "user",

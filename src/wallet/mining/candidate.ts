@@ -193,7 +193,7 @@ export function buildMiningGenerationRequest(options: {
     requiredWords: [string, string, string, string, string];
   }>;
   domainExtraPrompts: Record<string, string>;
-  extraPrompt: string | null;
+  fallbackInstruction: string | null;
 }): MiningSentenceGenerationRequest {
   return {
     schemaVersion: 1,
@@ -201,13 +201,13 @@ export function buildMiningGenerationRequest(options: {
     targetBlockHeight: options.targetBlockHeight,
     referencedBlockHashDisplay: options.referencedBlockHashDisplay,
     generatedAtUnixMs: options.generatedAtUnixMs ?? Date.now(),
-    extraPrompt: options.extraPrompt,
+    fallbackInstruction: options.fallbackInstruction,
     limits: createMiningSentenceRequestLimits(),
     rootDomains: options.domains.map((domain) => ({
       domainId: domain.domainId,
       domainName: domain.domainName,
       requiredWords: domain.requiredWords,
-      extraPrompt: options.domainExtraPrompts[domain.domainName.toLowerCase()] ?? null,
+      domainInstruction: options.domainExtraPrompts[domain.domainName.toLowerCase()] ?? null,
     })),
   };
 }
@@ -296,7 +296,7 @@ export async function generateCandidatesForDomains(options: {
       referencedBlockHashDisplay: bestBlockHash,
       domains: rootDomains,
       domainExtraPrompts: clientConfig?.mining.domainExtraPrompts ?? {},
-      extraPrompt: clientConfig?.mining.builtIn?.extraPrompt ?? null,
+      fallbackInstruction: clientConfig?.mining.builtIn?.extraPrompt ?? null,
     });
     let generated;
 

@@ -12,6 +12,10 @@ import {
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 
 interface CapturedAnthropicRequestBody {
+  system?: string;
+  messages?: Array<{
+    content?: string;
+  }>;
   tool_choice?: {
     type?: string;
     name?: string;
@@ -28,13 +32,13 @@ function createMiningSentenceRequest() {
     targetBlockHeight: 101,
     referencedBlockHashDisplay: "11".repeat(32),
     generatedAtUnixMs: 1,
-    extraPrompt: null,
+    fallbackInstruction: null,
     limits: createMiningSentenceRequestLimits(),
     rootDomains: [{
       domainId: 7,
       domainName: "cogdemo",
       requiredWords: ["under", "tree", "monkey", "youth", "basket"] as [string, string, string, string, string],
-      extraPrompt: null,
+      domainInstruction: null,
     }],
   };
 }
@@ -181,6 +185,9 @@ test("Anthropic requests force tool output and parse tool_use input", async (t) 
   ]);
   assert.ok(capturedBody);
   const body = capturedBody as CapturedAnthropicRequestBody;
+  assert.match(String(body.system), /domainInstruction/);
+  assert.match(String(body.system), /fallbackInstruction/);
+  assert.doesNotMatch(String(body.system), /extraPrompt/);
   assert.equal(body.tool_choice?.type, "tool");
   assert.equal(body.tool_choice?.name, "return_mining_candidates");
   assert.equal(body.tools?.[0]?.name, "return_mining_candidates");
@@ -356,26 +363,26 @@ test("caller aborts are not reclassified as provider unavailability", async (t) 
   );
 });
 
-test("OpenAI requests include per-domain prompts and the fallback prompt semantics", async (t) => {
+test("OpenAI requests include domain instructions and fallback instruction semantics", async (t) => {
   const fixture = await createSentenceGenerationFixture(t, {
     provider: "openai",
     modelOverride: "gpt-5.4-mini",
   });
   const request = {
     ...createMiningSentenceRequest(),
-    extraPrompt: "global fallback",
+    fallbackInstruction: "global fallback",
     rootDomains: [
       {
         domainId: 7,
         domainName: "cogdemo",
         requiredWords: ["under", "tree", "monkey", "youth", "basket"] as [string, string, string, string, string],
-        extraPrompt: "focus on cogdemo only",
+        domainInstruction: "focus on cogdemo only",
       },
       {
         domainId: 8,
         domainName: "betademo",
         requiredWords: ["able", "breeze", "cabin", "delta", "ember"] as [string, string, string, string, string],
-        extraPrompt: null,
+        domainInstruction: null,
       },
     ],
   };
@@ -415,8 +422,13 @@ test("OpenAI requests include per-domain prompts and the fallback prompt semanti
   const [systemInput, userInput] = body.input ?? [];
   assert.match(String(systemInput?.content), /Never apply one domain's prompt to another domain's candidates\./);
   assert.match(String(systemInput?.content), /Request-level fallback instruction: global fallback/);
-  assert.match(String(userInput?.content), /"extraPrompt": "focus on cogdemo only"/);
-  assert.match(String(userInput?.content), /"extraPrompt": null/);
+  assert.match(String(systemInput?.content), /domainInstruction/);
+  assert.match(String(systemInput?.content), /fallbackInstruction/);
+  assert.doesNotMatch(String(systemInput?.content), /extraPrompt/);
+  assert.match(String(userInput?.content), /"fallbackInstruction": "global fallback"/);
+  assert.match(String(userInput?.content), /"domainInstruction": "focus on cogdemo only"/);
+  assert.match(String(userInput?.content), /"domainInstruction": null/);
+  assert.doesNotMatch(String(userInput?.content), /extraPrompt/);
 });
 
 test("sentence generation uses only the active built-in provider and ignores remembered inactive providers", async (t) => {

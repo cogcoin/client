@@ -12,7 +12,7 @@ export interface MiningSentenceGenerationRequestV1 {
   targetBlockHeight: number;
   referencedBlockHashDisplay: string;
   generatedAtUnixMs: number;
-  extraPrompt: string | null;
+  fallbackInstruction: string | null;
   limits: {
     maxCandidatesPerRootDomain: number;
     maxCandidatesTotal: number;
@@ -23,7 +23,7 @@ export interface MiningSentenceGenerationRequestV1 {
     domainId: number;
     domainName: string;
     requiredWords: [string, string, string, string, string];
-    extraPrompt: string | null;
+    domainInstruction: string | null;
   }>;
 }
 

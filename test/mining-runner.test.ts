@@ -396,13 +396,13 @@ function createMiningSuspendTestClock() {
 }
 
 
-test("buildMiningGenerationRequestForTesting attaches distinct per-domain prompts", () => {
+test("buildMiningGenerationRequestForTesting attaches distinct per-domain instructions", () => {
   const request = buildMiningGenerationRequestForTesting({
     requestId: "request-1",
     targetBlockHeight: 101,
     referencedBlockHashDisplay: "11".repeat(32),
     generatedAtUnixMs: 1,
-    extraPrompt: "global fallback",
+    fallbackInstruction: "global fallback",
     domainExtraPrompts: {
       alpha: "focus alpha",
       beta: "focus beta",
@@ -421,15 +421,15 @@ test("buildMiningGenerationRequestForTesting attaches distinct per-domain prompt
     ],
   });
 
-  assert.equal(request.extraPrompt, "global fallback");
+  assert.equal(request.fallbackInstruction, "global fallback");
   assert.deepEqual(
     request.rootDomains.map((domain) => ({
       domainName: domain.domainName,
-      extraPrompt: domain.extraPrompt,
+      domainInstruction: domain.domainInstruction,
     })),
     [
-      { domainName: "alpha", extraPrompt: "focus alpha" },
-      { domainName: "beta", extraPrompt: "focus beta" },
+      { domainName: "alpha", domainInstruction: "focus alpha" },
+      { domainName: "beta", domainInstruction: "focus beta" },
     ],
   );
 });
