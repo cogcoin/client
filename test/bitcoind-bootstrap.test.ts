@@ -1814,7 +1814,7 @@ test("follow scene renders a lower-right mining version beside the status text",
     statusText,
     0,
     {
-      artworkStatusRightText: "v1.1.8",
+      artworkStatusRightText: "v1.1.9",
     },
   );
   const field = extractField(frame, 13);
@@ -1831,7 +1831,7 @@ test("follow scene renders an UPDATE badge on the left while keeping semver on t
     0,
     {
       artworkStatusLeftText: "UPDATE",
-      artworkStatusRightText: "v1.1.8",
+      artworkStatusRightText: "v1.1.9",
     },
   );
   const field = extractField(frame, 13);

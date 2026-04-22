@@ -289,7 +289,7 @@ test("mining follow visualizer passes the client semver to the right artwork sta
   let capturedOptions: FollowSceneRenderOptions | undefined;
 
   const visualizer = new MiningFollowVisualizer({
-    clientVersion: " 1.1.8 ",
+    clientVersion: " 1.1.9 ",
     progressOutput: "auto",
     stream: new MemoryStream({ isTTY: true, columns: 120 }),
     rendererFactory: () => ({
@@ -315,14 +315,14 @@ test("mining follow visualizer passes the client semver to the right artwork sta
   visualizer.close();
 
   assert.equal(capturedOptions?.artworkStatusLeftText, undefined);
-  assert.equal(capturedOptions?.artworkStatusRightText, "v1.1.8");
+  assert.equal(capturedOptions?.artworkStatusRightText, "v1.1.9");
 });
 
 test("mining follow visualizer adds an UPDATE badge on the left while keeping semver on the right", () => {
   let capturedOptions: FollowSceneRenderOptions | undefined;
 
   const visualizer = new MiningFollowVisualizer({
-    clientVersion: "1.1.8",
+    clientVersion: "1.1.9",
     updateAvailable: true,
     progressOutput: "auto",
     stream: new MemoryStream({ isTTY: true, columns: 120 }),
@@ -349,7 +349,7 @@ test("mining follow visualizer adds an UPDATE badge on the left while keeping se
   visualizer.close();
 
   assert.equal(capturedOptions?.artworkStatusLeftText, "UPDATE");
-  assert.equal(capturedOptions?.artworkStatusRightText, "v1.1.8");
+  assert.equal(capturedOptions?.artworkStatusRightText, "v1.1.9");
 });
 
 test("mining follow visualizer stays quiet when tty progress is disabled", () => {

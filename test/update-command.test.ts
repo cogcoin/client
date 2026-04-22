@@ -11,7 +11,7 @@ import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createWalletReadContext } from "./current-model-helpers.js";
 
-const CURRENT_VERSION = "1.1.8";
+const CURRENT_VERSION = "1.1.9";
 const NEXT_VERSION = "1.1.9";
 
 function createStringWriter(isTTY = false) {

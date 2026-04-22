@@ -114,7 +114,7 @@ test("status output keeps a tolerated header lead synced while surfacing the exp
       },
     },
   });
-  const report = formatWalletOverviewReport(context, "1.1.8");
+  const report = formatWalletOverviewReport(context, "1.1.9");
 
   assert.match(report, /Bitcoin service: Synced/i);
   assert.match(report, /Bitcoin best height: 100/);
