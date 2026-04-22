@@ -20,20 +20,19 @@ import type {
 } from "../types.js";
 import {
   createBuiltWalletMutationFeeSummary,
-  isAlreadyAcceptedError,
-  isBroadcastUnknownError,
-  pauseMiningForWalletMutation,
-  resolvePendingMutationReuseDecision,
   resolveWalletMutationFeeSelection,
-  saveWalletStatePreservingUnlock,
-  unlockTemporaryBuilderLocks,
-  updateMutationRecord,
-  type BuiltWalletMutationTransaction,
-  type FixedWalletInput,
   type WalletMutationFeeSelection,
   type WalletMutationFeeSummary,
-  type WalletMutationRpcClient,
-} from "./common.js";
+} from "./fee.js";
+import { pauseMiningForWalletMutation } from "./mining-preemption.js";
+import type { WalletMutationPublishResult } from "./publish.js";
+import { resolvePendingMutationReuseDecision } from "./reconcile.js";
+import { persistWalletMutationState, unlockTemporaryBuilderLocks } from "./state-persist.js";
+import type {
+  BuiltWalletMutationTransaction,
+  FixedWalletInput,
+  WalletMutationRpcClient,
+} from "./types.js";
 import {
   findPendingMutationByIntent,
   upsertPendingMutation,
@@ -66,20 +65,6 @@ export interface WalletMutationReconcileResult {
   state: WalletStateV1;
   mutation: PendingMutationRecord;
   resolution: "confirmed" | "live" | "repair-required" | "not-seen" | "continue";
-}
-
-export interface WalletMutationPublishResult {
-  state: WalletStateV1;
-  mutation: PendingMutationRecord;
-  status: PendingMutationStatus;
-}
-
-export interface WalletMutationPublishRpcClient extends Pick<
-  WalletMutationRpcClient,
-  "lockUnspent"
-> {
-  getBlockchainInfo(): Promise<{ blocks: number }>;
-  sendRawTransaction(hex: string): Promise<string>;
 }
 
 export interface WalletMutationRuntimeOptions<
@@ -177,26 +162,6 @@ export interface WalletMutationOperationSpec<
   }): TResult;
 }
 
-export async function persistWalletMutationState(options: {
-  state: WalletStateV1;
-  provider: WalletSecretProvider;
-  nowUnixMs: number;
-  paths: WalletRuntimePaths;
-}): Promise<WalletStateV1> {
-  const nextState = {
-    ...options.state,
-    stateRevision: options.state.stateRevision + 1,
-    lastWrittenAtUnixMs: options.nowUnixMs,
-  };
-  await saveWalletStatePreservingUnlock({
-    state: nextState,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-  return nextState;
-}
-
 export async function resolveExistingWalletMutation<
   TRpc extends Pick<
     WalletMutationRpcClient,
@@ -264,147 +229,12 @@ export async function resolveExistingWalletMutation<
   };
 }
 
-export async function publishWalletMutation<
-  TRpc extends WalletMutationPublishRpcClient,
->(options: {
-  rpc: TRpc;
-  walletName: string;
-  snapshotHeight: number | null;
-  built: BuiltWalletMutationTransaction;
-  mutation: PendingMutationRecord;
-  state: WalletStateV1;
-  provider: WalletSecretProvider;
-  nowUnixMs: number;
-  paths: WalletRuntimePaths;
-  errorPrefix: string;
-  afterAccepted?(options: {
-    state: WalletStateV1;
-    broadcastingMutation: PendingMutationRecord;
-    built: BuiltWalletMutationTransaction;
-    nowUnixMs: number;
-  }): Promise<{
-    state: WalletStateV1;
-    mutation: PendingMutationRecord;
-    status: PendingMutationStatus;
-  }>;
-}): Promise<WalletMutationPublishResult> {
-  let nextState = options.state;
-  const broadcastingMutation = updateMutationRecord(options.mutation, "broadcasting", options.nowUnixMs, {
-    attemptedTxid: options.built.txid,
-    attemptedWtxid: options.built.wtxid,
-    temporaryBuilderLockedOutpoints: options.built.temporaryBuilderLockedOutpoints,
-  });
-  nextState = await persistWalletMutationState({
-    state: upsertPendingMutation(nextState, broadcastingMutation),
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-
-  if (
-    options.snapshotHeight !== null
-    && options.snapshotHeight !== (await options.rpc.getBlockchainInfo()).blocks
-  ) {
-    await unlockTemporaryBuilderLocks(
-      options.rpc,
-      options.walletName,
-      options.built.temporaryBuilderLockedOutpoints,
-    );
-    throw new Error(`${options.errorPrefix}_tip_mismatch`);
-  }
-
-  try {
-    await options.rpc.sendRawTransaction(options.built.rawHex);
-  } catch (error) {
-    if (!isAlreadyAcceptedError(error)) {
-      if (isBroadcastUnknownError(error)) {
-        const unknownMutation = updateMutationRecord(
-          broadcastingMutation,
-          "broadcast-unknown",
-          options.nowUnixMs,
-          {
-            attemptedTxid: options.built.txid,
-            attemptedWtxid: options.built.wtxid,
-            temporaryBuilderLockedOutpoints: options.built.temporaryBuilderLockedOutpoints,
-          },
-        );
-        nextState = await persistWalletMutationState({
-          state: upsertPendingMutation(nextState, unknownMutation),
-          provider: options.provider,
-          nowUnixMs: options.nowUnixMs,
-          paths: options.paths,
-        });
-        throw new Error(`${options.errorPrefix}_broadcast_unknown`);
-      }
-
-      await unlockTemporaryBuilderLocks(
-        options.rpc,
-        options.walletName,
-        options.built.temporaryBuilderLockedOutpoints,
-      );
-      const canceledMutation = updateMutationRecord(
-        broadcastingMutation,
-        "canceled",
-        options.nowUnixMs,
-        {
-          attemptedTxid: options.built.txid,
-          attemptedWtxid: options.built.wtxid,
-          temporaryBuilderLockedOutpoints: [],
-        },
-      );
-      nextState = await persistWalletMutationState({
-        state: upsertPendingMutation(nextState, canceledMutation),
-        provider: options.provider,
-        nowUnixMs: options.nowUnixMs,
-        paths: options.paths,
-      });
-      throw error;
-    }
-  }
-
-  await unlockTemporaryBuilderLocks(
-    options.rpc,
-    options.walletName,
-    options.built.temporaryBuilderLockedOutpoints,
-  );
-
-  const accepted = options.afterAccepted === undefined
-    ? {
-      state: upsertPendingMutation(
-        nextState,
-        updateMutationRecord(broadcastingMutation, "live", options.nowUnixMs, {
-          attemptedTxid: options.built.txid,
-          attemptedWtxid: options.built.wtxid,
-          temporaryBuilderLockedOutpoints: [],
-        }),
-      ),
-      mutation: updateMutationRecord(broadcastingMutation, "live", options.nowUnixMs, {
-        attemptedTxid: options.built.txid,
-        attemptedWtxid: options.built.wtxid,
-        temporaryBuilderLockedOutpoints: [],
-      }),
-      status: "live" as const,
-    }
-    : await options.afterAccepted({
-      state: nextState,
-      broadcastingMutation,
-      built: options.built,
-      nowUnixMs: options.nowUnixMs,
-    });
-
-  const persistedState = await persistWalletMutationState({
-    state: accepted.state,
-    provider: options.provider,
-    nowUnixMs: options.nowUnixMs,
-    paths: options.paths,
-  });
-
-  return {
-    state: persistedState,
-    mutation: accepted.mutation,
-    status: accepted.status,
-  };
-}
+export { persistWalletMutationState } from "./state-persist.js";
+export { publishWalletMutation } from "./publish.js";
+export type {
+  WalletMutationPublishResult,
+  WalletMutationPublishRpcClient,
+} from "./publish.js";
 
 export async function executeWalletMutationOperation<
   TOperation extends { state: WalletStateV1 },
