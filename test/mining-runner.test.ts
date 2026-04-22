@@ -422,6 +422,8 @@ test("buildMiningGenerationRequestForTesting attaches distinct per-domain instru
   });
 
   assert.equal(request.fallbackInstruction, "global fallback");
+  assert.equal(request.limits.maxCandidatesPerRootDomain, 25);
+  assert.equal(request.limits.maxCandidatesTotal, 500);
   assert.deepEqual(
     request.rootDomains.map((domain) => ({
       domainName: domain.domainName,
