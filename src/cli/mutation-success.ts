@@ -53,8 +53,6 @@ export function writeMutationCommandSuccess(
   parsed: ParsedCliArgs,
   context: RequiredCliRunnerContext,
   options: {
-    data: unknown;
-    previewData?: unknown;
     reusedExisting: boolean;
     reusedMessage: string;
     fees?: WalletMutationFeeSummary | null;

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 
-import { buildMineSetupData } from "../src/cli/mining-json.js";
 import {
   loadClientConfig,
   saveBuiltInMiningProviderConfig,
@@ -21,7 +20,6 @@ import {
   createWalletSecretReference,
 } from "../src/wallet/state/provider.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
-import { createMiningControlPlaneView } from "./current-model-helpers.js";
 
 type SelectionOptions = {
   message: string;
@@ -457,36 +455,4 @@ test("saving built-in mining setup preserves remembered provider slots while upd
     openai: openAiConfig,
     anthropic: anthropicConfig,
   });
-});
-
-test("mine setup state-change JSON includes the selected model metadata and daily cost", () => {
-  const result = buildMineSetupData(createMiningControlPlaneView({
-    provider: {
-      configured: true,
-      provider: "anthropic",
-      status: "ready",
-      message: null,
-      modelId: "claude-sonnet-4-6",
-      effectiveModel: "claude-sonnet-4-6",
-      modelOverride: "claude-sonnet-4-6",
-      modelSelectionSource: "catalog",
-      usingDefaultModel: false,
-      extraPromptConfigured: true,
-      estimatedDailyCostUsd: 0.43776,
-      estimatedDailyCostDisplay: "$0.44/day",
-    },
-  }));
-  const provider = result.state.provider as {
-    modelId: string;
-    modelSelectionSource: string;
-    estimatedDailyCostUsd: number;
-    estimatedDailyCostDisplay: string;
-    effectiveModel: string;
-  };
-
-  assert.equal(provider.modelId, "claude-sonnet-4-6");
-  assert.equal(provider.modelSelectionSource, "catalog");
-  assert.equal(provider.estimatedDailyCostUsd, 0.43776);
-  assert.equal(provider.estimatedDailyCostDisplay, "$0.44/day");
-  assert.equal(provider.effectiveModel, "claude-sonnet-4-6");
 });

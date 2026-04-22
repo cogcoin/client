@@ -4,25 +4,6 @@ import {
   type FieldValueInputSource,
 } from "../../wallet/tx/index.js";
 import {
-  buildAnchorMutationData,
-  buildBitcoinTransferData,
-  buildCogMutationData,
-  buildDomainAdminMutationData,
-  buildDomainMarketMutationData,
-  buildFieldMutationData,
-  buildRegisterMutationData,
-  buildReputationMutationData,
-} from "../mutation-json.js";
-import {
-  buildAnchorPreviewData,
-  buildCogPreviewData,
-  buildDomainAdminPreviewData,
-  buildDomainMarketPreviewData,
-  buildFieldPreviewData,
-  buildRegisterPreviewData,
-  buildReputationPreviewData,
-} from "../preview-json.js";
-import {
   isAnchorMutationCommand,
   isBuyMutationCommand,
   isClaimMutationCommand,
@@ -139,7 +120,6 @@ export async function runWalletMutationCommand(
           paths: runtimePaths,
         });
         return writeMutationCommandSuccess(parsed, context, {
-          data: buildBitcoinTransferData(result),
           reusedExisting: false,
           reusedMessage: "",
           interactive,
@@ -172,12 +152,6 @@ export async function runWalletMutationCommand(
         });
         const nextSteps = getAnchorNextSteps(result.domainName);
         return writeMutationCommandSuccess(parsed, context, {
-          data: buildAnchorMutationData(result, {
-            foundingMessageText: result.foundingMessageText ?? parsed.anchorMessage,
-          }),
-          previewData: buildAnchorPreviewData(result, {
-            foundingMessageText: result.foundingMessageText ?? parsed.anchorMessage,
-          }),
           reusedExisting: result.reusedExisting,
           reusedMessage: "The existing pending anchor was reconciled instead of creating a duplicate.",
           fees: result.fees,
@@ -209,12 +183,6 @@ export async function runWalletMutationCommand(
       });
       const nextSteps = getRegisterNextSteps(result.domainName, result.registerKind);
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildRegisterMutationData(result, {
-          forceRace: parsed.forceRace,
-        }),
-        previewData: buildRegisterPreviewData(result, {
-          forceRace: parsed.forceRace,
-        }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending registration was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -249,12 +217,6 @@ export async function runWalletMutationCommand(
         paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildDomainMarketMutationData(result, {
-          commandKind: "transfer",
-        }),
-        previewData: buildDomainMarketPreviewData(result, {
-          commandKind: "transfer",
-        }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending transfer was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -291,12 +253,6 @@ export async function runWalletMutationCommand(
         paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildDomainMarketMutationData(result, {
-          commandKind: result.listedPriceCogtoshi === 0n ? "unsell" : "sell",
-        }),
-        previewData: buildDomainMarketPreviewData(result, {
-          commandKind: result.listedPriceCogtoshi === 0n ? "unsell" : "sell",
-        }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending listing mutation was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -345,12 +301,6 @@ export async function runWalletMutationCommand(
           paths: runtimePaths,
         });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildDomainAdminMutationData(result, {
-          commandKind: parsed.command,
-        }),
-        previewData: buildDomainAdminPreviewData(result, {
-          commandKind: parsed.command,
-        }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending endpoint mutation was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -395,12 +345,6 @@ export async function runWalletMutationCommand(
           paths: runtimePaths,
         });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildDomainAdminMutationData(result, {
-          commandKind: parsed.command,
-        }),
-        previewData: buildDomainAdminPreviewData(result, {
-          commandKind: parsed.command,
-        }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending delegate mutation was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -445,12 +389,6 @@ export async function runWalletMutationCommand(
           paths: runtimePaths,
         });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildDomainAdminMutationData(result, {
-          commandKind: parsed.command,
-        }),
-        previewData: buildDomainAdminPreviewData(result, {
-          commandKind: parsed.command,
-        }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending miner mutation was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -483,12 +421,6 @@ export async function runWalletMutationCommand(
         paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildDomainAdminMutationData(result, {
-          commandKind: "domain-canonical",
-        }),
-        previewData: buildDomainAdminPreviewData(result, {
-          commandKind: "domain-canonical",
-        }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending canonical mutation was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -522,8 +454,6 @@ export async function runWalletMutationCommand(
         paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildFieldMutationData(result),
-        previewData: buildFieldPreviewData(result),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending field creation was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -563,8 +493,6 @@ export async function runWalletMutationCommand(
         paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildFieldMutationData(result),
-        previewData: buildFieldPreviewData(result),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending field update was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -599,8 +527,6 @@ export async function runWalletMutationCommand(
         paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildFieldMutationData(result),
-        previewData: buildFieldPreviewData(result),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending field clear was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -634,12 +560,6 @@ export async function runWalletMutationCommand(
         paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildCogMutationData(result, {
-          commandKind: "send",
-        }),
-        previewData: buildCogPreviewData(result, {
-          commandKind: "send",
-        }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending COG transfer was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -675,18 +595,6 @@ export async function runWalletMutationCommand(
         paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildCogMutationData(result, {
-          commandKind: "cog-lock",
-          timeoutBlocksOrDuration: parsed.unlockFor,
-          timeoutHeight: parsed.untilHeight,
-          conditionHex: parsed.conditionHex,
-        }),
-        previewData: buildCogPreviewData(result, {
-          commandKind: "cog-lock",
-          timeoutBlocksOrDuration: parsed.unlockFor,
-          timeoutHeight: parsed.untilHeight,
-          conditionHex: parsed.conditionHex,
-        }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending lock was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -718,12 +626,6 @@ export async function runWalletMutationCommand(
         paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildCogMutationData(result, {
-          commandKind: "claim",
-        }),
-        previewData: buildCogPreviewData(result, {
-          commandKind: "claim",
-        }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending claim was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -755,12 +657,6 @@ export async function runWalletMutationCommand(
         paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildCogMutationData(result, {
-          commandKind: "reclaim",
-        }),
-        previewData: buildCogPreviewData(result, {
-          commandKind: "reclaim",
-        }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending reclaim was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -810,8 +706,6 @@ export async function runWalletMutationCommand(
           paths: runtimePaths,
         });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildReputationMutationData(result),
-        previewData: buildReputationPreviewData(result),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending reputation mutation was reconciled instead of creating a duplicate.",
         fees: result.fees,
@@ -846,12 +740,6 @@ export async function runWalletMutationCommand(
         paths: runtimePaths,
       });
       return writeMutationCommandSuccess(parsed, context, {
-        data: buildDomainMarketMutationData(result, {
-          commandKind: "buy",
-        }),
-        previewData: buildDomainMarketPreviewData(result, {
-          commandKind: "buy",
-        }),
         reusedExisting: result.reusedExisting,
         reusedMessage: "The existing pending purchase was reconciled instead of creating a duplicate.",
         fees: result.fees,

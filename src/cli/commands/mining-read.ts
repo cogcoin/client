@@ -9,7 +9,7 @@ import {
 import { writeLine } from "../io.js";
 import {
   normalizeListPage,
-} from "../output.js";
+} from "../pagination.js";
 import { formatNextStepLines } from "../workflow-hints.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";

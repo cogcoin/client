@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildMineStatusJson } from "../src/cli/read-json.js";
+import { formatMineStatusReport } from "../src/cli/mining-format.js";
 import { saveBuiltInMiningProviderConfig } from "../src/wallet/mining/config.js";
 import { inspectMiningControlPlane } from "../src/wallet/mining/control.js";
 import { saveMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
@@ -18,7 +18,7 @@ import {
   createWalletReadContext,
 } from "./current-model-helpers.js";
 
-test("mine status JSON exposes livePublishInMempool", () => {
+test("mine status text exposes live publish wait guidance", () => {
   const mining = createMiningControlPlaneView({
     runtime: createMiningRuntimeStatus({
       miningState: "paused",
@@ -29,26 +29,25 @@ test("mine status JSON exposes livePublishInMempool", () => {
     }),
   });
 
-  const result = buildMineStatusJson(mining);
+  const report = formatMineStatusReport(mining);
 
-  assert.equal(result.data.livePublishInMempool, true);
-  assert.equal(result.data.publishDecision, "kept-live-publish");
-  assert.match(result.nextSteps[0] ?? "", /live mining publish/);
+  assert.match(report, /Publish decision: kept-live-publish/);
+  assert.match(report, /Next: wait for the live mining publish to confirm, or rerun mining when you want replacements to resume\./);
 });
 
-test("mine status explanations avoid family wording", () => {
+test("mine status text avoids family wording in the note", () => {
   const mining = createMiningControlPlaneView({
     runtime: createMiningRuntimeStatus({
       note: "Mining is paused while another wallet mutation is active.",
     }),
   });
 
-  const result = buildMineStatusJson(mining);
-  assert.equal(result.explanations[0], "Mining is paused while another wallet mutation is active.");
-  assert.doesNotMatch(result.explanations.join("\n"), /family/);
+  const report = formatMineStatusReport(mining);
+  assert.match(report, /Note: Mining is paused while another wallet mutation is active\./);
+  assert.doesNotMatch(report, /family/);
 });
 
-test("mine status JSON exposes the effective provider model and not-found next step", () => {
+test("mine status text exposes the effective provider model and not-found next step", () => {
   const mining = createMiningControlPlaneView({
     runtime: createMiningRuntimeStatus({
       currentPhase: "waiting-provider",
@@ -72,25 +71,15 @@ test("mine status JSON exposes the effective provider model and not-found next s
     },
   });
 
-  const result = buildMineStatusJson(mining);
+  const report = formatMineStatusReport(mining);
 
-  assert.deepEqual(result.data.provider, {
-    configured: true,
-    kind: "anthropic",
-    modelId: "claude-sonnet-4-missing",
-    effectiveModel: "claude-sonnet-4-missing",
-    modelOverride: "claude-sonnet-4-missing",
-    modelSelectionSource: "custom",
-    usingDefaultModel: false,
-    extraPromptConfigured: false,
-    estimatedDailyCostUsd: null,
-    estimatedDailyCostDisplay: null,
-  });
-  assert.equal(result.data.providerState, "not-found");
-  assert.equal(result.nextSteps[0], "Run `cogcoin mine setup` and clear or correct the provider model.");
+  assert.match(report, /Provider model: claude-sonnet-4-missing \(override\)/);
+  assert.match(report, /Provider model source: custom/);
+  assert.match(report, /Provider runtime: not-found/);
+  assert.match(report, /Next: run `cogcoin mine setup` and clear or correct the provider model\./);
 });
 
-test("mine status JSON shows the insufficient-funds next step from publish decision", () => {
+test("mine status text shows the insufficient-funds next step from publish decision", () => {
   const mining = createMiningControlPlaneView({
     runtime: createMiningRuntimeStatus({
       currentPhase: "waiting",
@@ -100,10 +89,10 @@ test("mine status JSON shows the insufficient-funds next step from publish decis
     }),
   });
 
-  const result = buildMineStatusJson(mining);
+  const report = formatMineStatusReport(mining);
 
-  assert.equal(result.data.publishDecision, "publish-paused-insufficient-funds");
-  assert.equal(result.nextSteps[0], "Wait for enough safe BTC funding to become spendable for the next publish; mining resumes automatically.");
+  assert.match(report, /Publish decision: publish-paused-insufficient-funds/);
+  assert.match(report, /Next: wait for enough safe BTC funding to become spendable for the next publish; mining resumes automatically\./);
 });
 
 test("inspectMiningControlPlane drops stale provider wait details when paused live publish becomes the effective blocker", async (t) => {

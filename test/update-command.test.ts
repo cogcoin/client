@@ -307,7 +307,10 @@ test("passive update notifications still run for ordinary commands", async (t) =
 
   assert.equal(exitCode, 0);
   assert.equal(fetchCalls.count, 1);
-  assert.match(stderr.read(), /Update available: Cogcoin 1\.1\.7 -> 1\.1\.8/);
+  assert.match(
+    stderr.read(),
+    new RegExp(`Update available: Cogcoin ${CURRENT_VERSION.replaceAll(".", "\\.")} -> ${NEXT_VERSION.replaceAll(".", "\\.")}`),
+  );
 });
 
 test("cogcoin update skips the passive notifier and performs only the explicit lookup", async (t) => {

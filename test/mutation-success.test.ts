@@ -85,7 +85,6 @@ test("writeMutationCommandSuccess writes text output with shared reuse and next-
   } as unknown as RequiredCliRunnerContext;
 
   const code = writeMutationCommandSuccess(parsed, context, {
-    data: { domainName: "alpha" },
     reusedExisting: true,
     reusedMessage: "The existing pending transfer was reconciled instead of creating a duplicate.",
     interactive: true,
@@ -121,7 +120,6 @@ test("writeMutationCommandSuccess skips explorer links for non-interactive text 
   } as unknown as RequiredCliRunnerContext;
 
   const code = writeMutationCommandSuccess(parsed, context, {
-    data: { domainName: "alpha" },
     reusedExisting: false,
     reusedMessage: "",
     interactive: false,
@@ -150,7 +148,6 @@ test("writeMutationCommandSuccess appends fee summary fields when provided", () 
   } as unknown as RequiredCliRunnerContext;
 
   const code = writeMutationCommandSuccess(parsed, context, {
-    data: { domainName: "alpha" },
     reusedExisting: false,
     reusedMessage: "",
     fees: {

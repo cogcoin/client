@@ -3,10 +3,13 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { buildAddressJson, buildIdsJson, buildStatusJson } from "../src/cli/read-json.js";
-import { formatWalletOverviewReport } from "../src/cli/wallet-format.js";
+import {
+  formatFundingAddressReport,
+  formatIdentityListReport,
+  formatWalletOverviewReport,
+} from "../src/cli/wallet-format.js";
 import { deriveNodeHealthForTesting } from "../src/wallet/read/managed-services.js";
-import { normalizeListPage } from "../src/cli/output.js";
+import { normalizeListPage } from "../src/cli/pagination.js";
 import { inspectWalletLocalState } from "../src/wallet/read/index.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
@@ -20,22 +23,26 @@ import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createWalletReadContext, createWalletState } from "./current-model-helpers.js";
 import { configureTestClientPassword } from "./client-password-test-helpers.js";
 
-test("address JSON reports the single wallet address", () => {
+test("funding address report shows the single wallet address", () => {
   const context = createWalletReadContext();
-  const result = buildAddressJson(context);
+  const result = formatFundingAddressReport(context);
 
-  assert.equal(result.data.address, "bc1qfunding");
-  assert.equal(result.data.scriptPubKeyHex, "0014" + "11".repeat(20));
+  assert.match(result, /BTC Wallet Address/);
+  assert.match(result, /Address: bc1qfunding/);
+  assert.match(result, /ScriptPubKey: spk:0014/);
 });
 
-test("ids JSON exposes a single wallet-address entry", () => {
+test("identity list report exposes a single wallet-address entry", () => {
   const context = createWalletReadContext();
   const { page } = normalizeListPage([1], { limit: null, all: true, defaultLimit: 50 });
-  const result = buildIdsJson(context, page);
+  const result = formatIdentityListReport(context, {
+    limit: page.limit,
+    all: page.limit === null,
+  });
 
-  assert.equal(result.data.addresses?.length, 1);
-  assert.equal(result.data.addresses?.[0]?.address, "bc1qfunding");
-  assert.deepEqual(result.data.addresses?.[0]?.localDomains, []);
+  assert.match(result, /Wallet Address/);
+  assert.match(result, /bc1qfunding/);
+  assert.match(result, /domains none/);
 });
 
 test("deriveNodeHealth tolerates a short header lead without degrading publishability", () => {
@@ -107,16 +114,8 @@ test("status output keeps a tolerated header lead synced while surfacing the exp
       },
     },
   });
-  const json = buildStatusJson(context);
   const report = formatWalletOverviewReport(context, "1.1.8");
 
-  assert.deepEqual(json.warnings, []);
-  assert.equal(json.data.btc.bestHeight, 100);
-  assert.equal(json.data.btc.headerHeight, 102);
-  assert.match(
-    json.explanations.join("\n"),
-    /Bitcoin headers can briefly lead validated blocks/i,
-  );
   assert.match(report, /Bitcoin service: Synced/i);
   assert.match(report, /Bitcoin best height: 100/);
   assert.match(report, /Bitcoin headers: 102/);

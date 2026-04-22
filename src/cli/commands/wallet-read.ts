@@ -14,8 +14,8 @@ import {
 import { writeLine } from "../io.js";
 import { findWalletDomain, listDomainFields } from "../../wallet/read/index.js";
 import { filterWalletDomains } from "../../wallet/read/index.js";
-import { normalizeListPage } from "../output.js";
-import { listFieldsForJson, listLocksForJson } from "../read-json.js";
+import { normalizeListPage } from "../pagination.js";
+import { listVisibleDomainFields, listVisibleWalletLocks } from "../wallet-read-helpers.js";
 import {
   formatNextStepLines,
   getAddressNextSteps,
@@ -104,7 +104,7 @@ export async function runWalletReadCommand(
           limit: parsed.listAll ? null : (parsed.listLimit ?? defaultLimit),
           all: parsed.listAll,
         }));
-        const locks = listLocksForJson(readContext, {
+        const locks = listVisibleWalletLocks(readContext, {
           claimableOnly: parsed.locksClaimableOnly,
           reclaimableOnly: parsed.locksReclaimableOnly,
         });
@@ -151,7 +151,7 @@ export async function runWalletReadCommand(
       case "fields": {
         const defaultLimit = 100;
         const domainName = parsed.args[0]!;
-        const fields = listFieldsForJson(readContext, domainName);
+        const fields = listVisibleDomainFields(readContext, domainName);
         if (readContext.snapshot !== null && fields === null) {
           writeLine(context.stdout, formatFieldsReport(readContext, domainName, {
             limit: parsed.listAll ? null : (parsed.listLimit ?? defaultLimit),

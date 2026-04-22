@@ -1819,7 +1819,7 @@ test("follow scene renders a lower-right mining version beside the status text",
   );
   const field = extractField(frame, 13);
 
-  assert.match(field, /Waiting for next block\s{2,}v1\.1\.7$/);
+  assert.match(field, /Waiting for next block\s{2,}v1\.1\.8$/);
   assert.equal(field.indexOf(statusText), Math.floor((64 - statusText.length) / 2));
 });
 
@@ -1836,7 +1836,7 @@ test("follow scene renders an UPDATE badge on the left while keeping semver on t
   );
   const field = extractField(frame, 13);
 
-  assert.match(field, /^UPDATE\s{2,}.*Waiting for next block.*\s{2,}v1\.1\.7$/);
+  assert.match(field, /^UPDATE\s{2,}.*Waiting for next block.*\s{2,}v1\.1\.8$/);
   assert.equal(field.indexOf(statusText), Math.floor((64 - statusText.length) / 2));
 });
 
