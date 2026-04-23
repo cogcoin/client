@@ -63,7 +63,7 @@ function createManagedIndexerDaemonObservedStatus(
 ): ManagedIndexerDaemonObservedStatus {
   return {
     serviceApiVersion: "cogcoin/indexer-ipc/v1",
-    binaryVersion: "1.1.9",
+    binaryVersion: "1.1.10",
     buildId: null,
     updatedAtUnixMs: 1_700_000_000_100,
     walletRootId: "wallet-root-default",
@@ -208,7 +208,7 @@ test("managed indexer probe decisions centralize stale and unparseable replaceme
         client: {} as any,
         error: null,
       },
-      expectedBinaryVersion: "1.1.9",
+      expectedBinaryVersion: "1.1.10",
     }).action,
     "replace",
   );
@@ -223,7 +223,7 @@ test("managed indexer probe decisions centralize stale and unparseable replaceme
         client: {} as any,
         error: null,
       },
-      expectedBinaryVersion: "1.1.9",
+      expectedBinaryVersion: "1.1.10",
     }).action,
     "replace",
   );
@@ -238,7 +238,7 @@ test("managed indexer probe decisions centralize stale and unparseable replaceme
         client: null,
         error: "indexer_daemon_schema_mismatch",
       },
-      expectedBinaryVersion: "1.1.9",
+      expectedBinaryVersion: "1.1.10",
     }),
     {
       action: "reject",

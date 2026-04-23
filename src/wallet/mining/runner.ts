@@ -135,8 +135,8 @@ import type {
   MiningCooperativeYield,
   MiningPublishOutcome,
   MiningRpcClient,
-  ReadyMiningReadContext,
 } from "./engine-types.js";
+import { resolveReadyMiningReadContext } from "./engine-types.js";
 import {
   isMiningGenerationAbortRequested,
   markMiningGenerationActive,
@@ -596,9 +596,21 @@ async function performMiningCycle(options: {
     const displaySats = await resolveFundingDisplaySats(effectiveReadContext.localState.state, rpc).catch(() => null);
     syncMiningVisualizerBalances(options.loopState, effectiveReadContext, displaySats);
 
-    if (effectiveReadContext.localState.state.miningState.state === "repair-required") {
+    const readyReadContext = resolveReadyMiningReadContext(effectiveReadContext);
+    if (readyReadContext === null) {
       clearMiningProviderWait(options.loopState);
       await saveCycleStatus(effectiveReadContext, {
+        runMode: options.runMode,
+        currentPhase: "waiting-indexer",
+        lastError: null,
+        note: "Mining is waiting for Bitcoin Core and the indexer to align.",
+      });
+      return;
+    }
+
+    if (readyReadContext.localState.state.miningState.state === "repair-required") {
+      clearMiningProviderWait(options.loopState);
+      await saveCycleStatus(readyReadContext, {
         runMode: options.runMode,
         currentPhase: "waiting",
         lastError: null,
@@ -607,9 +619,9 @@ async function performMiningCycle(options: {
       return;
     }
 
-    if (hasBlockingMutation(effectiveReadContext.localState.state)) {
+    if (hasBlockingMutation(readyReadContext.localState.state)) {
       clearMiningProviderWait(options.loopState);
-      const nextState = defaultMiningStatePatch(effectiveReadContext.localState.state, {
+      const nextState = defaultMiningStatePatch(readyReadContext.localState.state, {
         state: "paused",
         pauseReason: "wallet-busy",
       });
@@ -618,15 +630,15 @@ async function performMiningCycle(options: {
         provider: options.provider,
         paths: options.paths,
       });
-      effectiveReadContext = {
-        ...effectiveReadContext,
+      const blockedReadContext: WalletReadContext = {
+        ...readyReadContext,
         localState: {
-          ...effectiveReadContext.localState,
+          ...readyReadContext.localState,
           availability: "ready",
           state: nextState,
         },
       };
-      await saveCycleStatus(effectiveReadContext, {
+      await saveCycleStatus(blockedReadContext, {
         runMode: options.runMode,
         currentPhase: "waiting",
         lastError: null,
@@ -638,9 +650,9 @@ async function performMiningCycle(options: {
     const preemptionRequest = await readMiningPreemptionRequest(options.paths);
     if (preemptionRequest !== null) {
       clearMiningProviderWait(options.loopState);
-      const nextState = defaultMiningStatePatch(effectiveReadContext.localState.state, {
-        state: effectiveReadContext.localState.state.miningState.livePublishInMempool
-          && effectiveReadContext.localState.state.miningState.state === "paused-stale"
+      const nextState = defaultMiningStatePatch(readyReadContext.localState.state, {
+        state: readyReadContext.localState.state.miningState.livePublishInMempool
+          && readyReadContext.localState.state.miningState.state === "paused-stale"
           ? "paused-stale"
           : "paused",
         pauseReason: preemptionRequest.reason,
@@ -651,9 +663,9 @@ async function performMiningCycle(options: {
         paths: options.paths,
       });
       await saveCycleStatus({
-        ...effectiveReadContext,
+        ...readyReadContext,
         localState: {
-          ...effectiveReadContext.localState,
+          ...readyReadContext.localState,
           state: nextState,
         },
       }, {
@@ -679,12 +691,12 @@ async function performMiningCycle(options: {
     });
     clearRecoveredBitcoindError = resetMiningBitcoindRecoveryState(
       options.loopState,
-      effectiveReadContext.nodeStatus?.serviceStatus ?? { pid: service.pid },
+      readyReadContext.nodeStatus?.serviceStatus ?? { pid: service.pid },
     );
 
     if (targetBlockHeight !== null && getBlockRewardCogtoshi(targetBlockHeight) === 0n) {
       clearMiningProviderWait(options.loopState);
-      const nextState = defaultMiningStatePatch(effectiveReadContext.localState.state, {
+      const nextState = defaultMiningStatePatch(readyReadContext.localState.state, {
         state: "paused",
         pauseReason: "zero-reward",
       });
@@ -694,9 +706,9 @@ async function performMiningCycle(options: {
         paths: options.paths,
       });
       await saveCycleStatus({
-        ...effectiveReadContext,
+        ...readyReadContext,
         localState: {
-          ...effectiveReadContext.localState,
+          ...readyReadContext.localState,
           state: nextState,
         },
       }, {
@@ -711,7 +723,7 @@ async function performMiningCycle(options: {
         "Skipped mining because the target block reward is zero.",
         {
           targetBlockHeight,
-          referencedBlockHashDisplay: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
+          referencedBlockHashDisplay: readyReadContext.nodeStatus?.nodeBestHashHex ?? null,
           runId: options.backgroundWorkerRunId,
         },
       ));
@@ -725,7 +737,7 @@ async function performMiningCycle(options: {
       paths: options.paths,
       runMode: options.runMode,
       backgroundWorkerRunId: options.backgroundWorkerRunId,
-      readContext: effectiveReadContext as ReadyMiningReadContext,
+      readContext: readyReadContext,
       rpc,
       targetBlockHeight,
       tipKey,

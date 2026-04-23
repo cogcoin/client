@@ -30,6 +30,7 @@ import {
   type MiningPublishRetryResult,
   type MiningRpcClient,
   type ReadyMiningReadContext,
+  resolveReadyMiningReadContext,
 } from "./engine-types.js";
 import {
   cloneMiningState,
@@ -786,16 +787,10 @@ export async function publishCandidate(options: {
 
   try {
     options.throwIfStopping?.();
-    if (
-      lockedReadContext.localState.availability !== "ready"
-      || lockedReadContext.localState.state === null
-      || lockedReadContext.snapshot === null
-      || lockedReadContext.model === null
-    ) {
+    const readyReadContext = resolveReadyMiningReadContext(lockedReadContext);
+    if (readyReadContext === null) {
       return await createStaleCandidateSkipResult(options.fallbackState);
     }
-
-    const readyReadContext = lockedReadContext as ReadyMiningReadContext;
     const refreshedCandidate = refreshMiningCandidateFromCurrentState(readyReadContext, options.candidate);
     if (refreshedCandidate === null) {
       return await createStaleCandidateSkipResult(readyReadContext.localState.state);

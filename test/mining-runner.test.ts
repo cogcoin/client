@@ -287,7 +287,7 @@ async function startFakeIndexerDaemonStatusServer(
             schemaVersion: INDEXER_DAEMON_SCHEMA_VERSION,
             walletRootId: options.walletRootId,
             daemonInstanceId: options.daemonInstanceId,
-            binaryVersion: "1.1.9",
+            binaryVersion: "1.1.10",
             buildId: "test-build",
             processId: 9_001,
             startedAtUnixMs: 1,
@@ -500,6 +500,62 @@ test("runMiningLoop survives a recoverable managed Bitcoin RPC failure and reach
 
   const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
   assert.equal(blockchainCalls, 2);
+  assert.equal(snapshot?.currentPhase, "waiting-indexer");
+  assert.equal(snapshot?.lastError, null);
+  assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
+});
+
+test("runMiningLoop stays alive when mining read context is not structurally ready yet", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-loop-missing-ready-context");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const abortController = new AbortController();
+  let openReadContextCalls = 0;
+  let generateCalls = 0;
+  let sleepCalls = 0;
+
+  await assert.doesNotReject(async () => {
+    await runMiningLoopForTesting({
+      dataDir: homeDirectory,
+      databasePath: join(homeDirectory, "indexer.sqlite"),
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      signal: abortController.signal,
+      openReadContext: async () => {
+        openReadContextCalls += 1;
+        return createLoopReadContext({
+          snapshot: null,
+          model: null,
+        });
+      },
+      attachService: async () => ({
+        rpc: {},
+        pid: 9_001,
+        refreshServiceStatus: async () => ({
+          serviceInstanceId: "svc-1",
+          processId: 9_001,
+        }),
+      }) as any,
+      rpcFactory: () => createLoopMiningRpc() as any,
+      generateCandidatesForDomainsImpl: async () => {
+        generateCalls += 1;
+        return [];
+      },
+      sleepImpl: async () => {
+        sleepCalls += 1;
+        if (sleepCalls >= 2) {
+          abortController.abort();
+        }
+      },
+    });
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.ok(openReadContextCalls >= 2);
+  assert.equal(generateCalls, 0);
   assert.equal(snapshot?.currentPhase, "waiting-indexer");
   assert.equal(snapshot?.lastError, null);
   assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");

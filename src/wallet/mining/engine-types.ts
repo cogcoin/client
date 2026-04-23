@@ -80,6 +80,21 @@ export type ReadyMiningReadContext = WalletReadContext & {
   model: NonNullable<WalletReadContext["model"]>;
 };
 
+export function resolveReadyMiningReadContext(
+  readContext: WalletReadContext,
+): ReadyMiningReadContext | null {
+  if (
+    readContext.localState.availability !== "ready"
+    || readContext.localState.state === null
+    || readContext.snapshot === null
+    || readContext.model === null
+  ) {
+    return null;
+  }
+
+  return readContext as ReadyMiningReadContext;
+}
+
 export interface MiningPublishSkipResult {
   state: WalletStateV1;
   txid: null;

@@ -121,7 +121,7 @@ async function startFakeIndexerDaemonStatusServer(
             schemaVersion: INDEXER_DAEMON_SCHEMA_VERSION,
             walletRootId: options.walletRootId,
             daemonInstanceId: options.daemonInstanceId,
-            binaryVersion: "1.1.9",
+            binaryVersion: "1.1.10",
             buildId: "test-build",
             processId: 9_001,
             startedAtUnixMs: 1,
@@ -1505,6 +1505,59 @@ test("performMiningCycle marks a fresh tip settle window while waiting for the i
   assert.equal(snapshot?.currentPhase, "waiting-indexer");
   assert.equal(snapshot?.tipSettledUntilUnixMs, 1_000 + MINING_TIP_SETTLE_WINDOW_MS);
   assert.equal(snapshot?.reconnectSettledUntilUnixMs, null);
+});
+
+test("performMiningCycle waits instead of crashing when mining read context is missing snapshot and model", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-missing-ready-context");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const state = createWalletState({
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+  });
+
+  await assert.doesNotReject(async () => {
+    await performMiningCycleForTesting({
+      dataDir: homeDirectory,
+      databasePath: `${homeDirectory}/client.sqlite`,
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      openReadContext: async () => ({
+        ...createWalletReadContext({
+          localState: {
+            availability: "ready",
+            clientPasswordReadiness: "ready",
+            unlockRequired: false,
+            walletRootId: state.walletRootId,
+            state,
+            source: "primary",
+            hasPrimaryStateFile: true,
+            hasBackupStateFile: false,
+            message: null,
+          },
+          snapshot: null,
+          model: null,
+        }),
+        close: async () => undefined,
+      }),
+      attachService: async () => ({ rpc: {} } as any),
+      rpcFactory: () => createHealthyMiningRpc() as any,
+      loopState,
+    });
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-indexer");
+  assert.equal(snapshot?.lastError, null);
+  assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
 });
 
 test("performMiningCycle waits instead of throwing on recoverable managed Bitcoin RPC failures", async (t) => {
