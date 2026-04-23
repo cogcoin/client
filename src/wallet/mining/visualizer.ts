@@ -147,10 +147,6 @@ function formatRewardCogAmount(value: bigint): string {
   })} COG`;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function consumeWrappedLine(
   text: string,
   capacity: number,
@@ -185,14 +181,18 @@ function highlightRequiredWords(sentence: string, requiredWords: readonly string
     requiredWords
       .map((word) => word.trim().toLowerCase())
       .filter((word) => word.length > 0),
-  )].sort((left, right) => right.length - left.length);
+  )];
 
   if (uniqueWords.length === 0) {
     return sentence;
   }
 
-  const pattern = new RegExp(`\\b(?:${uniqueWords.map(escapeRegExp).join("|")})\\b`, "gi");
-  return sentence.replace(pattern, (match) => match.toUpperCase());
+  return sentence.replace(/[A-Za-z]+/g, (match) => {
+    const normalizedToken = match.toLowerCase();
+    return uniqueWords.some((word) => normalizedToken.includes(word))
+      ? match.toUpperCase()
+      : match;
+  });
 }
 
 function formatSentenceSlot(

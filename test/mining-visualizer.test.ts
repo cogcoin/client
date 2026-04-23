@@ -660,9 +660,51 @@ test("mining follow visualizer uppercases each settled row with its own required
   }));
   visualizer.close();
 
-  assert.equal(capturedOptions?.extraLines?.[1], "1. @alpha: UNDER TREE trees treetop YOUTH, BASKET.");
-  assert.equal(capturedOptions?.extraLines?.[2], "2. @beta: CANDY VANISH YEAR TOAST toasty under.");
-  assert.equal(capturedOptions?.extraLines?.[6], "@local: MONKEY UNDER TREE trees.");
+  assert.equal(capturedOptions?.extraLines?.[1], "1. @alpha: UNDER TREE TREES TREETOP YOUTH, BASKET.");
+  assert.equal(capturedOptions?.extraLines?.[2], "2. @beta: CANDY VANISH YEAR TOAST TOASTY under.");
+  assert.equal(capturedOptions?.extraLines?.[6], "@local: MONKEY UNDER TREE TREES.");
+  assert.equal(capturedOptions?.extraLines?.[7], "");
+  assert.equal(capturedOptions?.extraLines?.[8], "");
+});
+
+test("mining follow visualizer uppercases whole alphabetic tokens for suffix, prefix, and prefix-plus-suffix matches", () => {
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        _cogcoinSyncHeight,
+        _cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot(), createUiState({
+    settledBlockHeight: 100,
+    settledBoardEntries: [
+      createBoardEntry(1, "alpha", "engages, recover, and reengages promptly.", ["engage", "cover"]),
+    ],
+    provisionalRequiredWords: ["engage", "cover"],
+    provisionalEntry: {
+      domainName: "local",
+      sentence: "engages, recover, and reengages.",
+    },
+  }));
+  visualizer.close();
+
+  assert.equal(capturedOptions?.extraLines?.[1], "1. @alpha: ENGAGES, RECOVER, and REENGAGES promptly.");
+  assert.equal(capturedOptions?.extraLines?.[6], "@local: ENGAGES, RECOVER, and REENGAGES.");
   assert.equal(capturedOptions?.extraLines?.[7], "");
   assert.equal(capturedOptions?.extraLines?.[8], "");
 });
