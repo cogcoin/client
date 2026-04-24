@@ -45,6 +45,7 @@ import { attachOrStartManagedBitcoindService } from "../../bitcoind/service.js";
 import { createRpcClient } from "../../bitcoind/node.js";
 import {
   buildPrePublishStatusOverrides,
+  resolveWaitingProviderNote,
   type MiningRuntimeStatusOverrides,
 } from "./projection.js";
 
@@ -241,7 +242,7 @@ export async function runMiningPhaseMachine(options: {
               currentPublishDecision: null,
               providerState: options.loopState.providerWaitState,
               lastError: options.loopState.providerWaitLastError,
-              note: "Mining is waiting for the sentence provider to recover.",
+              note: resolveWaitingProviderNote(options.loopState.providerWaitState),
             });
             return;
           }
@@ -257,7 +258,7 @@ export async function runMiningPhaseMachine(options: {
               currentPublishDecision: null,
               providerState: options.loopState.providerWaitState,
               lastError: options.loopState.providerWaitLastError,
-              note: "Mining is waiting for the sentence provider to recover.",
+              note: resolveWaitingProviderNote(options.loopState.providerWaitState),
             });
             return;
           }
@@ -338,7 +339,7 @@ export async function runMiningPhaseMachine(options: {
               currentPublishDecision: null,
               providerState: options.loopState.providerWaitState ?? error.providerState,
               lastError: error.message,
-              note: "Mining is waiting for the sentence provider to recover.",
+              note: resolveWaitingProviderNote(options.loopState.providerWaitState ?? error.providerState),
             });
             await options.appendEvent(createMiningEventRecord(
               "publish-paused-provider",

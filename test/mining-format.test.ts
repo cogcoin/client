@@ -57,6 +57,7 @@ test("mine status text renders the override provider model and 404 next step", (
   assert.match(report, /Provider model: claude-sonnet-4-missing \(override\)/);
   assert.match(report, /Provider model source: custom/);
   assert.match(report, /Provider runtime: not-found/);
+  assert.match(report, /Note: Mining is waiting because the configured sentence-provider model was not found\./);
   assert.match(report, /Next: run `cogcoin mine setup` and clear or correct the provider model\./);
 });
 

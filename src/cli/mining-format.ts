@@ -4,6 +4,7 @@ import type {
   MiningDomainPromptMutationResult,
   MiningEventRecord,
 } from "../wallet/mining/index.js";
+import { resolveWaitingProviderNote } from "../wallet/mining/projection.js";
 
 function formatMaybeIso(unixMs: number | null): string {
   return unixMs === null ? "none" : new Date(unixMs).toISOString();
@@ -47,7 +48,11 @@ function resolveInsufficientFundsNextStep(): string {
 function resolveMiningRuntimeNote(mining: MiningControlPlaneView): string | null {
   return mining.runtime.currentPublishDecision === "publish-paused-insufficient-funds"
     ? "Insufficient BTC to mine."
-    : mining.runtime.note;
+    : mining.runtime.note !== null
+      ? mining.runtime.note
+      : mining.runtime.currentPhase === "waiting-provider"
+        ? resolveWaitingProviderNote(mining.runtime.providerState)
+        : null;
 }
 
 export function formatMiningSummaryLine(mining: MiningControlPlaneView): string {

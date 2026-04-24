@@ -50,6 +50,23 @@ export interface MiningRuntimeStatusOverrides {
   livePublishInMempool?: boolean | null;
 }
 
+export function resolveWaitingProviderNote(
+  providerState: MiningRuntimeStatusV1["providerState"] | null,
+): string {
+  switch (providerState) {
+    case "backoff":
+      return "Mining is waiting because the sentence provider had a transient failure and will be retried automatically.";
+    case "rate-limited":
+      return "Mining is waiting because the sentence provider is rate limited and will be retried automatically.";
+    case "auth-error":
+      return "Mining is waiting because the sentence provider rejected the configured API key.";
+    case "not-found":
+      return "Mining is waiting because the configured sentence-provider model was not found.";
+    default:
+      return "Mining is waiting for the sentence provider to recover.";
+  }
+}
+
 export function buildPrePublishStatusOverrides(options: {
   state: WalletStateV1;
   candidate: MiningCandidate;
@@ -364,7 +381,7 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
       : existing?.currentPhase === "resuming"
         ? "Mining discarded stale in-flight work after a large local runtime gap and is rechecking health."
         : reuseExistingProviderWait
-          ? "Mining is waiting for the sentence provider to recover."
+          ? resolveWaitingProviderNote(existing?.providerState ?? providerState)
           : existing?.currentPhase === "waiting-indexer"
             ? "Mining is waiting for Bitcoin Core and the indexer to align."
             : existing?.currentPhase === "waiting-bitcoin-network"

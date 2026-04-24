@@ -76,6 +76,7 @@ test("mine status text exposes the effective provider model and not-found next s
   assert.match(report, /Provider model: claude-sonnet-4-missing \(override\)/);
   assert.match(report, /Provider model source: custom/);
   assert.match(report, /Provider runtime: not-found/);
+  assert.match(report, /Note: Mining is waiting because the configured sentence-provider model was not found\./);
   assert.match(report, /Next: run `cogcoin mine setup` and clear or correct the provider model\./);
 });
 
@@ -93,6 +94,42 @@ test("mine status text shows the insufficient-funds next step from publish decis
 
   assert.match(report, /Publish decision: publish-paused-insufficient-funds/);
   assert.match(report, /Next: wait for enough safe BTC funding to become spendable for the next publish; mining resumes automatically\./);
+});
+
+test("inspectMiningControlPlane carries forward provider-specific waiting notes from runtime state", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-control-provider-carry");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const readContext = createWalletReadContext();
+  const timeoutMessage = "The built-in OpenAI mining provider timed out after 30 seconds.";
+
+  await saveMiningRuntimeStatus(paths.miningStatusPath, createMiningRuntimeStatus({
+    currentPhase: "waiting-provider",
+    providerState: "backoff",
+    lastError: timeoutMessage,
+    note: "Mining is waiting for the sentence provider to recover.",
+  }));
+
+  const mining = await inspectMiningControlPlane({
+    provider,
+    localState: readContext.localState,
+    bitcoind: readContext.bitcoind,
+    nodeStatus: readContext.nodeStatus,
+    nodeHealth: readContext.nodeHealth,
+    indexer: readContext.indexer,
+    paths,
+  });
+
+  assert.equal(mining.runtime.currentPhase, "waiting-provider");
+  assert.equal(mining.runtime.providerState, "backoff");
+  assert.equal(mining.runtime.lastError, timeoutMessage);
+  assert.equal(
+    mining.runtime.note,
+    "Mining is waiting because the sentence provider had a transient failure and will be retried automatically.",
+  );
 });
 
 test("inspectMiningControlPlane drops stale provider wait details when paused live publish becomes the effective blocker", async (t) => {

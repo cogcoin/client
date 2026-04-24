@@ -1947,7 +1947,10 @@ test("performMiningCycle does not downgrade a tolerated 2-block header lead into
   const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
   assert.equal(snapshot?.currentPhase, "waiting-provider");
   assert.equal(snapshot?.providerState, "backoff");
-  assert.equal(snapshot?.note, "Mining is waiting for the sentence provider to recover.");
+  assert.equal(
+    snapshot?.note,
+    "Mining is waiting because the sentence provider had a transient failure and will be retried automatically.",
+  );
 });
 
 test("performMiningCycle still blocks mining on a 3-block header lead", async (t) => {
@@ -2366,6 +2369,10 @@ test("performMiningCycle backs off transient provider failures and retries witho
   assert.equal(snapshot?.currentPhase, "waiting-provider");
   assert.equal(snapshot?.providerState, "backoff");
   assert.equal(snapshot?.lastError, timeoutMessage);
+  assert.equal(
+    snapshot?.note,
+    "Mining is waiting because the sentence provider had a transient failure and will be retried automatically.",
+  );
   assert.equal(loopState.attemptedTipKey, null);
   assert.equal(loopState.providerTransientFailureCount, 1);
   assert.equal(loopState.providerWaitNextRetryAtUnixMs, 31_000);
@@ -2376,6 +2383,10 @@ test("performMiningCycle backs off transient provider failures and retries witho
   assert.equal(snapshot?.currentPhase, "waiting-provider");
   assert.equal(snapshot?.providerState, "backoff");
   assert.equal(snapshot?.lastError, timeoutMessage);
+  assert.equal(
+    snapshot?.note,
+    "Mining is waiting because the sentence provider had a transient failure and will be retried automatically.",
+  );
   assert.equal(generateCalls, 1);
 
   await runCycle(31_000);
@@ -2428,6 +2439,12 @@ test("performMiningCycle exponentially backs off repeated transient provider fai
     const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
     assert.equal(snapshot?.currentPhase, "waiting-provider");
     assert.equal(snapshot?.providerState, index === 0 ? "rate-limited" : "backoff");
+    assert.equal(
+      snapshot?.note,
+      index === 0
+        ? "Mining is waiting because the sentence provider is rate limited and will be retried automatically."
+        : "Mining is waiting because the sentence provider had a transient failure and will be retried automatically.",
+    );
     assert.equal(loopState.providerTransientFailureCount, index + 1);
     assert.equal(loopState.providerWaitNextRetryAtUnixMs, expectedNextRetryTimes[index]);
     assert.equal(loopState.attemptedTipKey, null);
@@ -2471,6 +2488,10 @@ test("performMiningCycle keeps auth provider failures on the same-tip provider w
   assert.equal(snapshot?.currentPhase, "waiting-provider");
   assert.equal(snapshot?.providerState, "auth-error");
   assert.equal(snapshot?.lastError, authMessage);
+  assert.equal(
+    snapshot?.note,
+    "Mining is waiting because the sentence provider rejected the configured API key.",
+  );
   assert.equal(loopState.providerWaitNextRetryAtUnixMs, null);
   assert.notEqual(loopState.attemptedTipKey, null);
   assert.equal(generateCalls, 1);
@@ -2480,6 +2501,10 @@ test("performMiningCycle keeps auth provider failures on the same-tip provider w
   assert.equal(snapshot?.currentPhase, "waiting-provider");
   assert.equal(snapshot?.providerState, "auth-error");
   assert.equal(snapshot?.lastError, authMessage);
+  assert.equal(
+    snapshot?.note,
+    "Mining is waiting because the sentence provider rejected the configured API key.",
+  );
   assert.equal(loopState.providerTransientFailureCount, 0);
   assert.equal(generateCalls, 1);
 });

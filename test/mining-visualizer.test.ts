@@ -384,6 +384,20 @@ test("mining visualizer descriptions surface zero-reward and note overrides", ()
   assert.equal(describeMiningVisualizerProgress(notedSnapshot), "Custom mining note.");
 });
 
+test("mining visualizer progress uses provider-specific waiting text without changing the short status label", () => {
+  const snapshot = createSnapshot({
+    currentPhase: "waiting-provider",
+    providerState: "rate-limited",
+    note: null,
+  });
+
+  assert.equal(
+    describeMiningVisualizerProgress(snapshot),
+    "Mining is waiting because the sentence provider is rate limited and will be retried automatically.",
+  );
+  assert.equal(describeMiningVisualizerStatus(snapshot), "Waiting for provider");
+});
+
 test("mining follow visualizer renders and advances follow-style age labels when block times are provided", () => {
   const clock = new FakeClock(180_000);
   const renderedFrames: string[] = [];

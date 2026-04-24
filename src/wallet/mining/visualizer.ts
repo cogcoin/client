@@ -15,6 +15,7 @@ import {
   type TtyRenderStream,
 } from "../../bitcoind/progress/render-policy.js";
 import { TtyProgressRenderer, type FollowSceneRenderOptions } from "../../bitcoind/progress/tty-renderer.js";
+import { resolveWaitingProviderNote } from "./projection.js";
 import type { MiningRuntimeStatusV1 } from "./types.js";
 
 interface VisualizerRendererLike {
@@ -441,7 +442,7 @@ export function describeMiningVisualizerProgress(
     case "resuming":
       return "Mining discarded stale in-flight work after a large local runtime gap and is rechecking health.";
     case "waiting-provider":
-      return "Mining is waiting for the sentence provider to recover.";
+      return resolveWaitingProviderNote(snapshot.providerState);
     case "waiting-indexer":
       return "Mining is waiting for Bitcoin Core and the indexer to align.";
     case "waiting-bitcoin-network":
