@@ -142,6 +142,85 @@ test("client prunes block records below the retained rewind window", async () =>
   await client.close();
 });
 
+test("client exposes coherent mirror snapshot and delta reads", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-client-mirror-reads");
+  const historyVector = loadHistoryVector();
+  const blocks = [...historyVector.setupBlocks, ...historyVector.testBlocks].slice(0, 4).map(materializeBlock);
+  const genesis = await loadBundledGenesisParameters();
+
+  const store = await openSqliteStore({ filename: databasePath });
+  const client = await openClient({
+    store,
+    genesisParameters: genesis,
+    snapshotInterval: 1000,
+    blockRecordRetention: 8,
+  });
+
+  for (const block of blocks) {
+    await client.applyBlock(block);
+  }
+
+  const mirrorSnapshot = await client.readMirrorSnapshot();
+  assert.deepEqual(mirrorSnapshot.tip, await client.getTip());
+  assert.equal(
+    Buffer.from(mirrorSnapshot.stateBytes).toString("hex"),
+    Buffer.from(serializeIndexerState(await client.getState())).toString("hex"),
+  );
+
+  const mirrorDelta = await client.readMirrorDelta(blocks[1]!.height);
+  assert.deepEqual(mirrorDelta.tip, await client.getTip());
+  assert.deepEqual(mirrorDelta.blockRecords.map((record) => record.height), [blocks[2]!.height, blocks[3]!.height]);
+  assert.deepEqual(
+    mirrorDelta.blockRecords.map((record) => record.blockHashHex),
+    blocks.slice(2).map((block) => internalBytesToDisplayHashHex(block.hash)),
+  );
+
+  await client.close();
+});
+
+test("client queues mirror reads behind in-flight mutations", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-client-mirror-queue");
+  const historyVector = loadHistoryVector();
+  const blocks = [...historyVector.setupBlocks, ...historyVector.testBlocks].slice(0, 2).map(materializeBlock);
+  const genesis = await loadBundledGenesisParameters();
+
+  const store = await openSqliteStore({ filename: databasePath });
+  const client = await openClient({
+    store,
+    genesisParameters: genesis,
+    snapshotInterval: 1000,
+    blockRecordRetention: 8,
+  });
+
+  const firstApply = client.applyBlock(blocks[0]!);
+  const queuedSnapshot = client.readMirrorSnapshot();
+  const queuedDelta = client.readMirrorDelta(blocks[0]!.height - 1);
+  const [firstResult, firstSnapshot, firstDelta] = await Promise.all([firstApply, queuedSnapshot, queuedDelta]);
+
+  assert.deepEqual(firstSnapshot.tip, firstResult.tip);
+  assert.equal(
+    Buffer.from(firstSnapshot.stateBytes).toString("hex"),
+    Buffer.from(serializeIndexerState(firstResult.applied.state)).toString("hex"),
+  );
+  assert.equal(firstDelta.tip?.height, firstResult.tip.height);
+  assert.deepEqual(firstDelta.blockRecords.map((record) => record.height), [blocks[0]!.height]);
+
+  await client.applyBlock(blocks[1]!);
+
+  const rewindPromise = (client as DefaultClient).rewindToHeight(-1);
+  const postRewindSnapshotPromise = client.readMirrorSnapshot();
+  const [rewoundTip, rewoundSnapshot] = await Promise.all([rewindPromise, postRewindSnapshotPromise]);
+
+  assert.equal(rewoundTip, null);
+  assert.equal(rewoundSnapshot.tip, null);
+  assert.equal(
+    Buffer.from(rewoundSnapshot.stateBytes).toString("hex"),
+    Buffer.from(serializeIndexerState(createInitialState(genesis))).toString("hex"),
+  );
+
+  await client.close();
+});
+
 test("client keeps blocks below genesis inactive and activates exactly at genesis", async () => {
   const databasePath = createTempDatabasePath("cogcoin-client-genesis-boundary");
   const historyVector = loadHistoryVector();

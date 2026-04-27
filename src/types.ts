@@ -29,6 +29,21 @@ export interface StoredBlockRecord {
   createdAt: number;
 }
 
+export interface ClientMirrorSnapshot {
+  tip: ClientTip | null;
+  stateBytes: Uint8Array;
+}
+
+export interface ClientMirrorDelta {
+  tip: ClientTip | null;
+  blockRecords: StoredBlockRecord[];
+}
+
+export interface ClientMirrorReader {
+  readMirrorSnapshot(): Promise<ClientMirrorSnapshot>;
+  readMirrorDelta(afterHeight: number): Promise<ClientMirrorDelta>;
+}
+
 export interface WriteAppliedBlockEntry {
   tip: ClientTip | null;
   stateBytes: Uint8Array | null;
@@ -62,7 +77,7 @@ export interface ApplyBlockResult {
   applied: AppliedBlock;
 }
 
-export interface Client {
+export interface Client extends ClientMirrorReader {
   getTip(): Promise<ClientTip | null>;
   getState(): Promise<IndexerState>;
   applyBlock(block: BitcoinBlock): Promise<ApplyBlockResult>;

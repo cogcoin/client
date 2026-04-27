@@ -112,6 +112,14 @@ export class DefaultManagedBitcoindClient implements ManagedBitcoindClient {
     return this.#client.getState();
   }
 
+  async readMirrorSnapshot() {
+    return this.#client.readMirrorSnapshot();
+  }
+
+  async readMirrorDelta(afterHeight: number) {
+    return this.#client.readMirrorDelta(afterHeight);
+  }
+
   async applyBlock(block: BitcoinBlock) {
     return this.#client.applyBlock(block);
   }

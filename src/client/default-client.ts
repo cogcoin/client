@@ -18,6 +18,8 @@ import type {
   ApplyBlockResult,
   Client,
   ClientCheckpoint,
+  ClientMirrorDelta,
+  ClientMirrorSnapshot,
   ClientStoreAdapter,
   ClientTip,
   WriteAppliedBlockEntry,
@@ -57,6 +59,33 @@ export class DefaultClient implements Client {
   async getState(): Promise<IndexerState> {
     await this.#queue;
     return this.#state;
+  }
+
+  async readMirrorSnapshot(): Promise<ClientMirrorSnapshot> {
+    return this.#enqueue(async () => {
+      this.#assertOpen();
+
+      return {
+        tip: this.#tip === null ? null : { ...this.#tip },
+        stateBytes: serializeIndexerState(this.#state),
+      };
+    });
+  }
+
+  async readMirrorDelta(afterHeight: number): Promise<ClientMirrorDelta> {
+    return this.#enqueue(async () => {
+      this.#assertOpen();
+
+      const blockRecords = await this.#store.loadBlockRecordsAfter(afterHeight);
+
+      return {
+        tip: this.#tip === null ? null : { ...this.#tip },
+        blockRecords: blockRecords.map((record) => ({
+          ...record,
+          recordBytes: new Uint8Array(record.recordBytes),
+        })),
+      };
+    });
   }
 
   async applyBlock(block: BitcoinBlock): Promise<ApplyBlockResult> {
