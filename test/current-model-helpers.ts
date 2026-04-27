@@ -224,6 +224,11 @@ export function createWalletReadContext(overrides: Record<string, unknown> = {})
         proofStatus: "ready",
       },
     },
+    fundingDisplaySats: "fundingDisplaySats" in overrides
+      ? overrides.fundingDisplaySats
+      : "fundingSpendableSats" in overrides
+        ? overrides.fundingSpendableSats
+        : 0n,
     fundingSpendableSats: 0n,
     mining: undefined,
     ...overrides,

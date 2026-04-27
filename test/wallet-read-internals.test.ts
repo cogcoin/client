@@ -7,6 +7,7 @@ import { stripDescriptorChecksum } from "../src/wallet/descriptor-normalization.
 import { deriveWalletMaterialFromMnemonic } from "../src/wallet/material.js";
 import {
   inspectWalletLocalStateWithDependencies,
+  readFundingBalanceSummary,
 } from "../src/wallet/read/local-state.js";
 import { openManagedWalletBitcoindReadState } from "../src/wallet/read/managed-bitcoind.js";
 import { openManagedWalletIndexerReadState } from "../src/wallet/read/managed-indexer.js";
@@ -188,6 +189,58 @@ test("inspectWalletLocalStateWithDependencies normalizes descriptor state throug
   });
   assert.equal(loaded.state.descriptor.checksum, material.descriptor.checksum);
   assert.equal(loaded.state.managedCoreWallet.descriptorChecksum, material.descriptor.checksum);
+});
+
+test("readFundingBalanceSummary separates stable display BTC from confirmed spendable BTC", async () => {
+  const state = createDerivedWalletState();
+  const summary = await readFundingBalanceSummary({
+    state,
+    rpc: {
+      listUnspent: async () => [
+        {
+          txid: "11".repeat(32),
+          vout: 0,
+          amount: 0.25,
+          scriptPubKey: state.funding.scriptPubKeyHex,
+          confirmations: 6,
+          spendable: true,
+          safe: true,
+        },
+        {
+          txid: "22".repeat(32),
+          vout: 1,
+          amount: 0.00009,
+          scriptPubKey: state.funding.scriptPubKeyHex,
+          confirmations: 0,
+          spendable: true,
+          safe: false,
+        },
+        {
+          txid: "33".repeat(32),
+          vout: 2,
+          amount: 0.5,
+          scriptPubKey: state.funding.scriptPubKeyHex,
+          confirmations: 0,
+          spendable: false,
+          safe: true,
+        },
+        {
+          txid: "44".repeat(32),
+          vout: 3,
+          amount: 0.75,
+          scriptPubKey: "0014" + "22".repeat(20),
+          confirmations: 3,
+          spendable: true,
+          safe: true,
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(summary, {
+    fundingDisplaySats: 25_009_000n,
+    fundingSpendableSats: 25_000_000n,
+  });
 });
 
 test("openManagedWalletBitcoindReadState keeps reject-path policy in the extracted owner", async () => {

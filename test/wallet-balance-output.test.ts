@@ -67,6 +67,7 @@ async function createReadySnapshot(): Promise<WalletSnapshotView> {
 
 async function createReadyBalanceContext(options: {
   stateOverrides?: Partial<WalletStateV1>;
+  fundingDisplaySats?: bigint | null;
   fundingSpendableSats?: bigint | null;
 } = {}) {
   const state = createWalletState(options.stateOverrides);
@@ -86,6 +87,11 @@ async function createReadyBalanceContext(options: {
     },
     snapshot,
     model: createWalletReadModel(state, snapshot),
+    fundingDisplaySats: "fundingDisplaySats" in options
+      ? (options.fundingDisplaySats ?? null)
+      : "fundingSpendableSats" in options
+        ? (options.fundingSpendableSats ?? null)
+        : 123_456_789n,
     fundingSpendableSats: "fundingSpendableSats" in options
       ? (options.fundingSpendableSats ?? null)
       : 123_456_789n,
@@ -315,11 +321,33 @@ test("balance ready-state text keeps pending lines below the domain sections and
 
 test("balance ready-state text renders unavailable BTC inside the art card", async () => {
   const context = await createReadyBalanceContext({
+    fundingDisplaySats: null,
     fundingSpendableSats: null,
   });
   const lines = formatBalanceReport(context).split("\n");
 
   assertSingleSpaceValue(lines[6]!, "Bitcoin Balance:", "unavailable BTC");
+});
+
+test("balance ready-state text shows stable BTC while mining change is in flight but keeps spendable guidance", async () => {
+  const context = await createReadyBalanceContext({
+    fundingDisplaySats: 90_000n,
+    fundingSpendableSats: 0n,
+    stateOverrides: {
+      domains: [
+        createLocalDomain({
+          name: "mitcat",
+          canonicalChainStatus: "anchored",
+        }),
+      ],
+    },
+  });
+  const lines = formatBalanceReport(context).split("\n");
+
+  assertSingleSpaceValue(lines[6]!, "Bitcoin Balance:", "0.00090000 BTC");
+  assert.ok(
+    formatBalanceReport(context).includes("Next step: Transfer BTC to bc1qfunding so your anchored root domain can keep mining."),
+  );
 });
 
 test("balance ready-state text adds quickstart below the art when BTC is below the funding threshold and no domain exists", async () => {

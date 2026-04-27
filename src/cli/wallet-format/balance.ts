@@ -69,7 +69,7 @@ function renderBalanceArtCard(
     }
 
     if (line.includes("Bitcoin Balance:")) {
-      return renderBalanceArtLine(line, "Bitcoin Balance:", ` ${formatBitcoinAmount(context.fundingSpendableSats ?? null)}`);
+      return renderBalanceArtLine(line, "Bitcoin Balance:", ` ${formatBitcoinAmount(context.fundingDisplaySats ?? null)}`);
     }
 
     if (line.includes("Cogcoin Balance:")) {

@@ -11,7 +11,7 @@ import {
   type WalletSecretProvider,
 } from "../state/provider.js";
 import { openManagedWalletReadServiceBundle } from "./managed-services.js";
-import { inspectWalletLocalState, readFundingSpendableSats } from "./local-state.js";
+import { inspectWalletLocalState, readFundingBalanceSummary } from "./local-state.js";
 import { createWalletReadModel } from "./project.js";
 import type {
   WalletReadContext,
@@ -52,7 +52,10 @@ export async function openWalletReadContext(options: {
     expectedIndexerBinaryVersion,
     now,
   });
-  const fundingSpendableSats = await readFundingSpendableSats({
+  const {
+    fundingDisplaySats,
+    fundingSpendableSats,
+  } = await readFundingBalanceSummary({
     state: localState.state,
     rpc: managedServices.node.rpc,
   });
@@ -80,6 +83,7 @@ export async function openWalletReadContext(options: {
     model: localState.state === null
       ? null
       : createWalletReadModel(localState.state, managedServices.snapshot),
+    fundingDisplaySats,
     fundingSpendableSats,
     mining,
     async close(): Promise<void> {

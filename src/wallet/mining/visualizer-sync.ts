@@ -7,13 +7,13 @@ import { displayToInternalBlockhash } from "@cogcoin/scoring";
 
 import { FOLLOW_VISIBLE_PRIOR_BLOCKS } from "../../bitcoind/client/follow-block-times.js";
 import type { WalletReadContext } from "../read/index.js";
+import { readFundingBalanceSummary } from "../read/local-state.js";
 import type { WalletStateV1 } from "../types.js";
 import type { MiningRpcClient } from "./engine-types.js";
 import type { MiningRuntimeLoopState } from "./engine-state.js";
 import { buildMiningTipKey, resetMiningUiForTip } from "./engine-state.js";
 import {
   deriveMiningWordIndices,
-  numberToSats,
   resolveBip39WordsFromIndices,
 } from "./engine-utils.js";
 import type {
@@ -269,18 +269,12 @@ export function syncMiningUiForCurrentTip(options: {
 }
 
 export async function resolveFundingDisplaySats(state: WalletStateV1, rpc: MiningRpcClient): Promise<bigint> {
-  const utxos = await rpc.listUnspent(state.managedCoreWallet.walletName, 0);
+  const summary = await readFundingBalanceSummary({
+    state,
+    rpc,
+  });
 
-  return utxos.reduce((sum, entry) => {
-    if (
-      entry.scriptPubKey !== state.funding.scriptPubKeyHex
-      || entry.spendable === false
-    ) {
-      return sum;
-    }
-
-    return sum + numberToSats(entry.amount);
-  }, 0n);
+  return summary.fundingDisplaySats ?? 0n;
 }
 
 export async function loadMiningVisibleFollowBlockTimes(options: {

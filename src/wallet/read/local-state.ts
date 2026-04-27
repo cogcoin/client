@@ -32,6 +32,11 @@ type WalletLocalStateDeps = {
   createRpcClient: typeof createRpcClient;
 };
 
+export interface FundingBalanceSummary {
+  fundingDisplaySats: bigint | null;
+  fundingSpendableSats: bigint | null;
+}
+
 const defaultWalletLocalStateDeps: WalletLocalStateDeps = {
   attachOrStartManagedBitcoindService,
   createRpcClient,
@@ -46,6 +51,11 @@ function isSpendableFundingUtxo(entry: RpcListUnspentEntry, fundingScriptPubKeyH
     && entry.confirmations >= 1
     && entry.spendable !== false
     && entry.safe !== false;
+}
+
+function isDisplayFundingUtxo(entry: RpcListUnspentEntry, fundingScriptPubKeyHex: string): boolean {
+  return entry.scriptPubKey === fundingScriptPubKeyHex
+    && entry.spendable !== false;
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -288,19 +298,48 @@ export async function readFundingSpendableSats(options: {
   state: WalletLocalStateStatus["state"];
   rpc: ReturnType<typeof createRpcClient> | null;
 }): Promise<bigint | null> {
+  return (await readFundingBalanceSummary(options)).fundingSpendableSats;
+}
+
+export async function readFundingBalanceSummary(options: {
+  state: WalletLocalStateStatus["state"];
+  rpc: Pick<ReturnType<typeof createRpcClient>, "listUnspent"> | null;
+}): Promise<FundingBalanceSummary> {
   if (options.state === null || options.rpc === null) {
-    return null;
+    return {
+      fundingDisplaySats: null,
+      fundingSpendableSats: null,
+    };
   }
 
   const state = options.state;
 
   try {
-    const utxos = await options.rpc.listUnspent(state.managedCoreWallet.walletName, 1);
-    return utxos.reduce((sum, entry) =>
-      isSpendableFundingUtxo(entry, state.funding.scriptPubKeyHex)
-        ? sum + btcAmountToSats(entry.amount)
-        : sum, 0n);
+    const utxos = await options.rpc.listUnspent(state.managedCoreWallet.walletName, 0);
+    let fundingDisplaySats = 0n;
+    let fundingSpendableSats = 0n;
+
+    for (const entry of utxos) {
+      if (!isDisplayFundingUtxo(entry, state.funding.scriptPubKeyHex)) {
+        continue;
+      }
+
+      const amountSats = btcAmountToSats(entry.amount);
+      fundingDisplaySats += amountSats;
+
+      if (isSpendableFundingUtxo(entry, state.funding.scriptPubKeyHex)) {
+        fundingSpendableSats += amountSats;
+      }
+    }
+
+    return {
+      fundingDisplaySats,
+      fundingSpendableSats,
+    };
   } catch {
-    return null;
+    return {
+      fundingDisplaySats: null,
+      fundingSpendableSats: null,
+    };
   }
 }
