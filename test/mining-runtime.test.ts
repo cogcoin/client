@@ -121,7 +121,7 @@ async function startFakeIndexerDaemonStatusServer(
             schemaVersion: INDEXER_DAEMON_SCHEMA_VERSION,
             walletRootId: options.walletRootId,
             daemonInstanceId: options.daemonInstanceId,
-            binaryVersion: "1.1.10",
+            binaryVersion: "1.1.11",
             buildId: "test-build",
             processId: 9_001,
             startedAtUnixMs: 1,

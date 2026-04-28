@@ -43,7 +43,7 @@ function createRuntimeState(
 ): IndexerDaemonRuntimeState {
   return {
     daemonInstanceId: "daemon-1",
-    binaryVersion: "1.1.10",
+    binaryVersion: "1.1.11",
     startedAtUnixMs: 1_700_000_000_000,
     walletRootId: "wallet-root-test",
     snapshots: new Map(),
@@ -80,7 +80,7 @@ function createManagedIndexerDaemonStatus(
 ): ManagedIndexerDaemonStatus {
   return {
     serviceApiVersion: "cogcoin/indexer-ipc/v1",
-    binaryVersion: "1.1.10",
+    binaryVersion: "1.1.11",
     buildId: null,
     updatedAtUnixMs: 1_700_000_000_100,
     walletRootId,
@@ -118,7 +118,7 @@ function createSnapshotHandleFixture(
     token: "lease-1",
     expiresAtUnixMs: Date.now() + 5_000,
     serviceApiVersion: "cogcoin/indexer-ipc/v1",
-    binaryVersion: "1.1.10",
+    binaryVersion: "1.1.11",
     buildId: null,
     walletRootId: "wallet-root-test",
     daemonInstanceId: "daemon-1",

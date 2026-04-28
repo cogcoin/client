@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import net from "node:net";
 
-import { writeFileAtomic } from "../wallet/fs/atomic.js";
+import { writeFileAtomic, writeJsonFileAtomic } from "../wallet/fs/atomic.js";
 import { readJsonFileIfPresent } from "./managed-runtime/status.js";
 import type {
   BitcoindRpcConfig,
@@ -20,6 +20,25 @@ export const LOCAL_HOST = "127.0.0.1";
 export const SUPPORTED_BITCOIND_VERSION = "30.2.0";
 const DEFAULT_DBCACHE_MIB = 450;
 const GIB = 1024 ** 3;
+
+export interface ManagedBitcoindRuntimeConfigFile {
+  chain: ManagedBitcoindRuntimeConfig["chain"];
+  rpc: ManagedBitcoindRuntimeConfig["rpc"];
+  zmqPort: ManagedBitcoindRuntimeConfig["zmqPort"];
+  p2pPort: ManagedBitcoindRuntimeConfig["p2pPort"];
+  getblockArchiveEndHeight: ManagedBitcoindRuntimeConfig["getblockArchiveEndHeight"];
+  getblockArchiveSha256: ManagedBitcoindRuntimeConfig["getblockArchiveSha256"];
+}
+
+type ManagedBitcoindRuntimeConfigFileDeps = {
+  readJsonFileIfPresent: (filePath: string) => Promise<ManagedBitcoindRuntimeConfigFile | null>;
+  writeJsonFileAtomic: typeof writeJsonFileAtomic;
+};
+
+const defaultManagedBitcoindRuntimeConfigFileDeps: ManagedBitcoindRuntimeConfigFileDeps = {
+  readJsonFileIfPresent,
+  writeJsonFileAtomic,
+};
 
 export function resolveManagedBitcoindDbcacheMiB(totalRamBytes: number): number {
   if (!Number.isFinite(totalRamBytes) || totalRamBytes <= 0) {
@@ -134,6 +153,76 @@ export async function resolveManagedBitcoindRuntimeConfig(
     getblockArchiveEndHeight: options.getblockArchiveEndHeight ?? null,
     getblockArchiveSha256: options.getblockArchiveSha256 ?? null,
   };
+}
+
+export function createManagedBitcoindRuntimeConfigFilePayload(
+  runtimeConfig: ManagedBitcoindRuntimeConfig,
+): ManagedBitcoindRuntimeConfigFile {
+  return {
+    chain: runtimeConfig.chain,
+    rpc: runtimeConfig.rpc,
+    zmqPort: runtimeConfig.zmqPort,
+    p2pPort: runtimeConfig.p2pPort,
+    getblockArchiveEndHeight: runtimeConfig.getblockArchiveEndHeight ?? null,
+    getblockArchiveSha256: runtimeConfig.getblockArchiveSha256 ?? null,
+  };
+}
+
+export function createManagedBitcoindRuntimeConfigFilePayloadFromStatus(
+  status: Pick<
+    ManagedBitcoindServiceStatus,
+    "chain" | "rpc" | "zmq" | "p2pPort" | "getblockArchiveEndHeight" | "getblockArchiveSha256"
+  >,
+): ManagedBitcoindRuntimeConfigFile {
+  return {
+    chain: status.chain,
+    rpc: status.rpc,
+    zmqPort: status.zmq.port,
+    p2pPort: status.p2pPort,
+    getblockArchiveEndHeight: status.getblockArchiveEndHeight ?? null,
+    getblockArchiveSha256: status.getblockArchiveSha256 ?? null,
+  };
+}
+
+async function writeManagedBitcoindRuntimeConfigPayload(
+  filePath: string,
+  nextPayload: ManagedBitcoindRuntimeConfigFile,
+  dependencies: ManagedBitcoindRuntimeConfigFileDeps = defaultManagedBitcoindRuntimeConfigFileDeps,
+): Promise<void> {
+  const currentPayload = await dependencies.readJsonFileIfPresent(filePath).catch(() => null);
+
+  if (JSON.stringify(currentPayload) === JSON.stringify(nextPayload)) {
+    return;
+  }
+
+  await dependencies.writeJsonFileAtomic(filePath, nextPayload, { mode: 0o600 });
+}
+
+export async function writeManagedBitcoindRuntimeConfigFile(
+  filePath: string,
+  runtimeConfig: ManagedBitcoindRuntimeConfig,
+  dependencies: ManagedBitcoindRuntimeConfigFileDeps = defaultManagedBitcoindRuntimeConfigFileDeps,
+): Promise<void> {
+  await writeManagedBitcoindRuntimeConfigPayload(
+    filePath,
+    createManagedBitcoindRuntimeConfigFilePayload(runtimeConfig),
+    dependencies,
+  );
+}
+
+export async function writeManagedBitcoindRuntimeConfigFileFromStatus(
+  filePath: string,
+  status: Pick<
+    ManagedBitcoindServiceStatus,
+    "chain" | "rpc" | "zmq" | "p2pPort" | "getblockArchiveEndHeight" | "getblockArchiveSha256"
+  >,
+  dependencies: ManagedBitcoindRuntimeConfigFileDeps = defaultManagedBitcoindRuntimeConfigFileDeps,
+): Promise<void> {
+  await writeManagedBitcoindRuntimeConfigPayload(
+    filePath,
+    createManagedBitcoindRuntimeConfigFilePayloadFromStatus(status),
+    dependencies,
+  );
 }
 
 export async function writeBitcoinConfForTesting(

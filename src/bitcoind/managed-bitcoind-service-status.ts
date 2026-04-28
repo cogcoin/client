@@ -157,14 +157,6 @@ export async function writeManagedBitcoindStatus(
     status.walletRootId,
     "Managed Core wallet replica is missing.",
   ));
-  await writeRuntimeStatusFile(paths.bitcoindRuntimeConfigPath, {
-    chain: status.chain,
-    rpc: status.rpc,
-    zmqPort: status.zmq.port,
-    p2pPort: status.p2pPort,
-    getblockArchiveEndHeight: status.getblockArchiveEndHeight,
-    getblockArchiveSha256: status.getblockArchiveSha256,
-  });
 }
 
 export async function clearManagedBitcoindRuntimeArtifacts(

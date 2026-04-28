@@ -22,6 +22,8 @@ import {
   resolveManagedBitcoindRuntimeConfig,
   SUPPORTED_BITCOIND_VERSION,
   verifyManagedBitcoindVersion,
+  writeManagedBitcoindRuntimeConfigFile,
+  writeManagedBitcoindRuntimeConfigFileFromStatus,
   writeBitcoinConfForTesting,
 } from "./managed-bitcoind-service-config.js";
 import {
@@ -188,6 +190,7 @@ async function tryAttachExistingManagedBitcoindService(
     paths,
     options,
   );
+  await writeManagedBitcoindRuntimeConfigFileFromStatus(paths.bitcoindRuntimeConfigPath, refreshed);
 
   return createManagedBitcoindNodeHandle({
     status: refreshed,
@@ -256,7 +259,10 @@ export async function attachOrStartManagedBitcoindService(
         await mkdir(runtimeOptions.dataDir, { recursive: true });
         const startManagedProcess = async (
           startOptions: ResolvedManagedBitcoindServiceOptions,
-        ): Promise<ManagedBitcoindServiceStatus> => {
+        ): Promise<{
+          runtimeConfig: Awaited<ReturnType<typeof resolveManagedBitcoindRuntimeConfig>>;
+          status: ManagedBitcoindServiceStatus;
+        }> => {
           const runtimeConfig = await resolveManagedBitcoindRuntimeConfig(
             paths.bitcoindStatusPath,
             paths.bitcoindRuntimeConfigPath,
@@ -311,45 +317,50 @@ export async function attachOrStartManagedBitcoindService(
             startOptions.dataDir,
           );
 
-          return createBitcoindServiceStatus({
-            binaryVersion,
-            serviceInstanceId: randomBytes(16).toString("hex"),
-            state: "ready",
-            processId: child.pid ?? null,
-            walletRootId: startOptions.walletRootId,
-            chain: startOptions.chain,
-            dataDir: startOptions.dataDir,
-            runtimeRoot: paths.walletRuntimeRoot,
-            startHeight: startOptions.startHeight,
-            rpc: rpcConfig,
-            zmq: zmqConfig,
-            p2pPort: runtimeConfig.p2pPort,
-            getblockArchiveEndHeight: runtimeConfig.getblockArchiveEndHeight ?? null,
-            getblockArchiveSha256: runtimeConfig.getblockArchiveSha256 ?? null,
-            walletReplica,
-            startedAtUnixMs: nowUnixMs,
-            heartbeatAtUnixMs: nowUnixMs,
-            lastError: walletReplica.message ?? null,
-          });
+          return {
+            runtimeConfig,
+            status: createBitcoindServiceStatus({
+              binaryVersion,
+              serviceInstanceId: randomBytes(16).toString("hex"),
+              state: "ready",
+              processId: child.pid ?? null,
+              walletRootId: startOptions.walletRootId,
+              chain: startOptions.chain,
+              dataDir: startOptions.dataDir,
+              runtimeRoot: paths.walletRuntimeRoot,
+              startHeight: startOptions.startHeight,
+              rpc: rpcConfig,
+              zmq: zmqConfig,
+              p2pPort: runtimeConfig.p2pPort,
+              getblockArchiveEndHeight: runtimeConfig.getblockArchiveEndHeight ?? null,
+              getblockArchiveSha256: runtimeConfig.getblockArchiveSha256 ?? null,
+              walletReplica,
+              startedAtUnixMs: nowUnixMs,
+              heartbeatAtUnixMs: nowUnixMs,
+              lastError: walletReplica.message ?? null,
+            }),
+          };
         };
 
+        let runtimeConfig: Awaited<ReturnType<typeof resolveManagedBitcoindRuntimeConfig>>;
         let status: ManagedBitcoindServiceStatus;
 
         try {
-          status = await startManagedProcess(runtimeOptions);
+          ({ runtimeConfig, status } = await startManagedProcess(runtimeOptions));
         } catch (error) {
           if (runtimeOptions.getblockArchivePath === undefined || runtimeOptions.getblockArchivePath === null) {
             throw error;
           }
 
-          status = await startManagedProcess({
+          ({ runtimeConfig, status } = await startManagedProcess({
             ...runtimeOptions,
             getblockArchivePath: null,
             getblockArchiveEndHeight: null,
             getblockArchiveSha256: null,
-          });
+          }));
         }
 
+        await writeManagedBitcoindRuntimeConfigFile(paths.bitcoindRuntimeConfigPath, runtimeConfig);
         await writeManagedBitcoindStatus(paths, status);
 
         return createManagedBitcoindNodeHandle({
