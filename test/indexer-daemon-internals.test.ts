@@ -37,13 +37,14 @@ import type {
   LoadedSnapshotMaterial,
 } from "../src/bitcoind/indexer-daemon/types.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
+import { CURRENT_CLIENT_VERSION } from "./version-helpers.js";
 
 function createRuntimeState(
   overrides: Partial<IndexerDaemonRuntimeState> = {},
 ): IndexerDaemonRuntimeState {
   return {
     daemonInstanceId: "daemon-1",
-    binaryVersion: "1.1.12",
+    binaryVersion: CURRENT_CLIENT_VERSION,
     startedAtUnixMs: 1_700_000_000_000,
     walletRootId: "wallet-root-test",
     snapshots: new Map(),
@@ -80,7 +81,7 @@ function createManagedIndexerDaemonStatus(
 ): ManagedIndexerDaemonStatus {
   return {
     serviceApiVersion: "cogcoin/indexer-ipc/v1",
-    binaryVersion: "1.1.12",
+    binaryVersion: CURRENT_CLIENT_VERSION,
     buildId: null,
     updatedAtUnixMs: 1_700_000_000_100,
     walletRootId,
@@ -118,7 +119,7 @@ function createSnapshotHandleFixture(
     token: "lease-1",
     expiresAtUnixMs: Date.now() + 5_000,
     serviceApiVersion: "cogcoin/indexer-ipc/v1",
-    binaryVersion: "1.1.12",
+    binaryVersion: CURRENT_CLIENT_VERSION,
     buildId: null,
     walletRootId: "wallet-root-test",
     daemonInstanceId: "daemon-1",

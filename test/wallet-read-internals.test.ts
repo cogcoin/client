@@ -27,6 +27,7 @@ import type {
 } from "../src/bitcoind/types.js";
 import { INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED } from "../src/bitcoind/indexer-daemon.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
+import { CURRENT_CLIENT_VERSION } from "./version-helpers.js";
 import { createDerivedWalletState } from "./wallet-lifecycle-test-helpers.js";
 
 function createManagedBitcoindObservedStatus(
@@ -72,7 +73,7 @@ function createManagedIndexerDaemonObservedStatus(
 ): ManagedIndexerDaemonObservedStatus {
   return {
     serviceApiVersion: "cogcoin/indexer-ipc/v1",
-    binaryVersion: "1.1.12",
+    binaryVersion: CURRENT_CLIENT_VERSION,
     buildId: null,
     updatedAtUnixMs: 1_700_000_000_100,
     walletRootId: "wallet-root",
@@ -370,7 +371,7 @@ test("openManagedWalletIndexerReadState falls back to status-file truth when att
     databasePath: "/tmp/client.sqlite",
     walletRootId: "wallet-root",
     startupTimeoutMs: 5_000,
-    expectedIndexerBinaryVersion: "1.1.12",
+    expectedIndexerBinaryVersion: CURRENT_CLIENT_VERSION,
     now: 1_700_000_001_000,
     nodeHandle: null,
   }, {
@@ -409,7 +410,7 @@ test("openManagedWalletIndexerReadState preserves background-follow recovery fai
       databasePath: "/tmp/client.sqlite",
       walletRootId: "wallet-root",
       startupTimeoutMs: 5_000,
-      expectedIndexerBinaryVersion: "1.1.12",
+      expectedIndexerBinaryVersion: CURRENT_CLIENT_VERSION,
       now: 1_700_000_001_000,
       nodeHandle: {
         stop: async () => {

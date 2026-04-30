@@ -29,6 +29,7 @@ import {
   createWalletState,
 } from "./current-model-helpers.js";
 import { createHealthyMiningRpc } from "./mining-rpc-test-helpers.js";
+import { CURRENT_CLIENT_VERSION } from "./version-helpers.js";
 
 function createRuntimePaths(homeDirectory: string): WalletRuntimePaths {
   return resolveWalletRuntimePathsForTesting({
@@ -292,7 +293,7 @@ async function startFakeIndexerDaemonStatusServer(
             schemaVersion: INDEXER_DAEMON_SCHEMA_VERSION,
             walletRootId: options.walletRootId,
             daemonInstanceId: options.daemonInstanceId,
-            binaryVersion: "1.1.12",
+            binaryVersion: CURRENT_CLIENT_VERSION,
             buildId: "test-build",
             processId: 9_001,
             startedAtUnixMs: 1,

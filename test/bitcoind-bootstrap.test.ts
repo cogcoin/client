@@ -43,6 +43,7 @@ import {
 import { MANAGED_RPC_RETRY_MESSAGE } from "../src/bitcoind/retryable-rpc.js";
 import type { BootstrapPhase, SnapshotChunkManifest, SnapshotMetadata, WritingQuote } from "../src/bitcoind/types.js";
 import { createTempDirectory, removeTempDirectory } from "./bitcoind-helpers.js";
+import { CURRENT_ARTWORK_VERSION_TEXT } from "./version-helpers.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1814,12 +1815,15 @@ test("follow scene renders a lower-right mining version beside the status text",
     statusText,
     0,
     {
-      artworkStatusRightText: "v1.1.12",
+      artworkStatusRightText: CURRENT_ARTWORK_VERSION_TEXT,
     },
   );
   const field = extractField(frame, 13);
 
-  assert.match(field, /Waiting for next block\s{2,}v1\.1\.12$/);
+  assert.match(
+    field,
+    new RegExp(`Waiting for next block\\s{2,}${CURRENT_ARTWORK_VERSION_TEXT.replaceAll(".", "\\.")}$`),
+  );
   assert.equal(field.indexOf(statusText), Math.floor((64 - statusText.length) / 2));
 });
 
@@ -1831,12 +1835,15 @@ test("follow scene renders an UPDATE badge on the left while keeping semver on t
     0,
     {
       artworkStatusLeftText: "UPDATE",
-      artworkStatusRightText: "v1.1.12",
+      artworkStatusRightText: CURRENT_ARTWORK_VERSION_TEXT,
     },
   );
   const field = extractField(frame, 13);
 
-  assert.match(field, /^UPDATE\s{2,}.*Waiting for next block.*\s{2,}v1\.1\.12$/);
+  assert.match(
+    field,
+    new RegExp(`^UPDATE\\s{2,}.*Waiting for next block.*\\s{2,}${CURRENT_ARTWORK_VERSION_TEXT.replaceAll(".", "\\.")}$`),
+  );
   assert.equal(field.indexOf(statusText), Math.floor((64 - statusText.length) / 2));
 });
 

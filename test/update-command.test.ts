@@ -10,9 +10,10 @@ import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createWalletReadContext } from "./current-model-helpers.js";
-
-const CURRENT_VERSION = "1.1.12";
-const NEXT_VERSION = "1.1.13";
+import {
+  CURRENT_CLIENT_VERSION,
+  NEWER_CLIENT_VERSION,
+} from "./version-helpers.js";
 
 function createStringWriter(isTTY = false) {
   let text = "";
@@ -142,8 +143,8 @@ async function createUpdateTestContext(
 
 test("update text output reports already up-to-date without invoking npm", async (t) => {
   const harness = await createUpdateTestContext(t, {
-    currentVersion: CURRENT_VERSION,
-    latestVersion: CURRENT_VERSION,
+    currentVersion: CURRENT_CLIENT_VERSION,
+    latestVersion: CURRENT_CLIENT_VERSION,
   });
 
   const exitCode = await runUpdateCommand(parseCliArgs(["update"]), harness.context);
@@ -153,11 +154,11 @@ test("update text output reports already up-to-date without invoking npm", async
   assert.equal(harness.prompt.prompts.length, 0);
   assert.match(
     harness.stdout.read(),
-    new RegExp(`Current version: ${CURRENT_VERSION.replaceAll(".", "\\.")}`),
+    new RegExp(`Current version: ${CURRENT_CLIENT_VERSION.replaceAll(".", "\\.")}`),
   );
   assert.match(
     harness.stdout.read(),
-    new RegExp(`Latest version: ${CURRENT_VERSION.replaceAll(".", "\\.")}`),
+    new RegExp(`Latest version: ${CURRENT_CLIENT_VERSION.replaceAll(".", "\\.")}`),
   );
   assert.match(harness.stdout.read(), /Cogcoin is already up to date\./);
   assert.equal(harness.stderr.read(), "");
@@ -165,8 +166,8 @@ test("update text output reports already up-to-date without invoking npm", async
 
 test("update text output prompts and invokes npm when a newer version is available", async (t) => {
   const harness = await createUpdateTestContext(t, {
-    currentVersion: CURRENT_VERSION,
-    latestVersion: NEXT_VERSION,
+    currentVersion: CURRENT_CLIENT_VERSION,
+    latestVersion: NEWER_CLIENT_VERSION,
     interactive: true,
     promptAnswers: ["y"],
     onInstall: async ({ stdout }) => {
@@ -181,11 +182,11 @@ test("update text output prompts and invokes npm when a newer version is availab
   assert.deepEqual(harness.prompt.prompts, ["Install update now? [Y/n]: "]);
   assert.match(
     harness.stdout.read(),
-    new RegExp(`Current version: ${CURRENT_VERSION.replaceAll(".", "\\.")}`),
+    new RegExp(`Current version: ${CURRENT_CLIENT_VERSION.replaceAll(".", "\\.")}`),
   );
   assert.match(
     harness.stdout.read(),
-    new RegExp(`Latest version: ${NEXT_VERSION.replaceAll(".", "\\.")}`),
+    new RegExp(`Latest version: ${NEWER_CLIENT_VERSION.replaceAll(".", "\\.")}`),
   );
   assert.match(harness.stdout.read(), /Installing update\.\.\./);
   assert.match(harness.stdout.read(), /npm install output/);
@@ -194,8 +195,8 @@ test("update text output prompts and invokes npm when a newer version is availab
 
 test("update text output exits cleanly when the prompt is declined", async (t) => {
   const harness = await createUpdateTestContext(t, {
-    currentVersion: CURRENT_VERSION,
-    latestVersion: NEXT_VERSION,
+    currentVersion: CURRENT_CLIENT_VERSION,
+    latestVersion: NEWER_CLIENT_VERSION,
     interactive: true,
     promptAnswers: ["n"],
   });
@@ -210,8 +211,8 @@ test("update text output exits cleanly when the prompt is declined", async (t) =
 
 test("update requires an interactive terminal without --yes when a newer version is available", async (t) => {
   const harness = await createUpdateTestContext(t, {
-    currentVersion: CURRENT_VERSION,
-    latestVersion: NEXT_VERSION,
+    currentVersion: CURRENT_CLIENT_VERSION,
+    latestVersion: NEWER_CLIENT_VERSION,
     interactive: false,
   });
 
@@ -225,8 +226,8 @@ test("update requires an interactive terminal without --yes when a newer version
 
 test("update --yes skips prompting and invokes npm", async (t) => {
   const harness = await createUpdateTestContext(t, {
-    currentVersion: CURRENT_VERSION,
-    latestVersion: NEXT_VERSION,
+    currentVersion: CURRENT_CLIENT_VERSION,
+    latestVersion: NEWER_CLIENT_VERSION,
     interactive: false,
   });
 
@@ -239,7 +240,7 @@ test("update --yes skips prompting and invokes npm", async (t) => {
 
 test("update registry failures map to cli_update_registry_unavailable", async (t) => {
   const harness = await createUpdateTestContext(t, {
-    currentVersion: CURRENT_VERSION,
+    currentVersion: CURRENT_CLIENT_VERSION,
     fetchImpl: (async () => {
       throw new Error("network");
     }) as typeof fetch,
@@ -254,8 +255,8 @@ test("update registry failures map to cli_update_registry_unavailable", async (t
 
 test("update missing npm failures map to cli_update_npm_not_found", async (t) => {
   const harness = await createUpdateTestContext(t, {
-    currentVersion: CURRENT_VERSION,
-    latestVersion: NEXT_VERSION,
+    currentVersion: CURRENT_CLIENT_VERSION,
+    latestVersion: NEWER_CLIENT_VERSION,
     onInstall: async () => {
       throw new Error("cli_update_npm_not_found");
     },
@@ -272,8 +273,8 @@ test("update missing npm failures map to cli_update_npm_not_found", async (t) =>
 
 test("update install failures map to cli_update_install_failed", async (t) => {
   const harness = await createUpdateTestContext(t, {
-    currentVersion: CURRENT_VERSION,
-    latestVersion: NEXT_VERSION,
+    currentVersion: CURRENT_CLIENT_VERSION,
+    latestVersion: NEWER_CLIENT_VERSION,
     onInstall: async () => {
       throw new Error("cli_update_install_failed");
     },
@@ -302,8 +303,8 @@ test("passive update notifications still run for ordinary commands", async (t) =
   const exitCode = await runCli(["status"], createDefaultContext({
     stdout: stdout.stream,
     stderr: stderr.stream,
-    fetchImpl: createVersionFetch(NEXT_VERSION, fetchCalls),
-    readPackageVersion: async () => CURRENT_VERSION,
+    fetchImpl: createVersionFetch(NEWER_CLIENT_VERSION, fetchCalls),
+    readPackageVersion: async () => CURRENT_CLIENT_VERSION,
     resolveUpdateCheckStatePath: () => join(homeDirectory, "update-check.json"),
     resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
@@ -321,7 +322,7 @@ test("passive update notifications still run for ordinary commands", async (t) =
   assert.equal(fetchCalls.count, 1);
   assert.match(
     stderr.read(),
-    new RegExp(`Update available: Cogcoin ${CURRENT_VERSION.replaceAll(".", "\\.")} -> ${NEXT_VERSION.replaceAll(".", "\\.")}`),
+    new RegExp(`Update available: Cogcoin ${CURRENT_CLIENT_VERSION.replaceAll(".", "\\.")} -> ${NEWER_CLIENT_VERSION.replaceAll(".", "\\.")}`),
   );
 });
 
@@ -335,8 +336,8 @@ test("cogcoin update skips the passive notifier and performs only the explicit l
   const exitCode = await runCli(["update", "--yes"], createDefaultContext({
     stdout: stdout.stream,
     stderr: stderr.stream,
-    fetchImpl: createVersionFetch(NEXT_VERSION, fetchCalls),
-    readPackageVersion: async () => CURRENT_VERSION,
+    fetchImpl: createVersionFetch(NEWER_CLIENT_VERSION, fetchCalls),
+    readPackageVersion: async () => CURRENT_CLIENT_VERSION,
     resolveUpdateCheckStatePath: () => join(homeDirectory, "update-check.json"),
     createPrompter: () => createPrompter({
       interactive: false,

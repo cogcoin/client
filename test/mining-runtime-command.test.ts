@@ -10,6 +10,10 @@ import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createMiningRuntimeStatus } from "./current-model-helpers.js";
+import {
+  CURRENT_CLIENT_VERSION,
+  NEWER_CLIENT_VERSION,
+} from "./version-helpers.js";
 
 function createStringWriter(options: { isTTY?: boolean; columns?: number } = {}) {
   let text = "";
@@ -299,8 +303,6 @@ test("mine text marks updateAvailable when tty mining sees a newer npm version",
   const stderr = createStringWriter({ isTTY: true, columns: 120 });
   const provider = createMemoryWalletSecretProviderForTesting();
   const prompter = createPrompter();
-  const version = "1.1.12";
-  const latestVersion = "1.1.13";
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mine-runtime-update");
   const resolvePaths = createTestRuntimePaths(homeDirectory);
   const runtimePaths = resolvePaths();
@@ -316,7 +318,7 @@ test("mine text marks updateAvailable when tty mining sees a newer npm version",
     signalSource: QUIET_SIGNAL_SOURCE,
     walletSecretProvider: provider,
     createPrompter: () => prompter,
-    readPackageVersion: async () => version,
+    readPackageVersion: async () => CURRENT_CLIENT_VERSION,
     resolveWalletRuntimePaths: () => resolvePaths(),
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
@@ -325,7 +327,7 @@ test("mine text marks updateAvailable when tty mining sees a newer npm version",
     loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
     openManagedIndexerMonitor: async () => createCompletedSyncMonitor([]) as any,
     fetchImpl: async () => new Response(JSON.stringify({
-      version: latestVersion,
+      version: NEWER_CLIENT_VERSION,
     }), {
       status: 200,
       headers: {
@@ -346,12 +348,12 @@ test("mine text marks updateAvailable when tty mining sees a newer npm version",
   assert.equal(exitCode, 0);
   assert.notEqual(runOptions, null);
   const actualRunOptions = runOptions!;
-  assert.equal(actualRunOptions.clientVersion, version);
+  assert.equal(actualRunOptions.clientVersion, CURRENT_CLIENT_VERSION);
   assert.equal(actualRunOptions.updateAvailable, true);
   assert.deepEqual(actualRunOptions.paths, runtimePaths);
   assert.match(
     await readFile(cachePath, "utf8"),
-    new RegExp(`"latestVersion": "${latestVersion.replaceAll(".", "\\.")}"`),
+    new RegExp(`"latestVersion": "${NEWER_CLIENT_VERSION.replaceAll(".", "\\.")}"`),
   );
 });
 

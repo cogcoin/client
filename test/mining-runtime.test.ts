@@ -70,6 +70,7 @@ import {
 } from "./current-model-helpers.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createHealthyMiningRpc } from "./mining-rpc-test-helpers.js";
+import { CURRENT_CLIENT_VERSION } from "./version-helpers.js";
 
 const MANAGED_CORE_WALLET_LOCKED_ERROR =
   "bitcoind_rpc_walletprocesspsbt_-13_Please enter the wallet passphrase with walletpassphrase first.";
@@ -122,7 +123,7 @@ async function startFakeIndexerDaemonStatusServer(
             schemaVersion: INDEXER_DAEMON_SCHEMA_VERSION,
             walletRootId: options.walletRootId,
             daemonInstanceId: options.daemonInstanceId,
-            binaryVersion: "1.1.12",
+            binaryVersion: CURRENT_CLIENT_VERSION,
             buildId: "test-build",
             processId: 9_001,
             startedAtUnixMs: 1,

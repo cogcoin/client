@@ -12,6 +12,10 @@ import { renderFollowFrameForTesting } from "../src/bitcoind/progress/follow-sce
 import type { FollowSceneRenderOptions } from "../src/bitcoind/progress/tty-renderer.js";
 import type { MiningRuntimeStatusV1 } from "../src/wallet/mining/types.js";
 import type { MiningFollowVisualizerState, MiningSentenceBoardEntry } from "../src/wallet/mining/visualizer.js";
+import {
+  CURRENT_ARTWORK_VERSION_TEXT,
+  CURRENT_CLIENT_VERSION,
+} from "./version-helpers.js";
 
 interface FakeTimer {
   callback: () => void;
@@ -289,7 +293,7 @@ test("mining follow visualizer passes the client semver to the right artwork sta
   let capturedOptions: FollowSceneRenderOptions | undefined;
 
   const visualizer = new MiningFollowVisualizer({
-    clientVersion: " 1.1.12 ",
+    clientVersion: ` ${CURRENT_CLIENT_VERSION} `,
     progressOutput: "auto",
     stream: new MemoryStream({ isTTY: true, columns: 120 }),
     rendererFactory: () => ({
@@ -315,14 +319,14 @@ test("mining follow visualizer passes the client semver to the right artwork sta
   visualizer.close();
 
   assert.equal(capturedOptions?.artworkStatusLeftText, undefined);
-  assert.equal(capturedOptions?.artworkStatusRightText, "v1.1.12");
+  assert.equal(capturedOptions?.artworkStatusRightText, CURRENT_ARTWORK_VERSION_TEXT);
 });
 
 test("mining follow visualizer adds an UPDATE badge on the left while keeping semver on the right", () => {
   let capturedOptions: FollowSceneRenderOptions | undefined;
 
   const visualizer = new MiningFollowVisualizer({
-    clientVersion: "1.1.12",
+    clientVersion: CURRENT_CLIENT_VERSION,
     updateAvailable: true,
     progressOutput: "auto",
     stream: new MemoryStream({ isTTY: true, columns: 120 }),
@@ -349,7 +353,7 @@ test("mining follow visualizer adds an UPDATE badge on the left while keeping se
   visualizer.close();
 
   assert.equal(capturedOptions?.artworkStatusLeftText, "UPDATE");
-  assert.equal(capturedOptions?.artworkStatusRightText, "v1.1.12");
+  assert.equal(capturedOptions?.artworkStatusRightText, CURRENT_ARTWORK_VERSION_TEXT);
 });
 
 test("mining follow visualizer stays quiet when tty progress is disabled", () => {

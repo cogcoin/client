@@ -22,6 +22,7 @@ import { saveWalletState } from "../src/wallet/state/storage.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
 import { createWalletReadContext, createWalletState } from "./current-model-helpers.js";
 import { configureTestClientPassword } from "./client-password-test-helpers.js";
+import { CURRENT_CLIENT_VERSION } from "./version-helpers.js";
 
 test("funding address report shows the single wallet address", () => {
   const context = createWalletReadContext();
@@ -114,7 +115,7 @@ test("status output keeps a tolerated header lead synced while surfacing the exp
       },
     },
   });
-  const report = formatWalletOverviewReport(context, "1.1.12");
+  const report = formatWalletOverviewReport(context, CURRENT_CLIENT_VERSION);
 
   assert.match(report, /Bitcoin service: Synced/i);
   assert.match(report, /Bitcoin best height: 100/);

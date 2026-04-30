@@ -19,6 +19,7 @@ import type {
   ManagedIndexerDaemonObservedStatus,
   ManagedIndexerDaemonStatus,
 } from "../src/bitcoind/types.js";
+import { CURRENT_CLIENT_VERSION } from "./version-helpers.js";
 
 function createManagedBitcoindObservedStatus(
   overrides: Partial<ManagedBitcoindObservedStatus> = {},
@@ -63,7 +64,7 @@ function createManagedIndexerDaemonObservedStatus(
 ): ManagedIndexerDaemonObservedStatus {
   return {
     serviceApiVersion: "cogcoin/indexer-ipc/v1",
-    binaryVersion: "1.1.12",
+    binaryVersion: CURRENT_CLIENT_VERSION,
     buildId: null,
     updatedAtUnixMs: 1_700_000_000_100,
     walletRootId: "wallet-root-default",
@@ -208,7 +209,7 @@ test("managed indexer probe decisions centralize stale and unparseable replaceme
         client: {} as any,
         error: null,
       },
-      expectedBinaryVersion: "1.1.12",
+      expectedBinaryVersion: CURRENT_CLIENT_VERSION,
     }).action,
     "replace",
   );
@@ -223,7 +224,7 @@ test("managed indexer probe decisions centralize stale and unparseable replaceme
         client: {} as any,
         error: null,
       },
-      expectedBinaryVersion: "1.1.12",
+      expectedBinaryVersion: CURRENT_CLIENT_VERSION,
     }).action,
     "replace",
   );
@@ -238,7 +239,7 @@ test("managed indexer probe decisions centralize stale and unparseable replaceme
         client: null,
         error: "indexer_daemon_schema_mismatch",
       },
-      expectedBinaryVersion: "1.1.12",
+      expectedBinaryVersion: CURRENT_CLIENT_VERSION,
     }),
     {
       action: "reject",

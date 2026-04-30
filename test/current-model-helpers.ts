@@ -2,6 +2,7 @@ import type { WalletStateV1 } from "../src/wallet/types.js";
 import type { MiningRuntimeStatusV1 } from "../src/wallet/mining/types.js";
 import type { MiningControlPlaneView } from "../src/wallet/mining/types.js";
 import { createWalletReadModel } from "../src/wallet/read/project.js";
+import { CURRENT_CLIENT_VERSION } from "./version-helpers.js";
 
 export function createMiningState(overrides: Partial<WalletStateV1["miningState"]> = {}): WalletStateV1["miningState"] {
   return {
@@ -90,7 +91,7 @@ export function createMiningRuntimeStatus(
     schemaVersion: 1,
     walletRootId: "wallet-root",
     workerApiVersion: "cogcoin/mining-worker/v1",
-    workerBinaryVersion: "1.1.12",
+    workerBinaryVersion: CURRENT_CLIENT_VERSION,
     workerBuildId: "build-1",
     updatedAtUnixMs: 1,
     runMode: "stopped",

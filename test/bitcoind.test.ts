@@ -41,6 +41,10 @@ import { openSqliteDatabase } from "../src/sqlite/driver.js";
 import { openSqliteStore } from "../src/sqlite/index.js";
 import { createTempDirectory, generateBlocks, getMiningDescriptor, removeTempDirectory, replayBlocks, serializeStateHex, waitForCondition } from "./bitcoind-helpers.js";
 import { createWalletReadContext } from "./current-model-helpers.js";
+import {
+  CURRENT_CLIENT_VERSION,
+  NEWER_CLIENT_VERSION,
+} from "./version-helpers.js";
 
 interface RegtestFixture {
   rootDir: string;
@@ -2197,7 +2201,7 @@ test("attach restarts a compatible stale daemon when expectedBinaryVersion is ne
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.1.12",
+      expectedBinaryVersion: CURRENT_CLIENT_VERSION,
       startupTimeoutMs: 5_000,
     });
 
@@ -2238,7 +2242,7 @@ test("attach restarts a compatible unparseable daemon when expectedBinaryVersion
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.1.12",
+      expectedBinaryVersion: CURRENT_CLIENT_VERSION,
       startupTimeoutMs: 5_000,
     });
 
@@ -2261,8 +2265,8 @@ test("attach restarts a compatible unparseable daemon when expectedBinaryVersion
 
 test("attach keeps compatible equal and newer daemon versions running", async () => {
   const cases = [
-    { name: "equal", binaryVersion: "1.1.12" },
-    { name: "newer", binaryVersion: "1.1.13" },
+    { name: "equal", binaryVersion: CURRENT_CLIENT_VERSION },
+    { name: "newer", binaryVersion: NEWER_CLIENT_VERSION },
   ];
 
   for (const testCase of cases) {
@@ -2285,7 +2289,7 @@ test("attach keeps compatible equal and newer daemon versions running", async ()
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.1.12",
+        expectedBinaryVersion: CURRENT_CLIENT_VERSION,
         startupTimeoutMs: 1_000,
       });
 
@@ -2338,7 +2342,7 @@ test("attach rejects a live daemon with incompatible service metadata without sp
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.1.12",
+        expectedBinaryVersion: CURRENT_CLIENT_VERSION,
         startupTimeoutMs: 1_000,
       }),
       /indexer_daemon_service_version_mismatch/,
@@ -2367,7 +2371,7 @@ test("attach accepts a live daemon for a different wallet root when the daemon i
       dataDir: fixture.dataDir,
       databasePath: fixture.databasePath,
       walletRootId,
-      expectedBinaryVersion: "1.1.12",
+      expectedBinaryVersion: CURRENT_CLIENT_VERSION,
       startupTimeoutMs: 1_000,
     });
     await daemon.close();
@@ -2395,7 +2399,7 @@ test("attach rejects a live daemon with an incompatible schema version", async (
         dataDir: fixture.dataDir,
         databasePath: fixture.databasePath,
         walletRootId,
-        expectedBinaryVersion: "1.1.12",
+        expectedBinaryVersion: CURRENT_CLIENT_VERSION,
         startupTimeoutMs: 1_000,
       }),
       /indexer_daemon_schema_mismatch/,

@@ -6,6 +6,7 @@ import type {
   ManagedBitcoindObservedStatus,
   ManagedIndexerDaemonObservedStatus,
 } from "../src/bitcoind/types.js";
+import { CURRENT_CLIENT_VERSION } from "./version-helpers.js";
 
 function createManagedBitcoindObservedStatus(
   overrides: Partial<ManagedBitcoindObservedStatus> = {},
@@ -50,7 +51,7 @@ function createManagedIndexerDaemonObservedStatus(
 ): ManagedIndexerDaemonObservedStatus {
   return {
     serviceApiVersion: "cogcoin/indexer-ipc/v1",
-    binaryVersion: "1.1.12",
+    binaryVersion: CURRENT_CLIENT_VERSION,
     buildId: null,
     updatedAtUnixMs: 1_700_000_000_100,
     walletRootId: "wallet-root-default",
@@ -102,7 +103,7 @@ test("openManagedWalletReadServiceBundle keeps managed-service fallback decision
     walletRootId: "wallet-root-target",
     localState: createUninitializedLocalState(),
     startupTimeoutMs: 5_000,
-    expectedIndexerBinaryVersion: "1.1.12",
+    expectedIndexerBinaryVersion: CURRENT_CLIENT_VERSION,
     now: 1_700_000_001_000,
   }, {
     loadBundledGenesisParameters: async () => {
@@ -180,7 +181,7 @@ test("openManagedWalletReadServiceBundle falls back to status-file truth when in
     walletRootId: "wallet-root-target",
     localState: createUninitializedLocalState(),
     startupTimeoutMs: 5_000,
-    expectedIndexerBinaryVersion: "1.1.12",
+    expectedIndexerBinaryVersion: CURRENT_CLIENT_VERSION,
     now: 1_700_000_001_000,
   }, {
     loadBundledGenesisParameters: async () => {
