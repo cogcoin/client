@@ -97,6 +97,15 @@ export function createHealthyMiningRpc(
         loaded: true,
       };
     },
+    async getRawMempoolVerbose() {
+      return {
+        txids: [],
+        mempool_sequence: "seq-0",
+      };
+    },
+    async getRawMempoolEntries() {
+      return {};
+    },
     async saveMempool() {
       return null;
     },

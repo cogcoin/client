@@ -490,6 +490,9 @@ export async function runMiningPhaseMachine(options: {
           },
         ));
 
+        let lastScoringProgressProcessed = -1;
+        let lastScoringProgressSavedAtUnixMs = 0;
+        let scoringProgressWrite = Promise.resolve();
         const gate = await runGateImpl({
           rpc: options.rpc,
           readContext: options.readContext,
@@ -499,7 +502,38 @@ export async function runMiningPhaseMachine(options: {
           cooperativeYield: options.cooperativeYieldImpl,
           cooperativeYieldEvery: options.cooperativeYieldEvery,
           throwIfStopping: options.throwIfStopping,
+          onWarmupProgress: async (progress) => {
+            if (progress.total <= 0) {
+              return;
+            }
+
+            const nowUnixMs = now();
+            if (
+              progress.processed === lastScoringProgressProcessed
+              || (
+                progress.processed !== 0
+                && progress.processed !== progress.total
+                && (nowUnixMs - lastScoringProgressSavedAtUnixMs) < 500
+              )
+            ) {
+              return;
+            }
+
+            lastScoringProgressProcessed = progress.processed;
+            lastScoringProgressSavedAtUnixMs = nowUnixMs;
+            scoringProgressWrite = scoringProgressWrite.then(async () => {
+              await options.saveCycleStatus(options.readContext, {
+                runMode: options.runMode,
+                currentPhase: "scoring",
+                currentPublishDecision: null,
+                lastError: null,
+                note: `Scoring mining candidates for the current tip (mempool ${progress.processed}/${progress.total}).`,
+              });
+            });
+            await scoringProgressWrite;
+          },
         });
+        await scoringProgressWrite;
         throwIfInterrupted();
         state.gateSnapshot = {
           higherRankedCompetitorDomainCount: gate.higherRankedCompetitorDomainCount,

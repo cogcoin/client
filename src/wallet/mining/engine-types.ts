@@ -33,6 +33,16 @@ export type MiningRpcClient = WalletMutationRpcClient & {
     txids: string[];
     mempool_sequence: string | number;
   }>;
+  getRawMempoolEntries(): Promise<Record<string, {
+    vsize: number;
+    fees: {
+      base: number;
+      ancestor: number;
+      descendant: number;
+    };
+    ancestorsize?: number;
+    descendantsize?: number;
+  }>>;
   getMempoolEntry(txid: string): Promise<{
     vsize: number;
     fees: {

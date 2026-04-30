@@ -391,6 +391,8 @@ export interface RpcRawMempoolVerbose {
   mempool_sequence: string | number;
 }
 
+export type RpcRawMempoolEntries = Record<string, RpcMempoolEntry>;
+
 export interface RpcWalletTransaction {
   txid: string;
   walletconflicts?: string[];

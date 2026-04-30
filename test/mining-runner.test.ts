@@ -12,6 +12,7 @@ import {
   runMiningLoopForTesting,
   throwIfMiningSuspendDetectedForTesting,
 } from "../src/wallet/mining/runner.js";
+import { clearMiningGateCache } from "../src/wallet/mining/competitiveness.js";
 import { buildMiningGenerationRequest as buildMiningGenerationRequestForTesting } from "../src/wallet/mining/candidate.js";
 import { saveClientConfig } from "../src/wallet/mining/config.js";
 import { loadMiningRuntimeStatus, readMiningEvents } from "../src/wallet/mining/runtime-artifacts.js";
@@ -129,6 +130,10 @@ function createLoopReadContext(overrides: Record<string, unknown> = {}) {
 function createLoopMiningRpc(overrides: Record<string, unknown> = {}) {
   return createHealthyMiningRpc(overrides);
 }
+
+test.afterEach(() => {
+  clearMiningGateCache(null);
+});
 
 function createLoopMiningCandidate(overrides: Record<string, unknown> = {}) {
   return {
@@ -287,7 +292,7 @@ async function startFakeIndexerDaemonStatusServer(
             schemaVersion: INDEXER_DAEMON_SCHEMA_VERSION,
             walletRootId: options.walletRootId,
             daemonInstanceId: options.daemonInstanceId,
-            binaryVersion: "1.1.11",
+            binaryVersion: "1.1.12",
             buildId: "test-build",
             processId: 9_001,
             startedAtUnixMs: 1,
@@ -625,6 +630,9 @@ test("runMiningLoop keeps progressing through long async gate work without false
             mempool_sequence: "seq-100",
           };
         },
+        async getRawMempoolEntries() {
+          return {};
+        },
       }) as any,
       nowImpl: () => 100_000 + suspendClock.now(),
       sleepImpl: async () => {
@@ -829,7 +837,7 @@ test("runMiningLoop exits on the next competitiveness yield after stop is reques
   const candidate = createLoopMiningCandidate();
   const txids = Array.from({ length: 30 }, (_, index) => `${(index + 1).toString(16).padStart(64, "0")}`);
   let rawTransactionCalls = 0;
-  let mempoolEntryCalls = 0;
+  let rawMempoolEntriesCalls = 0;
   let cooperativeYieldCalls = 0;
   let sleepCalls = 0;
 
@@ -866,17 +874,9 @@ test("runMiningLoop exits on the next competitiveness yield after stop is reques
             mempool_sequence: "seq-100",
           };
         },
-        async getRawTransaction() {
-          rawTransactionCalls += 1;
-          return {
-            txid: "aa".repeat(32),
-            vin: [],
-            vout: [],
-          };
-        },
-        async getMempoolEntry() {
-          mempoolEntryCalls += 1;
-          return {
+        async getRawMempoolEntries() {
+          rawMempoolEntriesCalls += 1;
+          return Object.fromEntries(txids.map((txid) => [txid, {
             fees: {
               base: 0.00001,
               ancestor: 0.00001,
@@ -885,6 +885,14 @@ test("runMiningLoop exits on the next competitiveness yield after stop is reques
             vsize: 200,
             ancestorsize: 200,
             descendantsize: 200,
+          }]));
+        },
+        async getRawTransaction() {
+          rawTransactionCalls += 1;
+          return {
+            txid: "aa".repeat(32),
+            vin: [],
+            vout: [],
           };
         },
       }) as any,
@@ -900,10 +908,113 @@ test("runMiningLoop exits on the next competitiveness yield after stop is reques
     });
   });
 
-  assert.equal(cooperativeYieldCalls, 1);
-  assert.equal(rawTransactionCalls, 1);
-  assert.equal(mempoolEntryCalls, 1);
+  assert.ok(
+    cooperativeYieldCalls >= 1,
+    `expected at least one competitiveness yield before stop, got ${cooperativeYieldCalls}`,
+  );
+  assert.ok(
+    rawTransactionCalls >= 0 && rawTransactionCalls <= 8,
+    `expected the stop to cut off the warmup during the first bounded fetch window, got ${rawTransactionCalls} raw tx calls`,
+  );
+  assert.equal(rawMempoolEntriesCalls, 1);
   assert.equal(sleepCalls, 0);
+});
+
+test("runMiningLoop refreshes the scoring note with mempool warmup progress during cold scans", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-loop-scoring-progress");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const abortController = new AbortController();
+  const databasePath = join(homeDirectory, "indexer.sqlite");
+  const syncedContext = createSynchronizedLoopReadContext({
+    dataDir: homeDirectory,
+    databasePath,
+  });
+  const candidate = createLoopMiningCandidate();
+  const txids = Array.from({ length: 60 }, (_, index) => `${(index + 1).toString(16).padStart(64, "0")}`);
+
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: syncedContext.localState.state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+  });
+
+  const runPromise = runMiningLoopForTesting({
+    dataDir: homeDirectory,
+    databasePath,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    signal: abortController.signal,
+    openReadContext: async () => syncedContext,
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    rpcFactory: () => createLoopMiningRpc({
+      async getRawMempoolVerbose() {
+        return {
+          txids,
+          mempool_sequence: "seq-100",
+        };
+      },
+      async getRawMempoolEntries() {
+        return Object.fromEntries(txids.map((txid) => [txid, {
+          fees: {
+            base: 0.00001,
+            ancestor: 0.00001,
+            descendant: 0.00001,
+          },
+          vsize: 200,
+          ancestorsize: 200,
+          descendantsize: 200,
+        }]));
+      },
+      async getRawTransaction(txid: string) {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 20);
+        });
+        return {
+          txid,
+          vin: [],
+          vout: [],
+        };
+      },
+    }) as any,
+    generateCandidatesForDomainsImpl: async () => [candidate],
+    cooperativeYieldEvery: 1,
+    cooperativeYieldImpl: async () => undefined,
+    sleepImpl: async () => undefined,
+  });
+
+  let progressSnapshot = null as Awaited<ReturnType<typeof loadMiningRuntimeStatus>> | null;
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    progressSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath).catch(() => null);
+    if (progressSnapshot?.currentPhase === "scoring" && /mempool \d+\/60/.test(progressSnapshot.note ?? "")) {
+      break;
+    }
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 10);
+    });
+  }
+
+  abortController.abort(createMiningStopRequestedError());
+  await assert.doesNotReject(async () => {
+    await runPromise;
+  });
+
+  assert.notEqual(progressSnapshot, null);
+  assert.equal(progressSnapshot?.currentPhase, "scoring");
+  assert.match(progressSnapshot?.note ?? "", /Scoring mining candidates for the current tip \(mempool \d+\/60\)\./);
 });
 
 test("runMiningLoop aborts mining-scoped managed RPC calls before the request timeout", async (t) => {

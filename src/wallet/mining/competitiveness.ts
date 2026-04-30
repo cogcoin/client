@@ -34,24 +34,26 @@ interface CachedCompetitorEntry {
   canonicalBlend: bigint;
 }
 
-interface CachedMempoolTxContext {
+interface CachedRawMempoolTxContext {
   txid: string;
-  effectiveFeeRate: number;
   senderScriptHex: string | null;
   rawTransaction: Awaited<ReturnType<MiningRpcClient["getRawTransaction"]>>;
   payload: Uint8Array | null;
 }
 
-interface MiningCompetitivenessCacheRecord {
+interface MiningCompetitivenessDecisionReuseRecord {
   indexerDaemonInstanceId: string;
   indexerSnapshotSeq: string;
   referencedBlockHashDisplay: string;
   localAssayTupleKey: string;
   excludedTxidsKey: string;
   mempoolSequence: string;
-  txids: string[];
-  txContexts: Map<string, CachedMempoolTxContext>;
   decision: CompetitivenessDecision;
+}
+
+interface MiningCompetitivenessCacheState {
+  rawTxContexts: Map<string, CachedRawMempoolTxContext>;
+  decisionReuse: MiningCompetitivenessDecisionReuseRecord | null;
 }
 
 interface OverlayDomainState {
@@ -83,7 +85,14 @@ interface RankedMiningSentenceEntry {
 }
 
 const MINING_MEMPOOL_COOPERATIVE_YIELD_EVERY = 25;
-const miningGateCache = new Map<string, MiningCompetitivenessCacheRecord>();
+const MINING_MEMPOOL_RAW_TX_FETCH_CONCURRENCY = 8;
+const MINING_MEMPOOL_PROGRESS_REPORT_EVERY = 25;
+const miningGateCache = new Map<string, MiningCompetitivenessCacheState>();
+
+interface MiningGateWarmupProgress {
+  processed: number;
+  total: number;
+}
 
 function defaultMiningCooperativeYield(): Promise<void> {
   return new Promise((resolve) => {
@@ -102,6 +111,125 @@ async function maybeYieldDuringMempoolScan(options: {
   }
 
   await (options.cooperativeYield ?? defaultMiningCooperativeYield)();
+}
+
+function getOrCreateMiningGateCacheState(walletRootId: string): MiningCompetitivenessCacheState {
+  const existing = miningGateCache.get(walletRootId);
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const created: MiningCompetitivenessCacheState = {
+    rawTxContexts: new Map<string, CachedRawMempoolTxContext>(),
+    decisionReuse: null,
+  };
+  miningGateCache.set(walletRootId, created);
+  return created;
+}
+
+function pruneRawTxContextsToVisibleTxids(options: {
+  rawTxContexts: Map<string, CachedRawMempoolTxContext>;
+  visibleTxids: readonly string[];
+}): void {
+  const visibleSet = new Set(options.visibleTxids);
+  for (const txid of [...options.rawTxContexts.keys()]) {
+    if (!visibleSet.has(txid)) {
+      options.rawTxContexts.delete(txid);
+    }
+  }
+}
+
+function resolveEffectiveFeeRate(mempoolEntry: Awaited<ReturnType<MiningRpcClient["getMempoolEntry"]>>): number {
+  return Number([
+    mempoolEntry.vsize > 0 ? (numberToSats(mempoolEntry.fees.base) / BigInt(mempoolEntry.vsize)) : 0n,
+    (mempoolEntry.ancestorsize ?? 0) > 0
+      ? (numberToSats(mempoolEntry.fees.ancestor) / BigInt(mempoolEntry.ancestorsize ?? 1))
+      : 0n,
+    (mempoolEntry.descendantsize ?? 0) > 0
+      ? (numberToSats(mempoolEntry.fees.descendant) / BigInt(mempoolEntry.descendantsize ?? 1))
+      : 0n,
+  ].reduce((best, candidate) => (candidate > best ? candidate : best), 0n));
+}
+
+async function warmMissingRawTxContexts(options: {
+  rpc: MiningRpcClient;
+  rawTxContexts: Map<string, CachedRawMempoolTxContext>;
+  visibleTxids: readonly string[];
+  cooperativeYield?: MiningCooperativeYield;
+  cooperativeYieldEvery?: number;
+  throwIfStopping?: () => void;
+  onWarmupProgress?: (progress: MiningGateWarmupProgress) => Promise<void> | void;
+}): Promise<void> {
+  const missingTxids = options.visibleTxids.filter((txid) => !options.rawTxContexts.has(txid));
+  if (missingTxids.length === 0) {
+    return;
+  }
+
+  let completed = 0;
+  let nextIndex = 0;
+  let lastReportedProcessed = -1;
+  let reportPromise = Promise.resolve();
+  const reportProgress = async (processed: number, force = false): Promise<void> => {
+    if (options.onWarmupProgress === undefined) {
+      return;
+    }
+
+    if (!force && processed !== missingTxids.length && (processed % MINING_MEMPOOL_PROGRESS_REPORT_EVERY) !== 0) {
+      return;
+    }
+
+    if (processed === lastReportedProcessed) {
+      return;
+    }
+
+    lastReportedProcessed = processed;
+    reportPromise = reportPromise.then(async () => {
+      await options.onWarmupProgress?.({
+        processed,
+        total: missingTxids.length,
+      });
+    });
+    await reportPromise;
+  };
+
+  await reportProgress(0, true);
+
+  const workerCount = Math.min(MINING_MEMPOOL_RAW_TX_FETCH_CONCURRENCY, missingTxids.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const iteration = nextIndex;
+      if (iteration >= missingTxids.length) {
+        return;
+      }
+      nextIndex += 1;
+
+      await maybeYieldDuringMempoolScan({
+        iteration,
+        cooperativeYield: options.cooperativeYield,
+        cooperativeYieldEvery: options.cooperativeYieldEvery,
+      });
+      options.throwIfStopping?.();
+
+      const txid = missingTxids[iteration]!;
+      const tx = await options.rpc.getRawTransaction(txid, true).catch(() => null);
+      options.throwIfStopping?.();
+
+      if (tx !== null) {
+        const payloadHex = tx.vout.find((entry) => entry.scriptPubKey?.hex?.startsWith("6a") === true)?.scriptPubKey?.hex;
+        options.rawTxContexts.set(txid, {
+          txid,
+          senderScriptHex: tx.vin[0]?.prevout?.scriptPubKey?.hex ?? null,
+          rawTransaction: tx,
+          payload: payloadHex === undefined ? null : extractOpReturnPayloadFromScriptHex(payloadHex),
+        });
+      }
+
+      completed += 1;
+      await reportProgress(completed, completed === missingTxids.length);
+    }
+  });
+
+  await Promise.all(workers);
 }
 
 export function clearMiningGateCache(walletRootId: string | null | undefined): void {
@@ -154,7 +282,7 @@ function readLenPrefixedScriptHex(bytes: Uint8Array, offset: number): { scriptHe
   };
 }
 
-function parseSupportedAncestorOperation(context: CachedMempoolTxContext): SupportedAncestorOperation | null | "unsupported" {
+function parseSupportedAncestorOperation(context: CachedRawMempoolTxContext): SupportedAncestorOperation | null | "unsupported" {
   const payload = context.payload;
 
   if (payload === null) {
@@ -242,7 +370,7 @@ function parseSupportedAncestorOperation(context: CachedMempoolTxContext): Suppo
   return "unsupported";
 }
 
-function getAncestorTxids(context: CachedMempoolTxContext, txContexts: Map<string, CachedMempoolTxContext>): string[] {
+function getAncestorTxids(context: CachedRawMempoolTxContext, txContexts: Map<string, CachedRawMempoolTxContext>): string[] {
   return context.rawTransaction.vin
     .map((vin) => vin.txid ?? null)
     .filter((txid): txid is string => txid !== null && txContexts.has(txid));
@@ -250,10 +378,10 @@ function getAncestorTxids(context: CachedMempoolTxContext, txContexts: Map<strin
 
 function topologicallyOrderAncestorContexts(options: {
   txid: string;
-  txContexts: Map<string, CachedMempoolTxContext>;
-}): CachedMempoolTxContext[] | null {
+  txContexts: Map<string, CachedRawMempoolTxContext>;
+}): CachedRawMempoolTxContext[] | null {
   const visited = new Map<string, "visiting" | "visited">();
-  const ordered: CachedMempoolTxContext[] = [];
+  const ordered: CachedRawMempoolTxContext[] = [];
   const root = options.txContexts.get(options.txid);
   if (root === undefined) {
     return [];
@@ -331,7 +459,7 @@ export function topologicallyOrderAncestorTxidsForTesting(options: {
 }): string[] | null {
   const ordered = topologicallyOrderAncestorContexts({
     txid: options.txid,
-    txContexts: options.txContexts as Map<string, CachedMempoolTxContext>,
+    txContexts: options.txContexts as Map<string, CachedRawMempoolTxContext>,
   });
   return ordered?.map((context) => context.txid) ?? null;
 }
@@ -434,7 +562,7 @@ function applySupportedAncestorOperation(options: {
 async function resolveOverlayAuthorizedMiningDomain(options: {
   readContext: WalletReadContext & { snapshot: NonNullable<WalletReadContext["snapshot"]> };
   txid: string;
-  txContexts: Map<string, CachedMempoolTxContext>;
+  txContexts: Map<string, CachedRawMempoolTxContext>;
   domainId: number;
   senderScriptHex: string;
 }): Promise<OverlayDomainState | "indeterminate" | null> {
@@ -550,6 +678,7 @@ export async function runCompetitivenessGate(options: {
   cooperativeYield?: MiningCooperativeYield;
   cooperativeYieldEvery?: number;
   throwIfStopping?: () => void;
+  onWarmupProgress?: (progress: MiningGateWarmupProgress) => Promise<void> | void;
 }): Promise<CompetitivenessDecision> {
   const createDecision = (overrides: Partial<CompetitivenessDecision>): CompetitivenessDecision => ({
     allowed: overrides.allowed ?? false,
@@ -578,10 +707,26 @@ export async function runCompetitivenessGate(options: {
     options.candidate.canonicalBlend.toString(),
     options.candidate.sender.scriptPubKeyHex,
   ].join(":");
+  const cacheState = getOrCreateMiningGateCacheState(walletRootId);
+  const setDecisionReuse = (decision: CompetitivenessDecision): void => {
+    cacheState.decisionReuse = {
+      indexerDaemonInstanceId: indexerTruthKey?.daemonInstanceId ?? "none",
+      indexerSnapshotSeq: indexerTruthKey?.snapshotSeq ?? "none",
+      referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+      localAssayTupleKey,
+      excludedTxidsKey: excludedTxids.join(","),
+      mempoolSequence,
+      decision,
+    };
+  };
 
   let mempoolVerbose: Awaited<ReturnType<MiningRpcClient["getRawMempoolVerbose"]>>;
+  let mempoolEntries: Awaited<ReturnType<MiningRpcClient["getRawMempoolEntries"]>>;
   try {
-    mempoolVerbose = await options.rpc.getRawMempoolVerbose();
+    [mempoolVerbose, mempoolEntries] = await Promise.all([
+      options.rpc.getRawMempoolVerbose(),
+      options.rpc.getRawMempoolEntries(),
+    ]);
     options.throwIfStopping?.();
   } catch {
     return createDecision({
@@ -590,20 +735,20 @@ export async function runCompetitivenessGate(options: {
   }
 
   const mempoolSequence = String(mempoolVerbose.mempool_sequence);
-  const cached = miningGateCache.get(walletRootId);
-  const cachedTruthMatches = cached !== undefined
+  const cached = cacheState.decisionReuse;
+  const cachedTruthMatches = cached !== null
     && indexerTruthKey !== null
     && cached.indexerDaemonInstanceId === indexerTruthKey.daemonInstanceId
     && cached.indexerSnapshotSeq === indexerTruthKey.snapshotSeq;
-  const cachedReferencedBlockMatches = cached !== undefined
+  const cachedReferencedBlockMatches = cached !== null
     && cached.referencedBlockHashDisplay === options.candidate.referencedBlockHashDisplay;
 
-  if (cached !== undefined && (!cachedTruthMatches || !cachedReferencedBlockMatches)) {
-    clearMiningGateCache(walletRootId);
+  if (cached !== null && (!cachedTruthMatches || !cachedReferencedBlockMatches)) {
+    cacheState.decisionReuse = null;
   }
 
   if (
-    cached !== undefined
+    cached !== null
     && cachedTruthMatches
     && cachedReferencedBlockMatches
     && cached.localAssayTupleKey === localAssayTupleKey
@@ -618,50 +763,19 @@ export async function runCompetitivenessGate(options: {
 
   const referencedPrefix = Buffer.from(options.candidate.referencedBlockHashInternal.subarray(0, 4)).toString("hex");
   const visibleTxids = mempoolVerbose.txids.filter((txid) => !excludedTxids.includes(txid));
-  const txContexts = cachedTruthMatches && cachedReferencedBlockMatches
-    ? (cached?.txContexts ?? new Map<string, CachedMempoolTxContext>())
-    : new Map<string, CachedMempoolTxContext>();
-  for (const txid of [...txContexts.keys()]) {
-    if (!visibleTxids.includes(txid)) {
-      txContexts.delete(txid);
-    }
-  }
-
-  for (let index = 0; index < visibleTxids.length; index += 1) {
-    await maybeYieldDuringMempoolScan({
-      iteration: index,
-      cooperativeYield: options.cooperativeYield,
-      cooperativeYieldEvery: options.cooperativeYieldEvery,
-    });
-    options.throwIfStopping?.();
-    const txid = visibleTxids[index]!;
-    if (txContexts.has(txid)) {
-      continue;
-    }
-
-    const [tx, mempoolEntry] = await Promise.all([
-      options.rpc.getRawTransaction(txid, true).catch(() => null),
-      options.rpc.getMempoolEntry(txid).catch(() => null),
-    ]);
-    options.throwIfStopping?.();
-    if (tx === null || mempoolEntry === null) {
-      continue;
-    }
-
-    const effectiveFeeRate = Number([
-      mempoolEntry.vsize > 0 ? (numberToSats(mempoolEntry.fees.base) / BigInt(mempoolEntry.vsize)) : 0n,
-      (mempoolEntry.ancestorsize ?? 0) > 0 ? (numberToSats(mempoolEntry.fees.ancestor) / BigInt(mempoolEntry.ancestorsize ?? 1)) : 0n,
-      (mempoolEntry.descendantsize ?? 0) > 0 ? (numberToSats(mempoolEntry.fees.descendant) / BigInt(mempoolEntry.descendantsize ?? 1)) : 0n,
-    ].reduce((best, candidate) => (candidate > best ? candidate : best), 0n));
-    const payloadHex = tx.vout.find((entry) => entry.scriptPubKey?.hex?.startsWith("6a") === true)?.scriptPubKey?.hex;
-    txContexts.set(txid, {
-      txid,
-      effectiveFeeRate,
-      senderScriptHex: tx.vin[0]?.prevout?.scriptPubKey?.hex ?? null,
-      rawTransaction: tx,
-      payload: payloadHex === undefined ? null : extractOpReturnPayloadFromScriptHex(payloadHex),
-    });
-  }
+  pruneRawTxContextsToVisibleTxids({
+    rawTxContexts: cacheState.rawTxContexts,
+    visibleTxids,
+  });
+  await warmMissingRawTxContexts({
+    rpc: options.rpc,
+    rawTxContexts: cacheState.rawTxContexts,
+    visibleTxids,
+    cooperativeYield: options.cooperativeYield,
+    cooperativeYieldEvery: options.cooperativeYieldEvery,
+    throwIfStopping: options.throwIfStopping,
+    onWarmupProgress: options.onWarmupProgress,
+  });
 
   const entries = new Map<string, CachedCompetitorEntry>();
   for (let index = 0; index < visibleTxids.length; index += 1) {
@@ -672,9 +786,10 @@ export async function runCompetitivenessGate(options: {
     });
     options.throwIfStopping?.();
     const txid = visibleTxids[index]!;
-    const context = txContexts.get(txid);
+    const context = cacheState.rawTxContexts.get(txid);
+    const mempoolEntry = mempoolEntries[txid];
 
-    if (context === undefined || context.payload === null || context.senderScriptHex === null) {
+    if (context === undefined || context.payload === null || context.senderScriptHex === null || mempoolEntry === undefined) {
       continue;
     }
 
@@ -686,7 +801,7 @@ export async function runCompetitivenessGate(options: {
     const overlayDomain = await resolveOverlayAuthorizedMiningDomain({
       readContext: options.readContext,
       txid,
-      txContexts,
+      txContexts: cacheState.rawTxContexts,
       domainId: decoded.domainId,
       senderScriptHex: context.senderScriptHex,
     });
@@ -698,17 +813,7 @@ export async function runCompetitivenessGate(options: {
         mempoolSequenceCacheStatus: "refreshed",
         lastMempoolSequence: mempoolSequence,
       });
-      miningGateCache.set(walletRootId, {
-        indexerDaemonInstanceId: indexerTruthKey?.daemonInstanceId ?? "none",
-        indexerSnapshotSeq: indexerTruthKey?.snapshotSeq ?? "none",
-        referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
-        localAssayTupleKey,
-        excludedTxidsKey: excludedTxids.join(","),
-        mempoolSequence,
-        txids: [...visibleTxids],
-        txContexts,
-        decision,
-      });
+      setDecisionReuse(decision);
       return decision;
     }
 
@@ -729,7 +834,7 @@ export async function runCompetitivenessGate(options: {
 
     entries.set(txid, {
       txid,
-      effectiveFeeRate: context.effectiveFeeRate,
+      effectiveFeeRate: resolveEffectiveFeeRate(mempoolEntry),
       domainId: decoded.domainId,
       domainName: overlayDomain.name,
       sentence: Buffer.from(decoded.sentenceBytes).toString("utf8"),
@@ -871,17 +976,7 @@ export async function runCompetitivenessGate(options: {
     }
   }
 
-  miningGateCache.set(walletRootId, {
-    indexerDaemonInstanceId: indexerTruthKey?.daemonInstanceId ?? "none",
-    indexerSnapshotSeq: indexerTruthKey?.snapshotSeq ?? "none",
-    referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
-    localAssayTupleKey,
-    excludedTxidsKey: excludedTxids.join(","),
-    mempoolSequence,
-    txids: [...visibleTxids],
-    txContexts,
-    decision,
-  });
+  setDecisionReuse(decision);
 
   return decision;
 }

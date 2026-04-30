@@ -299,8 +299,8 @@ test("mine text marks updateAvailable when tty mining sees a newer npm version",
   const stderr = createStringWriter({ isTTY: true, columns: 120 });
   const provider = createMemoryWalletSecretProviderForTesting();
   const prompter = createPrompter();
-  const version = "1.1.11";
-  const latestVersion = "1.1.12";
+  const version = "1.1.12";
+  const latestVersion = "1.1.13";
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mine-runtime-update");
   const resolvePaths = createTestRuntimePaths(homeDirectory);
   const runtimePaths = resolvePaths();

@@ -43,6 +43,7 @@ import {
   refreshMiningCandidateFromCurrentState as refreshMiningCandidateFromCurrentStateForTesting,
 } from "../src/wallet/mining/candidate.js";
 import {
+  clearMiningGateCache,
   runCompetitivenessGate,
   topologicallyOrderAncestorTxidsForTesting,
 } from "../src/wallet/mining/competitiveness.js";
@@ -121,7 +122,7 @@ async function startFakeIndexerDaemonStatusServer(
             schemaVersion: INDEXER_DAEMON_SCHEMA_VERSION,
             walletRootId: options.walletRootId,
             daemonInstanceId: options.daemonInstanceId,
-            binaryVersion: "1.1.11",
+            binaryVersion: "1.1.12",
             buildId: "test-build",
             processId: 9_001,
             startedAtUnixMs: 1,
@@ -201,6 +202,7 @@ async function runCompetitivenessGateForTesting(options: {
   assaySentencesImpl?: Parameters<typeof runCompetitivenessGate>[0]["assaySentencesImpl"];
   cooperativeYieldImpl?: Parameters<typeof runCompetitivenessGate>[0]["cooperativeYield"];
   cooperativeYieldEvery?: Parameters<typeof runCompetitivenessGate>[0]["cooperativeYieldEvery"];
+  onWarmupProgress?: Parameters<typeof runCompetitivenessGate>[0]["onWarmupProgress"];
 }) {
   return await runCompetitivenessGate({
     rpc: options.rpc,
@@ -210,8 +212,13 @@ async function runCompetitivenessGateForTesting(options: {
     assaySentencesImpl: options.assaySentencesImpl,
     cooperativeYield: options.cooperativeYieldImpl,
     cooperativeYieldEvery: options.cooperativeYieldEvery,
+    onWarmupProgress: options.onWarmupProgress,
   });
 }
+
+test.afterEach(() => {
+  clearMiningGateCache(null);
+});
 
 function resolveWordIndices(words: readonly string[]): number[] {
   return words.map((word) => {
@@ -467,6 +474,18 @@ function createGateRpc(options: {
         txids: options.txids,
         mempool_sequence: "seq-1",
       };
+    },
+    async getRawMempoolEntries() {
+      return Object.fromEntries(options.txids.map((txid) => [txid, options.mempoolEntries?.[txid] ?? {
+        vsize: 200,
+        fees: {
+          base: 0.00001,
+          ancestor: 0.00001,
+          descendant: 0.00001,
+        },
+        ancestorsize: 200,
+        descendantsize: 200,
+      }]));
     },
     async getRawTransaction(txid: string) {
       const tx = options.rawTransactions[txid];
@@ -3626,6 +3645,331 @@ test("runCompetitivenessGate keeps publish semantics and cooperatively yields du
   assert.equal(decision.higherRankedCompetitorDomainCount, 0);
   assert.equal(decision.candidateRank, 1);
   assert.equal(yieldCalls, 2);
+});
+
+test("runCompetitivenessGate uses bulk mempool metadata instead of per-tx mempool entry RPCs", async () => {
+  const candidate = createGateCandidate();
+  const context = createGateReadContext({
+    domains: [{ domainId: 7, name: "cogdemo" }],
+  });
+  const txid = "aa".repeat(32);
+  let mempoolEntryCalls = 0;
+
+  await assert.doesNotReject(async () => {
+    await runCompetitivenessGateForTesting({
+      rpc: {
+        ...(createGateRpc({
+          txids: [txid],
+          rawTransactions: {
+            [txid]: createMineTransaction({
+              txid,
+              domainId: 7,
+              senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+              referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+              sentenceFill: "s",
+            }),
+          },
+        }) as any),
+        async getMempoolEntry() {
+          mempoolEntryCalls += 1;
+          throw new Error("getMempoolEntry should not be used by competitiveness gate");
+        },
+      },
+      readContext: context,
+      candidate,
+      currentTxid: null,
+      assaySentencesImpl: createGateAssayStub({
+        ["s".repeat(60)]: 10n,
+      }) as any,
+    });
+  });
+
+  assert.equal(mempoolEntryCalls, 0);
+});
+
+test("runCompetitivenessGate reuses cached raw tx contexts across tip changes", async () => {
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 1, name: "alpha" },
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+  const firstCandidate = createGateCandidate({
+    referencedBlockHashDisplay: "11".repeat(32),
+    referencedBlockHashInternal: Buffer.from("22".repeat(32), "hex"),
+  });
+  const secondCandidate = createGateCandidate({
+    referencedBlockHashDisplay: "33".repeat(32),
+    referencedBlockHashInternal: Buffer.from("44".repeat(32), "hex"),
+  });
+  const txid = "aa".repeat(32);
+  let rawTransactionCalls = 0;
+
+  const rpc = {
+    async getRawMempoolVerbose() {
+      return {
+        txids: [txid],
+        mempool_sequence: "seq-1",
+      };
+    },
+    async getRawMempoolEntries() {
+      return {
+        [txid]: {
+          vsize: 200,
+          fees: {
+            base: 0.00001,
+            ancestor: 0.00001,
+            descendant: 0.00001,
+          },
+          ancestorsize: 200,
+          descendantsize: 200,
+        },
+      };
+    },
+    async getRawTransaction(requestTxid: string) {
+      rawTransactionCalls += 1;
+      return createMineTransaction({
+        txid: requestTxid,
+        domainId: 1,
+        senderScriptPubKeyHex: firstCandidate.sender.scriptPubKeyHex,
+        referencedBlockHashInternal: firstCandidate.referencedBlockHashInternal,
+        sentenceFill: "a",
+      });
+    },
+    async getMempoolEntry() {
+      throw new Error("unused");
+    },
+  };
+
+  await runCompetitivenessGateForTesting({
+    rpc: rpc as any,
+    readContext: context,
+    candidate: firstCandidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      ["a".repeat(60)]: 10n,
+    }) as any,
+  });
+  await runCompetitivenessGateForTesting({
+    rpc: rpc as any,
+    readContext: context,
+    candidate: secondCandidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({}) as any,
+  });
+
+  assert.equal(rawTransactionCalls, 1);
+});
+
+test("runCompetitivenessGate only fetches raw transaction deltas for newly added mempool txids", async () => {
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 1, name: "alpha" },
+      { domainId: 2, name: "bravo" },
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+  const candidate = createGateCandidate();
+  const txidA = "aa".repeat(32);
+  const txidB = "bb".repeat(32);
+  let rawTransactionCalls = 0;
+  let pass = 0;
+
+  const rpc = {
+    async getRawMempoolVerbose() {
+      pass += 1;
+      return {
+        txids: pass === 1 ? [txidA] : [txidA, txidB],
+        mempool_sequence: pass === 1 ? "seq-1" : "seq-2",
+      };
+    },
+    async getRawMempoolEntries() {
+      const txids = pass === 1 ? [txidA] : [txidA, txidB];
+      return Object.fromEntries(txids.map((txid) => [txid, {
+        vsize: 200,
+        fees: {
+          base: 0.00001,
+          ancestor: 0.00001,
+          descendant: 0.00001,
+        },
+        ancestorsize: 200,
+        descendantsize: 200,
+      }]));
+    },
+    async getRawTransaction(requestTxid: string) {
+      rawTransactionCalls += 1;
+      return createMineTransaction({
+        txid: requestTxid,
+        domainId: requestTxid === txidA ? 1 : 2,
+        senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+        referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+        sentenceFill: requestTxid === txidA ? "a" : "b",
+      });
+    },
+    async getMempoolEntry() {
+      throw new Error("unused");
+    },
+  };
+
+  await runCompetitivenessGateForTesting({
+    rpc: rpc as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      ["a".repeat(60)]: 10n,
+      ["b".repeat(60)]: 9n,
+    }) as any,
+  });
+  await runCompetitivenessGateForTesting({
+    rpc: rpc as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      ["a".repeat(60)]: 10n,
+      ["b".repeat(60)]: 9n,
+    }) as any,
+  });
+
+  assert.equal(rawTransactionCalls, 2);
+});
+
+test("runCompetitivenessGate prunes removed raw tx contexts and refetches them when they return", async () => {
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 1, name: "alpha" },
+      { domainId: 2, name: "bravo" },
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+  const candidate = createGateCandidate();
+  const txidA = "aa".repeat(32);
+  const txidB = "bb".repeat(32);
+  let rawTransactionCalls = 0;
+  let pass = 0;
+
+  const rpc = {
+    async getRawMempoolVerbose() {
+      pass += 1;
+      return {
+        txids: pass === 1 ? [txidA, txidB] : pass === 2 ? [txidA] : [txidA, txidB],
+        mempool_sequence: `seq-${pass}`,
+      };
+    },
+    async getRawMempoolEntries() {
+      const txids = pass === 1 ? [txidA, txidB] : pass === 2 ? [txidA] : [txidA, txidB];
+      return Object.fromEntries(txids.map((txid) => [txid, {
+        vsize: 200,
+        fees: {
+          base: 0.00001,
+          ancestor: 0.00001,
+          descendant: 0.00001,
+        },
+        ancestorsize: 200,
+        descendantsize: 200,
+      }]));
+    },
+    async getRawTransaction(requestTxid: string) {
+      rawTransactionCalls += 1;
+      return createMineTransaction({
+        txid: requestTxid,
+        domainId: requestTxid === txidA ? 1 : 2,
+        senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+        referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+        sentenceFill: requestTxid === txidA ? "a" : "b",
+      });
+    },
+    async getMempoolEntry() {
+      throw new Error("unused");
+    },
+  };
+
+  for (let index = 0; index < 3; index += 1) {
+    await runCompetitivenessGateForTesting({
+      rpc: rpc as any,
+      readContext: context,
+      candidate,
+      currentTxid: null,
+      assaySentencesImpl: createGateAssayStub({
+        ["a".repeat(60)]: 10n,
+        ["b".repeat(60)]: 9n,
+      }) as any,
+    });
+  }
+
+  assert.equal(rawTransactionCalls, 3);
+});
+
+test("runCompetitivenessGate reports warmup progress while loading missing raw transactions", async () => {
+  const candidate = createGateCandidate();
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 1, name: "alpha" },
+      { domainId: 2, name: "bravo" },
+      { domainId: 3, name: "cinder" },
+      { domainId: 4, name: "delta" },
+      { domainId: 5, name: "ember" },
+      { domainId: 6, name: "fable" },
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+  const txids = Array.from({ length: 30 }, (_, index) => `${(index + 1).toString(16).padStart(64, "0")}`);
+  const progressUpdates: Array<{ processed: number; total: number }> = [];
+
+  await runCompetitivenessGateForTesting({
+    rpc: {
+      async getRawMempoolVerbose() {
+        return {
+          txids,
+          mempool_sequence: "seq-1",
+        };
+      },
+      async getRawMempoolEntries() {
+        return Object.fromEntries(txids.map((txid) => [txid, {
+          vsize: 200,
+          fees: {
+            base: 0.00001,
+            ancestor: 0.00001,
+            descendant: 0.00001,
+          },
+          ancestorsize: 200,
+          descendantsize: 200,
+        }]));
+      },
+      async getRawTransaction(txid: string) {
+        return createMineTransaction({
+          txid,
+          domainId: 1,
+          senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+          referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+          sentenceFill: "a",
+        });
+      },
+      async getMempoolEntry() {
+        throw new Error("unused");
+      },
+    } as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      ["a".repeat(60)]: 10n,
+    }) as any,
+    onWarmupProgress: async (progress) => {
+      progressUpdates.push(progress);
+    },
+  });
+
+  assert.deepEqual(progressUpdates[0], {
+    processed: 0,
+    total: 30,
+  });
+  assert.deepEqual(progressUpdates.at(-1), {
+    processed: 30,
+    total: 30,
+  });
+  assert.ok(progressUpdates.some((progress) => progress.processed > 0 && progress.processed < progress.total));
 });
 
 test("topologicallyOrderAncestorTxidsForTesting handles deep ancestor chains without recursion", () => {

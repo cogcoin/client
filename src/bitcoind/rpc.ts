@@ -17,6 +17,7 @@ import type {
   RpcMempoolEntry,
   RpcMempoolInfo,
   RpcRawMempoolVerbose,
+  RpcRawMempoolEntries,
   RpcListDescriptorsResult,
   RpcLockedUnspent,
   RpcLoadTxOutSetResult,
@@ -510,6 +511,10 @@ export class BitcoinRpcClient {
 
   getRawMempoolVerbose(): Promise<RpcRawMempoolVerbose> {
     return this.call<RpcRawMempoolVerbose>("getrawmempool", [false, true]);
+  }
+
+  getRawMempoolEntries(): Promise<RpcRawMempoolEntries> {
+    return this.call<RpcRawMempoolEntries>("getrawmempool", [true]);
   }
 
   getMempoolInfo(): Promise<RpcMempoolInfo> {
