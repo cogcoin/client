@@ -56,7 +56,11 @@ async function ensureMiningProviderSetup(options: {
   });
 
   if (!setupReady) {
-    throw new Error("Built-in mining provider is not configured. Run `cogcoin mine setup`.");
+    throw new Error(
+      options.prompter.isInteractive
+        ? "Built-in mining provider is not configured. Run `cogcoin mine setup`."
+        : "mine_setup_requires_tty",
+    );
   }
 }
 

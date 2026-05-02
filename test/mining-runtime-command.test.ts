@@ -75,9 +75,9 @@ function createTestRuntimePaths(homeDirectory: string) {
   });
 }
 
-function createPrompter() {
+function createPrompter(isInteractive = true) {
   return {
-    isInteractive: true,
+    isInteractive,
     writeLine() {},
     async prompt() {
       return "";
@@ -158,7 +158,7 @@ function createCompletedSyncMonitor(events: string[]) {
   };
 }
 
-test("mine text ensures provider setup, syncs managed services, then starts foreground mining", async (t) => {
+test("mine text auto-runs provider setup, then syncs managed services and starts foreground mining", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
   const provider = createMemoryWalletSecretProviderForTesting();
@@ -238,6 +238,112 @@ test("mine text ensures provider setup, syncs managed services, then starts fore
   assert.equal(actualRunOptions.prompter, prompter);
   assert.equal(actualRunOptions.builtInSetupEnsured, true);
   assert.deepEqual(actualRunOptions.paths, runtimePaths);
+});
+
+test("mine stops before preflight when auto-setup is canceled", async (t) => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-setup-canceled"));
+  let monitorCalls = 0;
+  let runCalls = 0;
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    signalSource: QUIET_SIGNAL_SOURCE,
+    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
+    createPrompter,
+    resolveWalletRuntimePaths: () => resolvePaths(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
+    ensureBuiltInMiningSetupIfNeeded: async () => {
+      throw new Error("mining_setup_canceled");
+    },
+    openManagedIndexerMonitor: async () => {
+      monitorCalls += 1;
+      return createCompletedSyncMonitor([]) as any;
+    },
+    runForegroundMining: async () => {
+      runCalls += 1;
+    },
+  });
+
+  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine"]), context);
+
+  assert.notEqual(exitCode, 0);
+  assert.equal(stdout.read(), "");
+  assert.equal(monitorCalls, 0);
+  assert.equal(runCalls, 0);
+  assert.match(stderr.read(), /Mining setup was canceled\./);
+});
+
+test("mine stops before preflight when auto-setup validation fails", async (t) => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-setup-invalid"));
+  let monitorCalls = 0;
+  let runCalls = 0;
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    signalSource: QUIET_SIGNAL_SOURCE,
+    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
+    createPrompter,
+    resolveWalletRuntimePaths: () => resolvePaths(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
+    ensureBuiltInMiningSetupIfNeeded: async () => {
+      throw new Error("mining_setup_missing_api_key");
+    },
+    openManagedIndexerMonitor: async () => {
+      monitorCalls += 1;
+      return createCompletedSyncMonitor([]) as any;
+    },
+    runForegroundMining: async () => {
+      runCalls += 1;
+    },
+  });
+
+  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine"]), context);
+
+  assert.notEqual(exitCode, 0);
+  assert.equal(stdout.read(), "");
+  assert.equal(monitorCalls, 0);
+  assert.equal(runCalls, 0);
+  assert.match(stderr.read(), /Mining provider API key is required\./);
+});
+
+test("mine with missing config in a non-interactive terminal fails before preflight", async (t) => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-setup-noninteractive"));
+  let monitorCalls = 0;
+  let runCalls = 0;
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    signalSource: QUIET_SIGNAL_SOURCE,
+    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
+    createPrompter: () => createPrompter(false),
+    resolveWalletRuntimePaths: () => resolvePaths(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
+    ensureBuiltInMiningSetupIfNeeded: async () => false,
+    openManagedIndexerMonitor: async () => {
+      monitorCalls += 1;
+      return createCompletedSyncMonitor([]) as any;
+    },
+    runForegroundMining: async () => {
+      runCalls += 1;
+    },
+  });
+
+  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine"]), context);
+
+  assert.notEqual(exitCode, 0);
+  assert.equal(stdout.read(), "");
+  assert.equal(monitorCalls, 0);
+  assert.equal(runCalls, 0);
+  assert.match(stderr.read(), /Interactive terminal input is required\./);
 });
 
 test("mine tty shows the mining visualizer during preflight and reuses it for foreground mining", async (t) => {
