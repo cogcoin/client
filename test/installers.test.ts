@@ -558,6 +558,34 @@ function escapeRegex(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
+const POSIX_PHASE_TITLES = [
+  "==> [1/7] Detect platform and install location",
+  "==> [2/7] Prepare bootstrap tools",
+  "==> [3/7] Prepare managed Node.js runtime",
+  "==> [4/7] Configure PATH and npm prefix",
+  "==> [5/7] Install the Cogcoin CLI",
+  "==> [6/7] Verify the install",
+  "==> [7/7] Complete installation and hand off to cogcoin init",
+]
+
+function assertContainsInOrder(text: string, patterns: Array<string | RegExp>): void {
+  let cursor = 0
+
+  for (const pattern of patterns) {
+    const remaining = text.slice(cursor)
+    if (typeof pattern === "string") {
+      const index = remaining.indexOf(pattern)
+      assert.notEqual(index, -1, `Did not find text in order: ${pattern}`)
+      cursor += index + pattern.length
+      continue
+    }
+
+    const match = remaining.match(pattern)
+    assert.ok(match?.index !== undefined, `Did not find pattern in order: ${pattern}`)
+    cursor += match.index + match[0].length
+  }
+}
+
 test("install.sh bootstraps a managed Node runtime when no usable node is on PATH", async () => {
   const harness = await createPosixHarness({
     unameS: "Darwin",
@@ -570,9 +598,25 @@ test("install.sh bootstraps a managed Node runtime when no usable node is on PAT
       COGCOIN_SKIP_INIT: "1",
     })
 
-    assert.match(result.stdout, /Downloading Node\.js v22\.22\.2/)
-    assert.match(result.stdout, /Using Cogcoin-managed Node\.js runtime: v22\.22\.2\./)
-    assert.match(result.stdout, /Skipping `cogcoin init` because COGCOIN_SKIP_INIT=1\./)
+    const expectedCommand = `Run "${cogcoinBinPath(harness)}" init in an interactive terminal to continue.`
+    assertContainsInOrder(result.stdout, POSIX_PHASE_TITLES)
+    assert.match(result.stdout, /Platform: darwin/)
+    assert.match(result.stdout, /Architecture: arm64/)
+    assert.match(result.stdout, new RegExp(escapeRegex(`Install root: ${harness.installRoot}`)))
+    assert.match(result.stdout, new RegExp(escapeRegex(`Managed Node path: ${join(harness.installRoot, "bootstrap", "node", "bin", "node")}`)))
+    assert.match(result.stdout, new RegExp(escapeRegex(`Cogcoin CLI path: ${cogcoinBinPath(harness)}`)))
+    assert.match(result.stdout, new RegExp(escapeRegex(`Persistent PATH target: ${join(harness.home, ".zshrc")}`)))
+    assert.match(result.stdout, /Bootstrap download tools are already available\./)
+    assert.match(result.stdout, /No managed Node\.js runtime was found\. Downloading a fresh copy\./)
+    assert.match(result.stdout, /Downloading Node\.js archive: node-v22\.22\.2-darwin-arm64\.tar\.gz\./)
+    assert.match(result.stdout, /Verifying SHA-256 checksum for node-v22\.22\.2-darwin-arm64\.tar\.gz\./)
+    assert.match(result.stdout, /Checksum verified\./)
+    assert.match(result.stdout, /Managed Node\.js runtime installed successfully\./)
+    assert.match(result.stdout, new RegExp(escapeRegex(`Writing persistent PATH block to ${join(harness.home, ".zshrc")}.`)))
+    assert.match(result.stdout, new RegExp(escapeRegex(`Configuring npm global prefix: ${join(harness.installRoot, "bootstrap", "npm-global")}.`)))
+    assert.match(result.stdout, new RegExp(escapeRegex(`Verified Cogcoin CLI at ${cogcoinBinPath(harness)}.`)))
+    assert.match(result.stdout, /Installation completed\. `cogcoin init` was skipped because COGCOIN_SKIP_INIT=1\./)
+    assert.match(result.stdout, new RegExp(escapeRegex(expectedCommand)))
     await access(join(harness.installRoot, "bootstrap", "node", "bin", "node"), constants.X_OK)
     await access(cogcoinBinPath(harness), constants.X_OK)
 
@@ -602,7 +646,9 @@ test("install.sh replaces an outdated PATH node runtime with the managed runtime
       COGCOIN_SKIP_INIT: "1",
     })
 
-    assert.match(result.stdout, /Downloading Node\.js v22\.22\.2/)
+    assertContainsInOrder(result.stdout, POSIX_PHASE_TITLES)
+    assert.match(result.stdout, /No managed Node\.js runtime was found\. Downloading a fresh copy\./)
+    assert.match(result.stdout, /Managed Node\.js runtime installed successfully\./)
     assert.doesNotMatch(result.stdout, /Using existing Node\.js runtime/)
     await access(join(harness.installRoot, "bootstrap", "node", "bin", "node"), constants.X_OK)
     await access(cogcoinBinPath(harness), constants.X_OK)
@@ -624,7 +670,9 @@ test("install.sh ignores a PATH Node 22 runtime and still provisions the managed
       COGCOIN_SKIP_INIT: "1",
     })
 
-    assert.match(result.stdout, /Downloading Node\.js v22\.22\.2/)
+    assertContainsInOrder(result.stdout, POSIX_PHASE_TITLES)
+    assert.match(result.stdout, /No managed Node\.js runtime was found\. Downloading a fresh copy\./)
+    assert.match(result.stdout, /Managed Node\.js runtime installed successfully\./)
     assert.doesNotMatch(result.stdout, /Using existing Node\.js runtime/)
     await access(join(harness.installRoot, "bootstrap", "node", "bin", "node"), constants.X_OK)
     await access(cogcoinBinPath(harness), constants.X_OK)
@@ -648,7 +696,12 @@ for (const missingTool of ["curl", "tar", "xz"] as const) {
         COGCOIN_SKIP_INIT: "1",
       })
 
-      assert.match(result.stdout, /Installing bootstrap download tools\./)
+      assert.match(result.stdout, new RegExp(escapeRegex(`Missing bootstrap tools: ${missingTool}.`)))
+      assert.match(result.stdout, /Detected Linux package manager: apt-get\./)
+      assert.match(result.stdout, /Installing packages: curl ca-certificates tar xz-utils\./)
+      assert.match(result.stdout, /Using curl: /)
+      assert.match(result.stdout, /Using tar: /)
+      assert.match(result.stdout, /Using xz: /)
       const aptLog = await readFile(join(harness.logDir, "apt-get.log"), "utf8")
       assert.match(aptLog, /^update$/m)
       assert.match(aptLog, /install -y curl ca-certificates tar xz-utils/)
@@ -674,7 +727,12 @@ test("install.sh uses Homebrew to provision missing macOS bootstrap tools when H
       COGCOIN_SKIP_INIT: "1",
     })
 
-    assert.match(result.stdout, /Installing bootstrap download tools with Homebrew\./)
+    assert.match(result.stdout, /Missing bootstrap tools: curl tar\./)
+    assert.match(result.stdout, /Detected Homebrew: /)
+    assert.match(result.stdout, /Installing packages: curl gnu-tar xz\./)
+    assert.match(result.stdout, /Using curl: /)
+    assert.match(result.stdout, /Using tar: /)
+    assert.match(result.stdout, /Using xz: /)
     const brewLog = await readFile(join(harness.logDir, "brew.log"), "utf8")
     assert.match(brewLog, /install curl gnu-tar xz/)
     await access(join(harness.installRoot, "bootstrap", "node", "bin", "node"), constants.X_OK)
@@ -720,7 +778,11 @@ test("install.sh retries after a native addon build failure on Linux", async () 
       COGCOIN_SKIP_INIT: "1",
     })
 
+    assert.match(result.stdout, /Detected a native build failure\./)
     assert.match(result.stdout, /Installing native build prerequisites and retrying npm install\./)
+    assert.match(result.stdout, /Detected Linux package manager: apt-get\./)
+    assert.match(result.stdout, /Installing packages: build-essential python3 cmake pkg-config xz-utils\./)
+    assert.match(result.stdout, /npm install completed successfully after remediation\./)
     assert.equal((await readFile(harness.attemptFile, "utf8")).trim(), "2")
     const aptLog = await readFile(join(harness.logDir, "apt-get.log"), "utf8")
     assert.match(aptLog, /^update$/m)
@@ -759,8 +821,10 @@ install_client
 `,
     )
 
-    assert.match(result.stdout, /Waiting for Xcode Command Line Tools to finish installing\./)
+    assert.match(result.stdout, /Requesting Xcode Command Line Tools installation\./)
+    assert.match(result.stdout, /Polling every 15 seconds for Xcode Command Line Tools to finish installing\./)
     assert.match(result.stdout, /Xcode Command Line Tools are ready\. Retrying npm install\./)
+    assert.match(result.stdout, /npm install completed successfully after remediation\./)
     assert.equal((await readFile(harness.attemptFile, "utf8")).trim(), "2")
     await access(cogcoinBinPath(harness), constants.X_OK)
   } finally {
@@ -797,6 +861,8 @@ install_client
     )
 
     const expectedCommand = `Run "${managedNpmPath(harness)}" install -g @cogcoin/client && "${cogcoinBinPath(harness)}" init in an interactive terminal to continue.`
+    assert.match(result.stdout, /Requesting Xcode Command Line Tools installation\./)
+    assert.match(result.stdout, /Xcode Command Line Tools installation has been requested\./)
     assert.match(result.stdout, new RegExp(escapeRegex(expectedCommand)))
     assert.equal((await readFile(harness.attemptFile, "utf8")).trim(), "1")
   } finally {
@@ -833,6 +899,9 @@ install_client
     )
 
     const expectedCommand = `Run "${managedNpmPath(harness)}" install -g @cogcoin/client && "${cogcoinBinPath(harness)}" init in an interactive terminal to continue.`
+    assert.match(result.stdout, /Requesting Xcode Command Line Tools installation\./)
+    assert.match(result.stdout, /Polling every 15 seconds for Xcode Command Line Tools to finish installing\./)
+    assert.equal(countOccurrences(result.stdout, "Still waiting for Xcode Command Line Tools to finish installing."), 30)
     assert.match(result.stdout, /Xcode Command Line Tools are still installing\./)
     assert.match(result.stdout, new RegExp(escapeRegex(expectedCommand)))
     assert.equal(countOccurrences(await readFile(join(harness.logDir, "sleep.log"), "utf8"), "15"), 120)
@@ -853,9 +922,13 @@ test("install.sh is idempotent for profile updates and prints an exact follow-up
     const second = await runInstallSh(harness)
 
     const expectedCommand = `Run "${cogcoinBinPath(harness)}" init in an interactive terminal to continue.`
+    assertContainsInOrder(first.stdout, POSIX_PHASE_TITLES)
+    assert.match(first.stdout, /Installation completed\. `cogcoin init` needs an interactive terminal\./)
     assert.match(first.stdout, new RegExp(escapeRegex(expectedCommand)))
     assert.match(second.stdout, new RegExp(escapeRegex(expectedCommand)))
-    assert.match(second.stdout, /Using existing Cogcoin-managed Node\.js runtime: v22\.22\.2\./)
+    assert.match(second.stdout, /Managed runtime already exists\. Bootstrap download tools are not needed for this run\./)
+    assert.match(second.stdout, /Reusing the existing Cogcoin-managed Node\.js runtime\./)
+    assert.match(second.stdout, /Using Node\.js version: v22\.22\.2/)
 
     const profileText = await readFile(join(harness.home, ".bashrc"), "utf8")
     assert.equal(countOccurrences(profileText, "# >>> cogcoin installer >>>"), 1)
@@ -868,22 +941,38 @@ test("install.sh is idempotent for profile updates and prints an exact follow-up
 test("installer sources keep the intended interactive and Windows contract", async () => {
   const posixScript = await readFile(POSIX_INSTALL_SCRIPT_PATH, "utf8")
   const powershellScript = await readFile(POWERSHELL_INSTALL_SCRIPT_PATH, "utf8")
+  const readmeText = await readFile(join(process.cwd(), "README.md"), "utf8")
 
   assert.match(posixScript, /init < \/dev\/tty/)
   assert.match(posixScript, /COGCOIN_INSTALL_ROOT/)
   assert.match(posixScript, /COGCOIN_SKIP_INIT/)
   assert.match(posixScript, /npm install -g @cogcoin\/client/)
-  assert.match(posixScript, /install curl gnu-tar xz/)
+  assert.match(posixScript, /phase 1 "Detect platform and install location"/)
+  assert.match(posixScript, /phase 4 "Configure PATH and npm prefix"/)
+  assert.match(posixScript, /Verifying SHA-256 checksum/)
+  assert.match(posixScript, /Writing persistent PATH block to/)
+  assert.match(posixScript, /Configuring npm global prefix:/)
+  assert.match(posixScript, /installing packages: curl gnu-tar xz/i)
   assert.doesNotMatch(posixScript, /Using existing Node\.js runtime/)
 
   assert.match(powershellScript, /COGCOIN_INSTALL_ROOT/)
   assert.match(powershellScript, /COGCOIN_SKIP_INIT/)
-  assert.match(powershellScript, /Using existing Cogcoin-managed Node\.js runtime/)
+  assert.match(powershellScript, /Write-Phase -Index 1 -Message "Detect platform and install location"/)
+  assert.match(powershellScript, /Write-Phase -Index 4 -Message "Configure PATH and npm prefix"/)
+  assert.match(powershellScript, /PowerShell provides the bootstrap download tools needed for this installer/)
+  assert.match(powershellScript, /Verifying SHA-256 checksum/)
+  assert.match(powershellScript, /Configuring npm global prefix:/)
+  assert.match(powershellScript, /Installing winget package:/)
   assert.match(powershellScript, /SetEnvironmentVariable\("Path", \$newUserPath, "User"\)/)
   assert.match(powershellScript, /winget install --id/)
   assert.match(powershellScript, /Get-FileHash -Path/)
   assert.match(powershellScript, /& \$cogcoinCmd init/)
   assert.doesNotMatch(powershellScript, /Get-CommandPath -Name "node"/)
+
+  assert.match(readmeText, /### What The Installer Does/)
+  assert.match(readmeText, /### If The Installer Pauses Or Exits Early/)
+  assert.match(readmeText, /installs and uses a Cogcoin-managed Node\.js runtime/i)
+  assert.match(readmeText, /starts `cogcoin init` automatically only when the installer is running in an interactive terminal/i)
 })
 
 test("installer files and README do not embed private machine-specific paths", async () => {
