@@ -6,10 +6,20 @@ $CogcoinInstallCommand = "npm install -g @cogcoin/client"
 $CogcoinMinNodeMajor = 22
 $CogcoinPinnedNodeVersion = "22.22.2"
 $CogcoinNodeDistBaseUrl = "https://nodejs.org/dist/v$CogcoinPinnedNodeVersion"
+$CogcoinTotalPhases = 7
 
-function Write-Step {
+function Write-Phase {
+  param(
+    [int]$Index,
+    [string]$Message
+  )
+
+  Write-Host "==> [$Index/$CogcoinTotalPhases] $Message"
+}
+
+function Write-Detail {
   param([string]$Message)
-  Write-Host "==> $Message"
+  Write-Host "    $Message"
 }
 
 function Write-WarningMessage {
@@ -128,10 +138,14 @@ function Ensure-ManagedNodeRuntime {
   )
 
   if (Test-UsableRuntime -NodePath $ManagedNodePath -NpmPath $ManagedNpmPath) {
-    Write-Step "Using existing Cogcoin-managed Node.js runtime: $(& $ManagedNodePath -v)."
+    $versionText = & $ManagedNodePath -v
+    Write-Detail "Reusing the existing Cogcoin-managed Node.js runtime."
+    Write-Detail "Managed Node path: $ManagedNodePath"
+    Write-Detail "Using Node.js version: $versionText"
     return @{
       Node = $ManagedNodePath
       Npm = $ManagedNpmPath
+      Version = $versionText
     }
   }
 
@@ -147,11 +161,16 @@ function Ensure-ManagedNodeRuntime {
     $extractRoot = Join-Path $tempRoot "extract"
     $expandedRoot = Join-Path $extractRoot "node-v$CogcoinPinnedNodeVersion-win-$arch"
 
-    Write-Step "Downloading Node.js v$CogcoinPinnedNodeVersion (win/$arch)."
+    Write-Detail "No managed Node.js runtime was found. Downloading a fresh copy."
+    Write-Detail "Downloading Node.js archive: $archiveName."
     Download-File -Url $archiveUrl -Destination $archivePath
+    Write-Detail "Downloading checksum manifest: $shasumsUrl."
     Download-File -Url $shasumsUrl -Destination $shasumsPath
+    Write-Detail "Verifying SHA-256 checksum for $archiveName."
     Verify-Checksum -ArchivePath $archivePath -ArchiveName $archiveName -ShasumsPath $shasumsPath
+    Write-Detail "Checksum verified."
 
+    Write-Detail "Installing managed Node.js runtime to $NodeRoot."
     Expand-Archive -Path $archivePath -DestinationPath $extractRoot -Force
     if (-not (Test-Path $expandedRoot)) {
       Fail-Install "The downloaded Node.js archive did not unpack as expected."
@@ -173,10 +192,14 @@ function Ensure-ManagedNodeRuntime {
     Fail-Install "The managed Node.js runtime is not usable after installation."
   }
 
-  Write-Step "Using Cogcoin-managed Node.js runtime: $(& $ManagedNodePath -v)."
+  $installedVersion = & $ManagedNodePath -v
+  Write-Detail "Managed Node.js runtime installed successfully."
+  Write-Detail "Managed Node path: $ManagedNodePath"
+  Write-Detail "Using Node.js version: $installedVersion"
   return @{
     Node = $ManagedNodePath
     Npm = $ManagedNpmPath
+    Version = $installedVersion
   }
 }
 
@@ -239,6 +262,7 @@ function Install-WindowsBuildPrerequisites {
   }
 
   foreach ($packageId in @($pythonPackage, $cmakePackage, $buildToolsPackage)) {
+    Write-Detail "Installing winget package: $packageId."
     & winget install --id $packageId --exact --silent --accept-package-agreements --accept-source-agreements
   }
 }
@@ -257,11 +281,15 @@ function Run-NpmInstall {
 function Install-ClientWithRetry {
   param(
     [string]$NpmPath,
-    [string]$LogPath
+    [string]$LogPath,
+    [string]$CliPath
   )
 
-  Write-Step "Installing $CogcoinPackageName."
+  Write-Detail "Package: $CogcoinPackageName"
+  Write-Detail "CLI target path: $CliPath"
+  Write-Detail "Running: $CogcoinInstallCommand"
   if ((Run-NpmInstall -NpmPath $NpmPath -LogPath $LogPath) -eq 0) {
+    Write-Detail "npm install completed successfully."
     return
   }
 
@@ -269,16 +297,24 @@ function Install-ClientWithRetry {
     Fail-Install "npm install failed. Review $LogPath."
   }
 
-  Write-Step "Installing native build prerequisites and retrying npm install."
+  Write-Detail "Detected a native build failure."
+  Write-Detail "Installing native build prerequisites and retrying npm install."
   Install-WindowsBuildPrerequisites
   if ((Run-NpmInstall -NpmPath $NpmPath -LogPath $LogPath) -eq 0) {
+    Write-Detail "npm install completed successfully after remediation."
     return
   }
 
   Fail-Install "npm install failed after installing native build prerequisites. Review $LogPath."
 }
 
+function Write-FollowUpCommand {
+  param([string]$CogcoinCmd)
+  Write-Host "Run & `"$CogcoinCmd`" init in an interactive terminal to continue."
+}
+
 function Main {
+  $arch = Get-ProcessorArch
   $dataRoot = Resolve-DataRoot
   $bootstrapRoot = Join-Path $dataRoot "bootstrap"
   $cacheRoot = Join-Path $bootstrapRoot "cache"
@@ -290,32 +326,57 @@ function Main {
   $npmBinDir = $npmPrefix
   $cogcoinCmd = Join-Path $npmPrefix "cogcoin.cmd"
 
+  Write-Phase -Index 1 -Message "Detect platform and install location"
   New-Item -ItemType Directory -Path $bootstrapRoot, $cacheRoot, $logRoot, $npmPrefix -Force | Out-Null
+  Write-Detail "Platform: win32"
+  Write-Detail "Architecture: $arch"
+  Write-Detail "Install root: $dataRoot"
+  Write-Detail "Managed Node path: $managedNodePath"
+  Write-Detail "Cogcoin CLI path: $cogcoinCmd"
+  Write-Detail "Persistent PATH target: current user Path environment variable"
 
+  Write-Phase -Index 2 -Message "Prepare bootstrap tools"
+  Write-Detail "PowerShell provides the bootstrap download tools needed for this installer."
+
+  Write-Phase -Index 3 -Message "Prepare managed Node.js runtime"
   $runtime = Ensure-ManagedNodeRuntime -ManagedNodePath $managedNodePath -ManagedNpmPath $managedNpmPath -NodeRoot $nodeRoot -CacheRoot $cacheRoot
+
+  Write-Phase -Index 4 -Message "Configure PATH and npm prefix"
+  Write-Detail "Updating PATH for the current PowerShell session."
   $env:Path = "$npmBinDir;$($runtime.Node | Split-Path -Parent);$env:Path"
+  Write-Detail "Added to PATH: $($runtime.Node | Split-Path -Parent)"
+  Write-Detail "Added to PATH: $npmBinDir"
+  Write-Detail "Persisting PATH entries to the current user's Path environment variable."
   Set-UserPathEntry -Entries @($npmBinDir, ($runtime.Node | Split-Path -Parent))
-
+  Write-Detail "Persistent PATH entries are up to date."
+  Write-Detail "Configuring npm global prefix: $npmPrefix."
   & $runtime.Npm config set prefix $npmPrefix --location=user | Out-Null
-  $installLog = Join-Path $logRoot "npm-install.log"
-  Install-ClientWithRetry -NpmPath $runtime.Npm -LogPath $installLog
+  Write-Detail "npm global prefix configured."
 
+  Write-Phase -Index 5 -Message "Install the Cogcoin CLI"
+  $installLog = Join-Path $logRoot "npm-install.log"
+  Install-ClientWithRetry -NpmPath $runtime.Npm -LogPath $installLog -CliPath $cogcoinCmd
+
+  Write-Phase -Index 6 -Message "Verify the install"
   if (-not (Test-Path $cogcoinCmd)) {
     Fail-Install "The Cogcoin CLI was not found at $cogcoinCmd after installation."
   }
+  Write-Detail "Verified Cogcoin CLI at $cogcoinCmd."
 
+  Write-Phase -Index 7 -Message "Complete installation and hand off to cogcoin init"
   if ($env:COGCOIN_SKIP_INIT -eq "1") {
-    Write-Step "Skipping `cogcoin init` because COGCOIN_SKIP_INIT=1."
+    Write-Detail "Installation completed. `cogcoin init` was skipped because COGCOIN_SKIP_INIT=1."
+    Write-FollowUpCommand -CogcoinCmd $cogcoinCmd
     return
   }
 
   if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
-    Write-Step "Installation completed."
-    Write-Host "Run & `"$cogcoinCmd`" init in an interactive terminal to continue."
+    Write-Detail "Installation completed. `cogcoin init` needs an interactive terminal."
+    Write-FollowUpCommand -CogcoinCmd $cogcoinCmd
     return
   }
 
-  Write-Step "Starting `cogcoin init`."
+  Write-Detail "Installation completed. Starting `cogcoin init` now."
   & $cogcoinCmd init
 }
 

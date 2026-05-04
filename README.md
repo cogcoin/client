@@ -12,17 +12,26 @@ Install Cogcoin:
 curl -fsSL https://cogcoin.org/install.sh | bash
 # or on Windows PowerShell:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://cogcoin.org/install.ps1 | iex"
-
-# The installer provisions and uses a Cogcoin-managed Node.js runtime.
-# On macOS, Homebrew is only used if it is already installed and bootstrap tools are missing.
-# `cogcoin init` starts automatically in an interactive terminal and continues into sync.
-# If macOS Command Line Tools are still installing, the installer prints an exact resume command.
 cogcoin address  # Send 0.0015 BTC to address
 cogcoin register <domainname> # 6+ character domain for 0.001 BTC
 cogcoin anchor <domainname> # You can leave a founding message permanently on Bitcoin!
 cogcoin mine setup
 cogcoin mine # Use remaining ~0.0005 BTC for mining tx, ~1000 sats per entry (0.00001 BTC)
 ```
+
+### What The Installer Does
+
+- Installs and uses a Cogcoin-managed Node.js runtime.
+- Updates PATH for future shells so the managed `cogcoin` command stays available.
+- Installs `@cogcoin/client` into a Cogcoin-managed global npm prefix.
+- Starts `cogcoin init` automatically only when the installer is running in an interactive terminal.
+
+### If The Installer Pauses Or Exits Early
+
+- On macOS, Homebrew is only used if it is already installed and bootstrap tools are missing.
+- If the installer is noninteractive, it finishes by printing one exact `cogcoin init` follow-up command.
+- If you set `COGCOIN_SKIP_INIT=1`, the installer skips `cogcoin init` and prints the exact manual command to run later.
+- If macOS Command Line Tools are still installing, the installer either waits and retries automatically or prints the exact resume command.
 
 ## Preview
 
