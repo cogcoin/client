@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { join } from "node:path";
@@ -10,7 +11,11 @@ import { resolveManagedServicePaths } from "../src/bitcoind/service-paths.js";
 import type { ManagedIndexerDaemonStatus } from "../src/bitcoind/types.js";
 import { recordBackgroundFollowFailure } from "../src/bitcoind/indexer-daemon/background-follow.js";
 import { createIndexerDaemonClient } from "../src/bitcoind/indexer-daemon/client.js";
-import { readSnapshotWithRetry } from "../src/bitcoind/indexer-daemon/lifecycle.js";
+import {
+  probeIndexerDaemonForStart,
+  readSnapshotWithRetry,
+} from "../src/bitcoind/indexer-daemon/lifecycle.js";
+import { assertIndexerDaemonNativeDependencies } from "../src/bitcoind/indexer-daemon/native-dependencies.js";
 import {
   readIndexerDaemonStatusForTesting,
   stopIndexerDaemonServiceWithLockHeld,
@@ -29,6 +34,13 @@ import {
   readSnapshotLease,
   storeSnapshotLease,
 } from "../src/bitcoind/indexer-daemon/snapshot-leases.js";
+import {
+  IndexerDaemonStartupError,
+  classifyIndexerDaemonStartupFailure,
+  openIndexerDaemonStartupLog,
+  recordIndexerDaemonStartupFailure,
+  waitForIndexerDaemonStartup,
+} from "../src/bitcoind/indexer-daemon/startup.js";
 import type {
   IndexerDaemonClient,
   IndexerDaemonRuntimeState,
@@ -515,6 +527,150 @@ test("createIndexerDaemonClient matches request ids and times out when a daemon 
     }
     await closeServer(timeoutServer);
   }
+});
+
+test("indexer daemon startup reports child exit before IPC readiness", async () => {
+  const child = new EventEmitter() as EventEmitter & {
+    pid: number;
+    once: NodeJS.EventEmitter["once"];
+    off: NodeJS.EventEmitter["off"];
+  };
+  child.pid = 1234;
+  const pendingReady = new Promise<void>(() => undefined);
+
+  const startup = waitForIndexerDaemonStartup({
+    child,
+    logPath: "/tmp/indexer-daemon.log",
+    waitForReady: async () => pendingReady,
+    readLogTail: async () => "fatal startup failure",
+  });
+  child.emit("exit", 1, null);
+
+  await assert.rejects(
+    async () => startup,
+    (error) => {
+      assert.equal(error instanceof IndexerDaemonStartupError, true);
+      assert.equal((error as Error).message, "indexer_daemon_start_failed");
+      assert.equal((error as IndexerDaemonStartupError).exitCode, 1);
+      assert.equal((error as IndexerDaemonStartupError).logTail, "fatal startup failure");
+      return true;
+    },
+  );
+});
+
+test("indexer daemon startup preserves timeout when child remains alive but IPC is unavailable", async () => {
+  const child = new EventEmitter() as EventEmitter & {
+    pid: number;
+    once: NodeJS.EventEmitter["once"];
+    off: NodeJS.EventEmitter["off"];
+  };
+  child.pid = 1234;
+
+  await assert.rejects(
+    async () => waitForIndexerDaemonStartup({
+      child,
+      logPath: "/tmp/indexer-daemon.log",
+      waitForReady: async () => {
+        throw new Error("indexer_daemon_start_timeout");
+      },
+      readLogTail: async () => "still waiting",
+    }),
+    (error) => {
+      assert.equal(error instanceof IndexerDaemonStartupError, true);
+      assert.equal((error as Error).message, "indexer_daemon_start_timeout");
+      assert.equal((error as IndexerDaemonStartupError).logTail, "still waiting");
+      return true;
+    },
+  );
+});
+
+test("indexer daemon startup log is created with process diagnostics", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-indexer-startup-log");
+  const paths = resolveManagedServicePaths(homeDirectory, "wallet-root-test");
+  const log = await openIndexerDaemonStartupLog(paths);
+  await log.close();
+
+  const text = await readFile(paths.indexerDaemonLogPath, "utf8");
+  assert.match(text, /Cogcoin indexer daemon startup log/);
+  assert.match(text, /node=v/);
+});
+
+test("stale indexer daemon status and socket are cleared when the recorded pid is dead", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-indexer-stale-artifacts");
+  const walletRootId = "wallet-root-test";
+  const paths = resolveManagedServicePaths(homeDirectory, walletRootId);
+  await mkdir(paths.indexerServiceRoot, { recursive: true });
+  await writeIndexerDaemonStatusForTesting({
+    dataDir: homeDirectory,
+    walletRootId,
+  }, createManagedIndexerDaemonStatus(walletRootId, {
+    processId: 4321,
+  }));
+  await writeFile(paths.indexerDaemonSocketPath, "");
+  installProcessKillMock(t);
+
+  const probe = await probeIndexerDaemonForStart({
+    dataDir: homeDirectory,
+    walletRootId,
+    paths,
+  });
+
+  assert.equal(probe.compatibility, "unreachable");
+  assert.equal(await readIndexerDaemonStatusForTesting({ dataDir: homeDirectory, walletRootId }), null);
+  await assert.rejects(
+    async () => readFile(paths.indexerDaemonSocketPath, "utf8"),
+    /ENOENT/,
+  );
+});
+
+test("failed indexer daemon startup records failed status and preserves sqlite database", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-indexer-startup-failure");
+  const walletRootId = "wallet-root-test";
+  const dataDir = join(homeDirectory, "bitcoin");
+  const paths = resolveManagedServicePaths(dataDir, walletRootId);
+  const databasePath = join(homeDirectory, "client.sqlite");
+  await mkdir(paths.indexerServiceRoot, { recursive: true });
+  await writeFile(paths.indexerDaemonSocketPath, "");
+  await writeFile(databasePath, "not-a-real-db");
+
+  await recordIndexerDaemonStartupFailure({
+    paths,
+    walletRootId,
+    binaryVersion: CURRENT_CLIENT_VERSION,
+    lastError: "indexer_daemon_start_failed",
+    processId: 1234,
+  });
+
+  assert.equal(await readFile(databasePath, "utf8"), "not-a-real-db");
+  await assert.rejects(
+    async () => readFile(paths.indexerDaemonSocketPath, "utf8"),
+    /ENOENT/,
+  );
+  const status = await readIndexerDaemonStatusForTesting({ dataDir, walletRootId });
+  assert.equal(status?.state, "failed");
+  assert.equal(status?.lastError, "indexer_daemon_start_failed");
+  assert.equal(status?.processId, 1234);
+});
+
+test("indexer daemon native dependency checks classify sqlite ABI failures", async () => {
+  await assert.rejects(
+    async () => assertIndexerDaemonNativeDependencies(async () => {
+      throw new Error("NODE_MODULE_VERSION 137 does not match NODE_MODULE_VERSION 141");
+    }),
+    /sqlite_native_module_unavailable/,
+  );
+
+  await assert.rejects(
+    async () => assertIndexerDaemonNativeDependencies(async () => {
+      throw new Error("some unrelated module failure");
+    }),
+    /some unrelated module failure/,
+  );
+
+  assert.equal(
+    classifyIndexerDaemonStartupFailure("Error: sqlite_native_module_unavailable: NODE_MODULE_VERSION mismatch"),
+    "sqlite_native_module_unavailable",
+  );
 });
 
 test("readSnapshotWithRetry retries once on rotated leases and returns the second valid snapshot", async () => {

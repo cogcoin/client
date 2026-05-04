@@ -1,7 +1,27 @@
 import type { CliErrorPresentationRule } from "../types.js";
+import {
+  getIndexerDaemonStartupLogPath,
+  getIndexerDaemonStartupLogTail,
+} from "../../../bitcoind/indexer-daemon/startup.js";
+
+function formatIndexerStartupDetail(error: unknown): string | null {
+  const logPath = getIndexerDaemonStartupLogPath(error);
+  const logTail = getIndexerDaemonStartupLogTail(error);
+
+  if (logPath === null && logTail === null) {
+    return null;
+  }
+
+  const tail = logTail === null
+    ? null
+    : logTail.replace(/\s+/g, " ").slice(0, 300);
+  return tail === null
+    ? `Startup log: ${logPath}.`
+    : `Startup log: ${logPath}. Last output: ${tail}`;
+}
 
 export const serviceErrorRules: readonly CliErrorPresentationRule[] = [
-  ({ errorCode }) => {
+  ({ errorCode, error }) => {
     if (errorCode.endsWith("_requires_tty") && errorCode !== "cli_update_requires_tty") {
       return {
         what: "Interactive terminal input is required.",
@@ -15,6 +35,33 @@ export const serviceErrorRules: readonly CliErrorPresentationRule[] = [
         what: "Trusted service state is not ready.",
         why: "The wallet, bitcoind, or indexer is not yet aligned closely enough for this command to proceed safely.",
         next: "Check `cogcoin status`, wait for services to settle, and retry. If the state stays degraded, run `cogcoin repair`.",
+      };
+    }
+
+    if (errorCode === "sqlite_native_module_unavailable") {
+      const detail = formatIndexerStartupDetail(error);
+      return {
+        what: "The managed indexer daemon could not load its SQLite native module.",
+        why: `The active Node runtime is ${process.version}, but the installed native sqlite dependency appears to be missing or built for a different Node ABI.${detail === null ? "" : ` ${detail}`}`,
+        next: "Use the supported Node runtime for this checkout, then run `npm rebuild better-sqlite3 zeromq` or reinstall dependencies and retry.",
+      };
+    }
+
+    if (errorCode === "indexer_daemon_start_failed") {
+      const detail = formatIndexerStartupDetail(error);
+      return {
+        what: "The managed indexer daemon exited before it opened its local IPC socket.",
+        why: detail ?? "The daemon process died during startup before Cogcoin could read a service status.",
+        next: "Run `cogcoin repair` to clear stale managed indexer artifacts. If this was a local checkout, verify the Node version and rebuild native dependencies.",
+      };
+    }
+
+    if (errorCode === "indexer_daemon_start_timeout") {
+      const detail = formatIndexerStartupDetail(error);
+      return {
+        what: "The managed indexer daemon stayed alive but did not open its local IPC socket in time.",
+        why: detail ?? "Cogcoin could not attach to the daemon before the startup deadline.",
+        next: "Run `cogcoin repair` if this persists. If this was a local checkout, verify the Node version and rebuild native dependencies.",
       };
     }
 

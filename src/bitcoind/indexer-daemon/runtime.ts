@@ -15,6 +15,7 @@ import {
   resumeBackgroundFollow,
   withTimeout,
 } from "./background-follow.js";
+import { assertIndexerDaemonNativeDependencies } from "./native-dependencies.js";
 import { createIndexerDaemonServer } from "./server.js";
 import {
   buildIndexerDaemonStatus,
@@ -217,6 +218,24 @@ export function createIndexerDaemonRuntime(options: {
       }
 
       await mkdir(paths.indexerServiceRoot, { recursive: true });
+      try {
+        await assertIndexerDaemonNativeDependencies();
+      } catch (error) {
+        const now = Date.now();
+        state.state = "failed";
+        state.lastError = error instanceof Error ? error.message : String(error);
+        state.heartbeatAtUnixMs = now;
+        state.updatedAtUnixMs = now;
+        state.bootstrapPhase = "error";
+        state.bootstrapProgress = {
+          ...createBootstrapProgress("error", DEFAULT_SNAPSHOT_METADATA),
+          message: state.lastError,
+          lastError: state.lastError,
+          updatedAt: now,
+        };
+        await writeStatus().catch(() => undefined);
+        throw error;
+      }
       await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
 
       server = createIndexerDaemonServer({

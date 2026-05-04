@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { FileLockBusyError } from "../src/wallet/fs/lock.js";
+import { IndexerDaemonStartupError } from "../src/bitcoind/indexer-daemon/startup.js";
 import {
   classifyCliError,
   isBlockedError,
@@ -69,4 +70,41 @@ test("representative rule modules still produce the expected presentation text",
   assert.equal(services?.what, "The live managed bitcoind service runtime does not match this wallet.");
   assert.equal(mutation?.what, "Domain owner is not locally controlled.");
   assert.equal(update?.what, "Cogcoin could not find npm to install the update.");
+});
+
+test("indexer daemon startup diagnostics get actionable CLI presentation", () => {
+  const startupFailed = createCliErrorPresentation(
+    "indexer_daemon_start_failed",
+    "indexer_daemon_start_failed",
+    new IndexerDaemonStartupError("indexer_daemon_start_failed", {
+      logPath: "/tmp/cogcoin-indexer.log",
+      logTail: "Error: failed before listen",
+      exitCode: 1,
+    }),
+  );
+  const nativeFailed = createCliErrorPresentation(
+    "sqlite_native_module_unavailable",
+    "sqlite_native_module_unavailable",
+    new IndexerDaemonStartupError("sqlite_native_module_unavailable", {
+      logPath: "/tmp/cogcoin-indexer.log",
+      logTail: "Error: sqlite_native_module_unavailable: NODE_MODULE_VERSION mismatch",
+      exitCode: 1,
+    }),
+  );
+  const startupTimeout = createCliErrorPresentation(
+    "indexer_daemon_start_timeout",
+    "indexer_daemon_start_timeout",
+    new IndexerDaemonStartupError("indexer_daemon_start_timeout", {
+      logPath: "/tmp/cogcoin-indexer.log",
+      logTail: "still waiting for socket",
+    }),
+  );
+
+  assert.equal(startupFailed?.what, "The managed indexer daemon exited before it opened its local IPC socket.");
+  assert.match(startupFailed?.why ?? "", /Startup log: \/tmp\/cogcoin-indexer\.log/);
+  assert.equal(startupTimeout?.what, "The managed indexer daemon stayed alive but did not open its local IPC socket in time.");
+  assert.match(startupTimeout?.why ?? "", /Startup log: \/tmp\/cogcoin-indexer\.log/);
+  assert.equal(nativeFailed?.what, "The managed indexer daemon could not load its SQLite native module.");
+  assert.match(nativeFailed?.why ?? "", /active Node runtime/);
+  assert.match(nativeFailed?.next ?? "", /npm rebuild better-sqlite3 zeromq/);
 });
