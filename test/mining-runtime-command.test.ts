@@ -7,9 +7,13 @@ import { createDefaultContext } from "../src/cli/context.js";
 import { runMiningRuntimeCommand } from "../src/cli/commands/mining-runtime.js";
 import { parseCliArgs } from "../src/cli/parse.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
-import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
+import {
+  createMemoryWalletSecretProviderForTesting,
+  createWalletSecretReference,
+} from "../src/wallet/state/provider.js";
+import { saveWalletState } from "../src/wallet/state/storage.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
-import { createMiningRuntimeStatus } from "./current-model-helpers.js";
+import { createMiningRuntimeStatus, createWalletState } from "./current-model-helpers.js";
 import {
   CURRENT_CLIENT_VERSION,
   NEWER_CLIENT_VERSION,
@@ -84,6 +88,36 @@ function createPrompter(isInteractive = true) {
     },
     async promptHidden() {
       return "";
+    },
+  };
+}
+
+function createMineSetupPrompter(events: string[]) {
+  const answers = new Map([
+    ["Provider (openai/anthropic): ", "openai"],
+    ["API key: ", "test-api-key"],
+    ["Extra prompt (optional, blank for none): ", ""],
+  ]);
+
+  return {
+    isInteractive: true,
+    writeLine(message: string) {
+      events.push(`line:${message}`);
+    },
+    async prompt(message: string) {
+      events.push(`prompt:${message}`);
+      const answer = answers.get(message);
+      if (answer === undefined) {
+        throw new Error(`unexpected_prompt:${message}`);
+      }
+      return answer;
+    },
+    async promptHidden() {
+      return "";
+    },
+    async selectOption(options: { message: string }) {
+      events.push(`select:${options.message}`);
+      return "gpt-5.4-mini";
     },
   };
 }
@@ -238,6 +272,72 @@ test("mine text auto-runs provider setup, then syncs managed services and starts
   assert.equal(actualRunOptions.prompter, prompter);
   assert.equal(actualRunOptions.builtInSetupEnsured, true);
   assert.deepEqual(actualRunOptions.paths, runtimePaths);
+});
+
+test("mine uses the real setup gate before preflight when provider config is absent", async (t) => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const version = "7.8.9";
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-runtime-real-setup"));
+  const runtimePaths = resolvePaths();
+  const secretReference = createWalletSecretReference("wallet-root");
+  const events: string[] = [];
+  let expectedBinaryVersion: string | null = null;
+  let runCalls = 0;
+
+  await provider.storeSecret(secretReference.keyId, Buffer.alloc(32, 7));
+  await saveWalletState({
+    primaryPath: runtimePaths.walletStatePath,
+    backupPath: runtimePaths.walletStateBackupPath,
+  }, createWalletState(), {
+    provider,
+    secretReference,
+  });
+
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {
+      ...process.env,
+      COGCOIN_DISABLE_UPDATE_CHECK: "1",
+    },
+    signalSource: QUIET_SIGNAL_SOURCE,
+    walletSecretProvider: provider,
+    createPrompter: () => createMineSetupPrompter(events),
+    readPackageVersion: async () => version,
+    resolveWalletRuntimePaths: () => resolvePaths(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
+    loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
+    openManagedIndexerMonitor: async (options) => {
+      expectedBinaryVersion = options.expectedBinaryVersion ?? null;
+      events.push("status");
+      return createCompletedSyncMonitor(events) as any;
+    },
+    runForegroundMining: async (options) => {
+      runCalls += 1;
+      assert.equal(options.builtInSetupEnsured, true);
+      events.push("run");
+    },
+  });
+
+  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine"]), context);
+
+  assert.equal(exitCode, 0);
+  assert.equal(stdout.read(), "");
+  assert.equal(expectedBinaryVersion, version);
+  assert.equal(runCalls, 1);
+  assert.deepEqual(events.filter((event) => !event.startsWith("line:")), [
+    "prompt:Provider (openai/anthropic): ",
+    "select:Choose the mining model:",
+    "prompt:API key: ",
+    "prompt:Extra prompt (optional, blank for none): ",
+    "status",
+    "status",
+    "close-monitor",
+    "run",
+  ]);
 });
 
 test("mine stops before preflight when auto-setup is canceled", async (t) => {

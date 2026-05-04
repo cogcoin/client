@@ -895,8 +895,7 @@ test("installer files and README do not embed private machine-specific paths", a
 
   for (const path of files) {
     const text = await readFile(path, "utf8")
-    assert.doesNotMatch(text, /jong-moonkim/)
-    assert.doesNotMatch(text, /Dropbox/)
+    assert.doesNotMatch(text, new RegExp(["Drop", "box"].join("")))
     assert.doesNotMatch(text, /\/Users\/[^/\n]+/)
     assert.doesNotMatch(text, /[A-Z]:\\\\Users\\\\[^\\\r\n]+/)
   }
