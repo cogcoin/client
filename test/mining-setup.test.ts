@@ -8,6 +8,7 @@ import {
 } from "../src/wallet/mining/config.js";
 import { promptForMiningProviderConfigForTesting } from "../src/wallet/mining/control.js";
 import { MINING_MODEL_DAILY_COST_ESTIMATE_ASSUMPTION } from "../src/wallet/mining/provider-model.js";
+import { ensureBuiltInMiningSetupIfNeeded } from "../src/wallet/mining/runner.js";
 import type {
   ClientConfigV1,
   MiningProviderConfigByProvider,
@@ -19,7 +20,9 @@ import {
   createMemoryWalletSecretProviderForTesting,
   createWalletSecretReference,
 } from "../src/wallet/state/provider.js";
+import { saveWalletState } from "../src/wallet/state/storage.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
+import { createWalletState } from "./current-model-helpers.js";
 
 type SelectionOptions = {
   message: string;
@@ -49,6 +52,7 @@ function createSavedMiningProviderConfig(options: {
 function createSetupPrompter(options: {
   promptAnswers: string[];
   selectedValue: string | ((selectionOptions: SelectionOptions) => string);
+  isInteractive?: boolean;
 }) {
   const promptAnswers = [...options.promptAnswers];
   const events: string[] = [];
@@ -60,7 +64,7 @@ function createSetupPrompter(options: {
     lines,
     selections,
     prompter: {
-      isInteractive: true,
+      isInteractive: options.isInteractive ?? true,
       writeLine(message: string) {
         lines.push(message);
       },
@@ -83,6 +87,20 @@ function createSetupPrompter(options: {
   };
 }
 
+function createCompleteSetupPrompter(options: {
+  isInteractive?: boolean;
+} = {}) {
+  return createSetupPrompter({
+    promptAnswers: [
+      "openai",
+      "test-api-key",
+      "",
+    ],
+    selectedValue: "gpt-5.4-mini",
+    isInteractive: options.isInteractive,
+  });
+}
+
 async function createConfigFixture(t: TestContext) {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-setup");
   const paths = resolveWalletRuntimePathsForTesting({
@@ -92,6 +110,13 @@ async function createConfigFixture(t: TestContext) {
   const provider = createMemoryWalletSecretProviderForTesting();
   const secretReference = createWalletSecretReference("wallet-root");
   await provider.storeSecret(secretReference.keyId, Buffer.alloc(32, 9));
+  await saveWalletState({
+    primaryPath: paths.walletStatePath,
+    backupPath: paths.walletStateBackupPath,
+  }, createWalletState(), {
+    provider,
+    secretReference,
+  });
 
   return {
     paths,
@@ -127,6 +152,151 @@ test("mine setup prompts provider, model selector, api key, then extra prompt fo
   assert.equal(fixture.selections[0]!.initialValue, "claude-sonnet-4-6");
   assert.equal(fixture.selections[0]!.footer, MINING_MODEL_DAILY_COST_ESTIMATE_ASSUMPTION);
   assert.match(fixture.selections[0]!.options[0]!.description ?? "", /\$[0-9]/);
+});
+
+test("mine setup gate auto-runs setup when client config is missing and input is interactive", async (t) => {
+  const fixture = await createConfigFixture(t);
+  const setup = createCompleteSetupPrompter();
+
+  const ready = await ensureBuiltInMiningSetupIfNeeded({
+    provider: fixture.provider,
+    prompter: setup.prompter,
+    paths: fixture.paths,
+  });
+  const loaded = await loadClientConfig({
+    path: fixture.paths.clientConfigPath,
+    provider: fixture.provider,
+  });
+
+  assert.equal(ready, true);
+  assert.equal(loaded?.mining.builtIn?.provider, "openai");
+  assert.deepEqual(setup.events, [
+    "prompt:Provider (openai/anthropic): ",
+    "select:Choose the mining model:",
+    "prompt:API key: ",
+    "prompt:Extra prompt (optional, blank for none): ",
+  ]);
+});
+
+test("mine setup gate returns false for missing config when input is non-interactive", async (t) => {
+  const fixture = await createConfigFixture(t);
+  const setup = createCompleteSetupPrompter({
+    isInteractive: false,
+  });
+
+  const ready = await ensureBuiltInMiningSetupIfNeeded({
+    provider: fixture.provider,
+    prompter: setup.prompter,
+    paths: fixture.paths,
+  });
+  const loaded = await loadClientConfig({
+    path: fixture.paths.clientConfigPath,
+    provider: fixture.provider,
+  });
+
+  assert.equal(ready, false);
+  assert.equal(loaded, null);
+  assert.deepEqual(setup.events, []);
+});
+
+test("mine setup gate auto-runs setup when the saved config has no active built-in provider", async (t) => {
+  const fixture = await createConfigFixture(t);
+  await saveClientConfig({
+    path: fixture.paths.clientConfigPath,
+    provider: fixture.provider,
+    secretReference: fixture.secretReference,
+    config: {
+      schemaVersion: 1,
+      mining: {
+        builtIn: null,
+        domainExtraPrompts: {},
+      },
+    },
+  });
+  const setup = createCompleteSetupPrompter();
+
+  const ready = await ensureBuiltInMiningSetupIfNeeded({
+    provider: fixture.provider,
+    prompter: setup.prompter,
+    paths: fixture.paths,
+  });
+  const loaded = await loadClientConfig({
+    path: fixture.paths.clientConfigPath,
+    provider: fixture.provider,
+  });
+
+  assert.equal(ready, true);
+  assert.equal(loaded?.mining.builtIn?.provider, "openai");
+  assert.deepEqual(setup.events, [
+    "prompt:Provider (openai/anthropic): ",
+    "select:Choose the mining model:",
+    "prompt:API key: ",
+    "prompt:Extra prompt (optional, blank for none): ",
+  ]);
+});
+
+test("mine setup gate skips setup when an active built-in provider is already saved", async (t) => {
+  const fixture = await createConfigFixture(t);
+  const activeConfig = createSavedMiningProviderConfig({
+    provider: "anthropic",
+    modelOverride: "claude-sonnet-4-6",
+    modelSelectionSource: "catalog",
+  });
+  await saveBuiltInMiningProviderConfig({
+    path: fixture.paths.clientConfigPath,
+    provider: fixture.provider,
+    secretReference: fixture.secretReference,
+    config: activeConfig,
+  });
+  const setup = createCompleteSetupPrompter();
+
+  const ready = await ensureBuiltInMiningSetupIfNeeded({
+    provider: fixture.provider,
+    prompter: setup.prompter,
+    paths: fixture.paths,
+  });
+
+  assert.equal(ready, true);
+  assert.deepEqual(setup.events, []);
+});
+
+test("mine setup gate treats unreadable client config as missing and auto-runs setup interactively", async (t) => {
+  const fixture = await createConfigFixture(t);
+  const staleConfigSecretReference = createWalletSecretReference("stale-config-root");
+  await fixture.provider.storeSecret(staleConfigSecretReference.keyId, Buffer.alloc(32, 3));
+  await saveClientConfig({
+    path: fixture.paths.clientConfigPath,
+    provider: fixture.provider,
+    secretReference: staleConfigSecretReference,
+    config: {
+      schemaVersion: 1,
+      mining: {
+        builtIn: null,
+        domainExtraPrompts: {},
+      },
+    },
+  });
+  await fixture.provider.deleteSecret(staleConfigSecretReference.keyId);
+  const setup = createCompleteSetupPrompter();
+
+  const ready = await ensureBuiltInMiningSetupIfNeeded({
+    provider: fixture.provider,
+    prompter: setup.prompter,
+    paths: fixture.paths,
+  });
+  const loaded = await loadClientConfig({
+    path: fixture.paths.clientConfigPath,
+    provider: fixture.provider,
+  });
+
+  assert.equal(ready, true);
+  assert.equal(loaded?.mining.builtIn?.provider, "openai");
+  assert.deepEqual(setup.events, [
+    "prompt:Provider (openai/anthropic): ",
+    "select:Choose the mining model:",
+    "prompt:API key: ",
+    "prompt:Extra prompt (optional, blank for none): ",
+  ]);
 });
 
 test("mine setup only prompts for a custom model ID when the custom row is selected", async () => {

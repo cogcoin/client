@@ -418,8 +418,9 @@ export async function ensureBuiltInMiningSetupIfNeeded(options: {
     path: options.paths.clientConfigPath,
     provider: options.provider,
   }).catch(() => null);
+  const builtInConfig = config?.mining?.builtIn ?? null;
 
-  if (config?.mining.builtIn !== null) {
+  if (builtInConfig !== null) {
     return true;
   }
 
