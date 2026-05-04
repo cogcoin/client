@@ -189,6 +189,16 @@ function mapIndexerStartupError(message: string): {
         health: "starting",
         message: "Indexer daemon is still starting.",
       };
+    case "indexer_daemon_start_failed":
+      return {
+        health: "failed",
+        message: "The managed indexer daemon exited before it opened its local IPC socket.",
+      };
+    case "sqlite_native_module_unavailable":
+      return {
+        health: "failed",
+        message: "The managed indexer daemon could not load its SQLite native module.",
+      };
     case "indexer_daemon_service_version_mismatch":
       return {
         health: "service-version-mismatch",

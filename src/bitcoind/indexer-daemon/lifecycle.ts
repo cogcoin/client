@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -23,11 +23,18 @@ import {
 import {
   DEFAULT_INDEXER_DAEMON_SHUTDOWN_TIMEOUT_MS,
   DEFAULT_INDEXER_DAEMON_STARTUP_TIMEOUT_MS,
+  clearIndexerDaemonRuntimeArtifacts,
+  isIndexerDaemonProcessAlive,
   sleep,
   stopIndexerDaemonService as stopIndexerDaemonServiceInternal,
   stopIndexerDaemonServiceWithLockHeld,
   waitForIndexerDaemon,
 } from "./process.js";
+import {
+  openIndexerDaemonStartupLog,
+  recordIndexerDaemonStartupFailure,
+  waitForIndexerDaemonStartup,
+} from "./startup.js";
 import type {
   CoherentIndexerSnapshotLease,
   IndexerDaemonClient,
@@ -51,6 +58,36 @@ export async function probeIndexerDaemon(options: {
   const walletRootId = options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
   const paths = resolveManagedServicePaths(options.dataDir, walletRootId);
   return probeIndexerDaemonAtSocket(paths.indexerDaemonSocketPath, walletRootId);
+}
+
+export async function probeIndexerDaemonForStart(options: {
+  dataDir: string;
+  walletRootId: string;
+  paths?: ReturnType<typeof resolveManagedServicePaths>;
+}): Promise<IndexerDaemonProbeResult> {
+  const paths = options.paths ?? resolveManagedServicePaths(options.dataDir, options.walletRootId);
+  const probe = await probeIndexerDaemonAtSocket(paths.indexerDaemonSocketPath, options.walletRootId);
+
+  if (probe.compatibility === "compatible") {
+    return probe;
+  }
+
+  const status = await readJsonFileIfPresent<ManagedIndexerDaemonObservedStatus>(
+    paths.indexerDaemonStatusPath,
+  ).catch(() => null);
+  const processId = status?.processId ?? null;
+
+  if (processId !== null && !await isIndexerDaemonProcessAlive(processId)) {
+    await clearIndexerDaemonRuntimeArtifacts(paths);
+    return {
+      compatibility: "unreachable",
+      status: null,
+      client: null,
+      error: null,
+    };
+  }
+
+  return probe;
 }
 
 export async function readSnapshotWithRetry(
@@ -135,14 +172,16 @@ export async function attachOrStartIndexerDaemon(options: {
 
   const startDaemon = async (): Promise<IndexerDaemonClient> => {
     await mkdir(paths.indexerServiceRoot, { recursive: true });
+    const startupLog = await openIndexerDaemonStartupLog(paths);
     const daemonEntryPath = fileURLToPath(new URL("../indexer-daemon-main.js", import.meta.url));
-    const spawnOptions = serviceLifetime === "ephemeral"
+    const stdio: SpawnOptions["stdio"] = ["ignore", startupLog.fd, startupLog.fd];
+    const spawnOptions: SpawnOptions = serviceLifetime === "ephemeral"
       ? {
-        stdio: "ignore" as const,
+        stdio,
       }
       : {
         detached: true,
-        stdio: "ignore" as const,
+        stdio,
       };
     const child = spawn(process.execPath, [
       daemonEntryPath,
@@ -152,12 +191,17 @@ export async function attachOrStartIndexerDaemon(options: {
     ], {
       ...spawnOptions,
     });
+    await startupLog.close().catch(() => undefined);
     if (serviceLifetime !== "ephemeral") {
       child.unref();
     }
 
     try {
-      await waitForIndexerDaemon(options.dataDir, walletRootId, startupTimeoutMs);
+      await waitForIndexerDaemonStartup({
+        child,
+        logPath: startupLog.logPath,
+        waitForReady: () => waitForIndexerDaemon(options.dataDir, walletRootId, startupTimeoutMs),
+      });
     } catch (error) {
       if (child.pid !== undefined) {
         try {
@@ -166,6 +210,13 @@ export async function attachOrStartIndexerDaemon(options: {
           // ignore shutdown failures while unwinding startup errors
         }
       }
+      await recordIndexerDaemonStartupFailure({
+        paths,
+        walletRootId,
+        binaryVersion: expectedBinaryVersion ?? "0.0.0",
+        lastError: error instanceof Error ? error.message : String(error),
+        processId: child.pid ?? null,
+      }).catch(() => undefined);
       throw error;
     }
 
@@ -190,7 +241,11 @@ export async function attachOrStartIndexerDaemon(options: {
   }, {
     getPaths: (runtimeOptions) => resolveManagedServicePaths(runtimeOptions.dataDir, runtimeOptions.walletRootId),
     probeDaemon: async (runtimeOptions, runtimePaths) =>
-      probeIndexerDaemonAtSocket(runtimePaths.indexerDaemonSocketPath, runtimeOptions.walletRootId),
+      probeIndexerDaemonForStart({
+        dataDir: runtimeOptions.dataDir,
+        walletRootId: runtimeOptions.walletRootId,
+        paths: runtimePaths,
+      }),
     requestBackgroundFollow,
     closeClient: async (client) => {
       await client.close();

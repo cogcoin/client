@@ -22,6 +22,7 @@ export interface ManagedServicePaths {
   indexerDaemonLockPath: string;
   indexerDaemonStatusPath: string;
   indexerDaemonSocketPath: string;
+  indexerDaemonLogPath: string;
 }
 
 function createDataDirSuffix(dataDir: string): string {
@@ -70,5 +71,6 @@ export function resolveManagedServicePaths(
     indexerDaemonLockPath: join(walletRuntimeRoot, "indexer-daemon.lock"),
     indexerDaemonStatusPath: join(indexerServiceRoot, "status.json"),
     indexerDaemonSocketPath: resolveIndexerDaemonSocketPath(serviceRootId),
+    indexerDaemonLogPath: join(indexerServiceRoot, "daemon.log"),
   };
 }
