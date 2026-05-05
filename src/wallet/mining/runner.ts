@@ -179,6 +179,11 @@ import {
   syncMiningVisualizerBalances,
   syncMiningVisualizerBlockTimes,
 } from "./visualizer-sync.js";
+import {
+  ensureMiningMempoolRawTxSubscriber,
+  resolveMiningMempoolIndexCachePath,
+  resolveMiningMempoolServiceIdentity,
+} from "./mempool-index.js";
 
 const BEST_BLOCK_POLL_INTERVAL_MS = 500;
 const MINING_SUSPEND_HEARTBEAT_INTERVAL_MS = 1_000;
@@ -533,6 +538,24 @@ async function performMiningCycle(options: {
     throwIfStopping();
     throwIfMiningSuspendDetected(options.suspendDetector);
     const rpc = options.rpcFactory(service.rpc);
+    const serviceZmq = service.zmq as { endpoint?: string; rawTxTopic?: "rawtx" } | undefined;
+    const mempoolIndexCachePath = resolveMiningMempoolIndexCachePath(options.paths);
+    const mempoolIndexServiceIdentity = resolveMiningMempoolServiceIdentity({
+      dataDir: service.dataDir ?? options.dataDir,
+      pid: service.pid,
+      zmqEndpoint: serviceZmq?.endpoint ?? "unknown-zmq-endpoint",
+      rawTxTopic: serviceZmq?.rawTxTopic,
+    });
+    const mempoolIndexRawTxSupported = serviceZmq?.rawTxTopic === "rawtx";
+    if (mempoolIndexRawTxSupported && serviceZmq?.endpoint !== undefined) {
+      await ensureMiningMempoolRawTxSubscriber({
+        walletRootId: readContext.localState.state.walletRootId,
+        serviceIdentity: mempoolIndexServiceIdentity,
+        cachePath: mempoolIndexCachePath,
+        zmqEndpoint: serviceZmq.endpoint,
+        rawTxTopic: serviceZmq.rawTxTopic,
+      }).catch(() => false);
+    }
     const reconciliation = await reconcileLiveMiningState({
       state: readContext.localState.state,
       rpc,
@@ -753,6 +776,11 @@ async function performMiningCycle(options: {
       assaySentencesImpl: options.assaySentencesImpl,
       cooperativeYieldImpl: options.cooperativeYieldImpl,
       cooperativeYieldEvery: options.cooperativeYieldEvery,
+      mempoolIndex: {
+        rawTxSupported: mempoolIndexRawTxSupported,
+        cachePath: mempoolIndexCachePath,
+        serviceIdentity: mempoolIndexServiceIdentity,
+      },
       nowImpl: now,
       saveCycleStatus: async (context, overrides) => await saveCycleStatus(context, overrides),
       appendEvent: async (event) => await appendEvent(options.paths, event),

@@ -98,6 +98,7 @@ export interface BitcoindRpcConfig {
 export interface BitcoindZmqConfig {
   endpoint: string;
   topic: "hashblock";
+  rawTxTopic?: "rawtx";
   port: number;
   pollIntervalMs: number;
 }

@@ -167,7 +167,7 @@ export interface MiningRuntimeStatusV1 {
   higherRankedCompetitorDomainCount: number | null;
   dedupedCompetitorDomainCount: number | null;
   competitivenessGateIndeterminate: boolean | null;
-  mempoolSequenceCacheStatus: "reused" | "refreshed" | null;
+  mempoolSequenceCacheStatus: "reused" | "refreshed" | "indexed" | "index-warming" | "fallback-scan" | null;
   currentPublishDecision: string | null;
   lastMempoolSequence: string | null;
   lastCompetitivenessGateAtUnixMs: number | null;

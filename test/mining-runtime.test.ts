@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import net from "node:net";
+import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english.js";
 import { displayToInternalBlockhash, getWords } from "@cogcoin/scoring";
@@ -57,6 +58,10 @@ import {
 import { loadMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
 import { serializeMine } from "../src/wallet/cogop/index.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
+import {
+  clearMiningMempoolIndexCacheForTesting,
+  parseRawTransactionForMiningMempoolIndexTesting,
+} from "../src/wallet/mining/mempool-index.js";
 import {
   createMemoryWalletSecretProviderForTesting,
   createWalletSecretReference,
@@ -205,6 +210,7 @@ async function runCompetitivenessGateForTesting(options: {
   cooperativeYieldImpl?: Parameters<typeof runCompetitivenessGate>[0]["cooperativeYield"];
   cooperativeYieldEvery?: Parameters<typeof runCompetitivenessGate>[0]["cooperativeYieldEvery"];
   onWarmupProgress?: Parameters<typeof runCompetitivenessGate>[0]["onWarmupProgress"];
+  mempoolIndex?: Parameters<typeof runCompetitivenessGate>[0]["mempoolIndex"];
 }) {
   return await runCompetitivenessGate({
     rpc: options.rpc,
@@ -215,11 +221,13 @@ async function runCompetitivenessGateForTesting(options: {
     cooperativeYield: options.cooperativeYieldImpl,
     cooperativeYieldEvery: options.cooperativeYieldEvery,
     onWarmupProgress: options.onWarmupProgress,
+    mempoolIndex: options.mempoolIndex,
   });
 }
 
 test.afterEach(() => {
   clearMiningGateCache(null);
+  clearMiningMempoolIndexCacheForTesting();
 });
 
 function resolveWordIndices(words: readonly string[]): number[] {
@@ -313,6 +321,22 @@ function createMinePayloadScriptHex(
     serializeMine(domainId, referencedBlockHashInternal, createEncodedMiningSentence(sentenceFill)).opReturnData,
   );
   return `6a${payload.length.toString(16).padStart(2, "0")}${payload.toString("hex")}`;
+}
+
+function createRawTransactionHexForIndex(scriptHex: string): string {
+  return [
+    "01000000",
+    "01",
+    "11".repeat(32),
+    "00000000",
+    "00",
+    "ffffffff",
+    "01",
+    "0000000000000000",
+    (scriptHex.length / 2).toString(16).padStart(2, "0"),
+    scriptHex,
+    "00000000",
+  ].join("");
 }
 
 function createMineTransaction(options: {
@@ -4123,6 +4147,280 @@ test("runCompetitivenessGate uses bulk mempool metadata instead of per-tx mempoo
   });
 
   assert.equal(mempoolEntryCalls, 0);
+});
+
+test("raw transaction parser extracts txid, inputs, and OP_RETURN payload for the mempool index", () => {
+  const rawHex = createRawTransactionHexForIndex("6a0161");
+  const parsed = parseRawTransactionForMiningMempoolIndexTesting(rawHex);
+
+  assert.notEqual(parsed, null);
+  assert.equal(parsed?.txid.length, 64);
+  assert.deepEqual(parsed?.inputTxids, ["11".repeat(32)]);
+  assert.equal(Buffer.from(parsed?.payload ?? []).toString("hex"), "61");
+});
+
+test("runCompetitivenessGate uses persisted indexed contexts without refetching raw transactions", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-persisted");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const candidate = createGateCandidate();
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 1, name: "alpha" },
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+  const txid = "aa".repeat(32);
+  let rawTransactionCalls = 0;
+
+  const rpc = {
+    ...(createGateRpc({
+      txids: [txid],
+      rawTransactions: {
+        [txid]: createMineTransaction({
+          txid,
+          domainId: 1,
+          senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+          referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+          sentenceFill: "a",
+        }),
+      },
+    }) as any),
+    async getRawTransaction(requestTxid: string) {
+      rawTransactionCalls += 1;
+      return createMineTransaction({
+        txid: requestTxid,
+        domainId: 1,
+        senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+        referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+        sentenceFill: "a",
+      });
+    },
+    async getRawMempoolEntries() {
+      throw new Error("indexed path should not fetch full mempool metadata");
+    },
+  };
+
+  await runCompetitivenessGateForTesting({
+    rpc: rpc as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      ["a".repeat(60)]: 10n,
+    }) as any,
+    mempoolIndex: {
+      rawTxSupported: true,
+      cachePath,
+      serviceIdentity: "service-1",
+    },
+  });
+
+  assert.equal(rawTransactionCalls, 1);
+  clearMiningGateCache(context.localState.walletRootId);
+  clearMiningMempoolIndexCacheForTesting();
+
+  const secondDecision = await runCompetitivenessGateForTesting({
+    rpc: {
+      ...(rpc as any),
+      async getRawTransaction() {
+        rawTransactionCalls += 1;
+        throw new Error("persisted index should cover this txid");
+      },
+    } as any,
+    readContext: context,
+    candidate: createGateCandidate({ sentenceFill: "m" }),
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      ["a".repeat(60)]: 10n,
+    }) as any,
+    mempoolIndex: {
+      rawTxSupported: true,
+      cachePath,
+      serviceIdentity: "service-1",
+    },
+  });
+
+  assert.equal(rawTransactionCalls, 1);
+  assert.equal(secondDecision.mempoolSequenceCacheStatus, "indexed");
+});
+
+test("runCompetitivenessGate hydrates only unknown indexed mempool deltas", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-delta");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const candidate = createGateCandidate();
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 1, name: "alpha" },
+      { domainId: 2, name: "bravo" },
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+  const txidA = "aa".repeat(32);
+  const txidB = "bb".repeat(32);
+  let pass = 0;
+  let rawTransactionCalls = 0;
+
+  const rpc = {
+    async getRawMempoolVerbose() {
+      pass += 1;
+      return {
+        txids: pass === 1 ? [txidA] : [txidA, txidB],
+        mempool_sequence: `seq-${pass}`,
+      };
+    },
+    async getRawMempoolEntries() {
+      throw new Error("indexed path should not fetch full mempool metadata");
+    },
+    async getRawTransaction(requestTxid: string) {
+      rawTransactionCalls += 1;
+      return createMineTransaction({
+        txid: requestTxid,
+        domainId: requestTxid === txidA ? 1 : 2,
+        senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+        referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+        sentenceFill: requestTxid === txidA ? "a" : "b",
+      });
+    },
+    async getMempoolEntry() {
+      return {
+        vsize: 200,
+        fees: {
+          base: 0.00001,
+          ancestor: 0.00001,
+          descendant: 0.00001,
+        },
+        ancestorsize: 200,
+        descendantsize: 200,
+      };
+    },
+  };
+
+  await runCompetitivenessGateForTesting({
+    rpc: rpc as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      ["a".repeat(60)]: 10n,
+      ["b".repeat(60)]: 9n,
+    }) as any,
+    mempoolIndex: {
+      rawTxSupported: true,
+      cachePath,
+      serviceIdentity: "service-1",
+    },
+  });
+  clearMiningGateCache(context.localState.walletRootId);
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: rpc as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      ["a".repeat(60)]: 10n,
+      ["b".repeat(60)]: 9n,
+    }) as any,
+    mempoolIndex: {
+      rawTxSupported: true,
+      cachePath,
+      serviceIdentity: "service-1",
+    },
+  });
+
+  assert.equal(rawTransactionCalls, 2);
+  assert.equal(decision.mempoolSequenceCacheStatus, "index-warming");
+});
+
+test("runCompetitivenessGate stays indeterminate when indexed unknown hydration fails", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-hydration-fail");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const candidate = createGateCandidate();
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 1, name: "alpha" },
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: {
+      async getRawMempoolVerbose() {
+        return {
+          txids: ["aa".repeat(32)],
+          mempool_sequence: "seq-1",
+        };
+      },
+      async getRawMempoolEntries() {
+        throw new Error("failed indexed hydration must not fall back to unsafe full scan");
+      },
+      async getRawTransaction() {
+        throw new Error("transient raw transaction failure");
+      },
+      async getMempoolEntry() {
+        throw new Error("unused");
+      },
+    } as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    mempoolIndex: {
+      rawTxSupported: true,
+      cachePath,
+      serviceIdentity: "service-1",
+    },
+  });
+
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.decision, "indeterminate-mempool-gate");
+  assert.equal(decision.competitivenessGateIndeterminate, true);
+  assert.equal(decision.mempoolSequenceCacheStatus, "index-warming");
+});
+
+test("runCompetitivenessGate reports fallback-scan when rawtx support is absent", async () => {
+  const candidate = createGateCandidate();
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 1, name: "alpha" },
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+  const txid = "aa".repeat(32);
+  let mempoolEntryCalls = 0;
+
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: {
+      ...(createGateRpc({
+        txids: [txid],
+        rawTransactions: {
+          [txid]: createMineTransaction({
+            txid,
+            domainId: 1,
+            senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+            referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+            sentenceFill: "a",
+          }),
+        },
+      }) as any),
+      async getMempoolEntry() {
+        mempoolEntryCalls += 1;
+        throw new Error("fallback scan should not use targeted mempool entries");
+      },
+    },
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      ["a".repeat(60)]: 10n,
+    }) as any,
+    mempoolIndex: {
+      rawTxSupported: false,
+      cachePath: "unused",
+      serviceIdentity: "legacy-service",
+    },
+  });
+
+  assert.equal(mempoolEntryCalls, 0);
+  assert.equal(decision.mempoolSequenceCacheStatus, "fallback-scan");
 });
 
 test("runCompetitivenessGate reuses cached raw tx contexts across tip changes", async () => {

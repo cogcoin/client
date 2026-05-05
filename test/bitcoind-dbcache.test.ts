@@ -51,6 +51,8 @@ test("writeBitcoinConfForTesting writes dbcache into managed bitcoin.conf", asyn
     const text = await readFile(filePath, "utf8");
     assert.match(text, /^listen=0$/m);
     assert.match(text, /^dbcache=1024$/m);
+    assert.match(text, /^zmqpubhashblock=tcp:\/\/127\.0\.0\.1:\d+$/m);
+    assert.match(text, /^zmqpubrawtx=tcp:\/\/127\.0\.0\.1:\d+$/m);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -65,6 +67,8 @@ test("buildManagedServiceArgsForTesting includes dbcache in the managed bitcoind
 
   assert.ok(args.includes("-listen=0"));
   assert.ok(args.includes("-dbcache=768"));
+  assert.ok(args.includes("-zmqpubhashblock=tcp://127.0.0.1:28332"));
+  assert.ok(args.includes("-zmqpubrawtx=tcp://127.0.0.1:28332"));
 });
 
 test("buildManagedServiceArgsForTesting includes loadblock when a getblock archive is ready", () => {

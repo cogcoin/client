@@ -71,6 +71,7 @@ test("bitcoind args stay local-only and datadir-scoped", () => {
   assert.ok(args.includes("-rpcport=18443"));
   assert.ok(args.includes("-port=18444"));
   assert.ok(args.includes("-zmqpubhashblock=tcp://127.0.0.1:28332"));
+  assert.ok(args.includes("-zmqpubrawtx=tcp://127.0.0.1:28332"));
   assert.ok(args.includes("-datadir=/tmp/cogcoin-client-bitcoind"));
 });
 
@@ -236,5 +237,63 @@ test("node validation rejects wrong network, prune mode, and missing ZMQ", async
         "tcp://127.0.0.1:28332",
       ),
     /bitcoind_zmq_hashblock_missing/,
+  );
+
+  await assert.rejects(
+    () =>
+      validateNodeConfigForTesting(
+        {
+          async getBlockchainInfo() {
+            return {
+              chain: "main",
+              blocks: 0,
+              headers: 0,
+              bestblockhash: "00".repeat(32),
+              pruned: false,
+            };
+          },
+          async getZmqNotifications() {
+            return [
+              {
+                type: "pubhashblock",
+                address: "tcp://127.0.0.1:28332",
+                hwm: 1000,
+              },
+            ];
+          },
+        } as never,
+        "main",
+        "tcp://127.0.0.1:28332",
+        { requireRawTxZmq: true },
+      ),
+    /bitcoind_zmq_rawtx_missing/,
+  );
+
+  await assert.doesNotReject(
+    () =>
+      validateNodeConfigForTesting(
+        {
+          async getBlockchainInfo() {
+            return {
+              chain: "main",
+              blocks: 0,
+              headers: 0,
+              bestblockhash: "00".repeat(32),
+              pruned: false,
+            };
+          },
+          async getZmqNotifications() {
+            return [
+              {
+                type: "pubhashblock",
+                address: "tcp://127.0.0.1:28332",
+                hwm: 1000,
+              },
+            ];
+          },
+        } as never,
+        "main",
+        "tcp://127.0.0.1:28332",
+      ),
   );
 });

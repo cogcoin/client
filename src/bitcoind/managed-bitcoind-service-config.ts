@@ -245,6 +245,7 @@ export async function writeBitcoinConfForTesting(
     `rpcport=${runtimeConfig.rpc.port}`,
     `port=${runtimeConfig.p2pPort}`,
     `zmqpubhashblock=tcp://${LOCAL_HOST}:${runtimeConfig.zmqPort}`,
+    `zmqpubrawtx=tcp://${LOCAL_HOST}:${runtimeConfig.zmqPort}`,
     `walletdir=${walletDir}`,
   ];
 
@@ -264,6 +265,7 @@ export function buildManagedServiceArgsForTesting(
     `-rpcport=${runtimeConfig.rpc.port}`,
     `-port=${runtimeConfig.p2pPort}`,
     `-zmqpubhashblock=tcp://${LOCAL_HOST}:${runtimeConfig.zmqPort}`,
+    `-zmqpubrawtx=tcp://${LOCAL_HOST}:${runtimeConfig.zmqPort}`,
     `-walletdir=${walletDir}`,
     "-server=1",
     "-prune=0",

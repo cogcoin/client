@@ -104,6 +104,7 @@ export function buildBitcoindArgsForTesting(
     `-rpcport=${rpcPort}`,
     `-port=${p2pPort}`,
     `-zmqpubhashblock=tcp://${LOCAL_HOST}:${zmqPort}`,
+    `-zmqpubrawtx=tcp://${LOCAL_HOST}:${zmqPort}`,
     "-server=1",
     "-disablewallet=1",
     "-prune=0",
@@ -173,6 +174,7 @@ export async function validateNodeConfigForTesting(
   rpcClient: BitcoinRpcClient,
   expectedChain: "main" | "regtest",
   zmqEndpoint: string,
+  options: { requireRawTxZmq?: boolean } = {},
 ): Promise<void> {
   const info = await rpcClient.getBlockchainInfo();
 
@@ -190,6 +192,15 @@ export async function validateNodeConfigForTesting(
 
   if (!hasHashBlock) {
     throw new Error("bitcoind_zmq_hashblock_missing");
+  }
+
+  if (options.requireRawTxZmq === true) {
+    const hasRawTx = notifications.some((notification) =>
+      notification.type === "pubrawtx" && notification.address === zmqEndpoint);
+
+    if (!hasRawTx) {
+      throw new Error("bitcoind_zmq_rawtx_missing");
+    }
   }
 }
 
@@ -219,6 +230,7 @@ export async function launchManagedBitcoindNode(
   const zmqConfig: BitcoindZmqConfig = {
     endpoint: zmqEndpoint,
     topic: "hashblock",
+    rawTxTopic: "rawtx",
     port: zmqPort,
     pollIntervalMs: options.pollIntervalMs ?? DEFAULT_MANAGED_BITCOIND_FOLLOW_POLL_INTERVAL_MS,
   };
@@ -235,7 +247,9 @@ export async function launchManagedBitcoindNode(
 
   try {
     await waitForRpcReady(rpcClient, cookieFile, resolvedOptions.chain, startupTimeoutMs);
-    await validateNodeConfigForTesting(rpcClient, resolvedOptions.chain, zmqEndpoint);
+    await validateNodeConfigForTesting(rpcClient, resolvedOptions.chain, zmqEndpoint, {
+      requireRawTxZmq: true,
+    });
   } catch (error) {
     child.kill("SIGTERM");
     throw error;
@@ -251,7 +265,9 @@ export async function launchManagedBitcoindNode(
     getblockArchiveEndHeight: null,
     getblockArchiveSha256: null,
     async validate(): Promise<void> {
-      await validateNodeConfigForTesting(rpcClient, resolvedOptions.chain, zmqEndpoint);
+      await validateNodeConfigForTesting(rpcClient, resolvedOptions.chain, zmqEndpoint, {
+        requireRawTxZmq: true,
+      });
     },
     async stop(): Promise<void> {
       if (stopped) {

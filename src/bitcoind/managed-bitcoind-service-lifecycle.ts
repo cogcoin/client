@@ -274,6 +274,7 @@ export async function attachOrStartManagedBitcoindService(
           const zmqConfig: BitcoindZmqConfig = {
             endpoint: `tcp://${LOCAL_HOST}:${runtimeConfig.zmqPort}`,
             topic: "hashblock",
+            rawTxTopic: "rawtx",
             port: runtimeConfig.zmqPort,
             pollIntervalMs: startOptions.pollIntervalMs ?? DEFAULT_MANAGED_BITCOIND_FOLLOW_POLL_INTERVAL_MS,
           };
@@ -297,7 +298,9 @@ export async function attachOrStartManagedBitcoindService(
 
           try {
             await waitForManagedBitcoindRpcReady(rpc, rpcConfig.cookieFile, startOptions.chain, startupTimeoutMs);
-            await validateNodeConfigForTesting(rpc, startOptions.chain, zmqConfig.endpoint);
+            await validateNodeConfigForTesting(rpc, startOptions.chain, zmqConfig.endpoint, {
+              requireRawTxZmq: true,
+            });
           } catch (error) {
             if (child.pid !== undefined) {
               try {

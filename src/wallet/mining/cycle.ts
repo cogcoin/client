@@ -48,6 +48,7 @@ import {
   resolveWaitingProviderNote,
   type MiningRuntimeStatusOverrides,
 } from "./projection.js";
+import type { MiningMempoolIndexGateOptions } from "./mempool-index.js";
 
 interface RuntimeMiningCycleState extends MiningCycleState {
   generatedCandidates: MiningCandidate[] | null;
@@ -96,6 +97,7 @@ export async function runMiningPhaseMachine(options: {
   assaySentencesImpl?: typeof assaySentences;
   cooperativeYieldImpl?: MiningCooperativeYield;
   cooperativeYieldEvery?: number;
+  mempoolIndex?: MiningMempoolIndexGateOptions;
   nowImpl?: () => number;
   saveCycleStatus: (
     readContext: WalletReadContext,
@@ -501,6 +503,7 @@ export async function runMiningPhaseMachine(options: {
           assaySentencesImpl: options.assaySentencesImpl,
           cooperativeYield: options.cooperativeYieldImpl,
           cooperativeYieldEvery: options.cooperativeYieldEvery,
+          mempoolIndex: options.mempoolIndex,
           throwIfStopping: options.throwIfStopping,
           onWarmupProgress: async (progress) => {
             if (progress.total <= 0) {

@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { assaySentences, deriveBlendSeed } from "@cogcoin/scoring";
 import { lookupDomain, lookupDomainById } from "@cogcoin/indexer/queries";
 import { COG_OPCODES, COG_PREFIX } from "../cogop/constants.js";
-import { extractOpReturnPayloadFromScriptHex } from "../tx/register.js";
 import type { WalletReadContext } from "../read/index.js";
 import type { WalletStateV1 } from "../types.js";
 import type {
@@ -21,6 +20,10 @@ import {
 } from "./engine-utils.js";
 import type { MiningSentenceBoardEntry } from "./visualizer.js";
 import { getIndexerTruthKey } from "./candidate.js";
+import {
+  hydrateMiningMempoolIndex,
+  type MiningMempoolTxContext,
+} from "./mempool-index.js";
 
 interface CachedCompetitorEntry {
   txid: string;
@@ -34,12 +37,7 @@ interface CachedCompetitorEntry {
   canonicalBlend: bigint;
 }
 
-interface CachedRawMempoolTxContext {
-  txid: string;
-  senderScriptHex: string | null;
-  rawTransaction: Awaited<ReturnType<MiningRpcClient["getRawTransaction"]>>;
-  payload: Uint8Array | null;
-}
+type CachedRawMempoolTxContext = MiningMempoolTxContext;
 
 interface MiningCompetitivenessDecisionReuseRecord {
   indexerDaemonInstanceId: string;
@@ -55,6 +53,9 @@ interface MiningCompetitivenessCacheState {
   rawTxContexts: Map<string, CachedRawMempoolTxContext>;
   decisionReuse: MiningCompetitivenessDecisionReuseRecord | null;
 }
+
+type MiningMempoolGateCacheStatus =
+  NonNullable<CompetitivenessDecision["mempoolSequenceCacheStatus"]>;
 
 interface OverlayDomainState {
   domainId: number;
@@ -151,6 +152,49 @@ function resolveEffectiveFeeRate(mempoolEntry: Awaited<ReturnType<MiningRpcClien
   ].reduce((best, candidate) => (candidate > best ? candidate : best), 0n));
 }
 
+function createContextFromRawTransaction(
+  txid: string,
+  tx: Awaited<ReturnType<MiningRpcClient["getRawTransaction"]>>,
+): CachedRawMempoolTxContext | null {
+  const payloadHex = tx.vout.find((entry) => entry.scriptPubKey?.hex?.startsWith("6a") === true)?.scriptPubKey?.hex;
+  const payload = payloadHex === undefined ? null : Buffer.from(payloadHex, "hex");
+  const decodedPayload = payload === null || payload.length < 2 || payload[0] !== 0x6a
+    ? null
+    : (() => {
+      const opcode = payload[1];
+      if (opcode === undefined) {
+        return null;
+      }
+      if (opcode <= 75) {
+        const end = 2 + opcode;
+        return end === payload.length ? payload.subarray(2, end) : null;
+      }
+      if (opcode === 0x4c && payload.length >= 3) {
+        const length = payload[2]!;
+        const end = 3 + length;
+        return end === payload.length ? payload.subarray(3, end) : null;
+      }
+      return null;
+    })();
+
+  if (
+    decodedPayload === null
+    || decodedPayload.length < 3
+    || decodedPayload[0] !== COG_PREFIX[0]
+    || decodedPayload[1] !== COG_PREFIX[1]
+    || decodedPayload[2] !== COG_PREFIX[2]
+  ) {
+    return null;
+  }
+
+  return {
+    txid,
+    senderScriptHex: tx.vin[0]?.prevout?.scriptPubKey?.hex ?? null,
+    inputTxids: tx.vin.map((input) => input.txid).filter((inputTxid): inputTxid is string => inputTxid !== undefined),
+    payload: decodedPayload,
+  };
+}
+
 async function warmMissingRawTxContexts(options: {
   rpc: MiningRpcClient;
   rawTxContexts: Map<string, CachedRawMempoolTxContext>;
@@ -215,13 +259,10 @@ async function warmMissingRawTxContexts(options: {
       options.throwIfStopping?.();
 
       if (tx !== null) {
-        const payloadHex = tx.vout.find((entry) => entry.scriptPubKey?.hex?.startsWith("6a") === true)?.scriptPubKey?.hex;
-        options.rawTxContexts.set(txid, {
-          txid,
-          senderScriptHex: tx.vin[0]?.prevout?.scriptPubKey?.hex ?? null,
-          rawTransaction: tx,
-          payload: payloadHex === undefined ? null : extractOpReturnPayloadFromScriptHex(payloadHex),
-        });
+        const context = createContextFromRawTransaction(txid, tx);
+        if (context !== null) {
+          options.rawTxContexts.set(txid, context);
+        }
       }
 
       completed += 1;
@@ -371,9 +412,7 @@ function parseSupportedAncestorOperation(context: CachedRawMempoolTxContext): Su
 }
 
 function getAncestorTxids(context: CachedRawMempoolTxContext, txContexts: Map<string, CachedRawMempoolTxContext>): string[] {
-  return context.rawTransaction.vin
-    .map((vin) => vin.txid ?? null)
-    .filter((txid): txid is string => txid !== null && txContexts.has(txid));
+  return context.inputTxids.filter((txid) => txContexts.has(txid));
 }
 
 function topologicallyOrderAncestorContexts(options: {
@@ -457,9 +496,17 @@ export function topologicallyOrderAncestorTxidsForTesting(options: {
     rawTransaction: Awaited<ReturnType<MiningRpcClient["getRawTransaction"]>>;
   }>;
 }): string[] | null {
+  const txContexts = new Map([...options.txContexts].map(([txid, context]) => [txid, {
+    txid: context.txid,
+    senderScriptHex: null,
+    inputTxids: context.rawTransaction.vin
+      .map((vin) => vin.txid)
+      .filter((inputTxid): inputTxid is string => inputTxid !== undefined),
+    payload: null,
+  } satisfies CachedRawMempoolTxContext]));
   const ordered = topologicallyOrderAncestorContexts({
     txid: options.txid,
-    txContexts: options.txContexts as Map<string, CachedRawMempoolTxContext>,
+    txContexts,
   });
   return ordered?.map((context) => context.txid) ?? null;
 }
@@ -667,6 +714,41 @@ function toSentenceBoardEntries(
   }));
 }
 
+async function fetchIndexedMempoolEntries(options: {
+  rpc: Pick<MiningRpcClient, "getMempoolEntry">;
+  txids: readonly string[];
+  throwIfStopping?: () => void;
+}): Promise<Awaited<ReturnType<MiningRpcClient["getRawMempoolEntries"]>> | null> {
+  const entries: Awaited<ReturnType<MiningRpcClient["getRawMempoolEntries"]>> = {};
+  let nextIndex = 0;
+  const workerCount = Math.min(MINING_MEMPOOL_RAW_TX_FETCH_CONCURRENCY, options.txids.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex;
+      if (index >= options.txids.length) {
+        return;
+      }
+      nextIndex += 1;
+
+      options.throwIfStopping?.();
+      const txid = options.txids[index]!;
+      const entry = await options.rpc.getMempoolEntry(txid).catch(() => null);
+      options.throwIfStopping?.();
+      if (entry === null) {
+        throw new Error("mining_mempool_index_entry_unavailable");
+      }
+      entries[txid] = entry;
+    }
+  });
+
+  try {
+    await Promise.all(workers);
+    return entries;
+  } catch {
+    return null;
+  }
+}
+
 export async function runCompetitivenessGate(options: {
   rpc: MiningRpcClient;
   readContext: WalletReadContext & {
@@ -679,6 +761,11 @@ export async function runCompetitivenessGate(options: {
   cooperativeYieldEvery?: number;
   throwIfStopping?: () => void;
   onWarmupProgress?: (progress: MiningGateWarmupProgress) => Promise<void> | void;
+  mempoolIndex?: {
+    rawTxSupported: boolean;
+    cachePath: string;
+    serviceIdentity: string;
+  };
 }): Promise<CompetitivenessDecision> {
   const createDecision = (overrides: Partial<CompetitivenessDecision>): CompetitivenessDecision => ({
     allowed: overrides.allowed ?? false,
@@ -721,12 +808,8 @@ export async function runCompetitivenessGate(options: {
   };
 
   let mempoolVerbose: Awaited<ReturnType<MiningRpcClient["getRawMempoolVerbose"]>>;
-  let mempoolEntries: Awaited<ReturnType<MiningRpcClient["getRawMempoolEntries"]>>;
   try {
-    [mempoolVerbose, mempoolEntries] = await Promise.all([
-      options.rpc.getRawMempoolVerbose(),
-      options.rpc.getRawMempoolEntries(),
-    ]);
+    mempoolVerbose = await options.rpc.getRawMempoolVerbose();
     options.throwIfStopping?.();
   } catch {
     return createDecision({
@@ -763,19 +846,96 @@ export async function runCompetitivenessGate(options: {
 
   const referencedPrefix = Buffer.from(options.candidate.referencedBlockHashInternal.subarray(0, 4)).toString("hex");
   const visibleTxids = mempoolVerbose.txids.filter((txid) => !excludedTxids.includes(txid));
-  pruneRawTxContextsToVisibleTxids({
-    rawTxContexts: cacheState.rawTxContexts,
-    visibleTxids,
-  });
-  await warmMissingRawTxContexts({
-    rpc: options.rpc,
-    rawTxContexts: cacheState.rawTxContexts,
-    visibleTxids,
-    cooperativeYield: options.cooperativeYield,
-    cooperativeYieldEvery: options.cooperativeYieldEvery,
-    throwIfStopping: options.throwIfStopping,
-    onWarmupProgress: options.onWarmupProgress,
-  });
+  let rawTxContexts: Map<string, CachedRawMempoolTxContext>;
+  let mempoolEntries: Awaited<ReturnType<MiningRpcClient["getRawMempoolEntries"]>>;
+  let gateCacheStatus: MiningMempoolGateCacheStatus = "refreshed";
+
+  if (options.mempoolIndex?.rawTxSupported === true) {
+    const indexed = await hydrateMiningMempoolIndex({
+      walletRootId,
+      serviceIdentity: options.mempoolIndex.serviceIdentity,
+      cachePath: options.mempoolIndex.cachePath,
+      rpc: options.rpc,
+      visibleTxids,
+      cooperativeYield: options.cooperativeYield,
+      cooperativeYieldEvery: options.cooperativeYieldEvery,
+      throwIfStopping: options.throwIfStopping,
+      onWarmupProgress: options.onWarmupProgress,
+    }).catch(() => null);
+
+    if (indexed !== null) {
+      rawTxContexts = indexed.contexts;
+      gateCacheStatus = indexed.cacheStatus;
+      const indexedTxids = visibleTxids.filter((txid) => rawTxContexts.has(txid));
+      const indexedEntries = await fetchIndexedMempoolEntries({
+        rpc: options.rpc,
+        txids: indexedTxids,
+        throwIfStopping: options.throwIfStopping,
+      });
+
+      if (indexedEntries === null) {
+        rawTxContexts = new Map();
+        mempoolEntries = {};
+        gateCacheStatus = "fallback-scan";
+      } else {
+        mempoolEntries = indexedEntries;
+      }
+    } else {
+      return createDecision({
+        competitivenessGateIndeterminate: true,
+        decision: "indeterminate-mempool-gate",
+        mempoolSequenceCacheStatus: "index-warming",
+        lastMempoolSequence: mempoolSequence,
+      });
+    }
+  } else {
+    rawTxContexts = cacheState.rawTxContexts;
+    gateCacheStatus = options.mempoolIndex?.rawTxSupported === false ? "fallback-scan" : "refreshed";
+    const fallbackEntries = await options.rpc.getRawMempoolEntries().catch(() => null);
+    if (fallbackEntries === null) {
+      return createDecision({
+        competitivenessGateIndeterminate: true,
+      });
+    }
+    mempoolEntries = fallbackEntries;
+    pruneRawTxContextsToVisibleTxids({
+      rawTxContexts,
+      visibleTxids,
+    });
+    await warmMissingRawTxContexts({
+      rpc: options.rpc,
+      rawTxContexts,
+      visibleTxids,
+      cooperativeYield: options.cooperativeYield,
+      cooperativeYieldEvery: options.cooperativeYieldEvery,
+      throwIfStopping: options.throwIfStopping,
+      onWarmupProgress: options.onWarmupProgress,
+    });
+  }
+
+  if (gateCacheStatus === "fallback-scan" && rawTxContexts.size === 0 && Object.keys(mempoolEntries).length === 0) {
+    const fallbackEntries = await options.rpc.getRawMempoolEntries().catch(() => null);
+    if (fallbackEntries === null) {
+      return createDecision({
+        competitivenessGateIndeterminate: true,
+      });
+    }
+    mempoolEntries = fallbackEntries;
+    rawTxContexts = cacheState.rawTxContexts;
+    pruneRawTxContextsToVisibleTxids({
+      rawTxContexts,
+      visibleTxids,
+    });
+    await warmMissingRawTxContexts({
+      rpc: options.rpc,
+      rawTxContexts,
+      visibleTxids,
+      cooperativeYield: options.cooperativeYield,
+      cooperativeYieldEvery: options.cooperativeYieldEvery,
+      throwIfStopping: options.throwIfStopping,
+      onWarmupProgress: options.onWarmupProgress,
+    });
+  }
 
   const entries = new Map<string, CachedCompetitorEntry>();
   for (let index = 0; index < visibleTxids.length; index += 1) {
@@ -810,7 +970,7 @@ export async function runCompetitivenessGate(options: {
       const decision = createDecision({
         competitivenessGateIndeterminate: true,
         decision: "indeterminate-mempool-gate",
-        mempoolSequenceCacheStatus: "refreshed",
+        mempoolSequenceCacheStatus: gateCacheStatus,
         lastMempoolSequence: mempoolSequence,
       });
       setDecisionReuse(decision);
@@ -898,7 +1058,7 @@ export async function runCompetitivenessGate(options: {
       higherRankedCompetitorDomainCount: 1,
       dedupedCompetitorDomainCount: otherDomainBest.size,
       competitivenessGateIndeterminate: false,
-      mempoolSequenceCacheStatus: "refreshed",
+      mempoolSequenceCacheStatus: gateCacheStatus,
       lastMempoolSequence: mempoolSequence,
       visibleBoardEntries: toSentenceBoardEntries(visibleRankedEntries),
     });
@@ -942,7 +1102,7 @@ export async function runCompetitivenessGate(options: {
           higherRankedCompetitorDomainCount,
           dedupedCompetitorDomainCount: otherDomainBest.size,
           competitivenessGateIndeterminate: false,
-          mempoolSequenceCacheStatus: "refreshed",
+          mempoolSequenceCacheStatus: gateCacheStatus,
           lastMempoolSequence: mempoolSequence,
           visibleBoardEntries: toSentenceBoardEntries(visibleRankedEntries),
           candidateRank,
@@ -955,7 +1115,7 @@ export async function runCompetitivenessGate(options: {
           higherRankedCompetitorDomainCount,
           dedupedCompetitorDomainCount: otherDomainBest.size,
           competitivenessGateIndeterminate: false,
-          mempoolSequenceCacheStatus: "refreshed",
+          mempoolSequenceCacheStatus: gateCacheStatus,
           lastMempoolSequence: mempoolSequence,
           visibleBoardEntries: toSentenceBoardEntries(visibleRankedEntries),
           candidateRank,
@@ -969,7 +1129,7 @@ export async function runCompetitivenessGate(options: {
         higherRankedCompetitorDomainCount: 0,
         dedupedCompetitorDomainCount: otherDomainBest.size,
         competitivenessGateIndeterminate: true,
-        mempoolSequenceCacheStatus: "refreshed",
+        mempoolSequenceCacheStatus: gateCacheStatus,
         lastMempoolSequence: mempoolSequence,
         visibleBoardEntries: toSentenceBoardEntries(visibleRankedEntries),
       });
