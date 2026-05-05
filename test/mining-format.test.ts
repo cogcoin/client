@@ -76,3 +76,25 @@ test("mine status text shows the insufficient-funds next step from publish decis
   assert.match(report, /Next: wait for enough safe BTC funding to become spendable for the next publish; mining resumes automatically\./);
   assert.doesNotMatch(report, /Note: Insufficient funds for mining\./);
 });
+
+test("mine status text renders auto-reconciled mining publish decisions", () => {
+  const emptyPublishReport = formatMineStatusReport(createMiningControlPlaneView({
+    runtime: createMiningRuntimeStatus({
+      currentPhase: "idle",
+      miningState: "idle",
+      currentPublishDecision: "repair-auto-cleared-empty-publish",
+      note: "No locally controlled anchored root domains are currently eligible to mine.",
+    }),
+  }));
+  const confirmedConflictReport = formatMineStatusReport(createMiningControlPlaneView({
+    runtime: createMiningRuntimeStatus({
+      currentPhase: "idle",
+      miningState: "idle",
+      currentPublishDecision: "repair-auto-cleared-confirmed-conflict",
+      note: "No locally controlled anchored root domains are currently eligible to mine.",
+    }),
+  }));
+
+  assert.match(emptyPublishReport, /Publish decision: repair-auto-cleared-empty-publish/);
+  assert.match(confirmedConflictReport, /Publish decision: repair-auto-cleared-confirmed-conflict/);
+});
