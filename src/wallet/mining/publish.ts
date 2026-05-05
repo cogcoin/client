@@ -93,6 +93,34 @@ export function createInsufficientFundsMiningPublishErrorMessage(): string {
   return "Bitcoin Core could not fund the next mining publish with safe BTC.";
 }
 
+function clearAutoReconciledMiningPublish(
+  state: WalletStateV1,
+  currentPublishDecision: string,
+): WalletStateV1 {
+  return {
+    ...state,
+    miningState: {
+      ...clearMiningPublishState(state.miningState),
+      currentPublishDecision,
+    },
+  };
+}
+
+async function hasConfirmedWalletConflict(options: {
+  rpc: MiningRpcClient;
+  walletName: string;
+  conflictTxids: readonly string[];
+}): Promise<boolean> {
+  for (const txid of options.conflictTxids) {
+    const conflictTx = await options.rpc.getTransaction(options.walletName, txid).catch(() => null);
+    if (conflictTx !== null && conflictTx.confirmations > 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function createMiningFundingProbeCandidate(options: {
   domain: MiningEligibleAnchoredRoot;
   referencedBlockHashDisplay: string;
@@ -332,6 +360,9 @@ export async function reconcileLiveMiningState(options: {
   const currentTxid = state.miningState.currentTxid;
 
   if (currentTxid === null || !miningPublishMayStillExist(state.miningState)) {
+    if (state.miningState.state === "repair-required") {
+      state = clearAutoReconciledMiningPublish(state, "repair-auto-cleared-empty-publish");
+    }
     await reconcilePersistentPolicyLocks({
       rpc: options.rpc,
       walletName: state.managedCoreWallet.walletName,
@@ -413,6 +444,26 @@ export async function reconcileLiveMiningState(options: {
   }
 
   if ((walletTx?.walletconflicts?.length ?? 0) > 0) {
+    const confirmedConflict = await hasConfirmedWalletConflict({
+      rpc: options.rpc,
+      walletName,
+      conflictTxids: walletTx?.walletconflicts ?? [],
+    });
+
+    if (confirmedConflict) {
+      state = clearAutoReconciledMiningPublish(state, "repair-auto-cleared-confirmed-conflict");
+      await reconcilePersistentPolicyLocks({
+        rpc: options.rpc,
+        walletName: state.managedCoreWallet.walletName,
+        state,
+        fixedInputs: [],
+      });
+      return {
+        state,
+        recentWin: null,
+      };
+    }
+
     state = defaultMiningStatePatch(state, {
       state: "repair-required",
       pauseReason: state.miningState.currentPublishState === "broadcast-unknown"

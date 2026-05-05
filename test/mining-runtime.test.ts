@@ -33,6 +33,7 @@ import {
 import {
   createMiningPlan as createMiningPlanForTesting,
   publishCandidate as publishCandidateForTesting,
+  reconcileLiveMiningState as reconcileLiveMiningStateForTesting,
   resolveMiningConflictOutpoint as resolveMiningConflictOutpointForTesting,
 } from "../src/wallet/mining/publish.js";
 import {
@@ -747,6 +748,327 @@ test("clearMiningPublishState resets the live publish markers", () => {
   assert.equal(cleared.livePublishInMempool, false);
   assert.equal(cleared.currentTxid, null);
   assert.equal(cleared.currentPublishDecision, null);
+});
+
+function createRepairRequiredMiningState(
+  overrides: Partial<ReturnType<typeof createMiningState>> = {},
+): ReturnType<typeof createMiningState> {
+  return createMiningState({
+    runMode: "foreground",
+    state: "repair-required",
+    pauseReason: "wallet-conflict-observed",
+    currentPublishState: "in-mempool",
+    currentTxid: "aa".repeat(32),
+    currentWtxid: "bb".repeat(32),
+    currentDomain: "cogdemo",
+    currentDomainId: 7,
+    currentDomainIndex: 0,
+    currentSenderScriptPubKeyHex: "0014" + "11".repeat(20),
+    currentBlockTargetHeight: 101,
+    currentReferencedBlockHashDisplay: "11".repeat(32),
+    livePublishInMempool: false,
+    currentPublishDecision: "repair-required-wallet-conflict",
+    ...overrides,
+  });
+}
+
+test("reconcileLiveMiningState auto-clears repair-required mining state without a tracked txid", async () => {
+  let listUnspentCalls = 0;
+  const state = createWalletState({
+    miningState: createRepairRequiredMiningState({
+      currentTxid: null,
+      currentPublishState: "broadcast-unknown",
+      currentPublishDecision: "repair-required-broadcast-conflict",
+    }),
+  });
+
+  const result = await reconcileLiveMiningStateForTesting({
+    state,
+    rpc: createHealthyMiningRpc({
+      async listUnspent() {
+        listUnspentCalls += 1;
+        return [];
+      },
+      async getTransaction() {
+        throw new Error("getTransaction should not be needed without a tracked txid");
+      },
+    }) as any,
+    nodeBestHash: null,
+    nodeBestHeight: null,
+  });
+
+  assert.equal(result.state.miningState.state, "idle");
+  assert.equal(result.state.miningState.currentPublishState, "none");
+  assert.equal(result.state.miningState.currentTxid, null);
+  assert.equal(result.state.miningState.livePublishInMempool, false);
+  assert.equal(result.state.miningState.currentPublishDecision, "repair-auto-cleared-empty-publish");
+  assert.equal(listUnspentCalls, 1);
+});
+
+test("reconcileLiveMiningState auto-clears repair-required mining state with no publish marker", async () => {
+  const state = createWalletState({
+    miningState: createRepairRequiredMiningState({
+      currentPublishState: "none",
+      currentPublishDecision: "repair-required-wallet-conflict",
+    }),
+  });
+
+  const result = await reconcileLiveMiningStateForTesting({
+    state,
+    rpc: createHealthyMiningRpc() as any,
+    nodeBestHash: null,
+    nodeBestHeight: null,
+  });
+
+  assert.equal(result.state.miningState.state, "idle");
+  assert.equal(result.state.miningState.currentPublishState, "none");
+  assert.equal(result.state.miningState.currentTxid, null);
+  assert.equal(result.state.miningState.currentPublishDecision, "repair-auto-cleared-empty-publish");
+});
+
+test("reconcileLiveMiningState keeps confirmed tracked mining tx behavior", async () => {
+  const txid = "aa".repeat(32);
+  const state = createWalletState({
+    miningState: createRepairRequiredMiningState({
+      currentTxid: txid,
+      currentPublishState: "broadcast-unknown",
+      currentPublishDecision: "repair-required-broadcast-conflict",
+    }),
+  });
+
+  const result = await reconcileLiveMiningStateForTesting({
+    state,
+    rpc: createHealthyMiningRpc({
+      async getRawMempoolVerbose() {
+        return {
+          txids: [],
+          mempool_sequence: "seq-1",
+        };
+      },
+      async getTransaction(_walletName: string, requestedTxid: string) {
+        assert.equal(requestedTxid, txid);
+        return {
+          txid,
+          confirmations: 2,
+          walletconflicts: [],
+        };
+      },
+    }) as any,
+    nodeBestHash: "11".repeat(32),
+    nodeBestHeight: 100,
+  });
+
+  assert.equal(result.state.miningState.state, "idle");
+  assert.equal(result.state.miningState.currentPublishState, "none");
+  assert.equal(result.state.miningState.currentTxid, null);
+  assert.equal(result.state.miningState.currentPublishDecision, "tx-confirmed-while-down");
+});
+
+test("reconcileLiveMiningState restores repair-required tracked txs that are back in mempool", async () => {
+  const txid = "aa".repeat(32);
+  const scenarios = [
+    {
+      runMode: "foreground" as const,
+      referencedBlockHashDisplay: "11".repeat(32),
+      targetBlockHeight: 101,
+      expectedState: "live",
+      expectedPauseReason: null,
+      expectedDecision: "restored-live-publish",
+    },
+    {
+      runMode: "stopped" as const,
+      referencedBlockHashDisplay: "11".repeat(32),
+      targetBlockHeight: 101,
+      expectedState: "paused",
+      expectedPauseReason: "user-stopped",
+      expectedDecision: "restored-live-publish",
+    },
+    {
+      runMode: "foreground" as const,
+      referencedBlockHashDisplay: "22".repeat(32),
+      targetBlockHeight: 102,
+      expectedState: "paused-stale",
+      expectedPauseReason: "stale-block-context",
+      expectedDecision: "paused-stale-mempool",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const state = createWalletState({
+      miningState: createRepairRequiredMiningState({
+        runMode: scenario.runMode,
+        currentTxid: txid,
+        currentReferencedBlockHashDisplay: scenario.referencedBlockHashDisplay,
+        currentBlockTargetHeight: scenario.targetBlockHeight,
+      }),
+    });
+
+    const result = await reconcileLiveMiningStateForTesting({
+      state,
+      rpc: createHealthyMiningRpc({
+        async getRawMempoolVerbose() {
+          return {
+            txids: [txid],
+            mempool_sequence: "seq-1",
+          };
+        },
+        async getTransaction() {
+          return {
+            txid,
+            confirmations: 0,
+            walletconflicts: [],
+          };
+        },
+      }) as any,
+      nodeBestHash: "11".repeat(32),
+      nodeBestHeight: 100,
+    });
+
+    assert.equal(result.state.miningState.state, scenario.expectedState);
+    assert.equal(result.state.miningState.pauseReason, scenario.expectedPauseReason);
+    assert.equal(result.state.miningState.currentPublishState, "in-mempool");
+    assert.equal(result.state.miningState.currentTxid, txid);
+    assert.equal(result.state.miningState.livePublishInMempool, true);
+    assert.equal(result.state.miningState.currentPublishDecision, scenario.expectedDecision);
+  }
+});
+
+test("reconcileLiveMiningState auto-clears repair-required mining state after a confirmed wallet conflict", async () => {
+  const txid = "aa".repeat(32);
+  const conflictTxid = "cc".repeat(32);
+  let listUnspentCalls = 0;
+  const state = createWalletState({
+    miningState: createRepairRequiredMiningState({
+      currentTxid: txid,
+      currentPublishState: "broadcast-unknown",
+      pauseReason: "broadcast-unknown-conflict",
+      currentPublishDecision: "repair-required-broadcast-conflict",
+    }),
+  });
+
+  const result = await reconcileLiveMiningStateForTesting({
+    state,
+    rpc: createHealthyMiningRpc({
+      async listUnspent() {
+        listUnspentCalls += 1;
+        return [];
+      },
+      async getRawMempoolVerbose() {
+        return {
+          txids: [],
+          mempool_sequence: "seq-1",
+        };
+      },
+      async getTransaction(_walletName: string, requestedTxid: string) {
+        if (requestedTxid === txid) {
+          return {
+            txid,
+            confirmations: 0,
+            walletconflicts: [conflictTxid],
+          };
+        }
+
+        assert.equal(requestedTxid, conflictTxid);
+        return {
+          txid: conflictTxid,
+          confirmations: 1,
+          walletconflicts: [],
+        };
+      },
+    }) as any,
+    nodeBestHash: "11".repeat(32),
+    nodeBestHeight: 100,
+  });
+
+  assert.equal(result.state.miningState.state, "idle");
+  assert.equal(result.state.miningState.currentPublishState, "none");
+  assert.equal(result.state.miningState.currentTxid, null);
+  assert.equal(result.state.miningState.livePublishInMempool, false);
+  assert.equal(result.state.miningState.currentPublishDecision, "repair-auto-cleared-confirmed-conflict");
+  assert.equal(listUnspentCalls, 1);
+});
+
+test("reconcileLiveMiningState keeps repair-required mining state for unconfirmed wallet conflicts", async () => {
+  const txid = "aa".repeat(32);
+  const conflictTxid = "cc".repeat(32);
+  const state = createWalletState({
+    miningState: createRepairRequiredMiningState({
+      currentTxid: txid,
+      currentPublishState: "in-mempool",
+    }),
+  });
+
+  const result = await reconcileLiveMiningStateForTesting({
+    state,
+    rpc: createHealthyMiningRpc({
+      async getRawMempoolVerbose() {
+        return {
+          txids: [],
+          mempool_sequence: "seq-1",
+        };
+      },
+      async getTransaction(_walletName: string, requestedTxid: string) {
+        return {
+          txid: requestedTxid,
+          confirmations: 0,
+          walletconflicts: requestedTxid === txid ? [conflictTxid] : [],
+        };
+      },
+    }) as any,
+    nodeBestHash: "11".repeat(32),
+    nodeBestHeight: 100,
+  });
+
+  assert.equal(result.state.miningState.state, "repair-required");
+  assert.equal(result.state.miningState.pauseReason, "wallet-conflict-observed");
+  assert.equal(result.state.miningState.currentPublishState, "in-mempool");
+  assert.equal(result.state.miningState.currentTxid, txid);
+  assert.equal(result.state.miningState.livePublishInMempool, false);
+  assert.equal(result.state.miningState.currentPublishDecision, "repair-required-wallet-conflict");
+});
+
+test("reconcileLiveMiningState keeps repair-required mining state when conflict lookup fails", async () => {
+  const txid = "aa".repeat(32);
+  const conflictTxid = "cc".repeat(32);
+  const state = createWalletState({
+    miningState: createRepairRequiredMiningState({
+      currentTxid: txid,
+      currentPublishState: "broadcast-unknown",
+      pauseReason: "broadcast-unknown-conflict",
+      currentPublishDecision: "repair-required-broadcast-conflict",
+    }),
+  });
+
+  const result = await reconcileLiveMiningStateForTesting({
+    state,
+    rpc: createHealthyMiningRpc({
+      async getRawMempoolVerbose() {
+        return {
+          txids: [],
+          mempool_sequence: "seq-1",
+        };
+      },
+      async getTransaction(_walletName: string, requestedTxid: string) {
+        if (requestedTxid === txid) {
+          return {
+            txid,
+            confirmations: 0,
+            walletconflicts: [conflictTxid],
+          };
+        }
+
+        throw new Error("conflict transaction is temporarily unavailable");
+      },
+    }) as any,
+    nodeBestHash: "11".repeat(32),
+    nodeBestHeight: 100,
+  });
+
+  assert.equal(result.state.miningState.state, "repair-required");
+  assert.equal(result.state.miningState.pauseReason, "broadcast-unknown-conflict");
+  assert.equal(result.state.miningState.currentPublishState, "broadcast-unknown");
+  assert.equal(result.state.miningState.currentTxid, txid);
+  assert.equal(result.state.miningState.currentPublishDecision, "repair-required-broadcast-conflict");
 });
 
 test("same-tip live publishes are kept but stale-tip publishes are replaceable", () => {
@@ -1578,6 +1900,121 @@ test("performMiningCycle waits instead of crashing when mining read context is m
   assert.equal(snapshot?.currentPhase, "waiting-indexer");
   assert.equal(snapshot?.lastError, null);
   assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
+});
+
+test("performMiningCycle continues after auto-clearing an empty repair-required mining publish", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-auto-clear-empty-repair");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  await provider.storeSecret(createWalletSecretReference("wallet-root").keyId, Buffer.alloc(32, 9));
+  const loopState = createMiningLoopStateForTesting();
+  const miningState = createRepairRequiredMiningState({
+    currentTxid: null,
+    currentPublishState: "broadcast-unknown",
+    currentPublishDecision: "repair-required-broadcast-conflict",
+  });
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => createReadyMiningReadContext({
+      miningState,
+      readContextOverrides: {
+        model: {
+          walletScriptPubKeyHex: "0014" + "11".repeat(20),
+          domains: [],
+        },
+      },
+    }),
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.miningState, "idle");
+  assert.equal(snapshot?.currentPhase, "idle");
+  assert.equal(snapshot?.currentPublishState, "none");
+  assert.equal(snapshot?.currentTxid, null);
+  assert.equal(snapshot?.note, "No locally controlled anchored root domains are currently eligible to mine.");
+  assert.notEqual(snapshot?.note, "Mining is blocked until the current mining publish is repaired or reconciled.");
+});
+
+test("performMiningCycle keeps blocking when repair-required mining conflict is still unconfirmed", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-unconfirmed-conflict-blocked");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  await provider.storeSecret(createWalletSecretReference("wallet-root").keyId, Buffer.alloc(32, 9));
+  const loopState = createMiningLoopStateForTesting();
+  const txid = "aa".repeat(32);
+  const conflictTxid = "cc".repeat(32);
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => createReadyMiningReadContext({
+      miningState: createRepairRequiredMiningState({
+        currentTxid: txid,
+        currentPublishState: "in-mempool",
+      }),
+    }),
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    rpcFactory: () => createHealthyMiningRpc({
+      async getRawMempoolVerbose() {
+        return {
+          txids: [],
+          mempool_sequence: "seq-1",
+        };
+      },
+      async getTransaction(_walletName: string, requestedTxid: string) {
+        return {
+          txid: requestedTxid,
+          confirmations: 0,
+          walletconflicts: requestedTxid === txid ? [conflictTxid] : [],
+        };
+      },
+    }) as any,
+    loopState,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.miningState, "repair-required");
+  assert.equal(snapshot?.currentPhase, "waiting");
+  assert.equal(snapshot?.currentPublishState, "in-mempool");
+  assert.equal(snapshot?.currentTxid, txid);
+  assert.equal(snapshot?.currentPublishDecision, "repair-required-wallet-conflict");
+  assert.equal(snapshot?.pauseReason, "wallet-conflict-observed");
+  assert.equal(snapshot?.note, "Mining is blocked until the current mining publish is repaired or reconciled.");
 });
 
 test("performMiningCycle waits instead of throwing on recoverable managed Bitcoin RPC failures", async (t) => {
