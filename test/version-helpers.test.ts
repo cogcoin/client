@@ -14,7 +14,23 @@ test("current client version matches package.json", () => {
   const packageJsonRaw = readFileSync(join(process.cwd(), "package.json"), "utf8");
   const packageJson = JSON.parse(packageJsonRaw) as { version?: unknown };
 
+  assert.equal(packageJson.version, "1.2.0");
   assert.equal(CURRENT_CLIENT_VERSION, packageJson.version);
+});
+
+test("package metadata targets the indexer release required for mirror history", () => {
+  const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+    dependencies?: Record<string, string>;
+  };
+  const packageLock = JSON.parse(readFileSync(join(process.cwd(), "package-lock.json"), "utf8")) as {
+    packages?: Record<string, { version?: string; dependencies?: Record<string, string> }>;
+  };
+  const readme = readFileSync(join(process.cwd(), "README.md"), "utf8");
+
+  assert.equal(packageJson.dependencies?.["@cogcoin/indexer"], "1.0.2");
+  assert.equal(packageLock.packages?.[""]?.dependencies?.["@cogcoin/indexer"], "1.0.2");
+  assert.equal(packageLock.packages?.["node_modules/@cogcoin/indexer"]?.version, "1.0.2");
+  assert.match(readme, /@cogcoin\/indexer@1\.0\.2/u);
 });
 
 test("newer client version compares greater than the current client version", () => {

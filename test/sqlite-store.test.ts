@@ -9,6 +9,10 @@ import {
   serializeIndexerState,
 } from "@cogcoin/indexer";
 import { openSqliteStore } from "../src/sqlite/index.js";
+import {
+  ensureClientReindexRequirementV12,
+  isClientReindexRequirementV12Applied,
+} from "../src/sqlite/reindex-requirement.js";
 import { createTempDatabasePath, loadHistoryVector, materializeBlock } from "./helpers.js";
 
 test("sqlite store initializes empty and migrations are idempotent", async () => {
@@ -70,6 +74,112 @@ test("sqlite store persists tip and snapshot bytes for applied blocks", async ()
   );
 
   await store.close();
+});
+
+test("v1.2.0 reindex requirement resets unmarked indexed state and records marker", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-store-v12-reindex-reset");
+  const historyVector = loadHistoryVector();
+  const firstBlock = materializeBlock(historyVector.setupBlocks[0]);
+  const genesis = await loadBundledGenesisParameters();
+  const applied = await applyBlockWithScoring(createInitialState(genesis), firstBlock, genesis);
+  const store = await openSqliteStore({ filename: databasePath });
+  const now = Date.now();
+  const oldStyleStateBytes = new TextEncoder().encode("{\"history\":{}}");
+
+  await store.writeAppliedBlock({
+    tip: {
+      height: firstBlock.height,
+      blockHashHex: Buffer.from(firstBlock.hash).toString("hex"),
+      previousHashHex: firstBlock.previousHash === null ? null : Buffer.from(firstBlock.previousHash).toString("hex"),
+      stateHashHex: applied.stateHashHex,
+    },
+    stateBytes: oldStyleStateBytes,
+    blockRecord: {
+      height: applied.blockRecord.height,
+      blockHashHex: applied.blockRecord.hashHex,
+      previousHashHex: applied.blockRecord.previousHashHex,
+      stateHashHex: applied.blockRecord.stateHashHex,
+      recordBytes: serializeBlockRecord(applied.blockRecord),
+      createdAt: now,
+    },
+    checkpoint: {
+      height: firstBlock.height,
+      blockHashHex: Buffer.from(firstBlock.hash).toString("hex"),
+      stateBytes: oldStyleStateBytes,
+      createdAt: now,
+    },
+  });
+  await store.close();
+
+  assert.equal(await isClientReindexRequirementV12Applied(databasePath), false);
+  assert.deepEqual(await ensureClientReindexRequirementV12(databasePath), { action: "reset-and-marked" });
+  assert.equal(await isClientReindexRequirementV12Applied(databasePath), true);
+
+  const reopened = await openSqliteStore({ filename: databasePath });
+  assert.equal(await reopened.loadTip(), null);
+  assert.equal(await reopened.loadLatestSnapshot(), null);
+  assert.equal(await reopened.loadBlockRecord(firstBlock.height), null);
+  await reopened.close();
+});
+
+test("v1.2.0 reindex requirement marks current indexed state without resetting", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-store-v12-reindex-current");
+  const historyVector = loadHistoryVector();
+  const firstBlock = materializeBlock(historyVector.setupBlocks[0]);
+  const genesis = await loadBundledGenesisParameters();
+  const applied = await applyBlockWithScoring(createInitialState(genesis), firstBlock, genesis);
+  const store = await openSqliteStore({ filename: databasePath });
+
+  await store.writeAppliedBlock({
+    tip: {
+      height: firstBlock.height,
+      blockHashHex: Buffer.from(firstBlock.hash).toString("hex"),
+      previousHashHex: firstBlock.previousHash === null ? null : Buffer.from(firstBlock.previousHash).toString("hex"),
+      stateHashHex: applied.stateHashHex,
+    },
+    stateBytes: serializeIndexerState(applied.state),
+    blockRecord: null,
+    checkpoint: null,
+  });
+  await store.close();
+
+  assert.deepEqual(await ensureClientReindexRequirementV12(databasePath), { action: "marked-current" });
+
+  const reopened = await openSqliteStore({ filename: databasePath });
+  assert.equal((await reopened.loadTip())?.height, firstBlock.height);
+  await reopened.close();
+});
+
+test("v1.2.0 reindex requirement marks empty databases without resetting later indexed state", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-store-v12-reindex-empty");
+
+  assert.deepEqual(await ensureClientReindexRequirementV12(databasePath), { action: "marked-empty" });
+  assert.deepEqual(await ensureClientReindexRequirementV12(databasePath), { action: "already-applied" });
+
+  const historyVector = loadHistoryVector();
+  const firstBlock = materializeBlock(historyVector.setupBlocks[0]);
+  const genesis = await loadBundledGenesisParameters();
+  const applied = await applyBlockWithScoring(createInitialState(genesis), firstBlock, genesis);
+  const store = await openSqliteStore({ filename: databasePath });
+
+  await store.writeAppliedBlock({
+    tip: {
+      height: firstBlock.height,
+      blockHashHex: Buffer.from(firstBlock.hash).toString("hex"),
+      previousHashHex: firstBlock.previousHash === null ? null : Buffer.from(firstBlock.previousHash).toString("hex"),
+      stateHashHex: applied.stateHashHex,
+    },
+    stateBytes: serializeIndexerState(applied.state),
+    blockRecord: null,
+    checkpoint: null,
+  });
+  await store.close();
+
+  assert.deepEqual(await ensureClientReindexRequirementV12(databasePath), { action: "already-applied" });
+
+  const reopened = await openSqliteStore({ filename: databasePath });
+  assert.equal((await reopened.loadTip())?.height, firstBlock.height);
+  await reopened.close();
 });
 
 test("sqlite store rolls back tip changes when a block-record insert fails", async () => {

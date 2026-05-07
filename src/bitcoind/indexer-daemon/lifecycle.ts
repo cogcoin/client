@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { acquireFileLock, FileLockBusyError } from "../../wallet/fs/lock.js";
 import {
   buildManagedIndexerStatusFromSnapshotHandle,
+  resolveIndexerDaemonProbeDecision,
   validateIndexerSnapshotHandle,
   validateIndexerSnapshotPayload,
 } from "../managed-runtime/indexer-policy.js";
@@ -30,6 +31,11 @@ import {
   stopIndexerDaemonServiceWithLockHeld,
   waitForIndexerDaemon,
 } from "./process.js";
+import {
+  ensureClientReindexRequirementV12,
+  resolveClientReindexRequirementV12,
+  type ClientReindexRequirementStatus,
+} from "../../sqlite/reindex-requirement.js";
 import {
   openIndexerDaemonStartupLog,
   recordIndexerDaemonStartupFailure,
@@ -133,6 +139,114 @@ export async function readObservedIndexerDaemonStatus(options: {
   return readJsonFileIfPresent<ManagedIndexerDaemonObservedStatus>(paths.indexerDaemonStatusPath);
 }
 
+async function ensureV12ReindexRequirementBeforeIndexerStart(options: {
+  dataDir: string;
+  databasePath: string;
+  walletRootId: string;
+  paths: ReturnType<typeof resolveManagedServicePaths>;
+  startupTimeoutMs: number;
+  shutdownTimeoutMs?: number;
+  expectedBinaryVersion?: string | null;
+}): Promise<void> {
+  const readRequirement = async (): Promise<ClientReindexRequirementStatus> => {
+    try {
+      return await resolveClientReindexRequirementV12(options.databasePath);
+    } catch (error) {
+      if (error instanceof Error && error.message === "sqlite_store_schema_version_unsupported") {
+        // Let the daemon startup path surface and persist the existing
+        // schema-mismatch status instead of preempting it in this guard.
+        return "applied";
+      }
+      throw error;
+    }
+  };
+
+  const applyRequirement = async (): Promise<void> => {
+    try {
+      await ensureClientReindexRequirementV12(options.databasePath);
+    } catch (error) {
+      if (error instanceof Error && error.message === "sqlite_store_schema_version_unsupported") {
+        throw new Error("indexer_daemon_schema_mismatch", { cause: error });
+      }
+      throw error;
+    }
+  };
+
+  if (await readRequirement() === "applied") {
+    return;
+  }
+
+  const deadline = Date.now() + options.startupTimeoutMs;
+
+  while (true) {
+    let lock: Awaited<ReturnType<typeof acquireFileLock>>;
+
+    try {
+      lock = await acquireFileLock(options.paths.indexerDaemonLockPath, {
+        purpose: "indexer-reindex-v1.2.0",
+        walletRootId: options.walletRootId,
+        dataDir: options.dataDir,
+        databasePath: options.databasePath,
+      });
+    } catch (error) {
+      if (!(error instanceof FileLockBusyError)) {
+        throw error;
+      }
+
+      if (Date.now() >= deadline) {
+        throw new Error("indexer_daemon_start_timeout");
+      }
+
+      await sleep(250);
+
+      if (await readRequirement() === "applied") {
+        return;
+      }
+
+      continue;
+    }
+
+    try {
+      const requirement = await readRequirement();
+
+      if (requirement === "applied") {
+        return;
+      }
+
+      const probe = await probeIndexerDaemonForStart({
+        dataDir: options.dataDir,
+        walletRootId: options.walletRootId,
+        paths: options.paths,
+      });
+      const decision = resolveIndexerDaemonProbeDecision({
+        probe,
+        expectedBinaryVersion: options.expectedBinaryVersion,
+      });
+
+      await probe.client?.close().catch(() => undefined);
+
+      if (decision.action === "reject") {
+        throw new Error(decision.error ?? "indexer_daemon_protocol_error");
+      }
+
+      if (decision.action === "replace" || requirement === "reset-required") {
+        await stopIndexerDaemonServiceWithLockHeld({
+          dataDir: options.dataDir,
+          walletRootId: options.walletRootId,
+          shutdownTimeoutMs: options.shutdownTimeoutMs,
+          paths: options.paths,
+          processId: probe.status?.processId ?? null,
+        });
+      }
+
+      await applyRequirement();
+      return;
+    } finally {
+      await lock.release();
+    }
+  }
+}
+
 export async function attachOrStartIndexerDaemon(options: {
   dataDir: string;
   databasePath: string;
@@ -169,6 +283,16 @@ export async function attachOrStartIndexerDaemon(options: {
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_INDEXER_DAEMON_STARTUP_TIMEOUT_MS;
   const serviceLifetime = options.serviceLifetime ?? "persistent";
   const expectedBinaryVersion = options.expectedBinaryVersion ?? null;
+
+  await ensureV12ReindexRequirementBeforeIndexerStart({
+    dataDir: options.dataDir,
+    databasePath: options.databasePath,
+    walletRootId,
+    paths,
+    startupTimeoutMs,
+    shutdownTimeoutMs: options.shutdownTimeoutMs,
+    expectedBinaryVersion,
+  });
 
   const startDaemon = async (): Promise<IndexerDaemonClient> => {
     await mkdir(paths.indexerServiceRoot, { recursive: true });

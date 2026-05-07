@@ -39,6 +39,7 @@ import {
 } from "../src/bitcoind/types.js";
 import { openSqliteDatabase } from "../src/sqlite/driver.js";
 import { openSqliteStore } from "../src/sqlite/index.js";
+import { isClientReindexRequirementV12Applied } from "../src/sqlite/reindex-requirement.js";
 import { createTempDirectory, generateBlocks, getMiningDescriptor, removeTempDirectory, replayBlocks, serializeStateHex, waitForCondition } from "./bitcoind-helpers.js";
 import { createWalletReadContext } from "./current-model-helpers.js";
 import {
@@ -2214,6 +2215,77 @@ test("attach restarts a compatible stale daemon when expectedBinaryVersion is ne
     } finally {
       await daemon.close();
     }
+  } finally {
+    await shutdownIndexerDaemonForTesting({ dataDir: fixture.dataDir, walletRootId }).catch(() => undefined);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
+    await cleanupManagedFixture(fixture);
+  }
+});
+
+test("attachOrStartIndexerDaemon resets unmarked indexed state before attaching a daemon", async () => {
+  const fixture = createFixture("cogcoin-client-indexer-v12-reindex-on-start");
+  const walletRootId = "wallet-root-test";
+  const paths = resolveManagedServicePaths(fixture.dataDir, walletRootId);
+  await mkdir(paths.indexerServiceRoot, { recursive: true });
+
+  const oldStore = await openSqliteStore({ filename: fixture.databasePath });
+  await oldStore.writeAppliedBlock({
+    tip: {
+      height: 1,
+      blockHashHex: "11".repeat(32),
+      previousHashHex: "00".repeat(32),
+      stateHashHex: "22".repeat(32),
+    },
+    stateBytes: new Uint8Array([1]),
+    blockRecord: {
+      height: 1,
+      blockHashHex: "11".repeat(32),
+      previousHashHex: "00".repeat(32),
+      stateHashHex: "22".repeat(32),
+      recordBytes: new Uint8Array([2]),
+      createdAt: 1,
+    },
+    checkpoint: {
+      height: 1,
+      blockHashHex: "11".repeat(32),
+      stateBytes: new Uint8Array([1]),
+      createdAt: 1,
+    },
+  });
+  await oldStore.close();
+
+  const server = await startFakeIndexerDaemonServer(
+    paths.indexerDaemonSocketPath,
+    createManagedIndexerDaemonStatus(walletRootId, {
+      binaryVersion: CURRENT_CLIENT_VERSION,
+      daemonInstanceId: "daemon-pre-reindex",
+      processId: 4321,
+    }),
+  );
+
+  try {
+    const daemon = await attachOrStartIndexerDaemon({
+      dataDir: fixture.dataDir,
+      databasePath: fixture.databasePath,
+      walletRootId,
+      expectedBinaryVersion: CURRENT_CLIENT_VERSION,
+      startupTimeoutMs: 5_000,
+    });
+
+    try {
+      const status = await daemon.getStatus();
+      assert.notEqual(status.daemonInstanceId, "daemon-pre-reindex");
+    } finally {
+      await daemon.close();
+    }
+
+    assert.equal(await isClientReindexRequirementV12Applied(fixture.databasePath), true);
+    const reopened = await openSqliteStore({ filename: fixture.databasePath });
+    assert.equal(await reopened.loadTip(), null);
+    assert.equal(await reopened.loadLatestSnapshot(), null);
+    assert.equal(await reopened.loadBlockRecord(1), null);
+    await reopened.close();
   } finally {
     await shutdownIndexerDaemonForTesting({ dataDir: fixture.dataDir, walletRootId }).catch(() => undefined);
     await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   applyBlockWithScoring,
   createInitialState,
+  deserializeBlockRecord,
+  deserializeIndexerState,
   loadBundledGenesisParameters,
   serializeBlockRecord,
   serializeIndexerState,
@@ -13,7 +15,7 @@ import { bytesToHex } from "../src/bytes.js";
 import { DefaultClient } from "../src/client/default-client.js";
 import { openClient } from "../src/index.js";
 import { openSqliteStore } from "../src/sqlite/index.js";
-import { createTempDatabasePath, loadHistoryVector, materializeBlock } from "./helpers.js";
+import { createTempDatabasePath, loadHistoryVector, loadRealMiningPassVector, materializeBlock } from "./helpers.js";
 
 function createInternalOrderBlock(
   height: number,
@@ -174,6 +176,126 @@ test("client exposes coherent mirror snapshot and delta reads", async () => {
     mirrorDelta.blockRecords.map((record) => record.blockHashHex),
     blocks.slice(2).map((block) => internalBytesToDisplayHashHex(block.hash)),
   );
+
+  await client.close();
+});
+
+test("openClient loads old-style indexer snapshots without resetting local state", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-client-old-indexer-snapshot");
+  const historyVector = loadHistoryVector();
+  const [firstBlock, secondBlock] = historyVector.setupBlocks.slice(0, 2).map(materializeBlock);
+  assert.ok(firstBlock);
+  assert.ok(secondBlock);
+  const genesis = await loadBundledGenesisParameters();
+  const applied = await applyBlockWithScoring(createInitialState(genesis), firstBlock, genesis);
+  const oldStyleState = applied.state;
+  const oldStyleHistory = oldStyleState.history as Partial<Record<
+    "explorerBlocksByHeight" | "explorerTransactionsByHeight",
+    unknown
+  >>;
+  delete oldStyleHistory.explorerBlocksByHeight;
+  delete oldStyleHistory.explorerTransactionsByHeight;
+  const store = await openSqliteStore({ filename: databasePath });
+
+  await store.writeAppliedBlock({
+    tip: {
+      height: firstBlock.height,
+      blockHashHex: internalBytesToDisplayHashHex(firstBlock.hash),
+      previousHashHex: firstBlock.previousHash === null ? null : internalBytesToDisplayHashHex(firstBlock.previousHash),
+      stateHashHex: applied.stateHashHex,
+    },
+    stateBytes: serializeIndexerState(oldStyleState),
+    blockRecord: null,
+    checkpoint: null,
+  });
+
+  const client = await openClient({
+    store,
+    genesisParameters: genesis,
+  });
+
+  assert.equal((await client.getTip())?.height, firstBlock.height);
+  const reopenedState = await client.getState();
+  assert.ok(reopenedState.history.explorerBlocksByHeight instanceof Map);
+  assert.ok(reopenedState.history.explorerTransactionsByHeight instanceof Map);
+  assert.equal(reopenedState.history.explorerBlocksByHeight.size, 0);
+  assert.equal(reopenedState.history.explorerTransactionsByHeight.size, 0);
+
+  await client.applyBlock(secondBlock);
+  assert.equal((await client.getTip())?.height, secondBlock.height);
+  await client.close();
+});
+
+test("mirror reads expose reindexed explorer history and skip bitcoin-only blocks", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-client-mirror-history");
+  const historyVector = loadHistoryVector();
+  const blocks = [...historyVector.setupBlocks, ...historyVector.testBlocks].map(materializeBlock);
+  const genesis = await loadBundledGenesisParameters();
+
+  const store = await openSqliteStore({ filename: databasePath });
+  const client = await openClient({
+    store,
+    genesisParameters: genesis,
+    snapshotInterval: 1000,
+    blockRecordRetention: 1000,
+  });
+
+  for (const block of blocks) {
+    await client.applyBlock(block);
+  }
+
+  const mirrorSnapshot = await client.readMirrorSnapshot();
+  const snapshotState = deserializeIndexerState(mirrorSnapshot.stateBytes);
+  assert.ok(snapshotState.history.explorerBlocksByHeight.size > 0);
+  assert.ok(snapshotState.history.explorerTransactionsByHeight.size > 0);
+
+  const tip = await client.getTip();
+  assert.ok(tip !== null);
+  const bitcoinOnlyBlock = createInternalOrderBlock(
+    tip.height + 1,
+    "0a".repeat(32),
+    tip.blockHashHex,
+  );
+  await client.applyBlock(bitcoinOnlyBlock);
+  const afterBitcoinOnly = deserializeIndexerState((await client.readMirrorSnapshot()).stateBytes);
+  assert.equal(afterBitcoinOnly.history.explorerBlocksByHeight.has(bitcoinOnlyBlock.height), false);
+  assert.equal(afterBitcoinOnly.history.explorerTransactionsByHeight.has(bitcoinOnlyBlock.height), false);
+
+  await client.close();
+});
+
+test("mirror reads expose reindexed winner BIP39 indices", async () => {
+  const databasePath = createTempDatabasePath("cogcoin-client-mirror-mining-history");
+  const miningVector = loadRealMiningPassVector();
+  const blocks = [...miningVector.setupBlocks, ...miningVector.testBlocks].map(materializeBlock);
+  const genesis = await loadBundledGenesisParameters();
+
+  const store = await openSqliteStore({ filename: databasePath });
+  const client = await openClient({
+    store,
+    genesisParameters: genesis,
+    snapshotInterval: 1000,
+    blockRecordRetention: 1000,
+  });
+
+  for (const block of blocks) {
+    await client.applyBlock(block);
+  }
+
+  const snapshotState = deserializeIndexerState((await client.readMirrorSnapshot()).stateBytes);
+  const snapshotWinners = [...snapshotState.history.blockWinnersByHeight.values()].flat();
+  assert.ok(snapshotWinners.some((winner) => winner.bip39WordIndices.length === 5));
+
+  const mirrorDelta = await client.readMirrorDelta(blocks[0]!.height - 1);
+  const winnerRows = mirrorDelta.blockRecords
+    .map((record) => deserializeBlockRecord(record.recordBytes))
+    .flatMap((record) => record.mutations)
+    .filter((mutation) => mutation.kind === "winner_history")
+    .flatMap((mutation) => Array.isArray(mutation.newValue)
+      ? mutation.newValue as Array<{ bip39WordIndices?: unknown }>
+      : []);
+  assert.ok(winnerRows.some((winner) =>
+    Array.isArray(winner.bip39WordIndices) && winner.bip39WordIndices.length === 5));
 
   await client.close();
 });

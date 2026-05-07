@@ -38,6 +38,10 @@ export function loadHistoryVector(): VectorFile {
   return require("@cogcoin/vectors/history-queries.json") as VectorFile;
 }
 
+export function loadRealMiningPassVector(): VectorFile {
+  return require("@cogcoin/vectors/real-mining-pass.json") as VectorFile;
+}
+
 function materializeOutput(output: VectorOutput): BitcoinOutput {
   return {
     valueSats: BigInt(output.valueSats),

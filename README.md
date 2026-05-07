@@ -1,6 +1,6 @@
 # `@cogcoin/client`
 
-`@cogcoin/client@1.1.16` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
+`@cogcoin/client@1.2.0` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
 
 Use Node 22 or newer.
 
@@ -112,7 +112,7 @@ The published package depends on:
 
 - `@cogcoin/bitcoin@30.2.0`
 - `@cogcoin/genesis@1.0.0`
-- `@cogcoin/indexer@1.0.1`
+- `@cogcoin/indexer@1.0.2`
 - `@cogcoin/scoring@1.0.0`
 - `@scure/base@^2.0.0`
 - `@scure/bip32@^2.0.1`
@@ -122,6 +122,20 @@ The published package depends on:
 - `zeromq@6.5.0`
 
 `@cogcoin/vectors` is kept as a repository development dependency for conformance tests and is not part of the published runtime dependency surface.
+
+## Upgrade Notes For `1.2.0`
+
+`@cogcoin/client@1.2.0` updates the runtime indexer to `@cogcoin/indexer@1.0.2`. Existing wallet state, mining configuration, Bitcoin Core data, and secrets remain compatible and are not reset.
+
+On the first managed indexer start after upgrading, `cogcoin sync`, `cogcoin mine`, `cogcoin follow`, and related managed-indexer commands automatically clear and replay the local Cogcoin indexer SQLite projection once. This is required so the local index contains the complete explorer history and winner `bip39WordIndices` produced by `@cogcoin/indexer@1.0.2`.
+
+Supabase mirror operators should let the local client replay and catch up first, then run:
+
+```bash
+cogcoin-supabase reset --yes --recreate-schema
+```
+
+Old snapshots may deserialize successfully but can lack historical explorer rows and required winner `bip39WordIndices` for blocks indexed before `@cogcoin/indexer@1.0.2`, so they should not be used as the source for a complete Supabase reset.
 
 ## API
 
