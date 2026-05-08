@@ -75,7 +75,7 @@
     "zeromq": "6.5.0"
   },
   "devDependencies": {
-    "@cogcoin/vectors": "1.0.0",
+    "@cogcoin/vectors": "1.0.1",
     "@types/node": "^25.5.0",
     "typescript": "^6.0.2"
   }

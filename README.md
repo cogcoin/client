@@ -4,19 +4,12 @@
 
 Use Node 22 or newer.
 
-## Quick Start
-
-Install Cogcoin:
+## Installation
 
 ```bash
 curl -fsSL https://cogcoin.org/install.sh | bash
 # or on Windows PowerShell:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://cogcoin.org/install.ps1 | iex"
-cogcoin address  # Send 0.0015 BTC to address
-cogcoin register <domainname> # 6+ character domain for 0.001 BTC
-cogcoin anchor <domainname> # You can leave a founding message permanently on Bitcoin!
-cogcoin mine setup
-cogcoin mine # Use remaining ~0.0005 BTC for mining tx, ~1000 sats per entry (0.00001 BTC)
 ```
 
 ### What The Installer Does
@@ -32,6 +25,16 @@ cogcoin mine # Use remaining ~0.0005 BTC for mining tx, ~1000 sats per entry (0.
 - If the installer is noninteractive, it finishes by printing one exact `cogcoin init` follow-up command.
 - If you set `COGCOIN_SKIP_INIT=1`, the installer skips `cogcoin init` and prints the exact manual command to run later.
 - If macOS Command Line Tools are still installing, the installer either waits and retries automatically or prints the exact resume command.
+
+## Quick Start
+
+```bash
+cogcoin address  # Send 0.0015 BTC to address
+cogcoin register <domainname> # 6+ character domain for 0.001 BTC
+cogcoin anchor <domainname> # You can leave a founding message permanently on Bitcoin!
+cogcoin mine setup
+cogcoin mine # Use remaining ~0.0005 BTC for mining tx, ~1000 sats per entry (0.00001 BTC)
+```
 
 ## Preview
 
@@ -121,7 +124,7 @@ The published package depends on:
 - `hash-wasm@^4.12.0`
 - `zeromq@6.5.0`
 
-`@cogcoin/vectors` is kept as a repository development dependency for conformance tests and is not part of the published runtime dependency surface.
+`@cogcoin/vectors@1.0.1` is kept as a repository development dependency for conformance tests and is not part of the published runtime dependency surface.
 
 ## Upgrade Notes For `1.2.0`
 
