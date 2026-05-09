@@ -129,6 +129,14 @@ export const serviceErrorRules: readonly CliErrorPresentationRule[] = [
       };
     }
 
+    if (errorCode === "bitcoind_zmq_rawtx_missing" || errorCode.includes("rawtx_zmq_missing")) {
+      return {
+        what: "The live managed bitcoind service is missing raw transaction ZMQ.",
+        why: "This usually means an older managed bitcoind runtime is still running without the v1.2.0 `zmqpubrawtx` setting.",
+        next: "Run `cogcoin repair` so the wallet can stop the stale managed bitcoind service and restart it with the current ZMQ configuration.",
+      };
+    }
+
     if (errorCode.includes("bitcoind_replica_missing")) {
       return {
         what: "The managed Core wallet replica is missing.",

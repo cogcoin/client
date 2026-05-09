@@ -147,6 +147,105 @@ test("repairManagedBitcoindStage stops incompatible services and normalizes stat
   assert.equal(saved.state.managedCoreWallet.walletScriptPubKeyHex, state.funding.scriptPubKeyHex);
 });
 
+test("repairManagedBitcoindStage restarts managed bitcoind missing rawtx ZMQ without deleting durable state", async (t) => {
+  const state = createDerivedWalletState({
+    descriptorChecksum: "abcd1234",
+  });
+  const fixture = await createWalletLifecycleFixture(t, { state });
+  const servicePaths = resolveManagedServicePaths(fixture.dataDir, state.walletRootId);
+  const killLog = installProcessKillMock(t, [8_222]);
+  const harness = createManagedCoreRpcHarness({
+    mnemonic: state.mnemonic.phrase,
+    loadedWallets: [state.managedCoreWallet.walletName],
+  });
+  let attachCalls = 0;
+  const attachService = async (...args: Parameters<NonNullable<typeof harness.dependencies.attachService>>) => {
+    attachCalls += 1;
+    const handle = await harness.dependencies.attachService!(...args);
+    return {
+      ...handle,
+      refreshServiceStatus: async () => ({ state: "ready" }),
+    } as any;
+  };
+
+  await writeJsonFile(servicePaths.bitcoindStatusPath, {
+    processId: 8_222,
+  });
+  await writeJsonFile(servicePaths.bitcoindPidPath, {
+    processId: 8_222,
+  });
+  await writeJsonFile(servicePaths.bitcoindReadyPath, {
+    ready: true,
+  });
+  await writeJsonFile(servicePaths.bitcoindRuntimeConfigPath, {
+    zmqPort: 28_332,
+  });
+  await writeJsonFile(servicePaths.bitcoindWalletStatusPath, {
+    walletRootId: state.walletRootId,
+  });
+  await writeJsonFile(servicePaths.bitcoinConfPath, {
+    durable: true,
+  });
+  await writeJsonFile(fixture.databasePath, {
+    durable: true,
+  });
+
+  const context = resolveWalletRepairContext({
+    dataDir: fixture.dataDir,
+    databasePath: fixture.databasePath,
+    provider: fixture.provider,
+    paths: fixture.paths,
+    nowUnixMs: 123,
+    probeBitcoindService: async () => ({
+      compatibility: "rawtx-zmq-missing",
+      status: {
+        processId: 8_222,
+      },
+      error: "bitcoind_zmq_rawtx_missing",
+    }) as any,
+    attachService,
+    rpcFactory: harness.dependencies.rpcFactory,
+  });
+
+  const result = await repairManagedBitcoindStage({
+    context,
+    servicePaths,
+    state,
+    recoveredFromBackup: false,
+    repairStateNeedsPersist: false,
+  });
+
+  assert.equal(result.bitcoindServiceAction, "restarted-missing-rawtx-zmq");
+  assert.equal(result.bitcoindCompatibilityIssue, "rawtx-zmq-missing");
+  assert.equal(result.bitcoindPostRepairHealth, "ready");
+  assert.equal(attachCalls, 1);
+  assert.deepEqual(
+    killLog.calls.map((call) => [call.pid, call.signal]),
+    [
+      [8_222, "SIGTERM"],
+      [8_222, 0],
+    ],
+  );
+  assert.equal(await pathExists(servicePaths.bitcoindStatusPath), false);
+  assert.equal(await pathExists(servicePaths.bitcoindPidPath), false);
+  assert.equal(await pathExists(servicePaths.bitcoindReadyPath), false);
+  assert.equal(await pathExists(servicePaths.bitcoindRuntimeConfigPath), false);
+  assert.equal(await pathExists(servicePaths.bitcoindWalletStatusPath), false);
+  assert.equal(await pathExists(servicePaths.bitcoinConfPath), true);
+  assert.equal(await pathExists(fixture.databasePath), true);
+
+  const saved = await loadWalletState(
+    {
+      primaryPath: fixture.paths.walletStatePath,
+      backupPath: fixture.paths.walletStateBackupPath,
+    },
+    {
+      provider: fixture.provider,
+    },
+  );
+  assert.equal(saved.state.walletRootId, state.walletRootId);
+});
+
 test("repairManagedBitcoindStage recreates the managed Core replica when verification is not ready", async (t) => {
   const state = createDerivedWalletState({
     proofStatus: "ready",

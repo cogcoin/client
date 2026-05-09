@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import {
   deriveManagedBitcoindWalletStatus,
+  mapManagedBitcoindRuntimeProbeFailure,
   resolveManagedBitcoindProbeDecision,
   validateManagedBitcoindObservedStatus,
 } from "../src/bitcoind/managed-runtime/bitcoind-policy.js";
@@ -177,6 +178,28 @@ test("managed bitcoind probe decisions and health mapping come from the shared p
 
   assert.equal(health.health, "replica-missing");
   assert.match(health.message ?? "", /replica is missing/i);
+});
+
+test("managed bitcoind policy treats missing rawtx ZMQ as repairable compatibility", () => {
+  const status = createManagedBitcoindObservedStatus();
+
+  assert.deepEqual(
+    mapManagedBitcoindRuntimeProbeFailure(new Error("bitcoind_zmq_rawtx_missing"), status),
+    {
+      compatibility: "rawtx-zmq-missing",
+      status,
+      error: "bitcoind_zmq_rawtx_missing",
+    },
+  );
+
+  assert.deepEqual(
+    mapManagedBitcoindRuntimeProbeFailure(new Error("bitcoind_zmq_hashblock_missing"), status),
+    {
+      compatibility: "protocol-error",
+      status,
+      error: "managed_bitcoind_protocol_error",
+    },
+  );
 });
 
 test("managed indexer policy keeps wallet-root adoption permissive but rejects incompatible runtime identity", () => {

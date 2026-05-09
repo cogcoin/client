@@ -127,3 +127,24 @@ test("repair text output marks degraded repair states with sectioned warnings an
   assert.match(output, /\n\nNext step: Run `cogcoin status` to review the repaired local state\.\n$/u);
   assert.equal(stderr.toString(), "");
 });
+
+test("repair text output reports rawtx ZMQ managed bitcoind repair", async () => {
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream();
+
+  const code = await runCli(["repair"], {
+    stdout,
+    stderr,
+    stdin: new FakeInput(true) as never,
+    repairWallet: async () => createRepairResult({
+      bitcoindServiceAction: "restarted-missing-rawtx-zmq",
+      bitcoindCompatibilityIssue: "rawtx-zmq-missing",
+    }),
+  });
+
+  assert.equal(code, 0);
+  const output = stdout.toString();
+  assert.match(output, /✓ Managed bitcoind action: restarted-missing-rawtx-zmq/u);
+  assert.match(output, /✗ Managed bitcoind compatibility issue: rawtx-zmq-missing/u);
+  assert.equal(stderr.toString(), "");
+});

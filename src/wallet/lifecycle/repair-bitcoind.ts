@@ -57,29 +57,38 @@ export async function repairManagedBitcoindStage(options: {
       initialBitcoindProbe.compatibility === "service-version-mismatch"
       || initialBitcoindProbe.compatibility === "wallet-root-mismatch"
       || initialBitcoindProbe.compatibility === "runtime-mismatch"
+      || initialBitcoindProbe.compatibility === "rawtx-zmq-missing"
     ) {
       const processId = initialBitcoindProbe.status?.processId ?? null;
 
       if (processId === null) {
-        throw new Error("managed_bitcoind_process_id_unavailable");
-      }
-
-      try {
-        process.kill(processId, "SIGTERM");
-      } catch (error) {
-        if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "ESRCH") {
-          throw error;
+        if (initialBitcoindProbe.compatibility !== "rawtx-zmq-missing") {
+          throw new Error("managed_bitcoind_process_id_unavailable");
         }
-      }
 
-      await waitForProcessExit(processId, 15_000, "managed_bitcoind_stop_timeout");
-      await clearManagedBitcoindArtifacts(options.servicePaths);
-      bitcoindServiceAction = "stopped-incompatible-service";
+        await clearManagedBitcoindArtifacts(options.servicePaths);
+        bitcoindServiceAction = "restarted-missing-rawtx-zmq";
+      } else {
+        try {
+          process.kill(processId, "SIGTERM");
+        } catch (error) {
+          if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "ESRCH") {
+            throw error;
+          }
+        }
+
+        await waitForProcessExit(processId, 15_000, "managed_bitcoind_stop_timeout");
+        await clearManagedBitcoindArtifacts(options.servicePaths);
+        bitcoindServiceAction = initialBitcoindProbe.compatibility === "rawtx-zmq-missing"
+          ? "restarted-missing-rawtx-zmq"
+          : "stopped-incompatible-service";
+      }
     } else if (initialBitcoindProbe.compatibility === "unreachable") {
       const hasStaleArtifacts = await Promise.all([
         options.servicePaths.bitcoindStatusPath,
         options.servicePaths.bitcoindPidPath,
         options.servicePaths.bitcoindReadyPath,
+        options.servicePaths.bitcoindRuntimeConfigPath,
         options.servicePaths.bitcoindWalletStatusPath,
       ].map(pathExists));
 

@@ -18,6 +18,7 @@ export type ManagedBitcoindServiceCompatibility =
   | "service-version-mismatch"
   | "wallet-root-mismatch"
   | "runtime-mismatch"
+  | "rawtx-zmq-missing"
   | "unreachable"
   | "protocol-error";
 

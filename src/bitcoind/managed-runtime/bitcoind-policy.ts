@@ -15,6 +15,10 @@ function isRuntimeMismatchError(error: unknown): boolean {
     || error.message === "managed_bitcoind_runtime_mismatch";
 }
 
+function isMissingRawTxZmqError(error: unknown): boolean {
+  return error instanceof Error && error.message === "bitcoind_zmq_rawtx_missing";
+}
+
 function isUnreachableManagedBitcoindError(error: unknown): boolean {
   if (error instanceof Error) {
     if ("code" in error) {
@@ -79,6 +83,14 @@ export function mapManagedBitcoindRuntimeProbeFailure(
   error: unknown,
   status: ManagedBitcoindObservedStatus,
 ): ManagedBitcoindServiceProbeResult {
+  if (isMissingRawTxZmqError(error)) {
+    return {
+      compatibility: "rawtx-zmq-missing",
+      status,
+      error: "bitcoind_zmq_rawtx_missing",
+    };
+  }
+
   if (isRuntimeMismatchError(error)) {
     return {
       compatibility: "runtime-mismatch",

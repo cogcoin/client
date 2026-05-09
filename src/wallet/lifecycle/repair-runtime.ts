@@ -90,6 +90,8 @@ export function mapBitcoindCompatibilityToRepairIssue(
       return "wallet-root-mismatch";
     case "runtime-mismatch":
       return "runtime-mismatch";
+    case "rawtx-zmq-missing":
+      return "rawtx-zmq-missing";
     default:
       return "none";
   }
@@ -230,6 +232,7 @@ export async function clearManagedBitcoindArtifacts(
   await rm(servicePaths.bitcoindStatusPath, { force: true }).catch(() => undefined);
   await rm(servicePaths.bitcoindPidPath, { force: true }).catch(() => undefined);
   await rm(servicePaths.bitcoindReadyPath, { force: true }).catch(() => undefined);
+  await rm(servicePaths.bitcoindRuntimeConfigPath, { force: true }).catch(() => undefined);
   await rm(servicePaths.bitcoindWalletStatusPath, { force: true }).catch(() => undefined);
 }
 

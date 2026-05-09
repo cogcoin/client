@@ -62,12 +62,15 @@ test("representative rule modules still produce the expected presentation text",
   const surface = createCliErrorPresentation("cli_wallet_export_removed", "cli_wallet_export_removed");
   const wallet = createCliErrorPresentation("wallet_client_password_locked", "wallet_client_password_locked");
   const services = createCliErrorPresentation("managed_bitcoind_runtime_mismatch", "managed_bitcoind_runtime_mismatch");
+  const rawtx = createCliErrorPresentation("bitcoind_zmq_rawtx_missing", "bitcoind_zmq_rawtx_missing");
   const mutation = createCliErrorPresentation("wallet_transfer_owner_not_locally_controlled", "wallet_transfer_owner_not_locally_controlled");
   const update = createCliErrorPresentation("cli_update_npm_not_found", "cli_update_npm_not_found");
 
   assert.equal(surface?.what, "`wallet export` is no longer available.");
   assert.equal(wallet?.what, "Client password is locked.");
   assert.equal(services?.what, "The live managed bitcoind service runtime does not match this wallet.");
+  assert.equal(rawtx?.what, "The live managed bitcoind service is missing raw transaction ZMQ.");
+  assert.match(rawtx?.next ?? "", /cogcoin repair/u);
   assert.equal(mutation?.what, "Domain owner is not locally controlled.");
   assert.equal(update?.what, "Cogcoin could not find npm to install the update.");
 });
