@@ -30,6 +30,14 @@ export const serviceErrorRules: readonly CliErrorPresentationRule[] = [
       };
     }
 
+    if (errorCode === "managed_bitcoind_service_starting" || /^bitcoind_rpc_[^_]+_-28(?:_|$)/.test(errorCode)) {
+      return {
+        what: "Bitcoin Core is still loading.",
+        why: "The managed Bitcoin RPC service is alive, but Bitcoin Core is still warming up and returned its normal startup -28 response.",
+        next: "Wait for the node to finish loading, then rerun the command. Use `cogcoin status` to check readiness.",
+      };
+    }
+
     if (errorCode.includes("tip_mismatch") || errorCode.includes("stale") || errorCode.includes("catching_up") || errorCode.includes("starting")) {
       return {
         what: "Trusted service state is not ready.",

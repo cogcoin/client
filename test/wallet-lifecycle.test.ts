@@ -315,6 +315,52 @@ async function createRepairFixture(t: TestContext, options: {
   };
 }
 
+test("repair skips indexer repair when restarted bitcoind is still loading", async (t) => {
+  const fixture = await createRepairFixture(t);
+  const killLog = installProcessKillMock(t, [7_777]);
+  const progress: string[] = [];
+  let attachIndexerCalled = false;
+
+  const result = await repairWallet({
+    dataDir: fixture.dataDir,
+    databasePath: fixture.databasePath,
+    provider: fixture.provider,
+    paths: fixture.paths,
+    ...createRepairDependencies(fixture.state),
+    progress: async (event) => {
+      progress.push(event.message);
+    },
+    probeBitcoindService: async () => ({
+      compatibility: "rawtx-zmq-missing",
+      status: {
+        processId: 7_777,
+      },
+      error: "bitcoind_zmq_rawtx_missing",
+    }) as any,
+    attachService: async () => {
+      throw new Error("managed_bitcoind_service_starting");
+    },
+    attachIndexerDaemon: async () => {
+      attachIndexerCalled = true;
+      throw new Error("attachIndexerDaemon should not be called while bitcoind is warming");
+    },
+  });
+
+  assert.equal(result.bitcoindServiceAction, "restarted-missing-rawtx-zmq");
+  assert.equal(result.bitcoindPostRepairHealth, "starting");
+  assert.equal(result.indexerDaemonAction, "none");
+  assert.equal(result.indexerPostRepairHealth, "starting");
+  assert.equal(result.miningResumeAction, "none");
+  assert.match(result.note ?? "", /still loading the block index/u);
+  assert.equal(attachIndexerCalled, false);
+  assert.equal(progress.includes("Checking indexer..."), false);
+  assert.ok(progress.includes("Bitcoin Core is loading the block index; leaving managed bitcoind running."));
+  assert.equal(
+    killLog.calls.filter((call) => call.pid === 7_777 && call.signal === "SIGTERM").length,
+    1,
+  );
+});
+
 test("provider-backed Linux local-file wallets load after client password setup", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-wallet-lifecycle-linux");
   const paths = resolveWalletRuntimePathsForTesting({ homeDirectory, platform: "linux" });

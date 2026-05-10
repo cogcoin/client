@@ -63,6 +63,10 @@ test("representative rule modules still produce the expected presentation text",
   const wallet = createCliErrorPresentation("wallet_client_password_locked", "wallet_client_password_locked");
   const services = createCliErrorPresentation("managed_bitcoind_runtime_mismatch", "managed_bitcoind_runtime_mismatch");
   const rawtx = createCliErrorPresentation("bitcoind_zmq_rawtx_missing", "bitcoind_zmq_rawtx_missing");
+  const warming = createCliErrorPresentation(
+    "bitcoind_rpc_getblockchaininfo_-28_Loading block index…",
+    "bitcoind_rpc_getblockchaininfo_-28_Loading block index…",
+  );
   const mutation = createCliErrorPresentation("wallet_transfer_owner_not_locally_controlled", "wallet_transfer_owner_not_locally_controlled");
   const update = createCliErrorPresentation("cli_update_npm_not_found", "cli_update_npm_not_found");
 
@@ -71,6 +75,8 @@ test("representative rule modules still produce the expected presentation text",
   assert.equal(services?.what, "The live managed bitcoind service runtime does not match this wallet.");
   assert.equal(rawtx?.what, "The live managed bitcoind service is missing raw transaction ZMQ.");
   assert.match(rawtx?.next ?? "", /cogcoin repair/u);
+  assert.equal(warming?.what, "Bitcoin Core is still loading.");
+  assert.match(warming?.next ?? "", /cogcoin status/u);
   assert.equal(mutation?.what, "Domain owner is not locally controlled.");
   assert.equal(update?.what, "Cogcoin could not find npm to install the update.");
 });

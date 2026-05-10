@@ -88,6 +88,7 @@ export function resolveWalletRepairContext(options: {
     attachIndexerDaemon: options.attachIndexerDaemon ?? attachOrStartIndexerDaemon,
     probeIndexerDaemon: options.probeIndexerDaemon ?? probeIndexerDaemon,
     requestMiningPreemption: options.requestMiningPreemption,
+    progress: options.progress ?? (() => undefined),
   };
 }
 

@@ -15,6 +15,7 @@ import type {
 
 export type ManagedBitcoindServiceCompatibility =
   | "compatible"
+  | "starting"
   | "service-version-mismatch"
   | "wallet-root-mismatch"
   | "runtime-mismatch"
@@ -49,7 +50,7 @@ export interface ManagedIndexerDaemonProbeResult<TClient> {
 }
 
 export interface ManagedBitcoindProbeDecision {
-  action: "attach" | "start" | "reject";
+  action: "attach" | "wait" | "start" | "reject";
   error: string | null;
 }
 

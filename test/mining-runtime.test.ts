@@ -2116,6 +2116,67 @@ test("performMiningCycle waits instead of throwing on recoverable managed Bitcoi
   assert.equal(stopCalls, 0);
 });
 
+test("performMiningCycle waits while managed bitcoind is warming up", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-bitcoind-warmup");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  let probeCalls = 0;
+  let stopCalls = 0;
+
+  await assert.doesNotReject(async () => {
+    await performMiningCycleForTesting({
+      dataDir: homeDirectory,
+      databasePath: `${homeDirectory}/client.sqlite`,
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      openReadContext: async () => createRecoveryReadContext(),
+      attachService: async () => {
+        throw new Error("managed_bitcoind_service_starting");
+      },
+      probeService: async () => {
+        probeCalls += 1;
+        return {
+          compatibility: "starting",
+          status: {
+            serviceInstanceId: "svc-starting",
+            processId: process.pid,
+          },
+          error: "bitcoind_rpc_getblockchaininfo_-28_Loading block index…",
+        } as any;
+      },
+      stopService: async () => {
+        stopCalls += 1;
+        return {
+          status: "stopped",
+          walletRootId: "wallet-root",
+        } as any;
+      },
+      rpcFactory: () => {
+        throw new Error("rpcFactory should not be used when bitcoind is warming");
+      },
+      loopState,
+      nowImpl: () => 1_000,
+    });
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-bitcoin-network");
+  assert.equal(snapshot?.lastError, "managed_bitcoind_service_starting");
+  assert.equal(
+    snapshot?.note,
+    "Mining lost contact with the local Bitcoin RPC service and is waiting for it to recover.",
+  );
+  assert.equal(probeCalls, 1);
+  assert.equal(stopCalls, 0);
+});
+
 test("performMiningCycle waits through the live-pid grace window and throttles managed bitcoind restarts", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-rpc-grace");
   const paths = resolveWalletRuntimePathsForTesting({

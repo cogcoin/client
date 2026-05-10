@@ -18,6 +18,7 @@ import {
 import {
   clearOrphanedRepairLocks,
   ensureIndexerDatabaseHealthy,
+  reportRepairProgress,
 } from "./repair-runtime.js";
 import type {
   WalletRepairDependencies,
@@ -43,6 +44,7 @@ export async function repairWallet(options: {
     let loaded;
 
     try {
+      await reportRepairProgress(context, "wallet-check", "Checking wallet state...");
       loaded = await loadWalletState({
         primaryPath: context.paths.walletStatePath,
         backupPath: context.paths.walletStateBackupPath,
@@ -58,11 +60,13 @@ export async function repairWallet(options: {
     let repairStateNeedsPersist = false;
     const servicePaths = resolveManagedServicePaths(context.dataDir, repairedState.walletRootId);
 
+    await reportRepairProgress(context, "lock-cleanup", "Checking repair locks...");
     await clearOrphanedRepairLocks([
       servicePaths.bitcoindLockPath,
       servicePaths.indexerDaemonLockPath,
     ]);
 
+    await reportRepairProgress(context, "mining-cleanup", "Checking mining runtime...");
     const preRepairMiningRuntime = await loadMiningRuntimeStatus(context.paths.miningStatusPath).catch(() => null);
     const miningCleanup = await cleanupMiningForRepair({
       paths: context.paths,
@@ -78,6 +82,7 @@ export async function repairWallet(options: {
     }
 
     if (!context.assumeYes) {
+      await reportRepairProgress(context, "indexer-database-check", "Checking local indexer database...");
       await ensureIndexerDatabaseHealthy({
         databasePath: context.databasePath,
         dataDir: context.dataDir,
@@ -96,7 +101,14 @@ export async function repairWallet(options: {
     repairedState = bitcoindStage.state;
     repairStateNeedsPersist = bitcoindStage.repairStateNeedsPersist;
 
+    const repairNotes: string[] = [];
+
+    if (bitcoindStage.bitcoindPostRepairHealth === "starting") {
+      repairNotes.push("Managed bitcoind was restarted and is still loading the block index; rerun mining after it reaches ready.");
+    }
+
     if (recoveredFromBackup) {
+      await reportRepairProgress(context, "wallet-state-persist", "Persisting repaired wallet state...");
       repairedState = await persistRepairState({
         state: repairedState,
         provider: context.provider,
@@ -106,6 +118,7 @@ export async function repairWallet(options: {
       });
       repairStateNeedsPersist = false;
     } else if (repairStateNeedsPersist) {
+      await reportRepairProgress(context, "wallet-state-persist", "Persisting repaired wallet state...");
       repairedState = await persistRepairState({
         state: repairedState,
         provider: context.provider,
@@ -115,12 +128,27 @@ export async function repairWallet(options: {
       repairStateNeedsPersist = false;
     }
 
-    const indexerStage = await repairManagedIndexerStage({
-      context,
-      servicePaths,
-      state: repairedState,
-    });
+    const indexerStage = bitcoindStage.bitcoindPostRepairHealth === "starting"
+      ? {
+        resetIndexerDatabase: false,
+        indexerDaemonAction: "none" as const,
+        indexerCompatibilityIssue: "none" as const,
+        indexerPostRepairHealth: "starting" as const,
+      }
+      : await (async () => {
+        await reportRepairProgress(context, "indexer-check", "Checking indexer...");
+        return repairManagedIndexerStage({
+          context,
+          servicePaths,
+          state: repairedState,
+        });
+      })();
 
+    if (indexerStage.resetIndexerDatabase) {
+      repairNotes.push("Indexer artifacts were reset and may still be catching up.");
+    }
+
+    await reportRepairProgress(context, "mining-resume", "Checking whether mining should resume...");
     const miningResume = await resumeBackgroundMiningAfterRepair({
       miningPreRepairRunMode,
       provider: context.provider,
@@ -148,9 +176,7 @@ export async function repairWallet(options: {
       miningResumeAction: miningResume.miningResumeAction,
       miningPostRepairRunMode: miningResume.miningPostRepairRunMode,
       miningResumeError: miningResume.miningResumeError,
-      note: indexerStage.resetIndexerDatabase
-        ? "Indexer artifacts were reset and may still be catching up."
-        : null,
+      note: repairNotes.length > 0 ? repairNotes.join(" ") : null,
     };
   } finally {
     await controlLock.release();

@@ -53,6 +53,13 @@ export interface WalletRepairResult {
   note: string | null;
 }
 
+export interface WalletRepairProgressEvent {
+  code: string;
+  message: string;
+}
+
+export type WalletRepairProgressReporter = (event: WalletRepairProgressEvent) => void | Promise<void>;
+
 export interface WalletLifecycleRpcClient {
   getDescriptorInfo(descriptor: string): Promise<{
     descriptor: string;
@@ -130,6 +137,7 @@ export interface WalletRepairDependencies extends WalletManagedCoreDependencies 
   attachIndexerDaemon?: typeof attachOrStartIndexerDaemon;
   probeIndexerDaemon?: typeof probeIndexerDaemon;
   requestMiningPreemption?: typeof requestMiningGenerationPreemption;
+  progress?: WalletRepairProgressReporter;
 }
 
 export interface WalletRepairContext extends WalletManagedCoreContext {
@@ -140,6 +148,7 @@ export interface WalletRepairContext extends WalletManagedCoreContext {
   attachIndexerDaemon: NonNullable<WalletRepairDependencies["attachIndexerDaemon"]>;
   probeIndexerDaemon: NonNullable<WalletRepairDependencies["probeIndexerDaemon"]>;
   requestMiningPreemption?: WalletRepairDependencies["requestMiningPreemption"];
+  progress: WalletRepairProgressReporter;
 }
 
 export interface WalletBitcoindRepairStageResult {

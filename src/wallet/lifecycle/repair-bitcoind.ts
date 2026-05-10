@@ -9,8 +9,10 @@ import { pathExists } from "./context.js";
 import {
   clearManagedBitcoindArtifactsForDataDir,
   isManagedBitcoindRpcUnavailableError,
+  isManagedBitcoindStartupWarmupError,
   mapBitcoindCompatibilityToRepairIssue,
   mapBitcoindRepairHealth,
+  reportRepairProgress,
   waitForProcessExit,
 } from "./repair-runtime.js";
 import type {
@@ -45,6 +47,7 @@ export async function repairManagedBitcoindStage(options: {
   });
 
   try {
+    await reportRepairProgress(options.context, "bitcoind-check", "Checking managed bitcoind...");
     initialBitcoindProbe = await options.context.probeBitcoindService({
       dataDir: options.context.dataDir,
       chain: "main",
@@ -53,6 +56,23 @@ export async function repairManagedBitcoindStage(options: {
     });
 
     bitcoindCompatibilityIssue = mapBitcoindCompatibilityToRepairIssue(initialBitcoindProbe.compatibility);
+
+    if (initialBitcoindProbe.compatibility === "starting") {
+      await reportRepairProgress(
+        options.context,
+        "bitcoind-starting",
+        "Bitcoin Core is loading the block index; leaving managed bitcoind running.",
+      );
+      return {
+        state,
+        repairStateNeedsPersist,
+        recreatedManagedCoreWallet,
+        bitcoindServiceAction,
+        bitcoindCompatibilityIssue,
+        managedCoreReplicaAction,
+        bitcoindPostRepairHealth: "starting",
+      };
+    }
 
     if (
       initialBitcoindProbe.compatibility === "service-version-mismatch"
@@ -67,9 +87,21 @@ export async function repairManagedBitcoindStage(options: {
           throw new Error("managed_bitcoind_process_id_unavailable");
         }
 
+        await reportRepairProgress(
+          options.context,
+          "bitcoind-clear-stale-rawtx",
+          "Clearing stale managed bitcoind runtime missing rawtx ZMQ...",
+        );
         await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
         bitcoindServiceAction = "restarted-missing-rawtx-zmq";
       } else {
+        await reportRepairProgress(
+          options.context,
+          "bitcoind-stop-incompatible",
+          initialBitcoindProbe.compatibility === "rawtx-zmq-missing"
+            ? "Stopping stale managed bitcoind missing rawtx ZMQ..."
+            : "Stopping incompatible managed bitcoind service...",
+        );
         try {
           process.kill(processId, "SIGTERM");
         } catch (error) {
@@ -79,6 +111,7 @@ export async function repairManagedBitcoindStage(options: {
         }
 
         await waitForProcessExit(processId, 15_000, "managed_bitcoind_stop_timeout");
+        await reportRepairProgress(options.context, "bitcoind-clear-artifacts", "Clearing managed bitcoind runtime artifacts...");
         await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
         bitcoindServiceAction = initialBitcoindProbe.compatibility === "rawtx-zmq-missing"
           ? "restarted-missing-rawtx-zmq"
@@ -94,6 +127,7 @@ export async function repairManagedBitcoindStage(options: {
       ].map(pathExists));
 
       if (hasStaleArtifacts.some(Boolean)) {
+        await reportRepairProgress(options.context, "bitcoind-clear-stale", "Clearing stale managed bitcoind artifacts...");
         await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
         bitcoindServiceAction = "cleared-stale-artifacts";
       }
@@ -109,6 +143,14 @@ export async function repairManagedBitcoindStage(options: {
     let handleClosed = false;
 
     try {
+      await reportRepairProgress(
+        options.context,
+        attachAttempt === 0 ? "bitcoind-start" : "bitcoind-retry-start",
+        bitcoindServiceAction === "none"
+          ? "Attaching to managed bitcoind..."
+          : "Starting managed bitcoind with current ZMQ config...",
+      );
+      await reportRepairProgress(options.context, "bitcoind-wait-rpc", "Waiting for Bitcoin Core RPC readiness...");
       bitcoindHandle = await options.context.attachService({
         dataDir: options.context.dataDir,
         chain: "main",
@@ -116,6 +158,7 @@ export async function repairManagedBitcoindStage(options: {
         walletRootId: state.walletRootId,
       });
 
+      await reportRepairProgress(options.context, "bitcoind-normalize-wallet", "Checking managed Bitcoin wallet state...");
       const rpc = options.context.rpcFactory(bitcoindHandle.rpc);
       const normalizedDescriptorState = await normalizeWalletDescriptorState(state, rpc);
 
@@ -148,6 +191,7 @@ export async function repairManagedBitcoindStage(options: {
       });
 
       if (replica.proofStatus !== "ready") {
+        await reportRepairProgress(options.context, "bitcoind-recreate-replica", "Recreating managed Core wallet replica...");
         state = await recreateManagedCoreWalletReplica(
           state,
           options.context.provider,
@@ -169,6 +213,7 @@ export async function repairManagedBitcoindStage(options: {
         });
       }
 
+      await reportRepairProgress(options.context, "bitcoind-final-health", "Checking managed bitcoind post-repair health...");
       const finalBitcoindStatus = await bitcoindHandle.refreshServiceStatus?.() ?? null;
       const chainInfo = await rpc.getBlockchainInfo();
       bitcoindPostRepairHealth = mapBitcoindRepairHealth({
@@ -191,6 +236,23 @@ export async function repairManagedBitcoindStage(options: {
         bitcoindPostRepairHealth,
       };
     } catch (error) {
+      if (isManagedBitcoindStartupWarmupError(error)) {
+        await reportRepairProgress(
+          options.context,
+          "bitcoind-starting",
+          "Bitcoin Core is loading the block index; leaving managed bitcoind running.",
+        );
+        return {
+          state,
+          repairStateNeedsPersist,
+          recreatedManagedCoreWallet,
+          bitcoindServiceAction,
+          bitcoindCompatibilityIssue,
+          managedCoreReplicaAction,
+          bitcoindPostRepairHealth: "starting",
+        };
+      }
+
       if (bitcoindHandle !== null) {
         await bitcoindHandle.stop?.().catch(() => undefined);
         handleClosed = true;
@@ -204,6 +266,7 @@ export async function repairManagedBitcoindStage(options: {
         });
 
         try {
+          await reportRepairProgress(options.context, "bitcoind-clear-stale-rpc", "Clearing stale managed bitcoind RPC artifacts...");
           await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
         } finally {
           await retryLock.release();

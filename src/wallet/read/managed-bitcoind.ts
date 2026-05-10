@@ -106,6 +106,16 @@ async function attachNodeStatus(
     });
     const decision = resolveManagedBitcoindProbeDecision(probe);
 
+    if (decision.action === "wait") {
+      return {
+        handle: null,
+        rpc: null,
+        status: null,
+        observedStatus: probe.status,
+        error: null,
+      };
+    }
+
     if (decision.action === "reject") {
       return {
         handle: null,

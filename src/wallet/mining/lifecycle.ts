@@ -284,6 +284,9 @@ export async function handleRecoverableMiningBitcoindFailure(options: {
     if (probe.compatibility === "compatible") {
       rememberMiningBitcoindRecoveryIdentity(options.loopState, probe.status);
       options.loopState.bitcoinRecoveryFirstUnreachableAtUnixMs = null;
+    } else if (probe.compatibility === "starting") {
+      rememberMiningBitcoindRecoveryIdentity(options.loopState, probe.status);
+      options.loopState.bitcoinRecoveryFirstUnreachableAtUnixMs = null;
     } else if (probe.compatibility === "unreachable") {
       const identityChanged = rememberMiningBitcoindRecoveryIdentity(options.loopState, probe.status);
       const livePid = isMiningBitcoindRecoveryPidAlive(probe.status?.processId ?? null);

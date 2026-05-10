@@ -246,6 +246,75 @@ test("repairManagedBitcoindStage restarts managed bitcoind missing rawtx ZMQ wit
   assert.equal(saved.state.walletRootId, state.walletRootId);
 });
 
+test("repairManagedBitcoindStage returns starting when restarted bitcoind is still warming", async (t) => {
+  const state = createDerivedWalletState({
+    descriptorChecksum: "abcd1234",
+  });
+  const fixture = await createWalletLifecycleFixture(t, { state });
+  const servicePaths = resolveManagedServicePaths(fixture.dataDir, state.walletRootId);
+  const killLog = installProcessKillMock(t, [8_223]);
+  const progress: string[] = [];
+  let attachCalls = 0;
+  let rpcFactoryCalls = 0;
+
+  await writeJsonFile(servicePaths.bitcoindStatusPath, {
+    processId: 8_223,
+  });
+  await writeJsonFile(servicePaths.bitcoindPidPath, {
+    processId: 8_223,
+  });
+
+  const context = resolveWalletRepairContext({
+    dataDir: fixture.dataDir,
+    databasePath: fixture.databasePath,
+    provider: fixture.provider,
+    paths: fixture.paths,
+    nowUnixMs: 123,
+    progress: async (event) => {
+      progress.push(event.message);
+    },
+    probeBitcoindService: async () => ({
+      compatibility: "rawtx-zmq-missing",
+      status: {
+        processId: 8_223,
+      },
+      error: "bitcoind_zmq_rawtx_missing",
+    }) as any,
+    attachService: async () => {
+      attachCalls += 1;
+      throw new Error("managed_bitcoind_service_starting");
+    },
+    rpcFactory: () => {
+      rpcFactoryCalls += 1;
+      throw new Error("rpcFactory should not be called while bitcoind is warming");
+    },
+  });
+
+  const result = await repairManagedBitcoindStage({
+    context,
+    servicePaths,
+    state,
+    recoveredFromBackup: false,
+    repairStateNeedsPersist: false,
+  });
+
+  assert.equal(result.bitcoindServiceAction, "restarted-missing-rawtx-zmq");
+  assert.equal(result.bitcoindCompatibilityIssue, "rawtx-zmq-missing");
+  assert.equal(result.bitcoindPostRepairHealth, "starting");
+  assert.equal(attachCalls, 1);
+  assert.equal(rpcFactoryCalls, 0);
+  assert.deepEqual(
+    killLog.calls.map((call) => [call.pid, call.signal]),
+    [
+      [8_223, "SIGTERM"],
+      [8_223, 0],
+    ],
+  );
+  assert.ok(progress.includes("Stopping stale managed bitcoind missing rawtx ZMQ..."));
+  assert.ok(progress.includes("Waiting for Bitcoin Core RPC readiness..."));
+  assert.ok(progress.includes("Bitcoin Core is loading the block index; leaving managed bitcoind running."));
+});
+
 test("repairManagedBitcoindStage retries after stale managed RPC artifacts refuse connections", async (t) => {
   const state = createDerivedWalletState({
     descriptorChecksum: "abcd1234",

@@ -12,7 +12,7 @@ import type { ManagedBitcoindObservedStatus, ManagedBitcoindServiceStatus } from
 import { openClient } from "../../client.js";
 import { openSqliteStore } from "../../sqlite/index.js";
 import { clearOrphanedFileLock } from "../fs/lock.js";
-import type { WalletRepairResult } from "./types.js";
+import type { WalletRepairContext, WalletRepairResult } from "./types.js";
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -123,6 +123,25 @@ export function mapBitcoindRepairHealth(options: {
   }
 
   return "ready";
+}
+
+export async function reportRepairProgress(
+  context: Pick<WalletRepairContext, "progress">,
+  code: string,
+  message: string,
+): Promise<void> {
+  await context.progress({ code, message });
+}
+
+export function isManagedBitcoindStartupWarmupError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+
+  return message === "managed_bitcoind_service_starting"
+    || message === "bitcoind_rpc_timeout"
+    || message === "bitcoind_cookie_timeout"
+    || /^bitcoind_rpc_[^_]+_-28(?:_|$)/.test(message)
+    || message.startsWith("The managed Bitcoin RPC cookie file is unavailable at ")
+    || message.startsWith("The managed Bitcoin RPC cookie file could not be read at ");
 }
 
 function mapLeaseStateToRepairHealth(state: string): WalletRepairResult["indexerPostRepairHealth"] {

@@ -148,3 +148,40 @@ test("repair text output reports rawtx ZMQ managed bitcoind repair", async () =>
   assert.match(output, /✗ Managed bitcoind compatibility issue: rawtx-zmq-missing/u);
   assert.equal(stderr.toString(), "");
 });
+
+test("repair text output streams progress and explains bitcoind warmup", async () => {
+  const stdout = new MemoryStream();
+  const stderr = new MemoryStream();
+
+  const code = await runCli(["repair"], {
+    stdout,
+    stderr,
+    stdin: new FakeInput(true) as never,
+    repairWallet: async (options: any) => {
+      await options.progress({ code: "bitcoind-check", message: "Checking managed bitcoind..." });
+      await options.progress({ code: "bitcoind-wait-rpc", message: "Waiting for Bitcoin Core RPC readiness..." });
+      await options.progress({
+        code: "bitcoind-starting",
+        message: "Bitcoin Core is loading the block index; leaving managed bitcoind running.",
+      });
+      return createRepairResult({
+        bitcoindServiceAction: "restarted-missing-rawtx-zmq",
+        bitcoindCompatibilityIssue: "rawtx-zmq-missing",
+        bitcoindPostRepairHealth: "starting",
+        indexerPostRepairHealth: "starting",
+        miningResumeAction: "skipped-post-repair-blocked",
+        note: "Managed bitcoind was restarted and is still loading the block index; rerun mining after it reaches ready.",
+      });
+    },
+  });
+
+  assert.equal(code, 0);
+  const output = stdout.toString();
+  assert.match(output, /Checking managed bitcoind\.\.\./u);
+  assert.match(output, /Waiting for Bitcoin Core RPC readiness\.\.\./u);
+  assert.match(output, /Bitcoin Core is loading the block index; leaving managed bitcoind running\./u);
+  assert.match(output, /✗ Managed bitcoind post-repair health: starting/u);
+  assert.match(output, /✓ Note: Managed bitcoind was restarted and is still loading the block index; rerun mining after it reaches ready\./u);
+  assert.match(output, /Next step: Wait for Bitcoin Core to finish loading, then run `cogcoin status` or rerun `cogcoin mine`\./u);
+  assert.equal(stderr.toString(), "");
+});

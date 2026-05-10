@@ -60,7 +60,11 @@ function getResetNextSteps(result: WalletResetResult): string[] {
     : ["Run `cogcoin sync` to bootstrap assumeutxo and the managed Bitcoin/indexer state."];
 }
 
-function getRepairNextSteps(): string[] {
+function getRepairNextSteps(result: WalletRepairResult): string[] {
+  if (result.bitcoindPostRepairHealth === "starting") {
+    return ["Wait for Bitcoin Core to finish loading, then run `cogcoin status` or rerun `cogcoin mine`."];
+  }
+
   return ["Run `cogcoin status` to review the repaired local state."];
 }
 
@@ -177,7 +181,7 @@ function buildRepairWarningEntries(result: WalletRepairResult): SectionTextEntry
 }
 
 function formatRepairResultText(result: WalletRepairResult): string {
-  const nextStep = getRepairNextSteps()[0] ?? null;
+  const nextStep = getRepairNextSteps(result)[0] ?? null;
   const warningEntries = buildRepairWarningEntries(result);
   const sections = [
     formatAdminSection("Wallet", [
@@ -345,6 +349,9 @@ export async function runWalletAdminCommand(
           provider: repairProvider,
           assumeYes: parsed.assumeYes,
           paths: runtimePaths,
+          progress: async (event) => {
+            writeLine(context.stdout, event.message);
+          },
         });
         writeLine(context.stdout, formatRepairResultText(result));
         return 0;

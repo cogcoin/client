@@ -99,6 +99,10 @@ export async function attachOrStartManagedBitcoindRuntime<
     throw new Error("managed_bitcoind_protocol_error");
   }
 
+  if (existingDecision.action === "wait") {
+    return waitForManagedBitcoindRuntime(options, dependencies);
+  }
+
   if (existingDecision.action === "reject") {
     throw new Error(existingDecision.error ?? "managed_bitcoind_protocol_error");
   }
@@ -120,6 +124,10 @@ export async function attachOrStartManagedBitcoindRuntime<
         }
 
         throw new Error("managed_bitcoind_protocol_error");
+      }
+
+      if (liveDecision.action === "wait") {
+        return waitForManagedBitcoindRuntime(options, dependencies);
       }
 
       if (liveDecision.action === "reject") {

@@ -23,9 +23,27 @@ export function consumeManagedRpcRetryDelayMs(state: ManagedRpcRetryState): numb
 }
 
 export function isRetryableManagedRpcError(error: unknown): boolean {
+  if (isManagedRpcWarmupError(error)) {
+    return true;
+  }
+
   const message = error instanceof Error ? error.message : String(error);
 
-  if (message === "bitcoind_rpc_timeout") {
+  if (message.startsWith("The managed Bitcoin RPC request to ")) {
+    return message.includes(" failed");
+  }
+
+  return false;
+}
+
+export function isManagedRpcWarmupError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (
+    message === "managed_bitcoind_service_starting"
+    || message === "bitcoind_rpc_timeout"
+    || message === "bitcoind_cookie_timeout"
+  ) {
     return true;
   }
 
@@ -34,7 +52,14 @@ export function isRetryableManagedRpcError(error: unknown): boolean {
   }
 
   if (message.startsWith("The managed Bitcoin RPC request to ")) {
-    return message.includes(" failed");
+    return message.includes(" failed")
+      && (
+        message.includes("ECONNREFUSED")
+        || message.includes("ECONNRESET")
+        || message.includes("socket hang up")
+        || message.includes("timeout")
+        || message.includes("aborted")
+      );
   }
 
   return message.startsWith("The managed Bitcoin RPC cookie file is unavailable at ")

@@ -35,6 +35,7 @@ import {
   type BitcoindZmqConfig,
   waitForManagedBitcoindCookie,
 } from "./managed-bitcoind-service-config.js";
+import { isManagedRpcWarmupError } from "./retryable-rpc.js";
 import type { ManagedBitcoindServiceProbeResult } from "./managed-runtime/types.js";
 
 export async function waitForManagedBitcoindRpcReady(
@@ -204,12 +205,14 @@ export async function refreshManagedBitcoindStatus(
     await writeManagedBitcoindStatus(paths, nextStatus);
     return nextStatus;
   } catch (error) {
+    const processAlive = await isManagedBitcoindProcessAlive(status.processId);
+    const stillStarting = processAlive && isManagedRpcWarmupError(error);
     const nextStatus: ManagedBitcoindServiceStatus = {
       ...status,
       walletRootId: targetWalletRootId,
       runtimeRoot: paths.walletRuntimeRoot,
-      state: "failed",
-      processId: await isManagedBitcoindProcessAlive(status.processId) ? status.processId : null,
+      state: stillStarting ? "starting" : "failed",
+      processId: processAlive ? status.processId : null,
       heartbeatAtUnixMs: nowUnixMs,
       updatedAtUnixMs: nowUnixMs,
       lastError: error instanceof Error ? error.message : String(error),

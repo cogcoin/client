@@ -1,5 +1,6 @@
 import { join } from "node:path";
 
+import { isManagedRpcWarmupError } from "../retryable-rpc.js";
 import { resolveManagedServicePaths } from "../service-paths.js";
 import { MANAGED_BITCOIND_SERVICE_API_VERSION } from "../types.js";
 import type { ManagedBitcoindObservedStatus } from "../types.js";
@@ -99,6 +100,14 @@ export function mapManagedBitcoindRuntimeProbeFailure(
     };
   }
 
+  if (isManagedRpcWarmupError(error)) {
+    return {
+      compatibility: "starting",
+      status,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
   if (isUnreachableManagedBitcoindError(error)) {
     return {
       compatibility: "unreachable",
@@ -121,6 +130,13 @@ export function resolveManagedBitcoindProbeDecision(
     return {
       action: "attach",
       error: null,
+    };
+  }
+
+  if (probe.compatibility === "starting") {
+    return {
+      action: "wait",
+      error: probe.error ?? "managed_bitcoind_service_starting",
     };
   }
 
@@ -163,6 +179,12 @@ function mapManagedBitcoindStartupError(message: string): WalletBitcoindStatus {
         status: null,
         message: "The live managed bitcoind service runtime does not match this wallet's expected data directory or chain.",
       };
+    case "managed_bitcoind_service_starting":
+      return {
+        health: "starting",
+        status: null,
+        message: "Managed bitcoind service is still starting.",
+      };
     case "managed_bitcoind_protocol_error":
       return {
         health: "unavailable",
@@ -170,6 +192,14 @@ function mapManagedBitcoindStartupError(message: string): WalletBitcoindStatus {
         message: "The managed bitcoind runtime artifacts are invalid or incomplete.",
       };
     default:
+      if (/^bitcoind_rpc_[^_]+_-28(?:_|$)/.test(message)) {
+        return {
+          health: "starting",
+          status: null,
+          message,
+        };
+      }
+
       return {
         health: "unavailable",
         status: null,

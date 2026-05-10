@@ -10,6 +10,7 @@ import { readManagedBitcoindObservedStatus, listManagedBitcoindStatusCandidates 
 import { attachOrStartManagedBitcoindRuntime, probeManagedBitcoindRuntime } from "./managed-runtime/bitcoind-runtime.js";
 import type { ManagedBitcoindServiceProbeResult } from "./managed-runtime/types.js";
 import { createRpcClient, validateNodeConfigForTesting } from "./node.js";
+import { isManagedRpcWarmupError } from "./retryable-rpc.js";
 import { resolveManagedServicePaths, UNINITIALIZED_WALLET_ROOT_ID } from "./service-paths.js";
 import {
   DEFAULT_MANAGED_BITCOIND_FOLLOW_POLL_INTERVAL_MS,
@@ -295,6 +296,30 @@ export async function attachOrStartManagedBitcoindService(
           }
 
           const rpc = createRpcClient(rpcConfig);
+          const startedAtUnixMs = Date.now();
+          const serviceInstanceId = randomBytes(16).toString("hex");
+          const startingStatus = createBitcoindServiceStatus({
+            binaryVersion,
+            serviceInstanceId,
+            state: "starting",
+            processId: child.pid ?? null,
+            walletRootId: startOptions.walletRootId,
+            chain: startOptions.chain,
+            dataDir: startOptions.dataDir,
+            runtimeRoot: paths.walletRuntimeRoot,
+            startHeight: startOptions.startHeight,
+            rpc: rpcConfig,
+            zmq: zmqConfig,
+            p2pPort: runtimeConfig.p2pPort,
+            getblockArchiveEndHeight: runtimeConfig.getblockArchiveEndHeight ?? null,
+            getblockArchiveSha256: runtimeConfig.getblockArchiveSha256 ?? null,
+            walletReplica: null,
+            startedAtUnixMs,
+            heartbeatAtUnixMs: startedAtUnixMs,
+            lastError: "Managed bitcoind service is starting.",
+          });
+          await writeManagedBitcoindRuntimeConfigFile(paths.bitcoindRuntimeConfigPath, runtimeConfig);
+          await writeManagedBitcoindStatus(paths, startingStatus);
 
           try {
             await waitForManagedBitcoindRpcReady(rpc, rpcConfig.cookieFile, startOptions.chain, startupTimeoutMs);
@@ -302,6 +327,22 @@ export async function attachOrStartManagedBitcoindService(
               requireRawTxZmq: true,
             });
           } catch (error) {
+            const processAlive = child.pid !== undefined && await isManagedBitcoindProcessAlive(child.pid);
+            if (
+              startOptions.serviceLifetime !== "ephemeral"
+              && processAlive
+              && isManagedRpcWarmupError(error)
+            ) {
+              const nowUnixMs = Date.now();
+              await writeManagedBitcoindStatus(paths, {
+                ...startingStatus,
+                heartbeatAtUnixMs: nowUnixMs,
+                updatedAtUnixMs: nowUnixMs,
+                lastError: error instanceof Error ? error.message : String(error),
+              });
+              throw new Error("managed_bitcoind_service_starting");
+            }
+
             if (child.pid !== undefined) {
               try {
                 process.kill(child.pid, "SIGTERM");
@@ -324,7 +365,7 @@ export async function attachOrStartManagedBitcoindService(
             runtimeConfig,
             status: createBitcoindServiceStatus({
               binaryVersion,
-              serviceInstanceId: randomBytes(16).toString("hex"),
+              serviceInstanceId,
               state: "ready",
               processId: child.pid ?? null,
               walletRootId: startOptions.walletRootId,
@@ -338,7 +379,7 @@ export async function attachOrStartManagedBitcoindService(
               getblockArchiveEndHeight: runtimeConfig.getblockArchiveEndHeight ?? null,
               getblockArchiveSha256: runtimeConfig.getblockArchiveSha256 ?? null,
               walletReplica,
-              startedAtUnixMs: nowUnixMs,
+              startedAtUnixMs,
               heartbeatAtUnixMs: nowUnixMs,
               lastError: walletReplica.message ?? null,
             }),
@@ -351,6 +392,10 @@ export async function attachOrStartManagedBitcoindService(
         try {
           ({ runtimeConfig, status } = await startManagedProcess(runtimeOptions));
         } catch (error) {
+          if (isManagedRpcWarmupError(error)) {
+            throw error;
+          }
+
           if (runtimeOptions.getblockArchivePath === undefined || runtimeOptions.getblockArchivePath === null) {
             throw error;
           }

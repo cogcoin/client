@@ -202,6 +202,35 @@ test("managed bitcoind policy treats missing rawtx ZMQ as repairable compatibili
   );
 });
 
+test("managed bitcoind policy treats live RPC warmup as starting", () => {
+  const status = createManagedBitcoindObservedStatus({
+    state: "starting",
+    lastError: "bitcoind_rpc_getblockchaininfo_-28_Loading block index…",
+  });
+  const probe = mapManagedBitcoindRuntimeProbeFailure(
+    new Error("bitcoind_rpc_getblockchaininfo_-28_Loading block index…"),
+    status,
+  );
+
+  assert.deepEqual(probe, {
+    compatibility: "starting",
+    status,
+    error: "bitcoind_rpc_getblockchaininfo_-28_Loading block index…",
+  });
+  assert.deepEqual(resolveManagedBitcoindProbeDecision(probe), {
+    action: "wait",
+    error: "bitcoind_rpc_getblockchaininfo_-28_Loading block index…",
+  });
+
+  const health = deriveManagedBitcoindWalletStatus({
+    status,
+    nodeStatus: null,
+    startupError: null,
+  });
+  assert.equal(health.health, "starting");
+  assert.match(health.message ?? "", /Loading block index/u);
+});
+
 test("managed indexer policy keeps wallet-root adoption permissive but rejects incompatible runtime identity", () => {
   assert.doesNotThrow(() => validateIndexerRuntimeIdentity(
     createManagedIndexerDaemonObservedStatus({
