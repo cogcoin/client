@@ -4305,6 +4305,72 @@ test("runCompetitivenessGate uses persisted indexed contexts without refetching 
   assert.equal(secondDecision.mempoolSequenceCacheStatus, "indexed");
 });
 
+test("runCompetitivenessGate evaluates hydrated indexed contexts", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-evaluate");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const candidate = createGateCandidate();
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+  const txid = "aa".repeat(32);
+  let rawMempoolEntryCalls = 0;
+
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: {
+      async getRawMempoolVerbose() {
+        return {
+          txids: [txid],
+          mempool_sequence: "seq-1",
+        };
+      },
+      async getRawMempoolEntries() {
+        rawMempoolEntryCalls += 1;
+        throw new Error("indexed path should not fetch full mempool metadata");
+      },
+      async getRawTransaction() {
+        return createMineTransaction({
+          txid,
+          domainId: candidate.domainId,
+          senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+          referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+          sentenceFill: "a",
+        });
+      },
+      async getMempoolEntry() {
+        return {
+          vsize: 200,
+          fees: {
+            base: 0.00001,
+            ancestor: 0.00001,
+            descendant: 0.00001,
+          },
+          ancestorsize: 200,
+          descendantsize: 200,
+        };
+      },
+    } as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      ["a".repeat(60)]: candidate.canonicalBlend,
+    }) as any,
+    mempoolIndex: {
+      rawTxSupported: true,
+      cachePath,
+      serviceIdentity: "service-1",
+    },
+  });
+
+  assert.equal(rawMempoolEntryCalls, 0);
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.decision, "suppressed-same-domain-mempool");
+  assert.equal(decision.sameDomainCompetitorSuppressed, true);
+  assert.equal(decision.mempoolSequenceCacheStatus, "index-warming");
+});
+
 test("runCompetitivenessGate hydrates only unknown indexed mempool deltas", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-delta");
   const cachePath = join(homeDirectory, "mempool-index.json");

@@ -946,7 +946,7 @@ export async function runCompetitivenessGate(options: {
     });
     options.throwIfStopping?.();
     const txid = visibleTxids[index]!;
-    const context = cacheState.rawTxContexts.get(txid);
+    const context = rawTxContexts.get(txid);
     const mempoolEntry = mempoolEntries[txid];
 
     if (context === undefined || context.payload === null || context.senderScriptHex === null || mempoolEntry === undefined) {
@@ -961,7 +961,7 @@ export async function runCompetitivenessGate(options: {
     const overlayDomain = await resolveOverlayAuthorizedMiningDomain({
       readContext: options.readContext,
       txid,
-      txContexts: cacheState.rawTxContexts,
+      txContexts: rawTxContexts,
       domainId: decoded.domainId,
       senderScriptHex: context.senderScriptHex,
     });

@@ -3,7 +3,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { COG_PREFIX } from "../cogop/constants.js";
-import { writeJsonFileAtomic } from "../fs/atomic.js";
+import { writeFileAtomic } from "../fs/atomic.js";
 import { extractOpReturnPayloadFromScriptHex } from "../tx/register.js";
 import type { WalletRuntimePaths } from "../runtime.js";
 import type { MiningCooperativeYield, MiningRpcClient } from "./engine-types.js";
@@ -54,6 +54,8 @@ interface MiningMempoolIndexState {
   negativeTxids: Set<string>;
   loaded: boolean;
   savePromise: Promise<void>;
+  saveScheduled: ReturnType<typeof setTimeout> | null;
+  saveDirty: boolean;
 }
 
 interface RawTxSubscriberLike extends AsyncIterable<unknown> {
@@ -80,6 +82,7 @@ interface ParsedRawTransactionIndexContext {
 
 const indexStates = new Map<string, MiningMempoolIndexState>();
 const rawTxSubscribers = new Map<string, RawTxSubscriberState>();
+const RAW_TX_SUBSCRIBER_SAVE_DEBOUNCE_MS = 1_000;
 
 export function resolveMiningMempoolIndexCachePath(paths: Pick<WalletRuntimePaths, "miningRoot">): string {
   return join(paths.miningRoot, "mempool-index.json");
@@ -199,6 +202,8 @@ function getOrCreateState(options: {
     negativeTxids: new Set(),
     loaded: false,
     savePromise: Promise.resolve(),
+    saveScheduled: null,
+    saveDirty: false,
   };
   indexStates.set(key, created);
   return created;
@@ -217,9 +222,32 @@ async function saveState(state: MiningMempoolIndexState): Promise<void> {
 
   state.savePromise = state.savePromise.catch(() => undefined).then(async () => {
     await mkdir(dirname(state.cachePath), { recursive: true });
-    await writeJsonFileAtomic(state.cachePath, payload, { mode: 0o600 });
+    await writeFileAtomic(state.cachePath, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
   });
   await state.savePromise;
+}
+
+function scheduleStateSave(state: MiningMempoolIndexState): void {
+  state.saveDirty = true;
+  if (state.saveScheduled !== null) {
+    return;
+  }
+
+  state.saveScheduled = setTimeout(() => {
+    state.saveScheduled = null;
+    if (!state.saveDirty) {
+      return;
+    }
+
+    state.saveDirty = false;
+    void saveState(state)
+      .catch(() => undefined)
+      .finally(() => {
+        if (state.saveDirty) {
+          scheduleStateSave(state);
+        }
+      });
+  }, RAW_TX_SUBSCRIBER_SAVE_DEBOUNCE_MS);
 }
 
 function pruneStateToVisibleTxids(state: MiningMempoolIndexState, visibleTxids: readonly string[]): boolean {
@@ -611,8 +639,11 @@ export async function ensureMiningMempoolRawTxSubscriber(options: {
           continue;
         }
 
+        const previousSize = state.negativeTxids.size;
         state.negativeTxids.add(parsed.txid);
-        void saveState(state).catch(() => undefined);
+        if (state.negativeTxids.size !== previousSize) {
+          scheduleStateSave(state);
+        }
       }
     } catch {
       // The index remains conservative; the gate hydrates unknown txids by RPC.

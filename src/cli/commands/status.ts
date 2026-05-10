@@ -14,14 +14,14 @@ export async function runStatusCommand(
   const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
   const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
   const runtimePaths = context.resolveWalletRuntimePaths();
+  const packageVersion = await context.readPackageVersion();
 
   if (!parsed.statusLive) {
     const status = await context.inspectPassiveClientStatus(dbPath, dataDir, runtimePaths);
-    writeLine(context.stdout, formatStatusReport(status));
+    writeLine(context.stdout, formatStatusReport(status, packageVersion));
     return 0;
   }
 
-  const packageVersion = await context.readPackageVersion();
   await context.ensureDirectory(dirname(dbPath));
   const provider = withInteractiveWalletSecretProvider(
     context.walletSecretProvider,
