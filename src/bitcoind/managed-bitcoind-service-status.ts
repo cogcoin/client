@@ -134,7 +134,9 @@ export async function probeManagedBitcoindStatusCandidate(
       status.chain,
       options.startupTimeoutMs ?? DEFAULT_MANAGED_BITCOIND_STARTUP_TIMEOUT_MS,
     );
-    await validateNodeConfigForTesting(rpc, status.chain, status.zmq.endpoint);
+    await validateNodeConfigForTesting(rpc, status.chain, status.zmq.endpoint, {
+      requireRawTxZmq: true,
+    });
     return {
       compatibility: "compatible",
       status,
@@ -184,7 +186,9 @@ export async function refreshManagedBitcoindStatus(
       status.chain,
       options.startupTimeoutMs ?? DEFAULT_MANAGED_BITCOIND_STARTUP_TIMEOUT_MS,
     );
-    await validateNodeConfigForTesting(rpc, status.chain, status.zmq.endpoint);
+    await validateNodeConfigForTesting(rpc, status.chain, status.zmq.endpoint, {
+      requireRawTxZmq: true,
+    });
     const walletReplica = await loadManagedWalletReplicaIfPresent(rpc, targetWalletRootId, status.dataDir);
     const nextStatus: ManagedBitcoindServiceStatus = {
       ...status,

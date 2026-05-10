@@ -246,6 +246,93 @@ test("repairManagedBitcoindStage restarts managed bitcoind missing rawtx ZMQ wit
   assert.equal(saved.state.walletRootId, state.walletRootId);
 });
 
+test("repairManagedBitcoindStage retries after stale managed RPC artifacts refuse connections", async (t) => {
+  const state = createDerivedWalletState({
+    descriptorChecksum: "abcd1234",
+  });
+  const fixture = await createWalletLifecycleFixture(t, { state });
+  const servicePaths = resolveManagedServicePaths(fixture.dataDir, state.walletRootId);
+  const harness = createManagedCoreRpcHarness({
+    mnemonic: state.mnemonic.phrase,
+    loadedWallets: [state.managedCoreWallet.walletName],
+  });
+  let attachCalls = 0;
+  let blockchainInfoCalls = 0;
+
+  await writeJsonFile(servicePaths.bitcoindStatusPath, {
+    processId: 9_333,
+  });
+  await writeJsonFile(servicePaths.bitcoindPidPath, {
+    processId: 9_333,
+  });
+  await writeJsonFile(servicePaths.bitcoindReadyPath, {
+    ready: true,
+  });
+  await writeJsonFile(servicePaths.bitcoindRuntimeConfigPath, {
+    rpcPort: 53_890,
+  });
+  await writeJsonFile(servicePaths.bitcoindWalletStatusPath, {
+    walletRootId: state.walletRootId,
+  });
+
+  const context = resolveWalletRepairContext({
+    dataDir: fixture.dataDir,
+    databasePath: fixture.databasePath,
+    provider: fixture.provider,
+    paths: fixture.paths,
+    nowUnixMs: 123,
+    probeBitcoindService: async () => ({
+      compatibility: "compatible",
+      status: {
+        processId: 9_333,
+      },
+      error: null,
+    }) as any,
+    attachService: async () => {
+      attachCalls += 1;
+      return {
+        rpc: {} as any,
+        refreshServiceStatus: async () => ({ state: "ready" }),
+        stop: async () => undefined,
+      } as any;
+    },
+    rpcFactory: () => ({
+      ...harness.rpc,
+      async getBlockchainInfo() {
+        blockchainInfoCalls += 1;
+
+        if (blockchainInfoCalls === 1) {
+          throw new Error("The managed Bitcoin RPC request to 127.0.0.1:53890 for getblockchaininfo failed: connect ECONNREFUSED 127.0.0.1:53890.");
+        }
+
+        return {
+          blocks: 10,
+          headers: 10,
+        };
+      },
+    }) as any,
+  });
+
+  const result = await repairManagedBitcoindStage({
+    context,
+    servicePaths,
+    state,
+    recoveredFromBackup: false,
+    repairStateNeedsPersist: false,
+  });
+
+  assert.equal(result.bitcoindServiceAction, "restarted-compatible-service");
+  assert.equal(result.bitcoindCompatibilityIssue, "none");
+  assert.equal(result.bitcoindPostRepairHealth, "ready");
+  assert.equal(attachCalls, 2);
+  assert.equal(blockchainInfoCalls, 2);
+  assert.equal(await pathExists(servicePaths.bitcoindStatusPath), false);
+  assert.equal(await pathExists(servicePaths.bitcoindPidPath), false);
+  assert.equal(await pathExists(servicePaths.bitcoindReadyPath), false);
+  assert.equal(await pathExists(servicePaths.bitcoindRuntimeConfigPath), false);
+  assert.equal(await pathExists(servicePaths.bitcoindWalletStatusPath), false);
+});
+
 test("repairManagedBitcoindStage recreates the managed Core replica when verification is not ready", async (t) => {
   const state = createDerivedWalletState({
     proofStatus: "ready",

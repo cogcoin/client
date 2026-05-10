@@ -201,6 +201,26 @@ export async function isProcessAlive(pid: number | null): Promise<boolean> {
   }
 }
 
+export function isManagedBitcoindRpcUnavailableError(error: unknown): boolean {
+  if (error instanceof Error && "code" in error) {
+    const code = (error as NodeJS.ErrnoException).code;
+
+    if (code === "ENOENT" || code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EPIPE") {
+      return true;
+    }
+  }
+
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.message === "bitcoind_cookie_timeout"
+    || error.message.includes("cookie file is unavailable")
+    || error.message.includes("ECONNREFUSED")
+    || error.message.includes("ECONNRESET")
+    || error.message.includes("socket hang up");
+}
+
 export async function waitForProcessExit(
   pid: number,
   timeoutMs = 15_000,

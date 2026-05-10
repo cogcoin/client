@@ -8,6 +8,7 @@ import { recreateManagedCoreWalletReplica, verifyManagedCoreWalletReplica } from
 import { pathExists } from "./context.js";
 import {
   clearManagedBitcoindArtifacts,
+  isManagedBitcoindRpcUnavailableError,
   mapBitcoindCompatibilityToRepairIssue,
   mapBitcoindRepairHealth,
   waitForProcessExit,
@@ -103,89 +104,125 @@ export async function repairManagedBitcoindStage(options: {
     await bitcoindLock.release();
   }
 
-  const bitcoindHandle = await options.context.attachService({
-    dataDir: options.context.dataDir,
-    chain: "main",
-    startHeight: 0,
-    walletRootId: state.walletRootId,
-  });
+  for (let attachAttempt = 0; attachAttempt < 2; attachAttempt += 1) {
+    let bitcoindHandle: Awaited<ReturnType<WalletRepairContext["attachService"]>> | null = null;
+    let handleClosed = false;
 
-  try {
-    const rpc = options.context.rpcFactory(bitcoindHandle.rpc);
-    const normalizedDescriptorState = await normalizeWalletDescriptorState(state, rpc);
+    try {
+      bitcoindHandle = await options.context.attachService({
+        dataDir: options.context.dataDir,
+        chain: "main",
+        startHeight: 0,
+        walletRootId: state.walletRootId,
+      });
 
-    if (normalizedDescriptorState.changed) {
-      state = normalizedDescriptorState.state;
-      repairStateNeedsPersist = true;
-    }
+      const rpc = options.context.rpcFactory(bitcoindHandle.rpc);
+      const normalizedDescriptorState = await normalizeWalletDescriptorState(state, rpc);
 
-    const reconciledCoinControl = await persistWalletCoinControlStateIfNeeded({
-      state,
-      access: {
-        provider: options.context.provider,
-        secretReference: createWalletSecretReference(state.walletRootId),
-      },
-      paths: options.context.paths,
-      nowUnixMs: options.context.nowUnixMs,
-      replacePrimary: options.recoveredFromBackup && !repairStateNeedsPersist,
-      rpc,
-    });
-    state = reconciledCoinControl.state;
+      if (normalizedDescriptorState.changed) {
+        state = normalizedDescriptorState.state;
+        repairStateNeedsPersist = true;
+      }
 
-    if (reconciledCoinControl.changed) {
-      repairStateNeedsPersist = false;
-    }
-
-    let replica = await verifyManagedCoreWalletReplica(state, options.context.dataDir, {
-      nodeHandle: bitcoindHandle,
-      attachService: options.context.attachService,
-      rpcFactory: options.context.rpcFactory,
-    });
-
-    if (replica.proofStatus !== "ready") {
-      state = await recreateManagedCoreWalletReplica(
+      const reconciledCoinControl = await persistWalletCoinControlStateIfNeeded({
         state,
-        options.context.provider,
-        options.context.paths,
-        options.context.dataDir,
-        options.context.nowUnixMs,
-        {
-          attachService: options.context.attachService,
-          rpcFactory: options.context.rpcFactory,
+        access: {
+          provider: options.context.provider,
+          secretReference: createWalletSecretReference(state.walletRootId),
         },
-      );
-      recreatedManagedCoreWallet = true;
-      managedCoreReplicaAction = "recreated";
-      repairStateNeedsPersist = false;
-      replica = await verifyManagedCoreWalletReplica(state, options.context.dataDir, {
+        paths: options.context.paths,
+        nowUnixMs: options.context.nowUnixMs,
+        replacePrimary: options.recoveredFromBackup && !repairStateNeedsPersist,
+        rpc,
+      });
+      state = reconciledCoinControl.state;
+
+      if (reconciledCoinControl.changed) {
+        repairStateNeedsPersist = false;
+      }
+
+      let replica = await verifyManagedCoreWalletReplica(state, options.context.dataDir, {
         nodeHandle: bitcoindHandle,
         attachService: options.context.attachService,
         rpcFactory: options.context.rpcFactory,
       });
-    }
 
-    const finalBitcoindStatus = await bitcoindHandle.refreshServiceStatus?.() ?? null;
-    const chainInfo = await rpc.getBlockchainInfo();
-    bitcoindPostRepairHealth = mapBitcoindRepairHealth({
-      serviceState: finalBitcoindStatus?.state ?? null,
-      catchingUp: chainInfo.blocks < chainInfo.headers,
-      replica,
-    });
+      if (replica.proofStatus !== "ready") {
+        state = await recreateManagedCoreWalletReplica(
+          state,
+          options.context.provider,
+          options.context.paths,
+          options.context.dataDir,
+          options.context.nowUnixMs,
+          {
+            attachService: options.context.attachService,
+            rpcFactory: options.context.rpcFactory,
+          },
+        );
+        recreatedManagedCoreWallet = true;
+        managedCoreReplicaAction = "recreated";
+        repairStateNeedsPersist = false;
+        replica = await verifyManagedCoreWalletReplica(state, options.context.dataDir, {
+          nodeHandle: bitcoindHandle,
+          attachService: options.context.attachService,
+          rpcFactory: options.context.rpcFactory,
+        });
+      }
 
-    if (bitcoindServiceAction === "none" && initialBitcoindProbe.compatibility === "unreachable") {
-      bitcoindServiceAction = "restarted-compatible-service";
+      const finalBitcoindStatus = await bitcoindHandle.refreshServiceStatus?.() ?? null;
+      const chainInfo = await rpc.getBlockchainInfo();
+      bitcoindPostRepairHealth = mapBitcoindRepairHealth({
+        serviceState: finalBitcoindStatus?.state ?? null,
+        catchingUp: chainInfo.blocks < chainInfo.headers,
+        replica,
+      });
+
+      if (bitcoindServiceAction === "none" && initialBitcoindProbe.compatibility === "unreachable") {
+        bitcoindServiceAction = "restarted-compatible-service";
+      }
+
+      return {
+        state,
+        repairStateNeedsPersist,
+        recreatedManagedCoreWallet,
+        bitcoindServiceAction,
+        bitcoindCompatibilityIssue,
+        managedCoreReplicaAction,
+        bitcoindPostRepairHealth,
+      };
+    } catch (error) {
+      if (bitcoindHandle !== null) {
+        await bitcoindHandle.stop?.().catch(() => undefined);
+        handleClosed = true;
+      }
+
+      if (attachAttempt === 0 && isManagedBitcoindRpcUnavailableError(error)) {
+        const retryLock = await acquireFileLock(options.servicePaths.bitcoindLockPath, {
+          purpose: "managed-bitcoind-repair-stale-rpc",
+          walletRootId: state.walletRootId,
+          dataDir: options.context.dataDir,
+        });
+
+        try {
+          await clearManagedBitcoindArtifacts(options.servicePaths);
+        } finally {
+          await retryLock.release();
+        }
+
+        if (bitcoindServiceAction === "none") {
+          bitcoindServiceAction = "restarted-compatible-service";
+        }
+
+        continue;
+      }
+
+      throw error;
+    } finally {
+      if (!handleClosed) {
+        await bitcoindHandle?.stop?.().catch(() => undefined);
+      }
     }
-  } finally {
-    await bitcoindHandle.stop?.().catch(() => undefined);
   }
 
-  return {
-    state,
-    repairStateNeedsPersist,
-    recreatedManagedCoreWallet,
-    bitcoindServiceAction,
-    bitcoindCompatibilityIssue,
-    managedCoreReplicaAction,
-    bitcoindPostRepairHealth,
-  };
+  throw new Error("managed_bitcoind_repair_retry_exhausted");
 }
