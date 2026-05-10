@@ -1,5 +1,5 @@
-import { access, constants, mkdir, readFile, rm } from "node:fs/promises";
-import { dirname } from "node:path";
+import { access, constants, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import {
   attachOrStartIndexerDaemon,
@@ -8,7 +8,7 @@ import {
 } from "../../bitcoind/indexer-daemon.js";
 import { probeManagedBitcoindService } from "../../bitcoind/service.js";
 import { resolveManagedServicePaths } from "../../bitcoind/service-paths.js";
-import type { ManagedBitcoindServiceStatus } from "../../bitcoind/types.js";
+import type { ManagedBitcoindObservedStatus, ManagedBitcoindServiceStatus } from "../../bitcoind/types.js";
 import { openClient } from "../../client.js";
 import { openSqliteStore } from "../../sqlite/index.js";
 import { clearOrphanedFileLock } from "../fs/lock.js";
@@ -249,11 +249,79 @@ export async function clearIndexerDaemonArtifacts(
 export async function clearManagedBitcoindArtifacts(
   servicePaths: ReturnType<typeof resolveManagedServicePaths>,
 ): Promise<void> {
-  await rm(servicePaths.bitcoindStatusPath, { force: true }).catch(() => undefined);
-  await rm(servicePaths.bitcoindPidPath, { force: true }).catch(() => undefined);
-  await rm(servicePaths.bitcoindReadyPath, { force: true }).catch(() => undefined);
-  await rm(servicePaths.bitcoindRuntimeConfigPath, { force: true }).catch(() => undefined);
-  await rm(servicePaths.bitcoindWalletStatusPath, { force: true }).catch(() => undefined);
+  await clearManagedBitcoindArtifactRoot(servicePaths.walletRuntimeRoot);
+}
+
+async function readManagedBitcoindStatusAtRoot(
+  serviceRoot: string,
+): Promise<ManagedBitcoindObservedStatus | null> {
+  try {
+    return JSON.parse(await readFile(join(serviceRoot, "bitcoind-status.json"), "utf8")) as ManagedBitcoindObservedStatus;
+  } catch {
+    return null;
+  }
+}
+
+async function clearManagedBitcoindArtifactRoot(serviceRoot: string): Promise<void> {
+  await rm(join(serviceRoot, "bitcoind-status.json"), { force: true }).catch(() => undefined);
+  await rm(join(serviceRoot, "bitcoind.pid"), { force: true }).catch(() => undefined);
+  await rm(join(serviceRoot, "bitcoind.ready"), { force: true }).catch(() => undefined);
+  await rm(join(serviceRoot, "bitcoind-config.json"), { force: true }).catch(() => undefined);
+  await rm(join(serviceRoot, "bitcoind-wallet.json"), { force: true }).catch(() => undefined);
+}
+
+async function stopManagedBitcoindPid(pid: number | null): Promise<void> {
+  if (pid === null || !await isProcessAlive(pid)) {
+    return;
+  }
+
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH")) {
+      throw error;
+    }
+  }
+
+  await waitForProcessExit(pid, 15_000, "managed_bitcoind_stop_timeout");
+}
+
+export async function clearManagedBitcoindArtifactsForDataDir(
+  servicePaths: ReturnType<typeof resolveManagedServicePaths>,
+  dataDir: string,
+): Promise<void> {
+  const serviceRoots = new Set<string>([servicePaths.walletRuntimeRoot]);
+
+  const runtimeEntries = await readdir(servicePaths.runtimeRoot, { withFileTypes: true }).catch((error) => {
+    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+
+    throw error;
+  });
+
+  for (const entry of runtimeEntries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const serviceRoot = join(servicePaths.runtimeRoot, entry.name);
+    const status = await readManagedBitcoindStatusAtRoot(serviceRoot);
+
+    if (status?.dataDir === dataDir) {
+      serviceRoots.add(serviceRoot);
+    }
+  }
+
+  for (const serviceRoot of serviceRoots) {
+    const status = await readManagedBitcoindStatusAtRoot(serviceRoot);
+
+    if (status?.dataDir === dataDir) {
+      await stopManagedBitcoindPid(status.processId);
+    }
+
+    await clearManagedBitcoindArtifactRoot(serviceRoot);
+  }
 }
 
 export async function stopRecordedManagedProcess(

@@ -7,7 +7,7 @@ import { createWalletSecretReference } from "../state/provider.js";
 import { recreateManagedCoreWalletReplica, verifyManagedCoreWalletReplica } from "./managed-core.js";
 import { pathExists } from "./context.js";
 import {
-  clearManagedBitcoindArtifacts,
+  clearManagedBitcoindArtifactsForDataDir,
   isManagedBitcoindRpcUnavailableError,
   mapBitcoindCompatibilityToRepairIssue,
   mapBitcoindRepairHealth,
@@ -67,7 +67,7 @@ export async function repairManagedBitcoindStage(options: {
           throw new Error("managed_bitcoind_process_id_unavailable");
         }
 
-        await clearManagedBitcoindArtifacts(options.servicePaths);
+        await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
         bitcoindServiceAction = "restarted-missing-rawtx-zmq";
       } else {
         try {
@@ -79,7 +79,7 @@ export async function repairManagedBitcoindStage(options: {
         }
 
         await waitForProcessExit(processId, 15_000, "managed_bitcoind_stop_timeout");
-        await clearManagedBitcoindArtifacts(options.servicePaths);
+        await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
         bitcoindServiceAction = initialBitcoindProbe.compatibility === "rawtx-zmq-missing"
           ? "restarted-missing-rawtx-zmq"
           : "stopped-incompatible-service";
@@ -94,7 +94,7 @@ export async function repairManagedBitcoindStage(options: {
       ].map(pathExists));
 
       if (hasStaleArtifacts.some(Boolean)) {
-        await clearManagedBitcoindArtifacts(options.servicePaths);
+        await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
         bitcoindServiceAction = "cleared-stale-artifacts";
       }
     } else if (initialBitcoindProbe.compatibility === "protocol-error") {
@@ -204,7 +204,7 @@ export async function repairManagedBitcoindStage(options: {
         });
 
         try {
-          await clearManagedBitcoindArtifacts(options.servicePaths);
+          await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
         } finally {
           await retryLock.release();
         }

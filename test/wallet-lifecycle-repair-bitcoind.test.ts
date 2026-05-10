@@ -1,7 +1,7 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { access, mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 import { resolveManagedServicePaths } from "../src/bitcoind/service-paths.js";
 import { repairManagedBitcoindStage } from "../src/wallet/lifecycle/repair-bitcoind.js";
@@ -274,6 +274,22 @@ test("repairManagedBitcoindStage retries after stale managed RPC artifacts refus
   await writeJsonFile(servicePaths.bitcoindWalletStatusPath, {
     walletRootId: state.walletRootId,
   });
+  const siblingRoot = join(servicePaths.runtimeRoot, "managed-stale-sibling");
+  const foreignRoot = join(servicePaths.runtimeRoot, "managed-foreign");
+  await writeJsonFile(join(siblingRoot, "bitcoind-status.json"), {
+    dataDir: fixture.dataDir,
+    processId: null,
+  });
+  await writeJsonFile(join(siblingRoot, "bitcoind-config.json"), {
+    rpcPort: 55_327,
+  });
+  await writeJsonFile(join(foreignRoot, "bitcoind-status.json"), {
+    dataDir: `${fixture.dataDir}-foreign`,
+    processId: null,
+  });
+  await writeJsonFile(join(foreignRoot, "bitcoind-config.json"), {
+    rpcPort: 55_585,
+  });
 
   const context = resolveWalletRepairContext({
     dataDir: fixture.dataDir,
@@ -331,6 +347,10 @@ test("repairManagedBitcoindStage retries after stale managed RPC artifacts refus
   assert.equal(await pathExists(servicePaths.bitcoindReadyPath), false);
   assert.equal(await pathExists(servicePaths.bitcoindRuntimeConfigPath), false);
   assert.equal(await pathExists(servicePaths.bitcoindWalletStatusPath), false);
+  assert.equal(await pathExists(join(siblingRoot, "bitcoind-status.json")), false);
+  assert.equal(await pathExists(join(siblingRoot, "bitcoind-config.json")), false);
+  assert.equal(await pathExists(join(foreignRoot, "bitcoind-status.json")), true);
+  assert.equal(await pathExists(join(foreignRoot, "bitcoind-config.json")), true);
 });
 
 test("repairManagedBitcoindStage recreates the managed Core replica when verification is not ready", async (t) => {
