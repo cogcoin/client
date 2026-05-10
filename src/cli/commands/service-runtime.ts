@@ -12,6 +12,7 @@ import {
 import type {
   ManagedBitcoindObservedStatus,
   ManagedIndexerDaemonObservedStatus,
+  ManagedBitcoindServiceStatus,
 } from "../../bitcoind/types.js";
 import {
   resolveWalletRootIdFromLocalArtifacts,
@@ -120,24 +121,43 @@ async function resolveEffectiveWalletRootId(
   }));
 }
 
+function createRpcReadyProgressReporter(context: RequiredCliRunnerContext) {
+  return async (event: { message: string }) => {
+    writeLine(context.stdout, event.message);
+  };
+}
+
 async function inspectManagedBitcoindStatus(
   dataDir: string,
   context: RequiredCliRunnerContext,
 ): Promise<BitcoinStatusPayload> {
   const resolution = await resolveEffectiveWalletRootId(context);
+  const rpcReadyProgress = createRpcReadyProgressReporter(context);
   const probe = await context.probeManagedBitcoindService({
     dataDir,
     chain: "main",
     startHeight: 0,
     walletRootId: resolution.walletRootId,
+    rpcReadyProgress,
   });
 
   let node: BitcoinNodeSnapshot | null = null;
   let nodeError: string | null = null;
+  let service = probe.status;
 
   if (probe.compatibility === "compatible" && probe.status !== null) {
     try {
-      const rpc = context.createBitcoinRpcClient(probe.status.rpc);
+      service = await context.refreshManagedBitcoindServiceStatus(
+        probe.status as ManagedBitcoindServiceStatus,
+        resolveManagedServicePaths(dataDir, resolution.walletRootId),
+        {
+          dataDir,
+          chain: "main",
+          startHeight: 0,
+          walletRootId: resolution.walletRootId,
+        },
+      );
+      const rpc = context.createBitcoinRpcClient(service.rpc);
       const [blockchainInfo, networkInfo] = await Promise.all([
         rpc.getBlockchainInfo(),
         rpc.getNetworkInfo(),
@@ -163,7 +183,7 @@ async function inspectManagedBitcoindStatus(
     walletRootId: resolution.walletRootId,
     walletRootSource: resolution.source,
     compatibility: probe.compatibility,
-    service: probe.status,
+    service,
     node,
     nodeError,
   };
@@ -416,11 +436,13 @@ export async function runServiceRuntimeCommand(
 
     if (parsed.command === "bitcoin-start") {
       const resolution = await resolveEffectiveWalletRootId(context);
+      const rpcReadyProgress = createRpcReadyProgressReporter(context);
       const probe = await context.probeManagedBitcoindService({
         dataDir,
         chain: "main",
         startHeight: 0,
         walletRootId: resolution.walletRootId,
+        rpcReadyProgress,
       });
       const genesis = await loadBundledGenesisParameters();
       await context.attachManagedBitcoindService({
@@ -428,6 +450,7 @@ export async function runServiceRuntimeCommand(
         chain: "main",
         startHeight: resolveCogcoinProcessingStartHeight(genesis),
         walletRootId: resolution.walletRootId,
+        rpcReadyProgress: probe.compatibility === "compatible" ? undefined : rpcReadyProgress,
       });
       const bitcoindStatus = probe.compatibility === "compatible" ? "already-running" : "started";
       const payload = {
@@ -481,17 +504,20 @@ export async function runServiceRuntimeCommand(
       const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
       await context.ensureDirectory(dirname(dbPath));
       const genesis = await loadBundledGenesisParameters();
+      const rpcReadyProgress = createRpcReadyProgressReporter(context);
       const bitcoindProbe = await context.probeManagedBitcoindService({
         dataDir,
         chain: "main",
         startHeight: 0,
         walletRootId: resolution.walletRootId,
+        rpcReadyProgress,
       });
       await context.attachManagedBitcoindService({
         dataDir,
         chain: "main",
         startHeight: resolveCogcoinProcessingStartHeight(genesis),
         walletRootId: resolution.walletRootId,
+        rpcReadyProgress: bitcoindProbe.compatibility === "compatible" ? undefined : rpcReadyProgress,
       });
       const indexerProbe = await context.probeIndexerDaemon({
         dataDir,

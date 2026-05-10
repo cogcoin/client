@@ -234,12 +234,14 @@ export async function writeBitcoinConfForTesting(
   await mkdir(dirname(filePath), { recursive: true });
   await mkdir(walletDir, { recursive: true });
 
-  const lines = [
+  const commonLines = [
     "server=1",
     "prune=0",
+    `dbcache=${runtimeConfig.dbcacheMiB}`,
+  ];
+  const networkLines = [
     "dnsseed=1",
     "listen=0",
-    `dbcache=${runtimeConfig.dbcacheMiB}`,
     `rpcbind=${LOCAL_HOST}`,
     `rpcallowip=${LOCAL_HOST}`,
     `rpcport=${runtimeConfig.rpc.port}`,
@@ -248,6 +250,17 @@ export async function writeBitcoinConfForTesting(
     `zmqpubrawtx=tcp://${LOCAL_HOST}:${runtimeConfig.zmqPort}`,
     `walletdir=${walletDir}`,
   ];
+  const lines = options.chain === "regtest"
+    ? [
+      ...commonLines,
+      "",
+      "[regtest]",
+      ...networkLines,
+    ]
+    : [
+      ...commonLines,
+      ...networkLines,
+    ];
 
   await writeFileAtomic(filePath, `${lines.join("\n")}\n`, { mode: 0o600 });
 }
@@ -256,22 +269,9 @@ export function buildManagedServiceArgsForTesting(
   options: ManagedBitcoindServiceOptions,
   runtimeConfig: ManagedBitcoindRuntimeConfig,
 ): string[] {
-  const walletDir = join(options.dataDir ?? "", "wallets");
   const args = [
     "-nosettings=1",
     `-datadir=${options.dataDir}`,
-    `-rpcbind=${LOCAL_HOST}`,
-    `-rpcallowip=${LOCAL_HOST}`,
-    `-rpcport=${runtimeConfig.rpc.port}`,
-    `-port=${runtimeConfig.p2pPort}`,
-    `-zmqpubhashblock=tcp://${LOCAL_HOST}:${runtimeConfig.zmqPort}`,
-    `-zmqpubrawtx=tcp://${LOCAL_HOST}:${runtimeConfig.zmqPort}`,
-    `-walletdir=${walletDir}`,
-    "-server=1",
-    "-prune=0",
-    "-dnsseed=1",
-    "-listen=0",
-    `-dbcache=${runtimeConfig.dbcacheMiB}`,
   ];
 
   if (options.chain === "regtest") {
@@ -285,14 +285,34 @@ export function buildManagedServiceArgsForTesting(
   return args;
 }
 
-export async function waitForManagedBitcoindCookie(cookieFile: string, timeoutMs: number, sleepImpl: (ms: number) => Promise<void>): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+export async function waitForManagedBitcoindCookie(
+  cookieFile: string,
+  timeoutMs: number,
+  sleepImpl: (ms: number) => Promise<void>,
+  options: {
+    now?: () => number;
+    progressIntervalMs?: number;
+    onProgress?: (elapsedMs: number) => void | Promise<void>;
+  } = {},
+): Promise<void> {
+  const now = options.now ?? Date.now;
+  const progressIntervalMs = options.progressIntervalMs ?? 30_000;
+  const startedAt = now();
+  const deadline = startedAt + timeoutMs;
+  let lastProgressAt = startedAt;
 
-  while (Date.now() < deadline) {
+  while (now() < deadline) {
     try {
       await access(cookieFile, constants.R_OK);
       return;
     } catch {
+      const currentTime = now();
+
+      if (currentTime - lastProgressAt >= progressIntervalMs) {
+        await options.onProgress?.(Math.max(0, currentTime - startedAt));
+        lastProgressAt = currentTime;
+      }
+
       await sleepImpl(250);
     }
   }

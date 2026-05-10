@@ -2,6 +2,17 @@ import type {
   InternalManagedBitcoindOptions,
 } from "./types.js";
 
+export interface ManagedBitcoindRpcReadyProgressEvent {
+  code: "bitcoind-rpc-wait" | "bitcoind-rpc-wait-progress" | "bitcoind-rpc-ready";
+  message: string;
+  elapsedMs: number;
+  lastError: string | null;
+}
+
+export type ManagedBitcoindRpcReadyProgressReporter = (
+  event: ManagedBitcoindRpcReadyProgressEvent,
+) => void | Promise<void>;
+
 export interface ManagedWalletReplicaRpc {
   listWallets(): Promise<string[]>;
   loadWallet(walletName: string, loadOnStartup?: boolean): Promise<{ name: string; warning: string }>;
@@ -37,6 +48,7 @@ export type ManagedBitcoindServiceOptions = Pick<
   getblockArchiveEndHeight?: number | null;
   getblockArchiveSha256?: string | null;
   serviceLifetime?: "persistent" | "ephemeral";
+  rpcReadyProgress?: ManagedBitcoindRpcReadyProgressReporter;
 };
 
 export type ResolvedManagedBitcoindServiceOptions = ManagedBitcoindServiceOptions & {

@@ -58,17 +58,50 @@ test("writeBitcoinConfForTesting writes dbcache into managed bitcoin.conf", asyn
   }
 });
 
-test("buildManagedServiceArgsForTesting includes dbcache in the managed bitcoind argv", () => {
+test("writeBitcoinConfForTesting scopes regtest ports and ZMQ into the regtest section", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogcoin-client-regtest-conf-"));
+  const filePath = join(root, "bitcoin.conf");
+
+  try {
+    await writeBitcoinConfForTesting(filePath, {
+      dataDir: root,
+      chain: "regtest",
+      startHeight: 0,
+    }, createRuntimeConfig(768));
+
+    const text = await readFile(filePath, "utf8");
+    assert.match(text, /\n\[regtest\]\n/u);
+    assert.match(text, /\[regtest\]\ndnsseed=1\nlisten=0\nrpcbind=127\.0\.0\.1\nrpcallowip=127\.0\.0\.1\nrpcport=18443\nport=18444\nzmqpubhashblock=tcp:\/\/127\.0\.0\.1:28332\nzmqpubrawtx=tcp:\/\/127\.0\.0\.1:28332\nwalletdir=.+\/wallets\n$/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("buildManagedServiceArgsForTesting keeps managed runtime config in bitcoin.conf", () => {
   const args = buildManagedServiceArgsForTesting({
     dataDir: "/tmp/cogcoin-bitcoind",
     chain: "main",
     startHeight: 937_337,
   }, createRuntimeConfig(768));
 
-  assert.ok(args.includes("-listen=0"));
-  assert.ok(args.includes("-dbcache=768"));
-  assert.ok(args.includes("-zmqpubhashblock=tcp://127.0.0.1:28332"));
-  assert.ok(args.includes("-zmqpubrawtx=tcp://127.0.0.1:28332"));
+  assert.ok(args.includes("-nosettings=1"));
+  assert.ok(args.includes("-datadir=/tmp/cogcoin-bitcoind"));
+  for (const prefix of [
+    "-rpcbind=",
+    "-rpcallowip=",
+    "-rpcport=",
+    "-port=",
+    "-zmqpubhashblock=",
+    "-zmqpubrawtx=",
+    "-walletdir=",
+    "-server=",
+    "-prune=",
+    "-dnsseed=",
+    "-listen=",
+    "-dbcache=",
+  ]) {
+    assert.equal(args.some((arg) => arg.startsWith(prefix)), false, `${prefix} should be written through bitcoin.conf`);
+  }
 });
 
 test("buildManagedServiceArgsForTesting includes loadblock when a getblock archive is ready", () => {

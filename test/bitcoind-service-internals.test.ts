@@ -17,7 +17,10 @@ import {
   getManagedBitcoindWalletReplicaName,
   loadManagedWalletReplicaIfPresent,
 } from "../src/bitcoind/managed-bitcoind-service-replica.js";
-import { writeManagedBitcoindStatus } from "../src/bitcoind/managed-bitcoind-service-status.js";
+import {
+  waitForManagedBitcoindRpcReady,
+  writeManagedBitcoindStatus,
+} from "../src/bitcoind/managed-bitcoind-service-status.js";
 import type { ManagedBitcoindServiceStatus } from "../src/bitcoind/types.js";
 import { writeJsonFileAtomic } from "../src/wallet/fs/atomic.js";
 import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
@@ -60,6 +63,55 @@ function createManagedBitcoindServiceStatus(
     ...overrides,
   };
 }
+
+test("waitForManagedBitcoindRpcReady reports warmup progress and readiness", async (t) => {
+  const root = await createTrackedTempDirectory(t, "cogcoin-managed-bitcoind-rpc-ready");
+  const cookiePath = join(root, ".cookie");
+  const events: Array<{ code: string; message: string; lastError: string | null }> = [];
+  let callCount = 0;
+  let now = 1_000;
+  await writeFile(cookiePath, "user:password\n", "utf8");
+
+  const rpc = {
+    async getBlockchainInfo() {
+      callCount += 1;
+
+      if (callCount <= 2) {
+        throw new Error("bitcoind_rpc_getblockchaininfo_-28_Loading block index…");
+      }
+
+      return {
+        chain: "main",
+      };
+    },
+  };
+
+  await waitForManagedBitcoindRpcReady(rpc as never, cookiePath, "main", 60_000, {
+    progressIntervalMs: 1,
+    now: () => {
+      now += 10_000;
+      return now;
+    },
+    sleep: async () => undefined,
+    progress: async (event) => {
+      events.push({
+        code: event.code,
+        message: event.message,
+        lastError: event.lastError,
+      });
+    },
+  });
+
+  assert.deepEqual(events.map((event) => event.code), [
+    "bitcoind-rpc-wait",
+    "bitcoind-rpc-wait-progress",
+    "bitcoind-rpc-wait-progress",
+    "bitcoind-rpc-ready",
+  ]);
+  assert.match(events[1].message, /Still waiting for Bitcoin Core RPC readiness/u);
+  assert.equal(events[1].lastError, "Loading block index…");
+  assert.equal(events.at(-1)?.message, "Bitcoin Core RPC is ready.");
+});
 
 test("resolveManagedBitcoindRuntimeConfig reuses ports from prior managed status", async (t) => {
   const root = await createTrackedTempDirectory(t, "cogcoin-managed-bitcoind-config");

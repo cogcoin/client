@@ -17,6 +17,7 @@ import {
   type ManagedCoreWalletReplicaStatus,
 } from "./types.js";
 import type {
+  ManagedBitcoindRpcReadyProgressReporter,
   ManagedBitcoindServiceOwnership,
   ManagedBitcoindServiceOptions,
   ManagedBitcoindServiceStopResult,
@@ -38,17 +39,61 @@ import {
 import { isManagedRpcWarmupError } from "./retryable-rpc.js";
 import type { ManagedBitcoindServiceProbeResult } from "./managed-runtime/types.js";
 
+interface WaitForManagedBitcoindRpcReadyOptions {
+  progress?: ManagedBitcoindRpcReadyProgressReporter;
+  progressIntervalMs?: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+function describeRpcReadyError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+
+  const warmupMatch = /^bitcoind_rpc_[^_]+_-28_(.+)$/u.exec(error.message);
+
+  if (warmupMatch !== null) {
+    return warmupMatch[1].replaceAll("_", " ");
+  }
+
+  return error.message;
+}
+
 export async function waitForManagedBitcoindRpcReady(
   rpc: ReturnType<typeof createRpcClient>,
   cookieFile: string,
   expectedChain: "main" | "regtest",
   timeoutMs: number,
+  options: WaitForManagedBitcoindRpcReadyOptions = {},
 ): Promise<void> {
-  await waitForManagedBitcoindCookie(cookieFile, timeoutMs, sleep);
-  const deadline = Date.now() + timeoutMs;
+  const sleepImpl = options.sleep ?? sleep;
+  const now = options.now ?? Date.now;
+  const progressIntervalMs = options.progressIntervalMs ?? 30_000;
+  const startedAt = now();
+  await options.progress?.({
+    code: "bitcoind-rpc-wait",
+    message: "Waiting for Bitcoin Core RPC readiness...",
+    elapsedMs: 0,
+    lastError: null,
+  });
+  await waitForManagedBitcoindCookie(cookieFile, timeoutMs, sleepImpl, {
+    now,
+    progressIntervalMs,
+    onProgress: async (elapsedMs) => {
+      await options.progress?.({
+        code: "bitcoind-rpc-wait-progress",
+        message: `Still waiting for Bitcoin Core RPC readiness (${Math.floor(elapsedMs / 1000)}s elapsed). Last RPC state: cookie not ready.`,
+        elapsedMs,
+        lastError: "cookie not ready",
+      });
+    },
+  });
+  const deadline = now() + timeoutMs;
   let lastError: unknown = null;
+  let lastProgressAt = startedAt;
 
-  while (Date.now() < deadline) {
+  while (now() < deadline) {
     try {
       const info = await rpc.getBlockchainInfo();
 
@@ -56,10 +101,29 @@ export async function waitForManagedBitcoindRpcReady(
         throw new Error(`bitcoind_chain_expected_${expectedChain}_got_${info.chain}`);
       }
 
+      await options.progress?.({
+        code: "bitcoind-rpc-ready",
+        message: "Bitcoin Core RPC is ready.",
+        elapsedMs: Math.max(0, now() - startedAt),
+        lastError: null,
+      });
       return;
     } catch (error) {
       lastError = error;
-      await sleep(250);
+      const currentTime = now();
+
+      if (currentTime - lastProgressAt >= progressIntervalMs) {
+        const lastErrorText = describeRpcReadyError(lastError);
+        await options.progress?.({
+          code: "bitcoind-rpc-wait-progress",
+          message: `Still waiting for Bitcoin Core RPC readiness (${Math.floor((currentTime - startedAt) / 1000)}s elapsed). Last RPC state: ${lastErrorText}.`,
+          elapsedMs: Math.max(0, currentTime - startedAt),
+          lastError: lastErrorText,
+        });
+        lastProgressAt = currentTime;
+      }
+
+      await sleepImpl(250);
     }
   }
 
@@ -134,6 +198,9 @@ export async function probeManagedBitcoindStatusCandidate(
       status.rpc.cookieFile,
       status.chain,
       options.startupTimeoutMs ?? DEFAULT_MANAGED_BITCOIND_STARTUP_TIMEOUT_MS,
+      {
+        progress: options.rpcReadyProgress,
+      },
     );
     await validateNodeConfigForTesting(rpc, status.chain, status.zmq.endpoint, {
       requireRawTxZmq: true,
@@ -186,6 +253,9 @@ export async function refreshManagedBitcoindStatus(
       status.rpc.cookieFile,
       status.chain,
       options.startupTimeoutMs ?? DEFAULT_MANAGED_BITCOIND_STARTUP_TIMEOUT_MS,
+      {
+        progress: options.rpcReadyProgress,
+      },
     );
     await validateNodeConfigForTesting(rpc, status.chain, status.zmq.endpoint, {
       requireRawTxZmq: true,

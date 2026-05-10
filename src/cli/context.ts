@@ -13,6 +13,7 @@ import {
   probeManagedBitcoindService,
   stopManagedBitcoindService,
 } from "../bitcoind/service.js";
+import { refreshManagedBitcoindStatus } from "../bitcoind/managed-bitcoind-service-status.js";
 import {
   resolveDefaultBitcoindDataDirForTesting,
   resolveDefaultClientDatabasePathForTesting,
@@ -174,6 +175,7 @@ export function createDefaultContext(overrides: CliRunnerContext = {}): Required
     }),
     attachManagedBitcoindService: overrides.attachManagedBitcoindService ?? attachOrStartManagedBitcoindService,
     probeManagedBitcoindService: overrides.probeManagedBitcoindService ?? probeManagedBitcoindService,
+    refreshManagedBitcoindServiceStatus: overrides.refreshManagedBitcoindServiceStatus ?? refreshManagedBitcoindStatus,
     stopManagedBitcoindService: overrides.stopManagedBitcoindService ?? stopManagedBitcoindService,
     createBitcoinRpcClient: overrides.createBitcoinRpcClient ?? createRpcClient,
     attachIndexerDaemon: overrides.attachIndexerDaemon ?? attachOrStartIndexerDaemon,

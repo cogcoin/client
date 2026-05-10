@@ -39,6 +39,9 @@ export async function repairManagedBitcoindStage(options: {
     error: null,
   };
   let bitcoindPostRepairHealth: WalletBitcoindRepairStageResult["bitcoindPostRepairHealth"] = "unavailable";
+  const rpcReadyProgress = async (event: { code: string; message: string }) => {
+    await reportRepairProgress(options.context, event.code, event.message);
+  };
 
   const bitcoindLock = await acquireFileLock(options.servicePaths.bitcoindLockPath, {
     purpose: "managed-bitcoind-repair",
@@ -53,6 +56,7 @@ export async function repairManagedBitcoindStage(options: {
       chain: "main",
       startHeight: 0,
       walletRootId: state.walletRootId,
+      rpcReadyProgress,
     });
 
     bitcoindCompatibilityIssue = mapBitcoindCompatibilityToRepairIssue(initialBitcoindProbe.compatibility);
@@ -150,12 +154,12 @@ export async function repairManagedBitcoindStage(options: {
           ? "Attaching to managed bitcoind..."
           : "Starting managed bitcoind with current ZMQ config...",
       );
-      await reportRepairProgress(options.context, "bitcoind-wait-rpc", "Waiting for Bitcoin Core RPC readiness...");
       bitcoindHandle = await options.context.attachService({
         dataDir: options.context.dataDir,
         chain: "main",
         startHeight: 0,
         walletRootId: state.walletRootId,
+        rpcReadyProgress,
       });
 
       await reportRepairProgress(options.context, "bitcoind-normalize-wallet", "Checking managed Bitcoin wallet state...");

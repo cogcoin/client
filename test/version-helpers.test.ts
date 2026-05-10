@@ -14,7 +14,7 @@ test("current client version matches package.json", () => {
   const packageJsonRaw = readFileSync(join(process.cwd(), "package.json"), "utf8");
   const packageJson = JSON.parse(packageJsonRaw) as { version?: unknown };
 
-  assert.equal(packageJson.version, "1.2.4");
+  assert.equal(packageJson.version, "1.2.5");
   assert.equal(CURRENT_CLIENT_VERSION, packageJson.version);
 });
 

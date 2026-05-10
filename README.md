@@ -1,6 +1,6 @@
 # `@cogcoin/client`
 
-`@cogcoin/client@1.2.4` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
+`@cogcoin/client@1.2.5` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
 
 Use Node 22 or newer.
 
@@ -125,6 +125,10 @@ The published package depends on:
 - `zeromq@6.5.0`
 
 `@cogcoin/vectors@1.0.1` is kept as a repository development dependency for conformance tests and is not part of the published runtime dependency surface.
+
+## Upgrade Notes For `1.2.5`
+
+`@cogcoin/client@1.2.5` keeps managed Bitcoin runtime settings in `bitcoin.conf` instead of duplicating RPC, P2P, wallet, and ZMQ settings on the `bitcoind` command line. This prevents duplicate `pubhashblock` and `pubrawtx` ZMQ registrations. Managed startup, repair, `bitcoin status`, and `status --live` also refresh runtime status after successful RPC/ZMQ checks so a stale `starting` status does not remain after Core is ready.
 
 ## Upgrade Notes For `1.2.4`
 

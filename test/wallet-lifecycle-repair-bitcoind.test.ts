@@ -280,8 +280,14 @@ test("repairManagedBitcoindStage returns starting when restarted bitcoind is sti
       },
       error: "bitcoind_zmq_rawtx_missing",
     }) as any,
-    attachService: async () => {
+    attachService: async (serviceOptions) => {
       attachCalls += 1;
+      await serviceOptions.rpcReadyProgress?.({
+        code: "bitcoind-rpc-wait",
+        message: "Waiting for Bitcoin Core RPC readiness...",
+        elapsedMs: 0,
+        lastError: null,
+      });
       throw new Error("managed_bitcoind_service_starting");
     },
     rpcFactory: () => {

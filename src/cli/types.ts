@@ -14,6 +14,7 @@ import {
   probeManagedBitcoindService,
   stopManagedBitcoindService,
 } from "../bitcoind/service.js";
+import type { refreshManagedBitcoindStatus } from "../bitcoind/managed-bitcoind-service-status.js";
 import { openSqliteStore } from "../sqlite/index.js";
 import type { ClientStoreAdapter } from "../types.js";
 import type { WalletRuntimePaths } from "../wallet/runtime.js";
@@ -173,6 +174,7 @@ export interface CliRunnerContext {
   openManagedIndexerMonitor?: typeof openManagedIndexerMonitor;
   attachManagedBitcoindService?: typeof attachOrStartManagedBitcoindService;
   probeManagedBitcoindService?: typeof probeManagedBitcoindService;
+  refreshManagedBitcoindServiceStatus?: typeof refreshManagedBitcoindStatus;
   stopManagedBitcoindService?: typeof stopManagedBitcoindService;
   createBitcoinRpcClient?: typeof createRpcClient;
   attachIndexerDaemon?: typeof attachOrStartIndexerDaemon;

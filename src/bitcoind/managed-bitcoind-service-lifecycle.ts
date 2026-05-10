@@ -322,7 +322,9 @@ export async function attachOrStartManagedBitcoindService(
           await writeManagedBitcoindStatus(paths, startingStatus);
 
           try {
-            await waitForManagedBitcoindRpcReady(rpc, rpcConfig.cookieFile, startOptions.chain, startupTimeoutMs);
+            await waitForManagedBitcoindRpcReady(rpc, rpcConfig.cookieFile, startOptions.chain, startupTimeoutMs, {
+              progress: startOptions.rpcReadyProgress,
+            });
             await validateNodeConfigForTesting(rpc, startOptions.chain, zmqConfig.endpoint, {
               requireRawTxZmq: true,
             });
