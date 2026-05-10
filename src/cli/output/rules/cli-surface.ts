@@ -90,6 +90,14 @@ export const cliSurfaceErrorRules: readonly CliErrorPresentationRule[] = [
       };
     }
 
+    if (errorCode === "cli_live_not_supported_for_command") {
+      return {
+        what: "This command does not support `--live`.",
+        why: "`--live` only applies to `cogcoin status`, where it opts into RPC-backed wallet and service checks.",
+        next: "Drop `--live`, or run `cogcoin status --live`.",
+      };
+    }
+
     if (errorCode === "cli_anchor_clear_removed") {
       return {
         what: "`anchor clear` is no longer available.",

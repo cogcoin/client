@@ -114,8 +114,8 @@ const commandSpecs = [
     aliases: [{ tokens: ["status"] }],
     helpEntries: [
       {
-        usage: "status",
-        description: "Show wallet-aware local service and chain status",
+        usage: "status [--live]",
+        description: "Show passive local status; use --live for RPC-backed wallet balance",
       },
     ],
     describeCommand() {

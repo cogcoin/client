@@ -47,6 +47,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   let listLimit: number | null = null;
   let listAll = false;
   let follow = false;
+  let statusLive = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
@@ -317,6 +318,11 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
     if (token === "--follow") {
       follow = true;
+      continue;
+    }
+
+    if (token === "--live") {
+      statusLive = true;
       continue;
     }
 
@@ -592,6 +598,10 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_follow_not_supported_for_command");
   }
 
+  if (statusLive && command !== "status") {
+    throw new Error("cli_live_not_supported_for_command");
+  }
+
   if (command === "mine-log" && follow && (listAll || listLimit !== null)) {
     throw new Error("cli_follow_limit_not_supported");
   }
@@ -649,5 +659,6 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     listLimit,
     listAll,
     follow,
+    statusLive,
   };
 }

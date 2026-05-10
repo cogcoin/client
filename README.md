@@ -173,10 +173,12 @@ The installed `cogcoin` command covers the first-party local wallet and node wor
 - COG and reputation commands such as `send`, `cog lock`, `claim`, `reclaim`, `rep give`, and `rep revoke`
 - mining commands such as `mine`, `mine status`, `mine log`, `mine setup`, `mine prompt`, and `mine prompt list`
 
+`cogcoin status` is passive by default: it reads local SQLite/runtime status files without prompting for the client password, starting services, or making Bitcoin RPC calls. Use `cogcoin status --live` when you want the full RPC-backed wallet overview and balance report.
+
 Use `cogcoin mine prompt <domain>` to set or clear a per-domain mining prompt override for one anchored root domain, and `cogcoin mine prompt list` to inspect the current per-domain prompt state alongside the global fallback prompt.
 Interactive text invocations periodically check the npm registry for newer `@cogcoin/client` releases and print `npm install -g @cogcoin/client` when a newer version is available.
 Set `COGCOIN_DISABLE_UPDATE_CHECK=1` to disable the CLI update notice entirely.
-Ordinary `sync`, `follow`, and wallet-aware read/status flows detach from the managed Bitcoin and indexer services on exit instead of stopping them.
+Ordinary `sync`, `follow`, and wallet-aware live read flows detach from the managed Bitcoin and indexer services on exit instead of stopping them.
 Use the explicit `bitcoin ...` and `indexer ...` commands when you want direct service inspection or start/stop control.
 For provider-backed local wallets, normal reads, mutations, and mining setup flows load local wallet state on demand whenever the local secret provider is available.
 When no wallet exists yet, `cogcoin init` interactively lets you either create a new wallet or restore an existing one from a 24-word English BIP39 mnemonic, then continues into sync.

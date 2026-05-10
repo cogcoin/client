@@ -70,6 +70,7 @@ function createParsed(command: ParsedCliArgs["command"], args: string[]): Parsed
     listLimit: null,
     listAll: false,
     follow: false,
+    statusLive: false,
   };
 }
 

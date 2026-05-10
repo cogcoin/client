@@ -6,6 +6,7 @@ import { formatCliTextError } from "../src/cli/output.js";
 import { FileLockBusyError } from "../src/wallet/fs/lock.js";
 
 test("help text reflects the one-address model", () => {
+  assert.match(HELP_TEXT, /status \[--live\]\s+Show passive local status; use --live for RPC-backed wallet balance/i);
   assert.match(HELP_TEXT, /anchor <domain>\s+Anchor an owned unanchored domain with the wallet address/);
   assert.match(HELP_TEXT, /balance\s+Show local wallet COG balances/);
   assert.match(HELP_TEXT, /bitcoin transfer <sats> --to <address>\s+Send plain BTC from the wallet address/i);
@@ -112,6 +113,20 @@ test("parser accepts update with --yes", () => {
 
   assert.equal(parsed.command, "update");
   assert.equal(parsed.assumeYes, true);
+});
+
+test("parser accepts --live only for status", () => {
+  const passive = parseCliArgs(["status"]);
+  const live = parseCliArgs(["status", "--live"]);
+
+  assert.equal(passive.command, "status");
+  assert.equal(passive.statusLive, false);
+  assert.equal(live.command, "status");
+  assert.equal(live.statusLive, true);
+  assert.throws(
+    () => parseCliArgs(["sync", "--live"]),
+    /cli_live_not_supported_for_command/,
+  );
 });
 
 test("parser accepts mine prompt and mine prompt list", () => {

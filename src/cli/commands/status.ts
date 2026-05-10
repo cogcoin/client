@@ -1,6 +1,7 @@
 import { dirname } from "node:path";
 
 import { formatBalanceReport, formatWalletOverviewReport } from "../wallet-format.js";
+import { formatStatusReport } from "../status-format.js";
 import { writeLine } from "../io.js";
 import { createTerminalPrompter } from "../prompt.js";
 import type { ParsedCliArgs, RequiredCliRunnerContext } from "../types.js";
@@ -12,8 +13,15 @@ export async function runStatusCommand(
 ): Promise<number> {
   const dbPath = parsed.dbPath ?? context.resolveDefaultClientDatabasePath();
   const dataDir = parsed.dataDir ?? context.resolveDefaultBitcoindDataDir();
-  const packageVersion = await context.readPackageVersion();
   const runtimePaths = context.resolveWalletRuntimePaths();
+
+  if (!parsed.statusLive) {
+    const status = await context.inspectPassiveClientStatus(dbPath, dataDir, runtimePaths);
+    writeLine(context.stdout, formatStatusReport(status));
+    return 0;
+  }
+
+  const packageVersion = await context.readPackageVersion();
   await context.ensureDirectory(dirname(dbPath));
   const provider = withInteractiveWalletSecretProvider(
     context.walletSecretProvider,

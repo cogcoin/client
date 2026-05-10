@@ -119,6 +119,7 @@ export interface ParsedCliArgs {
   listLimit: number | null;
   listAll: boolean;
   follow: boolean;
+  statusLive: boolean;
 }
 
 export interface ManagedClientLike {
