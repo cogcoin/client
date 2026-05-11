@@ -39,11 +39,11 @@ export interface WalletRepairResult {
   recoveredFromBackup: boolean;
   recreatedManagedCoreWallet: boolean;
   resetIndexerDatabase: boolean;
-  bitcoindServiceAction: "none" | "cleared-stale-artifacts" | "stopped-incompatible-service" | "restarted-compatible-service" | "restarted-missing-rawtx-zmq";
+  bitcoindServiceAction: "none" | "cleared-stale-artifacts" | "stopped-incompatible-service" | "restarted-compatible-service" | "restarted-missing-rawtx-zmq" | "restarted-managed-service";
   bitcoindCompatibilityIssue: "none" | "service-version-mismatch" | "wallet-root-mismatch" | "runtime-mismatch" | "rawtx-zmq-missing";
   managedCoreReplicaAction: "none" | "recreated";
   bitcoindPostRepairHealth: "ready" | "catching-up" | "starting" | "failed" | "unavailable";
-  indexerDaemonAction: "none" | "cleared-stale-artifacts" | "stopped-incompatible-daemon" | "restarted-compatible-daemon";
+  indexerDaemonAction: "none" | "cleared-stale-artifacts" | "stopped-incompatible-daemon" | "restarted-compatible-daemon" | "restarted-managed-daemon" | "stopped-for-bitcoind-warmup";
   indexerCompatibilityIssue: "none" | "service-version-mismatch" | "wallet-root-mismatch" | "schema-mismatch";
   indexerPostRepairHealth: "starting" | "catching-up" | "synced" | "failed";
   miningPreRepairRunMode: "stopped" | "foreground" | "background";

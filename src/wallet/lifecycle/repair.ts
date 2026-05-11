@@ -8,7 +8,10 @@ import {
   resolveWalletRepairContext,
 } from "./context.js";
 import { repairManagedBitcoindStage } from "./repair-bitcoind.js";
-import { repairManagedIndexerStage } from "./repair-indexer.js";
+import {
+  prepareManagedIndexerForRepair,
+  startManagedIndexerAfterRepair,
+} from "./repair-indexer.js";
 import {
   applyRepairStoppedMiningState,
   cleanupMiningForRepair,
@@ -17,7 +20,6 @@ import {
 } from "./repair-mining.js";
 import {
   clearOrphanedRepairLocks,
-  ensureIndexerDatabaseHealthy,
   reportRepairProgress,
 } from "./repair-runtime.js";
 import type {
@@ -81,15 +83,11 @@ export async function repairWallet(options: {
       repairStateNeedsPersist = true;
     }
 
-    if (!context.assumeYes) {
-      await reportRepairProgress(context, "indexer-database-check", "Checking local indexer database...");
-      await ensureIndexerDatabaseHealthy({
-        databasePath: context.databasePath,
-        dataDir: context.dataDir,
-        walletRootId: repairedState.walletRootId,
-        resetIfNeeded: false,
-      });
-    }
+    const indexerPreparation = await prepareManagedIndexerForRepair({
+      context,
+      servicePaths,
+      state: repairedState,
+    });
 
     const bitcoindStage = await repairManagedBitcoindStage({
       context,
@@ -104,7 +102,7 @@ export async function repairWallet(options: {
     const repairNotes: string[] = [];
 
     if (bitcoindStage.bitcoindPostRepairHealth === "starting") {
-      repairNotes.push("Managed bitcoind was restarted and is still loading the block index; rerun mining after it reaches ready.");
+      repairNotes.push("Managed bitcoind was restarted and is still loading the block index; the indexer was left stopped and will restart on the next sync, mine, or repair after Bitcoin Core is ready.");
     }
 
     if (recoveredFromBackup) {
@@ -130,19 +128,17 @@ export async function repairWallet(options: {
 
     const indexerStage = bitcoindStage.bitcoindPostRepairHealth === "starting"
       ? {
-        resetIndexerDatabase: false,
-        indexerDaemonAction: "none" as const,
-        indexerCompatibilityIssue: "none" as const,
+        resetIndexerDatabase: indexerPreparation.resetIndexerDatabase,
+        indexerDaemonAction: "stopped-for-bitcoind-warmup" as const,
+        indexerCompatibilityIssue: indexerPreparation.indexerCompatibilityIssue,
         indexerPostRepairHealth: "starting" as const,
       }
-      : await (async () => {
-        await reportRepairProgress(context, "indexer-check", "Checking indexer...");
-        return repairManagedIndexerStage({
+      : await startManagedIndexerAfterRepair({
           context,
           servicePaths,
           state: repairedState,
+          preparation: indexerPreparation,
         });
-      })();
 
     if (indexerStage.resetIndexerDatabase) {
       repairNotes.push("Indexer artifacts were reset and may still be catching up.");

@@ -62,7 +62,7 @@ function getResetNextSteps(result: WalletResetResult): string[] {
 
 function getRepairNextSteps(result: WalletRepairResult): string[] {
   if (result.bitcoindPostRepairHealth === "starting") {
-    return ["Wait for Bitcoin Core to finish loading, then run `cogcoin status` or rerun `cogcoin mine`."];
+    return ["Wait for Bitcoin Core to finish loading, then rerun `cogcoin sync`, `cogcoin mine`, or `cogcoin repair` to start the indexer."];
   }
 
   return ["Run `cogcoin status` to review the repaired local state."];

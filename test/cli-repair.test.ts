@@ -65,6 +65,8 @@ test("repair text output uses the sectioned checkmarked layout for a healthy res
       walletRootId: "wallet-root-healthy",
       recreatedManagedCoreWallet: true,
       resetIndexerDatabase: true,
+      bitcoindServiceAction: "restarted-managed-service",
+      indexerDaemonAction: "restarted-managed-daemon",
       managedCoreReplicaAction: "recreated",
       miningPreRepairRunMode: "stopped",
       miningResumeAction: "none",
@@ -75,8 +77,8 @@ test("repair text output uses the sectioned checkmarked layout for a healthy res
   assert.equal(code, 0);
   const output = stdout.toString();
   assert.match(output, /^\n⛭ Cogcoin Repair ⛭\n\nWallet\n✓ Wallet root: wallet-root-healthy\n✓ Recovered from backup: no\n✓ Managed Core wallet recreated: yes/u);
-  assert.match(output, /\n\nManaged Bitcoind\n✓ Managed bitcoind action: none\n✓ Managed bitcoind compatibility issue: none\n✓ Managed Core replica action: recreated\n✓ Managed bitcoind post-repair health: ready/u);
-  assert.match(output, /\n\nIndexer\n✓ Indexer database reset: yes\n✓ Indexer daemon action: none\n✓ Indexer compatibility issue: none\n✓ Indexer post-repair health: synced/u);
+  assert.match(output, /\n\nManaged Bitcoind\n✓ Managed bitcoind action: restarted-managed-service\n✓ Managed bitcoind compatibility issue: none\n✓ Managed Core replica action: recreated\n✓ Managed bitcoind post-repair health: ready/u);
+  assert.match(output, /\n\nIndexer\n✓ Indexer database reset: yes\n✓ Indexer daemon action: restarted-managed-daemon\n✓ Indexer compatibility issue: none\n✓ Indexer post-repair health: synced/u);
   assert.match(output, /\n\nMining\n✓ Mining mode before repair: stopped\n✓ Mining resume action: none\n✓ Mining mode after repair: stopped/u);
   assert.doesNotMatch(output, /\n\nNotes\n/u);
   assert.doesNotMatch(output, /\n\nWarnings\n/u);
@@ -96,12 +98,12 @@ test("repair text output marks degraded repair states with sectioned warnings an
     repairWallet: async () => createRepairResult({
       walletRootId: "wallet-root-degraded",
       recoveredFromBackup: true,
-      bitcoindServiceAction: "restarted-compatible-service",
+      bitcoindServiceAction: "restarted-managed-service",
       bitcoindCompatibilityIssue: "runtime-mismatch",
       managedCoreReplicaAction: "recreated",
       bitcoindPostRepairHealth: "catching-up",
       resetIndexerDatabase: true,
-      indexerDaemonAction: "restarted-compatible-daemon",
+      indexerDaemonAction: "restarted-managed-daemon",
       indexerCompatibilityIssue: "schema-mismatch",
       indexerPostRepairHealth: "failed",
       miningPreRepairRunMode: "background",
@@ -169,8 +171,9 @@ test("repair text output streams progress and explains bitcoind warmup", async (
         bitcoindCompatibilityIssue: "rawtx-zmq-missing",
         bitcoindPostRepairHealth: "starting",
         indexerPostRepairHealth: "starting",
+        indexerDaemonAction: "stopped-for-bitcoind-warmup",
         miningResumeAction: "skipped-post-repair-blocked",
-        note: "Managed bitcoind was restarted and is still loading the block index; rerun mining after it reaches ready.",
+        note: "Managed bitcoind was restarted and is still loading the block index; the indexer was left stopped and will restart on the next sync, mine, or repair after Bitcoin Core is ready.",
       });
     },
   });
@@ -181,7 +184,8 @@ test("repair text output streams progress and explains bitcoind warmup", async (
   assert.match(output, /Waiting for Bitcoin Core RPC readiness\.\.\./u);
   assert.match(output, /Bitcoin Core is loading the block index; leaving managed bitcoind running\./u);
   assert.match(output, /✗ Managed bitcoind post-repair health: starting/u);
-  assert.match(output, /✓ Note: Managed bitcoind was restarted and is still loading the block index; rerun mining after it reaches ready\./u);
-  assert.match(output, /Next step: Wait for Bitcoin Core to finish loading, then run `cogcoin status` or rerun `cogcoin mine`\./u);
+  assert.match(output, /✓ Indexer daemon action: stopped-for-bitcoind-warmup/u);
+  assert.match(output, /✓ Note: Managed bitcoind was restarted and is still loading the block index; the indexer was left stopped and will restart on the next sync, mine, or repair after Bitcoin Core is ready\./u);
+  assert.match(output, /Next step: Wait for Bitcoin Core to finish loading, then rerun `cogcoin sync`, `cogcoin mine`, or `cogcoin repair` to start the indexer\./u);
   assert.equal(stderr.toString(), "");
 });

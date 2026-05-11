@@ -5,7 +5,6 @@ import type { WalletStateV1 } from "../types.js";
 import { persistWalletCoinControlStateIfNeeded } from "../coin-control.js";
 import { createWalletSecretReference } from "../state/provider.js";
 import { recreateManagedCoreWalletReplica, verifyManagedCoreWalletReplica } from "./managed-core.js";
-import { pathExists } from "./context.js";
 import {
   clearManagedBitcoindArtifactsForDataDir,
   isManagedBitcoindRpcUnavailableError,
@@ -13,7 +12,7 @@ import {
   mapBitcoindCompatibilityToRepairIssue,
   mapBitcoindRepairHealth,
   reportRepairProgress,
-  waitForProcessExit,
+  stopRecordedManagedProcess,
 } from "./repair-runtime.js";
 import type {
   WalletBitcoindRepairStageResult,
@@ -61,83 +60,40 @@ export async function repairManagedBitcoindStage(options: {
 
     bitcoindCompatibilityIssue = mapBitcoindCompatibilityToRepairIssue(initialBitcoindProbe.compatibility);
 
-    if (initialBitcoindProbe.compatibility === "starting") {
-      await reportRepairProgress(
-        options.context,
-        "bitcoind-starting",
-        "Bitcoin Core is loading the block index; leaving managed bitcoind running.",
-      );
-      return {
-        state,
-        repairStateNeedsPersist,
-        recreatedManagedCoreWallet,
-        bitcoindServiceAction,
-        bitcoindCompatibilityIssue,
-        managedCoreReplicaAction,
-        bitcoindPostRepairHealth: "starting",
-      };
+    if (initialBitcoindProbe.compatibility === "protocol-error") {
+      throw new Error(initialBitcoindProbe.error ?? "managed_bitcoind_protocol_error");
     }
 
-    if (
-      initialBitcoindProbe.compatibility === "service-version-mismatch"
-      || initialBitcoindProbe.compatibility === "wallet-root-mismatch"
-      || initialBitcoindProbe.compatibility === "runtime-mismatch"
-      || initialBitcoindProbe.compatibility === "rawtx-zmq-missing"
-    ) {
+    if (initialBitcoindProbe.compatibility !== "unreachable") {
       const processId = initialBitcoindProbe.status?.processId ?? null;
 
       if (processId === null) {
-        if (initialBitcoindProbe.compatibility !== "rawtx-zmq-missing") {
-          throw new Error("managed_bitcoind_process_id_unavailable");
-        }
+        throw new Error("managed_bitcoind_process_id_unavailable");
+      }
 
-        await reportRepairProgress(
-          options.context,
-          "bitcoind-clear-stale-rawtx",
-          "Clearing stale managed bitcoind runtime missing rawtx ZMQ...",
-        );
-        await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
-        bitcoindServiceAction = "restarted-missing-rawtx-zmq";
-      } else {
-        await reportRepairProgress(
-          options.context,
-          "bitcoind-stop-incompatible",
-          initialBitcoindProbe.compatibility === "rawtx-zmq-missing"
-            ? "Stopping stale managed bitcoind missing rawtx ZMQ..."
+      await reportRepairProgress(
+        options.context,
+        "bitcoind-stop-managed",
+        initialBitcoindProbe.compatibility === "rawtx-zmq-missing"
+          ? "Stopping stale managed bitcoind missing rawtx ZMQ..."
+          : initialBitcoindProbe.compatibility === "compatible" || initialBitcoindProbe.compatibility === "starting"
+            ? "Stopping managed bitcoind service for repair..."
             : "Stopping incompatible managed bitcoind service...",
-        );
-        try {
-          process.kill(processId, "SIGTERM");
-        } catch (error) {
-          if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "ESRCH") {
-            throw error;
-          }
-        }
-
-        await waitForProcessExit(processId, 15_000, "managed_bitcoind_stop_timeout");
-        await reportRepairProgress(options.context, "bitcoind-clear-artifacts", "Clearing managed bitcoind runtime artifacts...");
-        await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
-        bitcoindServiceAction = initialBitcoindProbe.compatibility === "rawtx-zmq-missing"
-          ? "restarted-missing-rawtx-zmq"
-          : "stopped-incompatible-service";
-      }
-    } else if (initialBitcoindProbe.compatibility === "unreachable") {
-      const hasStaleArtifacts = await Promise.all([
-        options.servicePaths.bitcoindStatusPath,
-        options.servicePaths.bitcoindPidPath,
-        options.servicePaths.bitcoindReadyPath,
-        options.servicePaths.bitcoindRuntimeConfigPath,
-        options.servicePaths.bitcoindWalletStatusPath,
-      ].map(pathExists));
-
-      if (hasStaleArtifacts.some(Boolean)) {
-        await reportRepairProgress(options.context, "bitcoind-clear-stale", "Clearing stale managed bitcoind artifacts...");
-        await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
-        bitcoindServiceAction = "cleared-stale-artifacts";
-      }
-    } else if (initialBitcoindProbe.compatibility === "protocol-error") {
-      throw new Error(initialBitcoindProbe.error ?? "managed_bitcoind_protocol_error");
+      );
+      await stopRecordedManagedProcess(processId, "managed_bitcoind_stop_timeout");
+      bitcoindServiceAction = initialBitcoindProbe.compatibility === "rawtx-zmq-missing"
+        ? "restarted-missing-rawtx-zmq"
+        : initialBitcoindProbe.compatibility === "service-version-mismatch"
+          || initialBitcoindProbe.compatibility === "wallet-root-mismatch"
+          || initialBitcoindProbe.compatibility === "runtime-mismatch"
+          ? "stopped-incompatible-service"
+          : "restarted-managed-service";
+    } else {
+      bitcoindServiceAction = "restarted-managed-service";
     }
+
+    await reportRepairProgress(options.context, "bitcoind-clear-artifacts", "Clearing managed bitcoind runtime artifacts...");
+    await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
   } finally {
     await bitcoindLock.release();
   }
@@ -150,9 +106,7 @@ export async function repairManagedBitcoindStage(options: {
       await reportRepairProgress(
         options.context,
         attachAttempt === 0 ? "bitcoind-start" : "bitcoind-retry-start",
-        bitcoindServiceAction === "none"
-          ? "Attaching to managed bitcoind..."
-          : "Starting managed bitcoind with current ZMQ config...",
+        "Starting managed bitcoind with current ZMQ config...",
       );
       bitcoindHandle = await options.context.attachService({
         dataDir: options.context.dataDir,
@@ -226,10 +180,6 @@ export async function repairManagedBitcoindStage(options: {
         replica,
       });
 
-      if (bitcoindServiceAction === "none" && initialBitcoindProbe.compatibility === "unreachable") {
-        bitcoindServiceAction = "restarted-compatible-service";
-      }
-
       return {
         state,
         repairStateNeedsPersist,
@@ -274,10 +224,6 @@ export async function repairManagedBitcoindStage(options: {
           await clearManagedBitcoindArtifactsForDataDir(options.servicePaths, options.context.dataDir);
         } finally {
           await retryLock.release();
-        }
-
-        if (bitcoindServiceAction === "none") {
-          bitcoindServiceAction = "restarted-compatible-service";
         }
 
         continue;

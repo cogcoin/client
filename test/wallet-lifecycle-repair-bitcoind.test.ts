@@ -128,6 +128,7 @@ test("repairManagedBitcoindStage stops incompatible services and normalizes stat
   assert.deepEqual(
     killLog.calls.map((call) => [call.pid, call.signal]),
     [
+      [8_111, 0],
       [8_111, "SIGTERM"],
       [8_111, 0],
     ],
@@ -222,6 +223,7 @@ test("repairManagedBitcoindStage restarts managed bitcoind missing rawtx ZMQ wit
   assert.deepEqual(
     killLog.calls.map((call) => [call.pid, call.signal]),
     [
+      [8_222, 0],
       [8_222, "SIGTERM"],
       [8_222, 0],
     ],
@@ -312,6 +314,7 @@ test("repairManagedBitcoindStage returns starting when restarted bitcoind is sti
   assert.deepEqual(
     killLog.calls.map((call) => [call.pid, call.signal]),
     [
+      [8_223, 0],
       [8_223, "SIGTERM"],
       [8_223, 0],
     ],
@@ -412,7 +415,7 @@ test("repairManagedBitcoindStage retries after stale managed RPC artifacts refus
     repairStateNeedsPersist: false,
   });
 
-  assert.equal(result.bitcoindServiceAction, "restarted-compatible-service");
+  assert.equal(result.bitcoindServiceAction, "restarted-managed-service");
   assert.equal(result.bitcoindCompatibilityIssue, "none");
   assert.equal(result.bitcoindPostRepairHealth, "ready");
   assert.equal(attachCalls, 2);

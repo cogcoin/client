@@ -290,19 +290,7 @@ async function clearManagedBitcoindArtifactRoot(serviceRoot: string): Promise<vo
 }
 
 async function stopManagedBitcoindPid(pid: number | null): Promise<void> {
-  if (pid === null || !await isProcessAlive(pid)) {
-    return;
-  }
-
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch (error) {
-    if (!(error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH")) {
-      throw error;
-    }
-  }
-
-  await waitForProcessExit(pid, 15_000, "managed_bitcoind_stop_timeout");
+  await stopRecordedManagedProcess(pid, "managed_bitcoind_stop_timeout");
 }
 
 export async function clearManagedBitcoindArtifactsForDataDir(

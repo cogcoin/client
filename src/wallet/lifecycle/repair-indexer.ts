@@ -1,26 +1,34 @@
 import type { ManagedServicePaths } from "../../bitcoind/service-paths.js";
 import { acquireFileLock } from "../fs/lock.js";
 import type { WalletStateV1 } from "../types.js";
-import { pathExists } from "./context.js";
 import {
   clearIndexerDaemonArtifacts,
   ensureIndexerDatabaseHealthy,
   mapIndexerCompatibilityToRepairIssue,
+  reportRepairProgress,
+  stopRecordedManagedProcess,
   verifyIndexerPostRepairHealth,
-  waitForProcessExit,
 } from "./repair-runtime.js";
 import type {
   WalletIndexerRepairStageResult,
   WalletRepairContext,
+  WalletRepairResult,
 } from "./types.js";
 
-export async function repairManagedIndexerStage(options: {
+export interface WalletIndexerRepairPreparationResult {
+  resetIndexerDatabase: boolean;
+  indexerDaemonAction: WalletRepairResult["indexerDaemonAction"];
+  indexerCompatibilityIssue: WalletRepairResult["indexerCompatibilityIssue"];
+  initialIndexerDaemonInstanceId: string | null;
+}
+
+export async function prepareManagedIndexerForRepair(options: {
   context: WalletRepairContext;
   servicePaths: ManagedServicePaths;
   state: WalletStateV1;
-}): Promise<WalletIndexerRepairStageResult> {
-  let indexerDaemonAction: WalletIndexerRepairStageResult["indexerDaemonAction"] = "none";
-  let indexerCompatibilityIssue: WalletIndexerRepairStageResult["indexerCompatibilityIssue"] = "none";
+}): Promise<WalletIndexerRepairPreparationResult> {
+  const indexerDaemonAction: WalletRepairResult["indexerDaemonAction"] = "restarted-managed-daemon";
+  let indexerCompatibilityIssue: WalletRepairResult["indexerCompatibilityIssue"] = "none";
   let initialIndexerDaemonInstanceId: string | null = null;
 
   const indexerLock = await acquireFileLock(options.servicePaths.indexerDaemonLockPath, {
@@ -33,6 +41,7 @@ export async function repairManagedIndexerStage(options: {
   let resetIndexerDatabase = false;
 
   try {
+    await reportRepairProgress(options.context, "indexer-check", "Checking indexer...");
     const initialProbe = await options.context.probeIndexerDaemon({
       dataDir: options.context.dataDir,
       walletRootId: options.state.walletRootId,
@@ -41,44 +50,31 @@ export async function repairManagedIndexerStage(options: {
     indexerCompatibilityIssue = mapIndexerCompatibilityToRepairIssue(initialProbe.compatibility);
     initialIndexerDaemonInstanceId = initialProbe.status?.daemonInstanceId ?? null;
 
-    if (initialProbe.compatibility === "compatible") {
-      await initialProbe.client?.close().catch(() => undefined);
-    } else if (
-      initialProbe.compatibility === "service-version-mismatch"
-      || initialProbe.compatibility === "wallet-root-mismatch"
-      || initialProbe.compatibility === "schema-mismatch"
-    ) {
+    if (initialProbe.compatibility === "protocol-error") {
+      throw new Error(initialProbe.error ?? "indexer_daemon_protocol_error");
+    }
+
+    if (initialProbe.compatibility !== "unreachable") {
       const processId = initialProbe.status?.processId ?? null;
 
       if (processId === null) {
         throw new Error("indexer_daemon_process_id_unavailable");
       }
 
-      try {
-        process.kill(processId, "SIGTERM");
-      } catch (error) {
-        if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "ESRCH") {
-          throw error;
-        }
-      }
-
-      await waitForProcessExit(processId);
-      await clearIndexerDaemonArtifacts(options.servicePaths);
-      indexerDaemonAction = "stopped-incompatible-daemon";
-    } else if (initialProbe.compatibility === "unreachable") {
-      const hasStaleArtifacts = await Promise.all([
-        options.servicePaths.indexerDaemonSocketPath,
-        options.servicePaths.indexerDaemonStatusPath,
-      ].map(pathExists));
-
-      if (hasStaleArtifacts.some(Boolean)) {
-        await clearIndexerDaemonArtifacts(options.servicePaths);
-        indexerDaemonAction = "cleared-stale-artifacts";
-      }
-    } else {
-      throw new Error(initialProbe.error ?? "indexer_daemon_protocol_error");
+      await reportRepairProgress(
+        options.context,
+        "indexer-stop-managed",
+        initialProbe.compatibility === "compatible"
+          ? "Stopping managed indexer daemon for repair..."
+          : "Stopping incompatible managed indexer daemon...",
+      );
+      await initialProbe.client?.close().catch(() => undefined);
+      await stopRecordedManagedProcess(processId, "indexer_daemon_stop_timeout");
     }
 
+    await reportRepairProgress(options.context, "indexer-clear-artifacts", "Clearing managed indexer runtime artifacts...");
+    await clearIndexerDaemonArtifacts(options.servicePaths);
+    await reportRepairProgress(options.context, "indexer-database-check", "Checking local indexer database...");
     resetIndexerDatabase = await ensureIndexerDatabaseHealthy({
       databasePath: options.context.databasePath,
       dataDir: options.context.dataDir,
@@ -89,19 +85,21 @@ export async function repairManagedIndexerStage(options: {
     await indexerLock.release();
   }
 
-  let preAttachIndexerDaemonInstanceId: string | null = null;
-  const preAttachProbe = await options.context.probeIndexerDaemon({
-    dataDir: options.context.dataDir,
-    walletRootId: options.state.walletRootId,
-  });
+  return {
+    resetIndexerDatabase,
+    indexerDaemonAction,
+    indexerCompatibilityIssue,
+    initialIndexerDaemonInstanceId,
+  };
+}
 
-  if (preAttachProbe.compatibility === "compatible") {
-    preAttachIndexerDaemonInstanceId = preAttachProbe.status?.daemonInstanceId ?? null;
-    await preAttachProbe.client?.close().catch(() => undefined);
-  } else if (preAttachProbe.compatibility !== "unreachable") {
-    throw new Error(preAttachProbe.error ?? "indexer_daemon_protocol_error");
-  }
-
+export async function startManagedIndexerAfterRepair(options: {
+  context: WalletRepairContext;
+  servicePaths: ManagedServicePaths;
+  state: WalletStateV1;
+  preparation: WalletIndexerRepairPreparationResult;
+}): Promise<WalletIndexerRepairStageResult> {
+  await reportRepairProgress(options.context, "indexer-start", "Starting managed indexer daemon...");
   const daemon = await options.context.attachIndexerDaemon({
     dataDir: options.context.dataDir,
     databasePath: options.context.databasePath,
@@ -119,36 +117,34 @@ export async function repairManagedIndexerStage(options: {
       walletRootId: options.state.walletRootId,
       nowUnixMs: options.context.nowUnixMs,
     });
-    const restartedIndexerDaemon = indexerDaemonAction !== "none" || preAttachProbe.compatibility === "unreachable";
 
     if (
-      restartedIndexerDaemon
-      && initialIndexerDaemonInstanceId !== null
-      && postRepairDaemonInstanceId === initialIndexerDaemonInstanceId
+      options.preparation.initialIndexerDaemonInstanceId !== null
+      && postRepairDaemonInstanceId === options.preparation.initialIndexerDaemonInstanceId
     ) {
       throw new Error("indexer_daemon_repair_identity_not_rotated");
     }
 
-    if (
-      !restartedIndexerDaemon
-      && preAttachProbe.compatibility === "compatible"
-      && preAttachIndexerDaemonInstanceId !== null
-      && postRepairDaemonInstanceId !== preAttachIndexerDaemonInstanceId
-    ) {
-      throw new Error("indexer_daemon_repair_identity_changed");
-    }
-
-    if (indexerDaemonAction === "none" && preAttachProbe.compatibility === "unreachable") {
-      indexerDaemonAction = "restarted-compatible-daemon";
-    }
-
     return {
-      resetIndexerDatabase,
-      indexerDaemonAction,
-      indexerCompatibilityIssue,
+      resetIndexerDatabase: options.preparation.resetIndexerDatabase,
+      indexerDaemonAction: options.preparation.indexerDaemonAction,
+      indexerCompatibilityIssue: options.preparation.indexerCompatibilityIssue,
       indexerPostRepairHealth,
     };
   } finally {
     await daemon.close().catch(() => undefined);
   }
+}
+
+export async function repairManagedIndexerStage(options: {
+  context: WalletRepairContext;
+  servicePaths: ManagedServicePaths;
+  state: WalletStateV1;
+}): Promise<WalletIndexerRepairStageResult> {
+  const preparation = await prepareManagedIndexerForRepair(options);
+
+  return await startManagedIndexerAfterRepair({
+    ...options,
+    preparation,
+  });
 }

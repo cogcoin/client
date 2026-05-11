@@ -141,13 +141,13 @@ test("repairManagedIndexerStage clears stale artifacts, resets a corrupt DB, and
 
   assert.deepEqual(result, {
     resetIndexerDatabase: true,
-    indexerDaemonAction: "cleared-stale-artifacts",
+    indexerDaemonAction: "restarted-managed-daemon",
     indexerCompatibilityIssue: "none",
     indexerPostRepairHealth: "synced",
   });
 });
 
-test("repairManagedIndexerStage preserves daemon identity when no restart was needed", async (t) => {
+test("repairManagedIndexerStage restarts a compatible daemon and verifies rotated identity", async (t) => {
   const fixture = await createWalletLifecycleFixture(t);
   const servicePaths = resolveManagedServicePaths(fixture.dataDir, fixture.state!.walletRootId);
   const compatibleProbe = async () => ({
@@ -174,12 +174,16 @@ test("repairManagedIndexerStage preserves daemon identity when no restart was ne
     attachIndexerDaemon: async () => createFakeIndexerDaemon(fixture.state!.walletRootId, "daemon-after") as any,
   });
 
-  await assert.rejects(
-    repairManagedIndexerStage({
-      context,
-      servicePaths,
-      state: fixture.state!,
-    }),
-    /indexer_daemon_repair_identity_changed/,
-  );
+  const result = await repairManagedIndexerStage({
+    context,
+    servicePaths,
+    state: fixture.state!,
+  });
+
+  assert.deepEqual(result, {
+    resetIndexerDatabase: false,
+    indexerDaemonAction: "restarted-managed-daemon",
+    indexerCompatibilityIssue: "none",
+    indexerPostRepairHealth: "synced",
+  });
 });

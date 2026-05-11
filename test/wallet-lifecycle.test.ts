@@ -348,16 +348,69 @@ test("repair skips indexer repair when restarted bitcoind is still loading", asy
 
   assert.equal(result.bitcoindServiceAction, "restarted-missing-rawtx-zmq");
   assert.equal(result.bitcoindPostRepairHealth, "starting");
-  assert.equal(result.indexerDaemonAction, "none");
+  assert.equal(result.indexerDaemonAction, "stopped-for-bitcoind-warmup");
   assert.equal(result.indexerPostRepairHealth, "starting");
   assert.equal(result.miningResumeAction, "none");
-  assert.match(result.note ?? "", /still loading the block index/u);
+  assert.match(result.note ?? "", /indexer was left stopped/u);
   assert.equal(attachIndexerCalled, false);
-  assert.equal(progress.includes("Checking indexer..."), false);
+  assert.equal(progress.includes("Checking indexer..."), true);
+  assert.ok(progress.includes("Clearing managed indexer runtime artifacts..."));
   assert.ok(progress.includes("Bitcoin Core is loading the block index; leaving managed bitcoind running."));
   assert.equal(
     killLog.calls.filter((call) => call.pid === 7_777 && call.signal === "SIGTERM").length,
     1,
+  );
+});
+
+test("repair recycles the managed indexer before managed bitcoind", async (t) => {
+  const fixture = await createRepairFixture(t);
+  const killLog = installProcessKillMock(t, [7_001, 8_001]);
+  const progress: string[] = [];
+
+  const result = await repairWallet({
+    dataDir: fixture.dataDir,
+    databasePath: fixture.databasePath,
+    provider: fixture.provider,
+    paths: fixture.paths,
+    ...createRepairDependencies(fixture.state),
+    progress: async (event) => {
+      progress.push(event.message);
+    },
+    probeIndexerDaemon: async () => ({
+      compatibility: "compatible",
+      status: {
+        daemonInstanceId: "daemon-before",
+        heartbeatAtUnixMs: 9_999,
+        state: "synced",
+        processId: 7_001,
+      },
+      client: {
+        async close() {},
+      },
+      error: null,
+    }) as any,
+    probeBitcoindService: async () => ({
+      compatibility: "compatible",
+      status: {
+        processId: 8_001,
+      },
+      error: null,
+    }) as any,
+  });
+
+  assert.equal(result.indexerDaemonAction, "restarted-managed-daemon");
+  assert.equal(result.indexerCompatibilityIssue, "none");
+  assert.equal(result.bitcoindServiceAction, "restarted-managed-service");
+  assert.equal(result.bitcoindCompatibilityIssue, "none");
+  assert.deepEqual(
+    killLog.calls
+      .filter((call) => call.signal === "SIGTERM")
+      .map((call) => call.pid),
+    [7_001, 8_001],
+  );
+  assert.ok(
+    progress.indexOf("Stopping managed indexer daemon for repair...")
+      < progress.indexOf("Stopping managed bitcoind service for repair..."),
   );
 });
 
