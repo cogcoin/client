@@ -105,6 +105,11 @@ function createPassiveStatus(overrides: Partial<PassiveClientStatus> = {}): Pass
       currentPhase: null,
       backgroundWorkerPid: null,
       backgroundWorkerHealth: null,
+      competitivenessGateReason: null,
+      competitivenessGateDiagnostics: null,
+      mempoolSequenceCacheStatus: null,
+      lastMempoolSequence: null,
+      lastCompetitivenessGateAtUnixMs: null,
       updatedAtUnixMs: null,
       lastError: null,
       note: null,
@@ -251,6 +256,11 @@ test("passive status formatter renders rich sections and derived lag hints", () 
       currentPhase: "indexer-alignment",
       backgroundWorkerPid: null,
       backgroundWorkerHealth: null,
+      competitivenessGateReason: null,
+      competitivenessGateDiagnostics: null,
+      mempoolSequenceCacheStatus: null,
+      lastMempoolSequence: null,
+      lastCompetitivenessGateAtUnixMs: null,
       updatedAtUnixMs: 1004,
       lastError: null,
       note: null,
@@ -289,6 +299,84 @@ test("passive status formatter marks missing service files as unavailable", () =
   assert.match(output, /Local Store[\s\S]*✗ Store initialized: no/);
   assert.match(output, /Managed Services\n✗ Managed bitcoind: unavailable\n✗ Indexer: unavailable/);
   assert.match(output, /Mining\n✗ Mining state: unavailable/);
+});
+
+test("passive status formatter surfaces mining gate diagnostics when present", () => {
+  const output = formatStatusReport(createPassiveStatus({
+    mining: {
+      statusPath: "/tmp/mining-status.json",
+      present: true,
+      runMode: "foreground",
+      miningState: "idle",
+      currentPhase: "waiting",
+      backgroundWorkerPid: null,
+      backgroundWorkerHealth: null,
+      competitivenessGateReason: "mempool_index_hydration_incomplete",
+      competitivenessGateDiagnostics: {
+        visibleMempoolTxCount: 12,
+        indexedContextCount: 9,
+        negativeTxCount: 2,
+        unknownTxCount: 3,
+        hydratedTxCount: 7,
+        mempoolEntryCount: 8,
+        missingEntryCount: 1,
+        cacheStatus: "index-warming",
+        mempoolSequence: "seq-42",
+        candidateRank: null,
+        higherRankedCompetitorDomainCount: 0,
+        dedupedCompetitorDomainCount: 0,
+      },
+      mempoolSequenceCacheStatus: "index-warming",
+      lastMempoolSequence: "seq-42",
+      lastCompetitivenessGateAtUnixMs: 10_000,
+      updatedAtUnixMs: 10_100,
+      lastError: null,
+      note: "Mining skipped this tick because the mempool competitiveness gate could not be verified safely.",
+      error: null,
+    },
+  }), "1.2.5");
+
+  assert.match(output, /✗ Competitiveness gate reason: mempool_index_hydration_incomplete/);
+  assert.match(output, /✓ Gate cache: index-warming/);
+  assert.match(output, /✓ Last mempool sequence: seq-42/);
+  assert.match(output, /✓ Last gate check: 10000/);
+  assert.match(output, /✓ Visible mempool txs: 12/);
+  assert.match(output, /✓ Indexed mempool contexts: 9/);
+  assert.match(output, /✓ Known non-Cog txs: 2/);
+  assert.match(output, /✓ Unknown mempool txs: 3/);
+  assert.match(output, /✓ Hydrated mempool txs: 7/);
+  assert.match(output, /✓ Mempool entries checked: 8/);
+  assert.match(output, /✗ Missing mempool entries: 1/);
+  assert.match(output, /✓ Higher-ranked competitor domains: 0/);
+  assert.match(output, /✓ Deduped competitor domains: 0/);
+  assert.doesNotMatch(output, /raw transaction/i);
+});
+
+test("passive status formatter does not show stale mining gate diagnostics when absent", () => {
+  const output = formatStatusReport(createPassiveStatus({
+    mining: {
+      statusPath: "/tmp/mining-status.json",
+      present: true,
+      runMode: "foreground",
+      miningState: "idle",
+      currentPhase: "waiting",
+      backgroundWorkerPid: null,
+      backgroundWorkerHealth: null,
+      competitivenessGateReason: null,
+      competitivenessGateDiagnostics: null,
+      mempoolSequenceCacheStatus: null,
+      lastMempoolSequence: null,
+      lastCompetitivenessGateAtUnixMs: null,
+      updatedAtUnixMs: 10_100,
+      lastError: null,
+      note: null,
+      error: null,
+    },
+  }), "1.2.5");
+
+  assert.doesNotMatch(output, /Competitiveness gate reason/);
+  assert.doesNotMatch(output, /Visible mempool txs/);
+  assert.doesNotMatch(output, /Missing mempool entries/);
 });
 
 test("passive status formatter surfaces corrupt runtime files and store errors", () => {
@@ -330,6 +418,11 @@ test("passive status formatter surfaces corrupt runtime files and store errors",
       currentPhase: null,
       backgroundWorkerPid: null,
       backgroundWorkerHealth: null,
+      competitivenessGateReason: null,
+      competitivenessGateDiagnostics: null,
+      mempoolSequenceCacheStatus: null,
+      lastMempoolSequence: null,
+      lastCompetitivenessGateAtUnixMs: null,
       updatedAtUnixMs: null,
       lastError: null,
       note: null,

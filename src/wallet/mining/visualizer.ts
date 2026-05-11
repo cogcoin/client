@@ -421,7 +421,9 @@ export function describeMiningVisualizerStatus(
   }
 
   if (snapshot.currentPublishDecision === "indeterminate-mempool-gate") {
-    return "Mempool gate indeterminate";
+    return snapshot.competitivenessGateReason === null
+      ? "Mempool gate indeterminate"
+      : `Mempool gate: ${snapshot.competitivenessGateReason}`;
   }
 
   if (snapshot.livePublishInMempool) {

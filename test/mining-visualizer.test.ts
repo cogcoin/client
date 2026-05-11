@@ -182,6 +182,8 @@ function createSnapshot(
     higherRankedCompetitorDomainCount: null,
     dedupedCompetitorDomainCount: null,
     competitivenessGateIndeterminate: null,
+    competitivenessGateReason: null,
+    competitivenessGateDiagnostics: null,
     mempoolSequenceCacheStatus: null,
     currentPublishDecision: null,
     lastMempoolSequence: null,
@@ -400,6 +402,20 @@ test("mining visualizer progress uses provider-specific waiting text without cha
     "Mining is waiting because the sentence provider is rate limited and will be retried automatically.",
   );
   assert.equal(describeMiningVisualizerStatus(snapshot), "Waiting for provider");
+});
+
+test("mining visualizer status surfaces mempool gate reason codes", () => {
+  const snapshot = createSnapshot({
+    currentPhase: "waiting",
+    currentPublishDecision: "indeterminate-mempool-gate",
+    competitivenessGateIndeterminate: true,
+    competitivenessGateReason: "mempool_index_hydration_incomplete",
+  });
+
+  assert.equal(
+    describeMiningVisualizerStatus(snapshot),
+    "Mempool gate: mempool_index_hydration_incomplete",
+  );
 });
 
 test("mining follow visualizer renders and advances follow-style age labels when block times are provided", () => {

@@ -197,6 +197,25 @@ function buildMiningRows(status: PassiveClientStatus): StatusRow[] {
 
   const miningHasError = status.mining.lastError !== null;
   const needsBackgroundWorker = status.mining.runMode === "background";
+  const diagnostics = status.mining.competitivenessGateDiagnostics;
+  const gateRows = status.mining.competitivenessGateReason === null
+    ? []
+    : [
+      row(false, `Competitiveness gate reason: ${status.mining.competitivenessGateReason}`),
+      row(status.mining.mempoolSequenceCacheStatus !== null, `Gate cache: ${formatValue(status.mining.mempoolSequenceCacheStatus)}`),
+      row(status.mining.lastMempoolSequence !== null, `Last mempool sequence: ${formatValue(status.mining.lastMempoolSequence)}`),
+      row(status.mining.lastCompetitivenessGateAtUnixMs !== null, `Last gate check: ${formatValue(status.mining.lastCompetitivenessGateAtUnixMs)}`),
+      row(diagnostics?.visibleMempoolTxCount !== null && diagnostics?.visibleMempoolTxCount !== undefined, `Visible mempool txs: ${formatValue(diagnostics?.visibleMempoolTxCount)}`),
+      row(diagnostics?.indexedContextCount !== null && diagnostics?.indexedContextCount !== undefined, `Indexed mempool contexts: ${formatValue(diagnostics?.indexedContextCount)}`),
+      row(diagnostics?.negativeTxCount !== null && diagnostics?.negativeTxCount !== undefined, `Known non-Cog txs: ${formatValue(diagnostics?.negativeTxCount)}`),
+      row(diagnostics?.unknownTxCount !== null && diagnostics?.unknownTxCount !== undefined, `Unknown mempool txs: ${formatValue(diagnostics?.unknownTxCount)}`),
+      row(diagnostics?.hydratedTxCount !== null && diagnostics?.hydratedTxCount !== undefined, `Hydrated mempool txs: ${formatValue(diagnostics?.hydratedTxCount)}`),
+      row(diagnostics?.mempoolEntryCount !== null && diagnostics?.mempoolEntryCount !== undefined, `Mempool entries checked: ${formatValue(diagnostics?.mempoolEntryCount)}`),
+      row(diagnostics?.missingEntryCount === 0, `Missing mempool entries: ${formatValue(diagnostics?.missingEntryCount)}`),
+      row(diagnostics?.candidateRank !== null && diagnostics?.candidateRank !== undefined, `Candidate rank: ${formatValue(diagnostics?.candidateRank)}`),
+      row(diagnostics?.higherRankedCompetitorDomainCount !== null && diagnostics?.higherRankedCompetitorDomainCount !== undefined, `Higher-ranked competitor domains: ${formatValue(diagnostics?.higherRankedCompetitorDomainCount)}`),
+      row(diagnostics?.dedupedCompetitorDomainCount !== null && diagnostics?.dedupedCompetitorDomainCount !== undefined, `Deduped competitor domains: ${formatValue(diagnostics?.dedupedCompetitorDomainCount)}`),
+    ];
 
   return [
     row(!miningHasError, `Mining run mode: ${formatValue(status.mining.runMode)}`),
@@ -207,6 +226,7 @@ function buildMiningRows(status: PassiveClientStatus): StatusRow[] {
     row(status.mining.updatedAtUnixMs !== null, `Mining updated: ${formatValue(status.mining.updatedAtUnixMs)}`),
     row(!miningHasError, `Mining last error: ${formatValue(status.mining.lastError)}`),
     row(status.mining.note === null, `Mining note: ${formatValue(status.mining.note)}`),
+    ...gateRows,
   ];
 }
 

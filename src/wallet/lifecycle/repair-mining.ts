@@ -161,6 +161,8 @@ export function createStoppedMiningRuntimeSnapshotForRepair(options: {
     higherRankedCompetitorDomainCount: null,
     dedupedCompetitorDomainCount: null,
     competitivenessGateIndeterminate: null,
+    competitivenessGateReason: null,
+    competitivenessGateDiagnostics: null,
     mempoolSequenceCacheStatus: null,
     currentPublishDecision: stoppedMiningState.currentPublishDecision,
     lastMempoolSequence: null,

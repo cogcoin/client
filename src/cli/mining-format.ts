@@ -55,6 +55,26 @@ function resolveMiningRuntimeNote(mining: MiningControlPlaneView): string | null
         : null;
 }
 
+function formatGateDiagnosticsCounts(mining: MiningControlPlaneView): string | null {
+  const diagnostics = mining.runtime.competitivenessGateDiagnostics;
+  if (diagnostics === null) {
+    return null;
+  }
+
+  return [
+    diagnostics.visibleMempoolTxCount === null ? null : `visible=${diagnostics.visibleMempoolTxCount}`,
+    diagnostics.indexedContextCount === null ? null : `indexed=${diagnostics.indexedContextCount}`,
+    diagnostics.negativeTxCount === null ? null : `negative=${diagnostics.negativeTxCount}`,
+    diagnostics.unknownTxCount === null ? null : `unknown=${diagnostics.unknownTxCount}`,
+    diagnostics.hydratedTxCount === null ? null : `hydrated=${diagnostics.hydratedTxCount}`,
+    diagnostics.mempoolEntryCount === null ? null : `entries=${diagnostics.mempoolEntryCount}`,
+    diagnostics.missingEntryCount === null ? null : `missingEntries=${diagnostics.missingEntryCount}`,
+    diagnostics.candidateRank === null ? null : `candidateRank=${diagnostics.candidateRank}`,
+    diagnostics.higherRankedCompetitorDomainCount === null ? null : `higherDomains=${diagnostics.higherRankedCompetitorDomainCount}`,
+    diagnostics.dedupedCompetitorDomainCount === null ? null : `competitorDomains=${diagnostics.dedupedCompetitorDomainCount}`,
+  ].filter((part): part is string => part !== null).join(" ") || null;
+}
+
 export function formatMiningSummaryLine(mining: MiningControlPlaneView): string {
   const provider = mining.provider.configured
     ? `${mining.provider.provider} configured`
@@ -134,9 +154,13 @@ export function formatMineStatusReport(mining: MiningControlPlaneView): string {
   if (mining.runtime.sameDomainCompetitorSuppressed === true) {
     lines.push("Competitiveness gate: suppressed by same-domain mempool incumbent");
   } else if (mining.runtime.competitivenessGateIndeterminate === true) {
-    lines.push("Competitiveness gate: indeterminate, so this tick was skipped safely");
+    lines.push(`Competitiveness gate: indeterminate${mining.runtime.competitivenessGateReason === null ? "" : ` (${mining.runtime.competitivenessGateReason})`}, so this tick was skipped safely`);
   } else if (mining.runtime.higherRankedCompetitorDomainCount !== null) {
     lines.push(`Higher-ranked competitor domains: ${mining.runtime.higherRankedCompetitorDomainCount}`);
+  }
+  const gateCounts = formatGateDiagnosticsCounts(mining);
+  if (gateCounts !== null) {
+    lines.push(`Gate diagnostics: ${gateCounts}`);
   }
   if (mining.runtime.dedupedCompetitorDomainCount !== null) {
     lines.push(`Deduped competitor domains: ${mining.runtime.dedupedCompetitorDomainCount}`);

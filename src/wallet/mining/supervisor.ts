@@ -261,6 +261,8 @@ function createStoppedMiningRuntimeSnapshotForTakeover(options: {
     higherRankedCompetitorDomainCount: null,
     dedupedCompetitorDomainCount: null,
     competitivenessGateIndeterminate: null,
+    competitivenessGateReason: null,
+    competitivenessGateDiagnostics: null,
     mempoolSequenceCacheStatus: null,
     currentPublishDecision: null,
     lastMempoolSequence: null,

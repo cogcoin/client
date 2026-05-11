@@ -22,6 +22,8 @@ import type { MiningSentenceBoardEntry } from "./visualizer.js";
 import { getIndexerTruthKey } from "./candidate.js";
 import {
   hydrateMiningMempoolIndex,
+  MiningMempoolIndexHydrationIncompleteError,
+  type MiningMempoolIndexHydrationDiagnostics,
   type MiningMempoolTxContext,
 } from "./mempool-index.js";
 
@@ -767,6 +769,29 @@ export async function runCompetitivenessGate(options: {
     serviceIdentity: string;
   };
 }): Promise<CompetitivenessDecision> {
+  let visibleMempoolTxCount: number | null = null;
+  let indexedContextCount: number | null = null;
+  let negativeTxCount: number | null = null;
+  let unknownTxCount: number | null = null;
+  let hydratedTxCount: number | null = null;
+  let mempoolEntryCount: number | null = null;
+  let missingEntryCount: number | null = null;
+  let mempoolSequenceForDiagnostics: string | null = null;
+  let cacheStatusForDiagnostics: CompetitivenessDecision["mempoolSequenceCacheStatus"] = null;
+  const createDiagnostics = (overrides: Partial<CompetitivenessDecision["diagnostics"]> = {}): CompetitivenessDecision["diagnostics"] => ({
+    visibleMempoolTxCount: overrides.visibleMempoolTxCount ?? visibleMempoolTxCount,
+    indexedContextCount: overrides.indexedContextCount ?? indexedContextCount,
+    negativeTxCount: overrides.negativeTxCount ?? negativeTxCount,
+    unknownTxCount: overrides.unknownTxCount ?? unknownTxCount,
+    hydratedTxCount: overrides.hydratedTxCount ?? hydratedTxCount,
+    mempoolEntryCount: overrides.mempoolEntryCount ?? mempoolEntryCount,
+    missingEntryCount: overrides.missingEntryCount ?? missingEntryCount,
+    cacheStatus: overrides.cacheStatus ?? cacheStatusForDiagnostics,
+    mempoolSequence: overrides.mempoolSequence ?? mempoolSequenceForDiagnostics,
+    candidateRank: overrides.candidateRank ?? null,
+    higherRankedCompetitorDomainCount: overrides.higherRankedCompetitorDomainCount ?? null,
+    dedupedCompetitorDomainCount: overrides.dedupedCompetitorDomainCount ?? null,
+  });
   const createDecision = (overrides: Partial<CompetitivenessDecision>): CompetitivenessDecision => ({
     allowed: overrides.allowed ?? false,
     decision: overrides.decision ?? "indeterminate-mempool-gate",
@@ -774,6 +799,14 @@ export async function runCompetitivenessGate(options: {
     higherRankedCompetitorDomainCount: overrides.higherRankedCompetitorDomainCount ?? 0,
     dedupedCompetitorDomainCount: overrides.dedupedCompetitorDomainCount ?? 0,
     competitivenessGateIndeterminate: overrides.competitivenessGateIndeterminate ?? false,
+    indeterminateReason: overrides.indeterminateReason ?? null,
+    diagnostics: overrides.diagnostics ?? createDiagnostics({
+      cacheStatus: overrides.mempoolSequenceCacheStatus ?? cacheStatusForDiagnostics,
+      mempoolSequence: overrides.lastMempoolSequence ?? mempoolSequenceForDiagnostics,
+      candidateRank: overrides.candidateRank ?? null,
+      higherRankedCompetitorDomainCount: overrides.higherRankedCompetitorDomainCount ?? null,
+      dedupedCompetitorDomainCount: overrides.dedupedCompetitorDomainCount ?? null,
+    }),
     mempoolSequenceCacheStatus: overrides.mempoolSequenceCacheStatus ?? null,
     lastMempoolSequence: overrides.lastMempoolSequence ?? null,
     visibleBoardEntries: overrides.visibleBoardEntries ?? [],
@@ -788,12 +821,22 @@ export async function runCompetitivenessGate(options: {
     },
   );
   const excludedTxids = [options.currentTxid].filter((value): value is string => value !== null).sort();
-  const localAssayTupleKey = [
-    options.candidate.domainId,
-    Buffer.from(options.candidate.encodedSentenceBytes).toString("hex"),
-    options.candidate.canonicalBlend.toString(),
-    options.candidate.sender.scriptPubKeyHex,
-  ].join(":");
+  let localAssayTupleKey: string;
+  try {
+    localAssayTupleKey = [
+      options.candidate.domainId,
+      Buffer.from(options.candidate.encodedSentenceBytes).toString("hex"),
+      options.candidate.canonicalBlend.toString(),
+      options.candidate.sender.scriptPubKeyHex,
+    ].join(":");
+  } catch {
+    return createDecision({
+      allowed: false,
+      decision: "indeterminate-mempool-gate",
+      indeterminateReason: "rank_evaluation_failed",
+      competitivenessGateIndeterminate: true,
+    });
+  }
   const cacheState = getOrCreateMiningGateCacheState(walletRootId);
   const setDecisionReuse = (decision: CompetitivenessDecision): void => {
     cacheState.decisionReuse = {
@@ -814,10 +857,12 @@ export async function runCompetitivenessGate(options: {
   } catch {
     return createDecision({
       competitivenessGateIndeterminate: true,
+      indeterminateReason: "raw_mempool_verbose_unavailable",
     });
   }
 
   const mempoolSequence = String(mempoolVerbose.mempool_sequence);
+  mempoolSequenceForDiagnostics = mempoolSequence;
   const cached = cacheState.decisionReuse;
   const cachedTruthMatches = cached !== null
     && indexerTruthKey !== null
@@ -841,63 +886,90 @@ export async function runCompetitivenessGate(options: {
     return {
       ...cached.decision,
       mempoolSequenceCacheStatus: "reused",
+      diagnostics: {
+        ...cached.decision.diagnostics,
+        cacheStatus: "reused",
+      },
     };
   }
 
   const referencedPrefix = Buffer.from(options.candidate.referencedBlockHashInternal.subarray(0, 4)).toString("hex");
   const visibleTxids = mempoolVerbose.txids.filter((txid) => !excludedTxids.includes(txid));
+  visibleMempoolTxCount = visibleTxids.length;
   let rawTxContexts: Map<string, CachedRawMempoolTxContext>;
   let mempoolEntries: Awaited<ReturnType<MiningRpcClient["getRawMempoolEntries"]>>;
   let gateCacheStatus: MiningMempoolGateCacheStatus = "refreshed";
+  let indexedEntryFailure = false;
+  const applyIndexDiagnostics = (diagnostics: MiningMempoolIndexHydrationDiagnostics): void => {
+    gateCacheStatus = diagnostics.cacheStatus;
+    cacheStatusForDiagnostics = diagnostics.cacheStatus;
+    indexedContextCount = diagnostics.indexedContextCount;
+    negativeTxCount = diagnostics.negativeTxidCount;
+    unknownTxCount = diagnostics.unknownTxidCount;
+    hydratedTxCount = diagnostics.hydratedCount;
+  };
 
   if (options.mempoolIndex?.rawTxSupported === true) {
-    const indexed = await hydrateMiningMempoolIndex({
-      walletRootId,
-      serviceIdentity: options.mempoolIndex.serviceIdentity,
-      cachePath: options.mempoolIndex.cachePath,
-      rpc: options.rpc,
-      visibleTxids,
-      cooperativeYield: options.cooperativeYield,
-      cooperativeYieldEvery: options.cooperativeYieldEvery,
-      throwIfStopping: options.throwIfStopping,
-      onWarmupProgress: options.onWarmupProgress,
-    }).catch(() => null);
-
-    if (indexed !== null) {
-      rawTxContexts = indexed.contexts;
-      gateCacheStatus = indexed.cacheStatus;
-      const indexedTxids = visibleTxids.filter((txid) => rawTxContexts.has(txid));
-      const indexedEntries = await fetchIndexedMempoolEntries({
+    let indexed: Awaited<ReturnType<typeof hydrateMiningMempoolIndex>>;
+    try {
+      indexed = await hydrateMiningMempoolIndex({
+        walletRootId,
+        serviceIdentity: options.mempoolIndex.serviceIdentity,
+        cachePath: options.mempoolIndex.cachePath,
         rpc: options.rpc,
-        txids: indexedTxids,
+        visibleTxids,
+        cooperativeYield: options.cooperativeYield,
+        cooperativeYieldEvery: options.cooperativeYieldEvery,
         throwIfStopping: options.throwIfStopping,
+        onWarmupProgress: options.onWarmupProgress,
       });
-
-      if (indexedEntries === null) {
-        rawTxContexts = new Map();
-        mempoolEntries = {};
-        gateCacheStatus = "fallback-scan";
-      } else {
-        mempoolEntries = indexedEntries;
+    } catch (error) {
+      if (error instanceof MiningMempoolIndexHydrationIncompleteError) {
+        applyIndexDiagnostics(error.diagnostics);
       }
-    } else {
       return createDecision({
         competitivenessGateIndeterminate: true,
         decision: "indeterminate-mempool-gate",
+        indeterminateReason: "mempool_index_hydration_incomplete",
         mempoolSequenceCacheStatus: "index-warming",
         lastMempoolSequence: mempoolSequence,
       });
     }
+
+    rawTxContexts = indexed.contexts;
+    applyIndexDiagnostics(indexed);
+    const indexedTxids = visibleTxids.filter((txid) => rawTxContexts.has(txid));
+    const indexedEntries = await fetchIndexedMempoolEntries({
+      rpc: options.rpc,
+      txids: indexedTxids,
+      throwIfStopping: options.throwIfStopping,
+    });
+
+    if (indexedEntries === null) {
+      rawTxContexts = new Map();
+      mempoolEntries = {};
+      gateCacheStatus = "fallback-scan";
+      cacheStatusForDiagnostics = gateCacheStatus;
+      indexedEntryFailure = true;
+    } else {
+      mempoolEntries = indexedEntries;
+      mempoolEntryCount = Object.keys(mempoolEntries).length;
+      missingEntryCount = Math.max(0, indexedTxids.length - mempoolEntryCount);
+    }
   } else {
     rawTxContexts = cacheState.rawTxContexts;
     gateCacheStatus = options.mempoolIndex?.rawTxSupported === false ? "fallback-scan" : "refreshed";
+    cacheStatusForDiagnostics = gateCacheStatus;
     const fallbackEntries = await options.rpc.getRawMempoolEntries().catch(() => null);
     if (fallbackEntries === null) {
       return createDecision({
         competitivenessGateIndeterminate: true,
+        indeterminateReason: "raw_mempool_entries_unavailable",
       });
     }
     mempoolEntries = fallbackEntries;
+    mempoolEntryCount = Object.keys(mempoolEntries).length;
+    missingEntryCount = Math.max(0, visibleTxids.length - mempoolEntryCount);
     pruneRawTxContextsToVisibleTxids({
       rawTxContexts,
       visibleTxids,
@@ -911,6 +983,10 @@ export async function runCompetitivenessGate(options: {
       throwIfStopping: options.throwIfStopping,
       onWarmupProgress: options.onWarmupProgress,
     });
+    indexedContextCount = rawTxContexts.size;
+    negativeTxCount = null;
+    unknownTxCount = Math.max(0, visibleTxids.length - rawTxContexts.size);
+    hydratedTxCount = rawTxContexts.size;
   }
 
   if (gateCacheStatus === "fallback-scan" && rawTxContexts.size === 0 && Object.keys(mempoolEntries).length === 0) {
@@ -918,9 +994,12 @@ export async function runCompetitivenessGate(options: {
     if (fallbackEntries === null) {
       return createDecision({
         competitivenessGateIndeterminate: true,
+        indeterminateReason: indexedEntryFailure ? "indexed_mempool_entry_unavailable" : "raw_mempool_entries_unavailable",
       });
     }
     mempoolEntries = fallbackEntries;
+    mempoolEntryCount = Object.keys(mempoolEntries).length;
+    missingEntryCount = Math.max(0, visibleTxids.length - mempoolEntryCount);
     rawTxContexts = cacheState.rawTxContexts;
     pruneRawTxContextsToVisibleTxids({
       rawTxContexts,
@@ -935,6 +1014,10 @@ export async function runCompetitivenessGate(options: {
       throwIfStopping: options.throwIfStopping,
       onWarmupProgress: options.onWarmupProgress,
     });
+    indexedContextCount = rawTxContexts.size;
+    negativeTxCount = null;
+    unknownTxCount = Math.max(0, visibleTxids.length - rawTxContexts.size);
+    hydratedTxCount = rawTxContexts.size;
   }
 
   const entries = new Map<string, CachedCompetitorEntry>();
@@ -970,6 +1053,7 @@ export async function runCompetitivenessGate(options: {
       const decision = createDecision({
         competitivenessGateIndeterminate: true,
         decision: "indeterminate-mempool-gate",
+        indeterminateReason: "unsupported_ancestor_overlay",
         mempoolSequenceCacheStatus: gateCacheStatus,
         lastMempoolSequence: mempoolSequence,
       });
@@ -1125,6 +1209,7 @@ export async function runCompetitivenessGate(options: {
       decision = createDecision({
         allowed: false,
         decision: "indeterminate-mempool-gate",
+        indeterminateReason: "rank_evaluation_failed",
         sameDomainCompetitorSuppressed: false,
         higherRankedCompetitorDomainCount: 0,
         dedupedCompetitorDomainCount: otherDomainBest.size,

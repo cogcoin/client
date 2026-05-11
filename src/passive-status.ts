@@ -84,6 +84,11 @@ export interface PassiveMiningStatus {
   currentPhase: string | null;
   backgroundWorkerPid: number | null;
   backgroundWorkerHealth: string | null;
+  competitivenessGateReason: MiningRuntimeStatusV1["competitivenessGateReason"];
+  competitivenessGateDiagnostics: MiningRuntimeStatusV1["competitivenessGateDiagnostics"];
+  mempoolSequenceCacheStatus: MiningRuntimeStatusV1["mempoolSequenceCacheStatus"];
+  lastMempoolSequence: string | null;
+  lastCompetitivenessGateAtUnixMs: number | null;
   updatedAtUnixMs: number | null;
   lastError: string | null;
   note: string | null;
@@ -281,6 +286,11 @@ function emptyMiningStatus(
     currentPhase: null,
     backgroundWorkerPid: null,
     backgroundWorkerHealth: null,
+    competitivenessGateReason: null,
+    competitivenessGateDiagnostics: null,
+    mempoolSequenceCacheStatus: null,
+    lastMempoolSequence: null,
+    lastCompetitivenessGateAtUnixMs: null,
     updatedAtUnixMs: null,
     lastError: null,
     note: null,
@@ -371,6 +381,11 @@ async function inspectMiningStatus(statusPath: string | null): Promise<PassiveMi
     currentPhase: result.status.currentPhase ?? null,
     backgroundWorkerPid: result.status.backgroundWorkerPid ?? null,
     backgroundWorkerHealth: result.status.backgroundWorkerHealth ?? null,
+    competitivenessGateReason: result.status.competitivenessGateReason ?? null,
+    competitivenessGateDiagnostics: result.status.competitivenessGateDiagnostics ?? null,
+    mempoolSequenceCacheStatus: result.status.mempoolSequenceCacheStatus ?? null,
+    lastMempoolSequence: result.status.lastMempoolSequence ?? null,
+    lastCompetitivenessGateAtUnixMs: result.status.lastCompetitivenessGateAtUnixMs ?? null,
     updatedAtUnixMs: result.status.updatedAtUnixMs ?? null,
     lastError: result.status.lastError ?? null,
     note: result.status.note ?? null,

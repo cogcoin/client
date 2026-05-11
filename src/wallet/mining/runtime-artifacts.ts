@@ -57,6 +57,8 @@ export async function loadMiningRuntimeStatus(
       sameDomainCompetitorSuppressed: parsed.sameDomainCompetitorSuppressed ?? null,
       dedupedCompetitorDomainCount: parsed.dedupedCompetitorDomainCount ?? null,
       competitivenessGateIndeterminate: parsed.competitivenessGateIndeterminate ?? null,
+      competitivenessGateReason: parsed.competitivenessGateReason ?? null,
+      competitivenessGateDiagnostics: parsed.competitivenessGateDiagnostics ?? null,
       mempoolSequenceCacheStatus: parsed.mempoolSequenceCacheStatus ?? null,
     };
   } catch (error) {

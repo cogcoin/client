@@ -77,6 +77,41 @@ test("mine status text shows the insufficient-funds next step from publish decis
   assert.doesNotMatch(report, /Note: Insufficient funds for mining\./);
 });
 
+test("mine status text renders competitiveness gate diagnostics", () => {
+  const report = formatMineStatusReport(createMiningControlPlaneView({
+    runtime: createMiningRuntimeStatus({
+      currentPhase: "waiting",
+      miningState: "idle",
+      currentPublishDecision: "indeterminate-mempool-gate",
+      competitivenessGateIndeterminate: true,
+      competitivenessGateReason: "mempool_index_hydration_incomplete",
+      competitivenessGateDiagnostics: {
+        visibleMempoolTxCount: 12,
+        indexedContextCount: 9,
+        negativeTxCount: 2,
+        unknownTxCount: 3,
+        hydratedTxCount: 7,
+        mempoolEntryCount: 8,
+        missingEntryCount: 1,
+        cacheStatus: "index-warming",
+        mempoolSequence: "seq-42",
+        candidateRank: null,
+        higherRankedCompetitorDomainCount: 0,
+        dedupedCompetitorDomainCount: 0,
+      },
+      mempoolSequenceCacheStatus: "index-warming",
+      lastMempoolSequence: "seq-42",
+    }),
+  }));
+
+  assert.match(report, /Publish decision: indeterminate-mempool-gate/);
+  assert.match(report, /Competitiveness gate: indeterminate \(mempool_index_hydration_incomplete\), so this tick was skipped safely/);
+  assert.match(report, /Gate diagnostics: visible=12 indexed=9 negative=2 unknown=3 hydrated=7 entries=8 missingEntries=1 higherDomains=0 competitorDomains=0/);
+  assert.match(report, /Last mempool sequence: seq-42/);
+  assert.match(report, /Gate cache: index-warming/);
+  assert.doesNotMatch(report, /raw transaction/i);
+});
+
 test("mine status text renders auto-reconciled mining publish decisions", () => {
   const emptyPublishReport = formatMineStatusReport(createMiningControlPlaneView({
     runtime: createMiningRuntimeStatus({

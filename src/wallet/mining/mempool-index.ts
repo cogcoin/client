@@ -22,7 +22,22 @@ export interface MiningMempoolTxContext {
 export interface MiningMempoolIndexHydrationResult {
   contexts: Map<string, MiningMempoolTxContext>;
   cacheStatus: "indexed" | "index-warming";
+  indexedContextCount: number;
+  negativeTxidCount: number;
+  unknownTxidCount: number;
   hydratedCount: number;
+}
+
+export type MiningMempoolIndexHydrationDiagnostics = Omit<MiningMempoolIndexHydrationResult, "contexts">;
+
+export class MiningMempoolIndexHydrationIncompleteError extends Error {
+  readonly diagnostics: MiningMempoolIndexHydrationDiagnostics;
+
+  constructor(diagnostics: MiningMempoolIndexHydrationDiagnostics) {
+    super("mining_mempool_index_hydration_incomplete");
+    this.name = "MiningMempoolIndexHydrationIncompleteError";
+    this.diagnostics = diagnostics;
+  }
 }
 
 export interface MiningMempoolIndexGateOptions {
@@ -390,6 +405,24 @@ async function hydrateUnknownTxids(options: {
   }
 }
 
+function createHydrationDiagnostics(options: {
+  state: MiningMempoolIndexState;
+  unknownTxids: readonly string[];
+  cacheStatus: MiningMempoolIndexHydrationResult["cacheStatus"];
+}): MiningMempoolIndexHydrationDiagnostics {
+  const hydratedCount = options.unknownTxids.filter((txid) =>
+    options.state.contexts.has(txid) || options.state.negativeTxids.has(txid)
+  ).length;
+
+  return {
+    cacheStatus: options.cacheStatus,
+    indexedContextCount: options.state.contexts.size,
+    negativeTxidCount: options.state.negativeTxids.size,
+    unknownTxidCount: options.unknownTxids.length,
+    hydratedCount,
+  };
+}
+
 export async function hydrateMiningMempoolIndex(options: {
   walletRootId: string;
   serviceIdentity: string;
@@ -412,17 +445,32 @@ export async function hydrateMiningMempoolIndex(options: {
     !state.contexts.has(txid) && !state.negativeTxids.has(txid)
   );
 
+  const cacheStatus = unknownTxids.length === 0 ? "indexed" : "index-warming";
+
   if (unknownTxids.length > 0) {
-    await hydrateUnknownTxids({
-      state,
-      rpc: options.rpc,
-      unknownTxids,
-      cooperativeYield: options.cooperativeYield,
-      cooperativeYieldEvery: options.cooperativeYieldEvery,
-      throwIfStopping: options.throwIfStopping,
-      onWarmupProgress: options.onWarmupProgress,
-    });
-    changed = true;
+    try {
+      await hydrateUnknownTxids({
+        state,
+        rpc: options.rpc,
+        unknownTxids,
+        cooperativeYield: options.cooperativeYield,
+        cooperativeYieldEvery: options.cooperativeYieldEvery,
+        throwIfStopping: options.throwIfStopping,
+        onWarmupProgress: options.onWarmupProgress,
+      });
+      changed = true;
+    } catch {
+      changed = true;
+      const diagnostics = createHydrationDiagnostics({
+        state,
+        unknownTxids,
+        cacheStatus,
+      });
+      if (changed) {
+        await saveState(state).catch(() => undefined);
+      }
+      throw new MiningMempoolIndexHydrationIncompleteError(diagnostics);
+    }
   }
 
   if (changed) {
@@ -431,8 +479,11 @@ export async function hydrateMiningMempoolIndex(options: {
 
   return {
     contexts: new Map(state.contexts),
-    cacheStatus: unknownTxids.length === 0 ? "indexed" : "index-warming",
-    hydratedCount: unknownTxids.length,
+    ...createHydrationDiagnostics({
+      state,
+      unknownTxids,
+      cacheStatus,
+    }),
   };
 }
 

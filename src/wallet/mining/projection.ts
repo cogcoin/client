@@ -42,6 +42,8 @@ export interface MiningRuntimeStatusOverrides {
   higherRankedCompetitorDomainCount?: number | null;
   dedupedCompetitorDomainCount?: number | null;
   competitivenessGateIndeterminate?: boolean | null;
+  competitivenessGateReason?: MiningRuntimeStatusV1["competitivenessGateReason"];
+  competitivenessGateDiagnostics?: MiningRuntimeStatusV1["competitivenessGateDiagnostics"];
   mempoolSequenceCacheStatus?: MiningRuntimeStatusV1["mempoolSequenceCacheStatus"];
   lastMempoolSequence?: string | null;
   lastCompetitivenessGateAtUnixMs?: number | null;
@@ -86,6 +88,8 @@ export function buildPrePublishStatusOverrides(options: {
     currentDomainName: options.candidate.domainName,
     currentSentenceDisplay: options.candidate.sentence,
     currentCanonicalBlend: options.candidate.canonicalBlend.toString(),
+    competitivenessGateReason: null,
+    competitivenessGateDiagnostics: null,
     note: replacing
       ? "Replacing the live mining transaction for the current tip."
       : "Broadcasting the best mining candidate for the current tip.",
@@ -357,6 +361,8 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
     higherRankedCompetitorDomainCount: existing?.higherRankedCompetitorDomainCount ?? null,
     dedupedCompetitorDomainCount: existing?.dedupedCompetitorDomainCount ?? null,
     competitivenessGateIndeterminate: existing?.competitivenessGateIndeterminate ?? null,
+    competitivenessGateReason: existing?.competitivenessGateReason ?? null,
+    competitivenessGateDiagnostics: existing?.competitivenessGateDiagnostics ?? null,
     mempoolSequenceCacheStatus: existing?.mempoolSequenceCacheStatus ?? null,
     currentPublishDecision: state?.currentPublishDecision ?? existing?.currentPublishDecision ?? null,
     lastMempoolSequence: existing?.lastMempoolSequence ?? null,
@@ -491,6 +497,14 @@ export function applyMiningRuntimeStatusOverrides(options: {
     competitivenessGateIndeterminate: resolveSnapshotOverride(
       overrides.competitivenessGateIndeterminate,
       options.runtime.competitivenessGateIndeterminate,
+    ),
+    competitivenessGateReason: resolveSnapshotOverride(
+      overrides.competitivenessGateReason,
+      options.runtime.competitivenessGateReason,
+    ),
+    competitivenessGateDiagnostics: resolveSnapshotOverride(
+      overrides.competitivenessGateDiagnostics,
+      options.runtime.competitivenessGateDiagnostics,
     ),
     mempoolSequenceCacheStatus: resolveSnapshotOverride(
       overrides.mempoolSequenceCacheStatus,

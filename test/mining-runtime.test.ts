@@ -55,7 +55,10 @@ import {
   resolveSettledBoard as resolveSettledBoardForTesting,
   syncMiningVisualizerBlockTimes as syncMiningVisualizerBlockTimesForTesting,
 } from "../src/wallet/mining/visualizer-sync.js";
-import { loadMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
+import {
+  loadMiningRuntimeStatus,
+  readMiningEvents,
+} from "../src/wallet/mining/runtime-artifacts.js";
 import { serializeMine } from "../src/wallet/cogop/index.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
@@ -2651,6 +2654,112 @@ test("performMiningCycle keeps the insufficient-funding blocker active across re
   assert.equal(snapshot?.lastError, "Bitcoin Core could not fund the next mining publish with safe BTC.");
 });
 
+test("performMiningCycle persists competitiveness gate diagnostics on indeterminate skips", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-gate-diagnostics");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const readContext = createProviderRetryReadContext();
+  readContext.dataDir = homeDirectory;
+  readContext.databasePath = `${homeDirectory}/client.sqlite`;
+  readContext.snapshot.daemonInstanceId = "daemon-1";
+  readContext.snapshot.snapshotSeq = "seq-100";
+  const diagnostics = {
+    visibleMempoolTxCount: 12,
+    indexedContextCount: 9,
+    negativeTxCount: 2,
+    unknownTxCount: 3,
+    hydratedTxCount: 7,
+    mempoolEntryCount: 8,
+    missingEntryCount: 1,
+    cacheStatus: "index-warming" as const,
+    mempoolSequence: "seq-42",
+    candidateRank: null,
+    higherRankedCompetitorDomainCount: 0,
+    dedupedCompetitorDomainCount: 0,
+  };
+
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: readContext.localState.state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+  });
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: "run-1",
+    openReadContext: async () => readContext,
+    attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+    nowImpl: () => 10_000,
+    generateCandidatesForDomainsImpl: async () => [createTestMiningCandidate()],
+    runCompetitivenessGateImpl: async () => ({
+      allowed: false,
+      decision: "indeterminate-mempool-gate",
+      sameDomainCompetitorSuppressed: false,
+      higherRankedCompetitorDomainCount: 0,
+      dedupedCompetitorDomainCount: 0,
+      competitivenessGateIndeterminate: true,
+      indeterminateReason: "mempool_index_hydration_incomplete",
+      diagnostics,
+      mempoolSequenceCacheStatus: "index-warming",
+      lastMempoolSequence: "seq-42",
+      visibleBoardEntries: [],
+      candidateRank: null,
+    }),
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  const events = await readMiningEvents({
+    eventsPath: paths.miningEventsPath,
+    all: true,
+  });
+  const skippedEvent = events.find((event) => event.kind === "publish-skipped-gate-indeterminate") ?? null;
+
+  assert.equal(snapshot?.currentPhase, "waiting");
+  assert.equal(snapshot?.currentPublishDecision, "indeterminate-mempool-gate");
+  assert.equal(snapshot?.competitivenessGateReason, "mempool_index_hydration_incomplete");
+  assert.deepEqual(snapshot?.competitivenessGateDiagnostics, diagnostics);
+  assert.equal(snapshot?.lastCompetitivenessGateAtUnixMs, 10_000);
+  assert.equal(snapshot?.lastMempoolSequence, "seq-42");
+  assert.equal(snapshot?.mempoolSequenceCacheStatus, "index-warming");
+  assert.match(
+    snapshot?.note ?? "",
+    /mempool competitiveness gate could not be verified safely \(mempool_index_hydration_incomplete\)/,
+  );
+  assert.notEqual(skippedEvent, null);
+  assert.equal(skippedEvent?.reason, "mempool_index_hydration_incomplete");
+  assert.match(skippedEvent?.message ?? "", /visible=12/);
+  assert.match(skippedEvent?.message ?? "", /missingEntries=1/);
+});
+
+test("pre-publish status overrides clear stale competitiveness gate diagnostics", () => {
+  const state = createWalletState({
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+  });
+  const selectedCandidate = createTestMiningCandidate();
+
+  const overrides = buildPrePublishStatusOverridesForTesting({
+    state,
+    candidate: selectedCandidate,
+  });
+
+  assert.equal(overrides.competitivenessGateReason, null);
+  assert.equal(overrides.competitivenessGateDiagnostics, null);
+});
+
 test("performMiningCycle retries managed Core wallet relocks on later ticks without regenerating candidates", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-managed-core-relock-cycle");
   const paths = resolveWalletRuntimePathsForTesting({
@@ -4112,6 +4221,42 @@ test("runCompetitivenessGate keeps indeterminate mempool semantics when mempool 
   assert.equal(decision.allowed, false);
   assert.equal(decision.decision, "indeterminate-mempool-gate");
   assert.equal(decision.competitivenessGateIndeterminate, true);
+  assert.equal(decision.indeterminateReason, "raw_mempool_verbose_unavailable");
+  assert.equal(decision.diagnostics.visibleMempoolTxCount, null);
+  assert.equal(decision.diagnostics.higherRankedCompetitorDomainCount, null);
+  assert.equal(decision.diagnostics.dedupedCompetitorDomainCount, null);
+});
+
+test("runCompetitivenessGate reports raw mempool entry failures", async () => {
+  const candidate = createGateCandidate();
+  const context = createGateReadContext({
+    domains: [{
+      domainId: 7,
+      name: "cogdemo",
+    }],
+  });
+
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: {
+      ...(createGateRpc({
+        txids: ["aa".repeat(32)],
+        rawTransactions: {},
+      }) as any),
+      async getRawMempoolEntries() {
+        throw new Error("raw mempool entries unavailable");
+      },
+    } as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+  });
+
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.decision, "indeterminate-mempool-gate");
+  assert.equal(decision.indeterminateReason, "raw_mempool_entries_unavailable");
+  assert.equal(decision.diagnostics.visibleMempoolTxCount, 1);
+  assert.equal(decision.diagnostics.higherRankedCompetitorDomainCount, null);
+  assert.equal(decision.diagnostics.dedupedCompetitorDomainCount, null);
 });
 
 test("runCompetitivenessGate keeps publish semantics and cooperatively yields during large scans", async () => {
@@ -4473,15 +4618,25 @@ test("runCompetitivenessGate stays indeterminate when indexed unknown hydration 
     rpc: {
       async getRawMempoolVerbose() {
         return {
-          txids: ["aa".repeat(32)],
+          txids: ["aa".repeat(32), "bb".repeat(32)],
           mempool_sequence: "seq-1",
         };
       },
       async getRawMempoolEntries() {
         throw new Error("failed indexed hydration must not fall back to unsafe full scan");
       },
-      async getRawTransaction() {
-        throw new Error("transient raw transaction failure");
+      async getRawTransaction(txid: string) {
+        if (txid === "aa".repeat(32)) {
+          throw new Error("transient raw transaction failure");
+        }
+
+        return createMineTransaction({
+          txid,
+          domainId: 1,
+          senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+          referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+          sentenceFill: "a",
+        });
       },
       async getMempoolEntry() {
         throw new Error("unused");
@@ -4500,7 +4655,148 @@ test("runCompetitivenessGate stays indeterminate when indexed unknown hydration 
   assert.equal(decision.allowed, false);
   assert.equal(decision.decision, "indeterminate-mempool-gate");
   assert.equal(decision.competitivenessGateIndeterminate, true);
+  assert.equal(decision.indeterminateReason, "mempool_index_hydration_incomplete");
   assert.equal(decision.mempoolSequenceCacheStatus, "index-warming");
+  assert.equal(decision.diagnostics.visibleMempoolTxCount, 2);
+  assert.equal(decision.diagnostics.indexedContextCount, 1);
+  assert.equal(decision.diagnostics.negativeTxCount, 0);
+  assert.equal(decision.diagnostics.unknownTxCount, 2);
+  assert.equal(decision.diagnostics.hydratedTxCount, 1);
+  assert.equal(decision.diagnostics.cacheStatus, "index-warming");
+  assert.equal(decision.diagnostics.mempoolSequence, "seq-1");
+  assert.equal(decision.diagnostics.higherRankedCompetitorDomainCount, null);
+  assert.equal(decision.diagnostics.dedupedCompetitorDomainCount, null);
+});
+
+test("runCompetitivenessGate reports indexed entry failures when fallback cannot verify", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-entry-fail");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const candidate = createGateCandidate();
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+  const txid = "aa".repeat(32);
+
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: {
+      async getRawMempoolVerbose() {
+        return {
+          txids: [txid],
+          mempool_sequence: "seq-1",
+        };
+      },
+      async getRawMempoolEntries() {
+        throw new Error("fallback mempool entries unavailable");
+      },
+      async getRawTransaction() {
+        return createMineTransaction({
+          txid,
+          domainId: candidate.domainId,
+          senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+          referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+          sentenceFill: "a",
+        });
+      },
+      async getMempoolEntry() {
+        throw new Error("indexed mempool entry unavailable");
+      },
+    } as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    mempoolIndex: {
+      rawTxSupported: true,
+      cachePath,
+      serviceIdentity: "service-1",
+    },
+  });
+
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.decision, "indeterminate-mempool-gate");
+  assert.equal(decision.indeterminateReason, "indexed_mempool_entry_unavailable");
+  assert.equal(decision.diagnostics.visibleMempoolTxCount, 1);
+  assert.equal(decision.diagnostics.indexedContextCount, 1);
+  assert.equal(decision.diagnostics.cacheStatus, "fallback-scan");
+});
+
+test("runCompetitivenessGate reports unsupported ancestor overlays", async () => {
+  const candidate = createGateCandidate();
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+  const parentTxid = "bb".repeat(32);
+  const childTxid = "aa".repeat(32);
+
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: createGateRpc({
+      txids: [parentTxid, childTxid],
+      rawTransactions: {
+        [parentTxid]: {
+          txid: parentTxid,
+          vin: [{ txid: "ff".repeat(32), prevout: { scriptPubKey: { hex: candidate.sender.scriptPubKeyHex } } }],
+          vout: [{
+            n: 0,
+            value: 0,
+            scriptPubKey: {
+              hex: "6a04434f47ff",
+            },
+          }],
+        } as ReturnType<typeof createMineTransaction>,
+        [childTxid]: createMineTransaction({
+          txid: childTxid,
+          domainId: candidate.domainId,
+          senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+          referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+          sentenceFill: "a",
+          parentTxid,
+        }),
+      },
+    }) as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      ["a".repeat(60)]: candidate.canonicalBlend,
+    }) as any,
+  });
+
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.decision, "indeterminate-mempool-gate");
+  assert.equal(decision.indeterminateReason, "unsupported_ancestor_overlay");
+  assert.equal(decision.diagnostics.visibleMempoolTxCount, 2);
+  assert.equal(decision.diagnostics.higherRankedCompetitorDomainCount, null);
+  assert.equal(decision.diagnostics.dedupedCompetitorDomainCount, null);
+});
+
+test("runCompetitivenessGate reports rank evaluation failures", async () => {
+  const candidate = createGateCandidate({
+    encodedSentenceBytes: null,
+  });
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: createGateRpc({
+      txids: [],
+      rawTransactions: {},
+    }) as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+  });
+
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.decision, "indeterminate-mempool-gate");
+  assert.equal(decision.indeterminateReason, "rank_evaluation_failed");
+  assert.equal(decision.diagnostics.higherRankedCompetitorDomainCount, null);
+  assert.equal(decision.diagnostics.dedupedCompetitorDomainCount, null);
 });
 
 test("runCompetitivenessGate reports fallback-scan when rawtx support is absent", async () => {

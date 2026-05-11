@@ -74,6 +74,35 @@ function createInitialState(options: {
   };
 }
 
+function formatGateReasonSuffix(reason: CompetitivenessDecision["indeterminateReason"]): string {
+  return reason === null ? "" : ` (${reason})`;
+}
+
+function formatGateDiagnosticsSummary(
+  diagnostics: CompetitivenessDecision["diagnostics"] | null,
+): string {
+  if (diagnostics === null) {
+    return "";
+  }
+
+  const parts = [
+    diagnostics.visibleMempoolTxCount === null ? null : `visible=${diagnostics.visibleMempoolTxCount}`,
+    diagnostics.indexedContextCount === null ? null : `indexed=${diagnostics.indexedContextCount}`,
+    diagnostics.negativeTxCount === null ? null : `negative=${diagnostics.negativeTxCount}`,
+    diagnostics.unknownTxCount === null ? null : `unknown=${diagnostics.unknownTxCount}`,
+    diagnostics.hydratedTxCount === null ? null : `hydrated=${diagnostics.hydratedTxCount}`,
+    diagnostics.mempoolEntryCount === null ? null : `entries=${diagnostics.mempoolEntryCount}`,
+    diagnostics.missingEntryCount === null ? null : `missingEntries=${diagnostics.missingEntryCount}`,
+    diagnostics.candidateRank === null ? null : `candidateRank=${diagnostics.candidateRank}`,
+    diagnostics.higherRankedCompetitorDomainCount === null ? null : `higherDomains=${diagnostics.higherRankedCompetitorDomainCount}`,
+    diagnostics.dedupedCompetitorDomainCount === null ? null : `competitorDomains=${diagnostics.dedupedCompetitorDomainCount}`,
+    diagnostics.cacheStatus === null ? null : `cache=${diagnostics.cacheStatus}`,
+    diagnostics.mempoolSequence === null ? null : `sequence=${diagnostics.mempoolSequence}`,
+  ].filter((part): part is string => part !== null);
+
+  return parts.length === 0 ? "" : ` ${parts.join(" ")}`;
+}
+
 export async function runMiningPhaseMachine(options: {
   dataDir: string;
   databasePath: string;
@@ -196,6 +225,8 @@ export async function runMiningPhaseMachine(options: {
               runMode: options.runMode,
               currentPhase: "idle",
               currentPublishDecision: null,
+              competitivenessGateReason: null,
+              competitivenessGateDiagnostics: null,
               lastError: null,
               note: "No locally controlled anchored root domains are currently eligible to mine.",
             });
@@ -289,6 +320,8 @@ export async function runMiningPhaseMachine(options: {
           runMode: options.runMode,
           currentPhase: "generating",
           currentPublishDecision: null,
+          competitivenessGateReason: null,
+          competitivenessGateDiagnostics: null,
           lastError: null,
           note: "Generating mining sentences for eligible root domains.",
         });
@@ -438,6 +471,8 @@ export async function runMiningPhaseMachine(options: {
           runMode: options.runMode,
           currentPhase: "scoring",
           currentPublishDecision: null,
+          competitivenessGateReason: null,
+          competitivenessGateDiagnostics: null,
           lastError: null,
           note: "Scoring mining candidates for the current tip.",
         });
@@ -453,6 +488,8 @@ export async function runMiningPhaseMachine(options: {
             runMode: options.runMode,
             currentPhase: "idle",
             currentPublishDecision: "publish-skipped-no-candidate",
+            competitivenessGateReason: null,
+            competitivenessGateDiagnostics: null,
             note: "No publishable mining candidate passed scoring gates for the current tip.",
           });
           await options.appendEvent(createMiningEventRecord(
@@ -559,7 +596,8 @@ export async function runMiningPhaseMachine(options: {
             ? "Best local sentence found, but a same-domain mempool competitor already matches or beats it."
             : gate.decision === "suppressed-top5-mempool"
               ? `Best local sentence found, but ${gate.higherRankedCompetitorDomainCount} stronger competitor root domains are already in mempool.`
-              : "Mining skipped this tick because the mempool competitiveness gate could not be verified safely.";
+              : `Mining skipped this tick because the mempool competitiveness gate could not be verified safely${formatGateReasonSuffix(gate.indeterminateReason)}.${formatGateDiagnosticsSummary(gate.diagnostics)}`;
+          const gateWasIndeterminate = gate.decision === "indeterminate-mempool-gate";
           await options.saveCycleStatus(options.readContext, {
             runMode: options.runMode,
             currentPhase: "waiting",
@@ -568,6 +606,8 @@ export async function runMiningPhaseMachine(options: {
             higherRankedCompetitorDomainCount: gate.higherRankedCompetitorDomainCount,
             dedupedCompetitorDomainCount: gate.dedupedCompetitorDomainCount,
             competitivenessGateIndeterminate: gate.competitivenessGateIndeterminate,
+            competitivenessGateReason: gateWasIndeterminate ? gate.indeterminateReason : null,
+            competitivenessGateDiagnostics: gateWasIndeterminate ? gate.diagnostics : null,
             mempoolSequenceCacheStatus: gate.mempoolSequenceCacheStatus,
             lastMempoolSequence: gate.lastMempoolSequence,
             lastCompetitivenessGateAtUnixMs: now(),
@@ -580,10 +620,10 @@ export async function runMiningPhaseMachine(options: {
                 ? "publish-skipped-top5-mempool"
                 : "publish-skipped-gate-indeterminate",
             gate.decision === "suppressed-same-domain-mempool"
-              ? "Skipped publish because a same-domain mempool competitor already outranks the local candidate."
-              : gate.decision === "suppressed-top5-mempool"
-                ? `Skipped publish because ${gate.higherRankedCompetitorDomainCount} stronger competitor root domains are already in mempool.`
-                : "Skipped publish because the competitiveness gate could not be evaluated safely.",
+                ? "Skipped publish because a same-domain mempool competitor already outranks the local candidate."
+                : gate.decision === "suppressed-top5-mempool"
+                  ? `Skipped publish because ${gate.higherRankedCompetitorDomainCount} stronger competitor root domains are already in mempool.`
+                  : `Skipped publish because the competitiveness gate could not be evaluated safely${formatGateReasonSuffix(gate.indeterminateReason)}.${formatGateDiagnosticsSummary(gate.diagnostics)}`,
             {
               targetBlockHeight: best.targetBlockHeight,
               referencedBlockHashDisplay: best.referencedBlockHashDisplay,
@@ -591,7 +631,7 @@ export async function runMiningPhaseMachine(options: {
               domainName: best.domainName,
               score: best.canonicalBlend.toString(),
               runId: options.backgroundWorkerRunId,
-              reason: gate.decision,
+              reason: gateWasIndeterminate ? gate.indeterminateReason ?? gate.decision : gate.decision,
             },
           ));
           return;
@@ -682,6 +722,8 @@ export async function runMiningPhaseMachine(options: {
               higherRankedCompetitorDomainCount: state.gateSnapshot.higherRankedCompetitorDomainCount,
               dedupedCompetitorDomainCount: state.gateSnapshot.dedupedCompetitorDomainCount,
               competitivenessGateIndeterminate: false,
+              competitivenessGateReason: null,
+              competitivenessGateDiagnostics: null,
               mempoolSequenceCacheStatus: state.gateSnapshot.mempoolSequenceCacheStatus,
               lastMempoolSequence: state.gateSnapshot.lastMempoolSequence,
               lastCompetitivenessGateAtUnixMs: now(),
@@ -716,6 +758,8 @@ export async function runMiningPhaseMachine(options: {
               higherRankedCompetitorDomainCount: state.gateSnapshot.higherRankedCompetitorDomainCount,
               dedupedCompetitorDomainCount: state.gateSnapshot.dedupedCompetitorDomainCount,
               competitivenessGateIndeterminate: false,
+              competitivenessGateReason: null,
+              competitivenessGateDiagnostics: null,
               mempoolSequenceCacheStatus: state.gateSnapshot.mempoolSequenceCacheStatus,
               lastMempoolSequence: state.gateSnapshot.lastMempoolSequence,
               lastCompetitivenessGateAtUnixMs: now(),
@@ -756,6 +800,8 @@ export async function runMiningPhaseMachine(options: {
             higherRankedCompetitorDomainCount: state.gateSnapshot.higherRankedCompetitorDomainCount,
             dedupedCompetitorDomainCount: state.gateSnapshot.dedupedCompetitorDomainCount,
             competitivenessGateIndeterminate: false,
+            competitivenessGateReason: null,
+            competitivenessGateDiagnostics: null,
             mempoolSequenceCacheStatus: state.gateSnapshot.mempoolSequenceCacheStatus,
             lastMempoolSequence: state.gateSnapshot.lastMempoolSequence,
             lastCompetitivenessGateAtUnixMs: now(),

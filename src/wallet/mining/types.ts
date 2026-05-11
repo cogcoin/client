@@ -80,6 +80,29 @@ export interface MiningEventRecord {
   runId?: string | null;
 }
 
+export type MiningCompetitivenessGateReason =
+  | "raw_mempool_verbose_unavailable"
+  | "mempool_index_hydration_incomplete"
+  | "raw_mempool_entries_unavailable"
+  | "indexed_mempool_entry_unavailable"
+  | "unsupported_ancestor_overlay"
+  | "rank_evaluation_failed";
+
+export interface MiningCompetitivenessGateDiagnostics {
+  visibleMempoolTxCount: number | null;
+  indexedContextCount: number | null;
+  negativeTxCount: number | null;
+  unknownTxCount: number | null;
+  hydratedTxCount: number | null;
+  mempoolEntryCount: number | null;
+  missingEntryCount: number | null;
+  cacheStatus: "reused" | "refreshed" | "indexed" | "index-warming" | "fallback-scan" | null;
+  mempoolSequence: string | null;
+  candidateRank: number | null;
+  higherRankedCompetitorDomainCount: number | null;
+  dedupedCompetitorDomainCount: number | null;
+}
+
 export interface MiningRuntimeStatusV1 {
   schemaVersion: 1;
   walletRootId: string | null;
@@ -167,6 +190,8 @@ export interface MiningRuntimeStatusV1 {
   higherRankedCompetitorDomainCount: number | null;
   dedupedCompetitorDomainCount: number | null;
   competitivenessGateIndeterminate: boolean | null;
+  competitivenessGateReason: MiningCompetitivenessGateReason | null;
+  competitivenessGateDiagnostics: MiningCompetitivenessGateDiagnostics | null;
   mempoolSequenceCacheStatus: "reused" | "refreshed" | "indexed" | "index-warming" | "fallback-scan" | null;
   currentPublishDecision: string | null;
   lastMempoolSequence: string | null;

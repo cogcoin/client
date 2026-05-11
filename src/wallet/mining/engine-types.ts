@@ -6,6 +6,10 @@ import type {
 } from "../tx/common.js";
 import type { WalletStateV1 } from "../types.js";
 import type { MiningRuntimeStatusV1 } from "./types.js";
+import type {
+  MiningCompetitivenessGateDiagnostics,
+  MiningCompetitivenessGateReason,
+} from "./types.js";
 import type { MiningFollowVisualizerState, MiningRecentWinSummary, MiningSentenceBoardEntry } from "./visualizer.js";
 
 export type MiningRpcClient = WalletMutationRpcClient & {
@@ -149,6 +153,8 @@ export interface CompetitivenessDecision {
   higherRankedCompetitorDomainCount: number;
   dedupedCompetitorDomainCount: number;
   competitivenessGateIndeterminate: boolean;
+  indeterminateReason: MiningCompetitivenessGateReason | null;
+  diagnostics: MiningCompetitivenessGateDiagnostics;
   mempoolSequenceCacheStatus: MiningRuntimeStatusV1["mempoolSequenceCacheStatus"];
   lastMempoolSequence: string | null;
   visibleBoardEntries: MiningSentenceBoardEntry[];
