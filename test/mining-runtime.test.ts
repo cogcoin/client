@@ -43,6 +43,7 @@ import {
 } from "../src/wallet/mining/projection.js";
 import {
   refreshMiningCandidateFromCurrentState as refreshMiningCandidateFromCurrentStateForTesting,
+  resolveEligibleAnchoredRoots as resolveEligibleAnchoredRootsForTesting,
 } from "../src/wallet/mining/candidate.js";
 import {
   clearMiningGateCache,
@@ -379,6 +380,8 @@ function createGateReadContext(options: {
     domainId: number;
     name: string;
     ownerScriptPubKeyHex?: string;
+    delegateScriptPubKeyHex?: string | null;
+    minerScriptPubKeyHex?: string | null;
     anchored?: boolean;
   }>;
   walletScriptPubKeyHex?: string;
@@ -428,17 +431,22 @@ function createGateReadContext(options: {
         message: null,
       },
       model: {
+        walletAddress: state.funding.address,
         walletScriptPubKeyHex,
         domains: options.domains.map((domain) => ({
           name: domain.name,
           anchored: domain.anchored ?? true,
           readOnly: false,
-          localRelationship: "local",
+          localRelationship: (domain.ownerScriptPubKeyHex ?? walletScriptPubKeyHex) === walletScriptPubKeyHex
+            ? "local"
+            : "external",
           domainId: domain.domainId,
           ownerAddress: (domain.ownerScriptPubKeyHex ?? walletScriptPubKeyHex) === walletScriptPubKeyHex
             ? state.funding.address
             : null,
           ownerScriptPubKeyHex: domain.ownerScriptPubKeyHex ?? walletScriptPubKeyHex,
+          delegateScriptPubKeyHex: domain.delegateScriptPubKeyHex ?? null,
+          minerScriptPubKeyHex: domain.minerScriptPubKeyHex ?? null,
         })),
       },
       snapshot: {
@@ -453,8 +461,12 @@ function createGateReadContext(options: {
               anchorHeight: 100,
               ownerScriptPubKey: Buffer.from(domain.ownerScriptPubKeyHex ?? walletScriptPubKeyHex, "hex"),
               endpoint: null,
-              delegate: null,
-              miner: null,
+              delegate: domain.delegateScriptPubKeyHex === undefined || domain.delegateScriptPubKeyHex === null
+                ? null
+                : Buffer.from(domain.delegateScriptPubKeyHex, "hex"),
+              miner: domain.minerScriptPubKeyHex === undefined || domain.minerScriptPubKeyHex === null
+                ? null
+                : Buffer.from(domain.minerScriptPubKeyHex, "hex"),
             }])),
             balances: new Map(),
           },
@@ -538,6 +550,69 @@ function createGateRpc(options: {
   };
 }
 
+test("resolveEligibleAnchoredRoots includes owner, delegate, and designated miner authorizations", () => {
+  const walletScriptPubKeyHex = "0014" + "11".repeat(20);
+  const externalScriptPubKeyHex = "0014" + "22".repeat(20);
+  const context = createGateReadContext({
+    walletScriptPubKeyHex,
+    domains: [
+      { domainId: 7, name: "owner" },
+      {
+        domainId: 8,
+        name: "delegate",
+        ownerScriptPubKeyHex: externalScriptPubKeyHex,
+        delegateScriptPubKeyHex: walletScriptPubKeyHex,
+      },
+      {
+        domainId: 9,
+        name: "miner",
+        ownerScriptPubKeyHex: externalScriptPubKeyHex,
+        minerScriptPubKeyHex: walletScriptPubKeyHex,
+      },
+      {
+        domainId: 10,
+        name: "external",
+        ownerScriptPubKeyHex: externalScriptPubKeyHex,
+      },
+      { domainId: 11, name: "unanchored", anchored: false },
+      { domainId: 12, name: "owner-child" },
+    ],
+  });
+
+  assert.deepEqual(resolveEligibleAnchoredRootsForTesting(context), [
+    {
+      domainId: 7,
+      domainName: "owner",
+      localIndex: 0,
+      sender: {
+        localIndex: 0,
+        scriptPubKeyHex: walletScriptPubKeyHex,
+        address: "bc1qfunding",
+      },
+    },
+    {
+      domainId: 8,
+      domainName: "delegate",
+      localIndex: 0,
+      sender: {
+        localIndex: 0,
+        scriptPubKeyHex: walletScriptPubKeyHex,
+        address: "bc1qfunding",
+      },
+    },
+    {
+      domainId: 9,
+      domainName: "miner",
+      localIndex: 0,
+      sender: {
+        localIndex: 0,
+        scriptPubKeyHex: walletScriptPubKeyHex,
+        address: "bc1qfunding",
+      },
+    },
+  ]);
+});
+
 function createGateAssayStub(scores: Record<string, bigint | null>) {
   return async (_domainId: number, _referencedBlockHashInternal: Uint8Array, sentences: string[]) =>
     sentences.map((sentence, index) => {
@@ -562,6 +637,19 @@ function createReadyMiningReadContext(options: {
   readContextOverrides?: Record<string, unknown>;
 }) {
   const walletScriptPubKeyHex = "0014" + "11".repeat(20);
+  const readContextOverrides = options.readContextOverrides ?? {};
+  const modelOverride = readContextOverrides["model"];
+  const mergedReadContextOverrides = {
+    ...readContextOverrides,
+    ...(modelOverride !== undefined && modelOverride !== null && typeof modelOverride === "object" && !Array.isArray(modelOverride)
+      ? {
+        model: {
+          walletAddress: "bc1qfunding",
+          ...(modelOverride as Record<string, unknown>),
+        },
+      }
+      : {}),
+  };
   const state = createWalletState({
     managedCoreWallet: {
       walletName: "wallet.dat",
@@ -598,6 +686,7 @@ function createReadyMiningReadContext(options: {
         message: null,
       },
       model: {
+        walletAddress: state.managedCoreWallet.walletAddress,
         walletScriptPubKeyHex: state.managedCoreWallet.walletScriptPubKeyHex,
         domains: [{
           name: "cogdemo",
@@ -618,6 +707,7 @@ function createReadyMiningReadContext(options: {
               name: "cogdemo",
               anchored: true,
               anchorHeight: 100,
+              ownerScriptPubKey: Buffer.from(walletScriptPubKeyHex, "hex"),
               endpoint: null,
             }]]),
             balances: new Map(),
@@ -636,7 +726,7 @@ function createReadyMiningReadContext(options: {
           proofStatus: "ready",
         },
       },
-      ...options.readContextOverrides,
+      ...mergedReadContextOverrides,
     }),
     close: options.close ?? (async () => undefined),
   } as any;
@@ -704,6 +794,7 @@ function createProviderRetryReadContext() {
               name: "cogdemo",
               anchored: true,
               anchorHeight: 100,
+              ownerScriptPubKey: Buffer.from("0014" + "11".repeat(20), "hex"),
               endpoint: null,
             }]]),
             balances: new Map(),
@@ -1505,6 +1596,7 @@ test("performMiningCycle keeps the prior settled board pinned across tip rollove
               name: "cogdemo",
               anchored: true,
               anchorHeight: 100,
+              ownerScriptPubKey: Buffer.from("0014" + "11".repeat(20), "hex"),
               endpoint: null,
             }]]),
             balances: new Map(),
@@ -1606,6 +1698,7 @@ test("performMiningCycle keeps the prior settled board pinned across tip rollove
               name: "cogdemo",
               anchored: true,
               anchorHeight: 100,
+              ownerScriptPubKey: Buffer.from("0014" + "11".repeat(20), "hex"),
               endpoint: null,
             }]]),
             balances: new Map(),
@@ -1705,6 +1798,7 @@ test("performMiningCycle keeps the prior settled board pinned across tip rollove
               name: "cogdemo",
               anchored: true,
               anchorHeight: 100,
+              ownerScriptPubKey: Buffer.from("0014" + "11".repeat(20), "hex"),
               endpoint: null,
             }]]),
             balances: new Map(),
@@ -1818,6 +1912,7 @@ test("performMiningCycle marks a fresh tip settle window while waiting for the i
                 name: "cogdemo",
                 anchored: true,
                 anchorHeight: 100,
+                ownerScriptPubKey: Buffer.from("0014" + "11".repeat(20), "hex"),
                 endpoint: null,
               }]]),
               balances: new Map(),
@@ -2788,6 +2883,7 @@ test("performMiningCycle retries managed Core wallet relocks on later ticks with
             name: "cogdemo",
             anchored: true,
             anchorHeight: 100,
+            ownerScriptPubKey: Buffer.from("0014" + "11".repeat(20), "hex"),
             endpoint: null,
           }]]),
           balances: new Map(),
@@ -3242,6 +3338,7 @@ test("resume refresh seeds the latest prior non-empty indexed board when the new
                 name: "cogdemo",
                 anchored: true,
                 anchorHeight: 100,
+                ownerScriptPubKey: Buffer.from("0014" + "11".repeat(20), "hex"),
                 endpoint: null,
               }]]),
               balances: new Map(),

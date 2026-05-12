@@ -1,6 +1,6 @@
 # `@cogcoin/client`
 
-`@cogcoin/client@1.2.7` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
+`@cogcoin/client@1.2.8` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
 
 Use Node 22 or newer.
 
@@ -125,6 +125,10 @@ The published package depends on:
 - `zeromq@6.5.0`
 
 `@cogcoin/vectors@1.0.1` is kept as a repository development dependency for conformance tests and is not part of the published runtime dependency surface.
+
+## Upgrade Notes For `1.2.8`
+
+`@cogcoin/client@1.2.8` centralizes mining authorization so `cogcoin mine prompt`, `cogcoin mine prompt list`, `domains --mineable`, candidate generation, and stale-candidate checks all use the same confirmed-state rule. Anchored root domains are mineable when the current wallet script is the confirmed owner, delegate, or designated miner; unanchored domains, subdomains, read-only domains, and domains authorized only for legacy local scripts remain non-mineable.
 
 ## Upgrade Notes For `1.2.7`
 

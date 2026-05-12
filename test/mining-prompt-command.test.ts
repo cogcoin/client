@@ -53,11 +53,18 @@ function createRuntimePaths(homeDirectory: string): WalletRuntimePaths {
   });
 }
 
+type MineablePromptDomain = {
+  name: string;
+  domainId: number;
+  authorization?: "owner" | "delegate" | "miner";
+};
+
 function createMineableReadContext(options: {
-  mineableDomains?: Array<{ name: string; domainId: number }>;
+  mineableDomains?: MineablePromptDomain[];
 }) {
   const mineableDomains = options.mineableDomains ?? [];
   const walletScriptPubKeyHex = "0014" + "11".repeat(20);
+  const externalScriptPubKeyHex = "0014" + "22".repeat(20);
   const state = createWalletState({
     funding: {
       address: "bc1qfunding",
@@ -66,7 +73,7 @@ function createMineableReadContext(options: {
     domains: mineableDomains.map((domain) => ({
       name: domain.name,
       domainId: domain.domainId,
-      currentOwnerScriptPubKeyHex: walletScriptPubKeyHex,
+      currentOwnerScriptPubKeyHex: (domain.authorization ?? "owner") === "owner" ? walletScriptPubKeyHex : externalScriptPubKeyHex,
       canonicalChainStatus: "anchored",
       foundingMessageText: null,
       birthTime: null,
@@ -94,10 +101,10 @@ function createMineableReadContext(options: {
           name: domain.name,
           anchored: true,
           readOnly: false,
-          localRelationship: "local",
+          localRelationship: (domain.authorization ?? "owner") === "owner" ? "local" : "external",
           domainId: domain.domainId,
-          ownerAddress: state.funding.address,
-          ownerScriptPubKeyHex: walletScriptPubKeyHex,
+          ownerAddress: (domain.authorization ?? "owner") === "owner" ? state.funding.address : null,
+          ownerScriptPubKeyHex: (domain.authorization ?? "owner") === "owner" ? walletScriptPubKeyHex : externalScriptPubKeyHex,
         })),
       },
       snapshot: {
@@ -109,10 +116,10 @@ function createMineableReadContext(options: {
               name: domain.name,
               anchored: true,
               anchorHeight: 100,
-              ownerScriptPubKey: Buffer.from(walletScriptPubKeyHex, "hex"),
+              ownerScriptPubKey: Buffer.from((domain.authorization ?? "owner") === "owner" ? walletScriptPubKeyHex : externalScriptPubKeyHex, "hex"),
               endpoint: null,
-              delegate: null,
-              miner: null,
+              delegate: domain.authorization === "delegate" ? Buffer.from(walletScriptPubKeyHex, "hex") : null,
+              miner: domain.authorization === "miner" ? Buffer.from(walletScriptPubKeyHex, "hex") : null,
             }])),
             balances: new Map(),
           },
@@ -157,7 +164,7 @@ async function seedClientConfig(options: {
 }
 
 async function createFixture(t: TestContext, options: {
-  mineableDomains?: Array<{ name: string; domainId: number }>;
+  mineableDomains?: MineablePromptDomain[];
   builtInExtraPrompt?: string | null;
   domainExtraPrompts?: Record<string, string>;
 }) {
@@ -234,6 +241,40 @@ test("mine prompt updates config for a mineable domain", async (t) => {
     provider: fixture.provider,
   });
   assert.equal(saved?.mining.domainExtraPrompts.alpha, "focus alpha");
+  assert.match(stdout.read(), /Current domain prompt: none/);
+  assert.match(stdout.read(), /Per-domain mining prompt updated\./);
+  assert.equal(stderr.read(), "");
+});
+
+test("mine prompt updates config for a designated miner domain", async (t) => {
+  const fixture = await createFixture(t, {
+    mineableDomains: [{ name: "alpha", domainId: 7, authorization: "miner" }],
+    builtInExtraPrompt: "global fallback",
+  });
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const prompt = createPrompter({
+    interactive: true,
+    answers: ["focus miner alpha"],
+  });
+
+  const exitCode = await runCli(["mine", "prompt", "alpha"], {
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    walletSecretProvider: fixture.provider,
+    createPrompter: () => prompt.prompter as any,
+    resolveWalletRuntimePaths: () => fixture.paths,
+    resolveDefaultClientDatabasePath: () => join(fixture.homeDirectory, "indexer.sqlite"),
+    resolveDefaultBitcoindDataDir: () => join(fixture.homeDirectory, "bitcoin"),
+    openWalletReadContext: async () => fixture.createReadContext(),
+  });
+
+  assert.equal(exitCode, 0);
+  const saved = await loadClientConfig({
+    path: fixture.paths.clientConfigPath,
+    provider: fixture.provider,
+  });
+  assert.equal(saved?.mining.domainExtraPrompts.alpha, "focus miner alpha");
   assert.match(stdout.read(), /Current domain prompt: none/);
   assert.match(stdout.read(), /Per-domain mining prompt updated\./);
   assert.equal(stderr.read(), "");
@@ -390,8 +431,8 @@ test("mine prompt text suggests the first missing custom prompt and includes dor
   const fixture = await createFixture(t, {
     mineableDomains: [
       { name: "alpha", domainId: 7 },
-      { name: "beta", domainId: 8 },
-      { name: "gamma", domainId: 9 },
+      { name: "beta", domainId: 8, authorization: "delegate" },
+      { name: "gamma", domainId: 9, authorization: "miner" },
     ],
     builtInExtraPrompt: "global fallback",
     domainExtraPrompts: {

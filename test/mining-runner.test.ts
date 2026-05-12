@@ -86,6 +86,7 @@ function createLoopReadContext(overrides: Record<string, unknown> = {}) {
               name: "cogdemo",
               anchored: true,
               anchorHeight: 100,
+              ownerScriptPubKey: Buffer.from(walletScriptPubKeyHex, "hex"),
               endpoint: null,
             }]]),
             balances: new Map(),
@@ -119,6 +120,7 @@ function createLoopReadContext(overrides: Record<string, unknown> = {}) {
         },
       },
       model: {
+        walletAddress: state.managedCoreWallet.walletAddress,
         walletScriptPubKeyHex,
         domains: [],
       },
@@ -177,6 +179,7 @@ function createSynchronizedLoopReadContext(overrides: Record<string, unknown> = 
     },
     nodeHealth: "synced",
     model: {
+      walletAddress: "bc1qfunding",
       walletScriptPubKeyHex,
       domains: [{
         name: "cogdemo",
@@ -204,6 +207,7 @@ function createSynchronizedLoopReadContext(overrides: Record<string, unknown> = 
             name: "cogdemo",
             anchored: true,
             anchorHeight: 100,
+            ownerScriptPubKey: Buffer.from(walletScriptPubKeyHex, "hex"),
             endpoint: null,
           }]]),
           balances: new Map(),

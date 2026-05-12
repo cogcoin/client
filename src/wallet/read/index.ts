@@ -3,7 +3,9 @@ export {
   filterWalletDomains,
   isMineableWalletDomain,
   isRootDomainName,
+  resolveMineableWalletDomain,
   type WalletDomainFilterOptions,
+  type MineableWalletDomainResolution,
 } from "./filter.js";
 export {
   createFieldPreview,

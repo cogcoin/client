@@ -23,8 +23,7 @@ import type { MiningRuntimeStatusV1 } from "./types.js";
 import { createMiningSentenceRequestLimits } from "./sentence-protocol.js";
 import { generateMiningSentences, type MiningSentenceGenerationRequest } from "./sentences.js";
 import { createMiningStopRequestedError } from "./stop.js";
-import { isMineableWalletDomain } from "../read/index.js";
-import { lookupDomain } from "@cogcoin/indexer/queries";
+import { resolveMineableWalletDomain } from "../read/index.js";
 
 const BEST_BLOCK_POLL_INTERVAL_MS = 500;
 
@@ -130,35 +129,16 @@ export function resolveEligibleAnchoredRoots(context: WalletReadContext): Mining
   const domains: MiningEligibleAnchoredRoot[] = [];
 
   for (const domain of model.domains) {
-    if (!isMineableWalletDomain(context, domain)) {
-      continue;
-    }
-
-    const domainId = domain.domainId;
-
-    if (
-      domainId === null
-      || domainId === undefined
-      || domain.ownerAddress == null
-      || domain.ownerScriptPubKeyHex !== model.walletScriptPubKeyHex
-    ) {
-      continue;
-    }
-
-    const chainDomain = lookupDomain(snapshot.state, domain.name);
-    if (chainDomain === null || !chainDomain.anchored) {
+    const mineable = resolveMineableWalletDomain(context, domain);
+    if (mineable === null) {
       continue;
     }
 
     domains.push({
-      domainId,
-      domainName: domain.name,
+      domainId: mineable.domainId,
+      domainName: mineable.domainName,
       localIndex: 0,
-      sender: {
-        localIndex: 0,
-        scriptPubKeyHex: model.walletScriptPubKeyHex,
-        address: domain.ownerAddress,
-      },
+      sender: mineable.sender,
     });
   }
 

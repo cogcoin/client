@@ -60,12 +60,22 @@ export function createWalletReadModel(
   const ownedDomains = snapshotState === null
     ? []
     : listDomainsByOwner(snapshotState, fundingScriptBytes).sort((left, right) => left.name.localeCompare(right.name));
+  const authorizedMiningDomains = snapshotState === null
+    ? []
+    : [...snapshotState.consensus.domainsById.values()]
+      .filter((domain) =>
+        bytesToHex(domain.delegate) === walletState.funding.scriptPubKeyHex
+        || bytesToHex(domain.miner) === walletState.funding.scriptPubKeyHex)
+      .sort((left, right) => left.name.localeCompare(right.name));
 
   const domainNames = new Set<string>();
   for (const domain of walletState.domains) {
     domainNames.add(domain.name);
   }
   for (const name of ownedDomains.map((domain) => domain.name)) {
+    domainNames.add(name);
+  }
+  for (const name of authorizedMiningDomains.map((domain) => domain.name)) {
     domainNames.add(name);
   }
 

@@ -15,23 +15,72 @@ export function isRootDomainName(name: string): boolean {
   return !name.includes("-");
 }
 
+function bytesToHex(value: Uint8Array | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  return Buffer.from(value).toString("hex");
+}
+
+function scriptMatches(value: Uint8Array | null | undefined, scriptPubKeyHex: string): boolean {
+  return bytesToHex(value) === scriptPubKeyHex;
+}
+
+export interface MineableWalletDomainResolution {
+  domainId: number;
+  domainName: string;
+  sender: {
+    localIndex: number;
+    scriptPubKeyHex: string;
+    address: string;
+  };
+}
+
+export function resolveMineableWalletDomain(
+  context: WalletReadContext,
+  domain: WalletDomainView,
+): MineableWalletDomainResolution | null {
+  const state = context.localState.state;
+  const model = context.model;
+  const snapshot = context.snapshot;
+
+  if (state === null || model === null || snapshot === null || model.walletAddress == null) {
+    return null;
+  }
+
+  if (!isRootDomainName(domain.name) || domain.anchored !== true || domain.readOnly || domain.domainId === null) {
+    return null;
+  }
+
+  const chainDomain = lookupDomain(snapshot.state, domain.name);
+  if (chainDomain === null || !chainDomain.anchored || chainDomain.domainId !== domain.domainId) {
+    return null;
+  }
+
+  const walletScriptPubKeyHex = model.walletScriptPubKeyHex;
+  const authorized = scriptMatches(chainDomain.ownerScriptPubKey, walletScriptPubKeyHex)
+    || scriptMatches(chainDomain.delegate, walletScriptPubKeyHex)
+    || scriptMatches(chainDomain.miner, walletScriptPubKeyHex);
+
+  return authorized
+    ? {
+      domainId: chainDomain.domainId,
+      domainName: chainDomain.name,
+      sender: {
+        localIndex: 0,
+        scriptPubKeyHex: walletScriptPubKeyHex,
+        address: model.walletAddress,
+      },
+    }
+    : null;
+}
+
 export function isMineableWalletDomain(
   context: WalletReadContext,
   domain: WalletDomainView,
 ): boolean {
-  const state = context.localState.state;
-  const snapshot = context.snapshot;
-
-  if (state === null || context.model === null || snapshot === null) {
-    return false;
-  }
-
-  if (!isRootDomainName(domain.name) || domain.anchored !== true || domain.readOnly || domain.localRelationship !== "local" || domain.domainId === null) {
-    return false;
-  }
-
-  const chainDomain = lookupDomain(snapshot.state, domain.name);
-  return chainDomain !== null && chainDomain.anchored;
+  return resolveMineableWalletDomain(context, domain) !== null;
 }
 
 export function filterWalletDomains(

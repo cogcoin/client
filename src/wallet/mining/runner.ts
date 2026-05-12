@@ -43,7 +43,6 @@ import {
 } from "../tx/common.js";
 import type { WalletPrompter } from "../lifecycle.js";
 import {
-  isMineableWalletDomain,
   openWalletReadContext,
   type WalletReadContext,
 } from "../read/index.js";
