@@ -861,7 +861,7 @@ export async function runCompetitivenessGate(options: {
     });
   }
 
-  const mempoolSequence = String(mempoolVerbose.mempool_sequence);
+  let mempoolSequence = String(mempoolVerbose.mempool_sequence);
   mempoolSequenceForDiagnostics = mempoolSequence;
   const cached = cacheState.decisionReuse;
   const cachedTruthMatches = cached !== null
@@ -894,7 +894,7 @@ export async function runCompetitivenessGate(options: {
   }
 
   const referencedPrefix = Buffer.from(options.candidate.referencedBlockHashInternal.subarray(0, 4)).toString("hex");
-  const visibleTxids = mempoolVerbose.txids.filter((txid) => !excludedTxids.includes(txid));
+  let visibleTxids = mempoolVerbose.txids.filter((txid) => !excludedTxids.includes(txid));
   visibleMempoolTxCount = visibleTxids.length;
   let rawTxContexts: Map<string, CachedRawMempoolTxContext>;
   let mempoolEntries: Awaited<ReturnType<MiningRpcClient["getRawMempoolEntries"]>>;
@@ -908,6 +908,13 @@ export async function runCompetitivenessGate(options: {
     unknownTxCount = diagnostics.unknownTxidCount;
     hydratedTxCount = diagnostics.hydratedCount;
   };
+  const createMempoolIndexHydrationIncompleteDecision = (): CompetitivenessDecision => createDecision({
+    competitivenessGateIndeterminate: true,
+    decision: "indeterminate-mempool-gate",
+    indeterminateReason: "mempool_index_hydration_incomplete",
+    mempoolSequenceCacheStatus: "index-warming",
+    lastMempoolSequence: mempoolSequence,
+  });
 
   if (options.mempoolIndex?.rawTxSupported === true) {
     let indexed: Awaited<ReturnType<typeof hydrateMiningMempoolIndex>>;
@@ -924,16 +931,41 @@ export async function runCompetitivenessGate(options: {
         onWarmupProgress: options.onWarmupProgress,
       });
     } catch (error) {
-      if (error instanceof MiningMempoolIndexHydrationIncompleteError) {
-        applyIndexDiagnostics(error.diagnostics);
+      if (!(error instanceof MiningMempoolIndexHydrationIncompleteError)) {
+        return createMempoolIndexHydrationIncompleteDecision();
       }
-      return createDecision({
-        competitivenessGateIndeterminate: true,
-        decision: "indeterminate-mempool-gate",
-        indeterminateReason: "mempool_index_hydration_incomplete",
-        mempoolSequenceCacheStatus: "index-warming",
-        lastMempoolSequence: mempoolSequence,
-      });
+      applyIndexDiagnostics(error.diagnostics);
+
+      const refreshedMempoolVerbose = await options.rpc.getRawMempoolVerbose().catch(() => null);
+      options.throwIfStopping?.();
+      if (refreshedMempoolVerbose === null) {
+        return createMempoolIndexHydrationIncompleteDecision();
+      }
+
+      mempoolVerbose = refreshedMempoolVerbose;
+      mempoolSequence = String(refreshedMempoolVerbose.mempool_sequence);
+      mempoolSequenceForDiagnostics = mempoolSequence;
+      visibleTxids = refreshedMempoolVerbose.txids.filter((txid) => !excludedTxids.includes(txid));
+      visibleMempoolTxCount = visibleTxids.length;
+
+      try {
+        indexed = await hydrateMiningMempoolIndex({
+          walletRootId,
+          serviceIdentity: options.mempoolIndex.serviceIdentity,
+          cachePath: options.mempoolIndex.cachePath,
+          rpc: options.rpc,
+          visibleTxids,
+          cooperativeYield: options.cooperativeYield,
+          cooperativeYieldEvery: options.cooperativeYieldEvery,
+          throwIfStopping: options.throwIfStopping,
+          onWarmupProgress: options.onWarmupProgress,
+        });
+      } catch (retryError) {
+        if (retryError instanceof MiningMempoolIndexHydrationIncompleteError) {
+          applyIndexDiagnostics(retryError.diagnostics);
+        }
+        return createMempoolIndexHydrationIncompleteDecision();
+      }
     }
 
     rawTxContexts = indexed.contexts;

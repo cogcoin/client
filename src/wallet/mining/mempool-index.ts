@@ -32,11 +32,13 @@ export type MiningMempoolIndexHydrationDiagnostics = Omit<MiningMempoolIndexHydr
 
 export class MiningMempoolIndexHydrationIncompleteError extends Error {
   readonly diagnostics: MiningMempoolIndexHydrationDiagnostics;
+  readonly failedTxids: readonly string[];
 
-  constructor(diagnostics: MiningMempoolIndexHydrationDiagnostics) {
+  constructor(diagnostics: MiningMempoolIndexHydrationDiagnostics, failedTxids: readonly string[]) {
     super("mining_mempool_index_hydration_incomplete");
     this.name = "MiningMempoolIndexHydrationIncompleteError";
     this.diagnostics = diagnostics;
+    this.failedTxids = failedTxids;
   }
 }
 
@@ -67,6 +69,7 @@ interface MiningMempoolIndexState {
   cachePath: string;
   contexts: Map<string, MiningMempoolTxContext>;
   negativeTxids: Set<string>;
+  activeVisibleTxids: Set<string> | null;
   loaded: boolean;
   savePromise: Promise<void>;
   saveScheduled: ReturnType<typeof setTimeout> | null;
@@ -215,6 +218,7 @@ function getOrCreateState(options: {
     cachePath: options.cachePath,
     contexts: new Map(),
     negativeTxids: new Set(),
+    activeVisibleTxids: null,
     loaded: false,
     savePromise: Promise.resolve(),
     saveScheduled: null,
@@ -225,17 +229,18 @@ function getOrCreateState(options: {
 }
 
 async function saveState(state: MiningMempoolIndexState): Promise<void> {
-  const payload: PersistedMiningMempoolIndexCache = {
-    schemaVersion: MINING_MEMPOOL_INDEX_SCHEMA_VERSION,
-    walletRootId: state.walletRootId,
-    serviceIdentity: state.serviceIdentity,
-    contexts: [...state.contexts.values()]
-      .sort((left, right) => left.txid.localeCompare(right.txid))
-      .map(serializeContext),
-    negativeTxids: [...state.negativeTxids].sort(),
-  };
-
   state.savePromise = state.savePromise.catch(() => undefined).then(async () => {
+    pruneStateToActiveVisibleTxids(state);
+    const payload: PersistedMiningMempoolIndexCache = {
+      schemaVersion: MINING_MEMPOOL_INDEX_SCHEMA_VERSION,
+      walletRootId: state.walletRootId,
+      serviceIdentity: state.serviceIdentity,
+      contexts: [...state.contexts.values()]
+        .sort((left, right) => left.txid.localeCompare(right.txid))
+        .map(serializeContext),
+      negativeTxids: [...state.negativeTxids].sort(),
+    };
+
     await mkdir(dirname(state.cachePath), { recursive: true });
     await writeFileAtomic(state.cachePath, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
   });
@@ -267,6 +272,18 @@ function scheduleStateSave(state: MiningMempoolIndexState): void {
 
 function pruneStateToVisibleTxids(state: MiningMempoolIndexState, visibleTxids: readonly string[]): boolean {
   const visibleSet = new Set(visibleTxids);
+  return pruneStateToVisibleTxidSet(state, visibleSet);
+}
+
+function pruneStateToActiveVisibleTxids(state: MiningMempoolIndexState): boolean {
+  if (state.activeVisibleTxids === null) {
+    return false;
+  }
+
+  return pruneStateToVisibleTxidSet(state, state.activeVisibleTxids);
+}
+
+function pruneStateToVisibleTxidSet(state: MiningMempoolIndexState, visibleSet: ReadonlySet<string>): boolean {
   let changed = false;
 
   for (const txid of [...state.contexts.keys()]) {
@@ -328,14 +345,15 @@ async function hydrateUnknownTxids(options: {
   cooperativeYieldEvery?: number;
   throwIfStopping?: () => void;
   onWarmupProgress?: (progress: { processed: number; total: number }) => Promise<void> | void;
-}): Promise<void> {
+}): Promise<string[]> {
   if (options.unknownTxids.length === 0) {
-    return;
+    return [];
   }
 
   let completed = 0;
   let nextIndex = 0;
   let lastReportedProcessed = -1;
+  const failedTxids: string[] = [];
   let reportPromise = Promise.resolve();
   const reportProgress = async (processed: number, force = false): Promise<void> => {
     if (options.onWarmupProgress === undefined) {
@@ -361,7 +379,6 @@ async function hydrateUnknownTxids(options: {
   };
 
   await reportProgress(0, true);
-  let failed = false;
   const workerCount = Math.min(MINING_MEMPOOL_INDEX_RAW_TX_FETCH_CONCURRENCY, options.unknownTxids.length);
   const workers = Array.from({ length: workerCount }, async () => {
     while (true) {
@@ -383,7 +400,7 @@ async function hydrateUnknownTxids(options: {
       options.throwIfStopping?.();
 
       if (tx === null) {
-        failed = true;
+        failedTxids.push(txid);
       } else {
         const context = createContextFromRpcTransaction(txid, tx);
         if (context === null) {
@@ -400,9 +417,7 @@ async function hydrateUnknownTxids(options: {
   });
 
   await Promise.all(workers);
-  if (failed) {
-    throw new Error("mining_mempool_index_hydration_incomplete");
-  }
+  return failedTxids;
 }
 
 function createHydrationDiagnostics(options: {
@@ -440,6 +455,7 @@ export async function hydrateMiningMempoolIndex(options: {
     cachePath: options.cachePath,
   });
   await loadStateFromDisk(state);
+  state.activeVisibleTxids = new Set(options.visibleTxids);
   let changed = pruneStateToVisibleTxids(state, options.visibleTxids);
   const unknownTxids = options.visibleTxids.filter((txid) =>
     !state.contexts.has(txid) && !state.negativeTxids.has(txid)
@@ -448,8 +464,9 @@ export async function hydrateMiningMempoolIndex(options: {
   const cacheStatus = unknownTxids.length === 0 ? "indexed" : "index-warming";
 
   if (unknownTxids.length > 0) {
+    let failedTxids: readonly string[];
     try {
-      await hydrateUnknownTxids({
+      failedTxids = await hydrateUnknownTxids({
         state,
         rpc: options.rpc,
         unknownTxids,
@@ -460,6 +477,7 @@ export async function hydrateMiningMempoolIndex(options: {
       });
       changed = true;
     } catch {
+      pruneStateToVisibleTxids(state, options.visibleTxids);
       changed = true;
       const diagnostics = createHydrationDiagnostics({
         state,
@@ -469,10 +487,24 @@ export async function hydrateMiningMempoolIndex(options: {
       if (changed) {
         await saveState(state).catch(() => undefined);
       }
-      throw new MiningMempoolIndexHydrationIncompleteError(diagnostics);
+      throw new MiningMempoolIndexHydrationIncompleteError(diagnostics, []);
+    }
+
+    if (failedTxids.length > 0) {
+      changed = pruneStateToVisibleTxids(state, options.visibleTxids) || changed;
+      const diagnostics = createHydrationDiagnostics({
+        state,
+        unknownTxids,
+        cacheStatus,
+      });
+      if (changed) {
+        await saveState(state).catch(() => undefined);
+      }
+      throw new MiningMempoolIndexHydrationIncompleteError(diagnostics, failedTxids);
     }
   }
 
+  changed = pruneStateToVisibleTxids(state, options.visibleTxids) || changed;
   if (changed) {
     await saveState(state);
   }
@@ -687,6 +719,10 @@ export async function ensureMiningMempoolRawTxSubscriber(options: {
 
         const parsed = parseRawTransactionForIndex(normalized[1]!.toString("hex"));
         if (parsed === null || isCogPayload(parsed.payload)) {
+          continue;
+        }
+
+        if (state.activeVisibleTxids === null || !state.activeVisibleTxids.has(parsed.txid)) {
           continue;
         }
 

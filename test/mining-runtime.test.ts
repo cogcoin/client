@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -63,7 +63,10 @@ import {
 import { serializeMine } from "../src/wallet/cogop/index.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
+  closeMiningMempoolIndexSubscribersForTesting,
   clearMiningMempoolIndexCacheForTesting,
+  ensureMiningMempoolRawTxSubscriber,
+  hydrateMiningMempoolIndex,
   parseRawTransactionForMiningMempoolIndexTesting,
 } from "../src/wallet/mining/mempool-index.js";
 import {
@@ -229,7 +232,8 @@ async function runCompetitivenessGateForTesting(options: {
   });
 }
 
-test.afterEach(() => {
+test.afterEach(async () => {
+  await closeMiningMempoolIndexSubscribersForTesting();
   clearMiningGateCache(null);
   clearMiningMempoolIndexCacheForTesting();
 });
@@ -321,10 +325,18 @@ function createMinePayloadScriptHex(
   referencedBlockHashInternal: Uint8Array,
   sentenceFill: string,
 ): string {
-  const payload = Buffer.from(
+  const payloadHex = createMinePayloadHex(domainId, referencedBlockHashInternal, sentenceFill);
+  return `6a${(payloadHex.length / 2).toString(16).padStart(2, "0")}${payloadHex}`;
+}
+
+function createMinePayloadHex(
+  domainId: number,
+  referencedBlockHashInternal: Uint8Array,
+  sentenceFill: string,
+): string {
+  return Buffer.from(
     serializeMine(domainId, referencedBlockHashInternal, createEncodedMiningSentence(sentenceFill)).opReturnData,
-  );
-  return `6a${payload.length.toString(16).padStart(2, "0")}${payload.toString("hex")}`;
+  ).toString("hex");
 }
 
 function createRawTransactionHexForIndex(scriptHex: string): string {
@@ -370,6 +382,27 @@ function createMineTransaction(options: {
           options.referencedBlockHashInternal,
           options.sentenceFill,
         ),
+      },
+    }],
+  };
+}
+
+function createNonCogTransaction(txid: string) {
+  return {
+    txid,
+    vin: [{
+      txid: "ff".repeat(32),
+      prevout: {
+        scriptPubKey: {
+          hex: "0014" + "22".repeat(20),
+        },
+      },
+    }],
+    vout: [{
+      n: 0,
+      value: 0,
+      scriptPubKey: {
+        hex: "6a0161",
       },
     }],
   };
@@ -4462,6 +4495,275 @@ test("raw transaction parser extracts txid, inputs, and OP_RETURN payload for th
   assert.equal(Buffer.from(parsed?.payload ?? []).toString("hex"), "61");
 });
 
+function createPersistedMempoolIndexForTesting(options: {
+  walletRootId: string;
+  serviceIdentity: string;
+  contexts?: Array<{
+    txid: string;
+    payloadHex?: string;
+  }>;
+  negativeTxids?: string[];
+}) {
+  return {
+    schemaVersion: 1,
+    walletRootId: options.walletRootId,
+    serviceIdentity: options.serviceIdentity,
+    contexts: (options.contexts ?? []).map((context) => ({
+      txid: context.txid,
+      senderScriptHex: "0014" + "11".repeat(20),
+      inputTxids: ["ff".repeat(32)],
+      payloadHex: context.payloadHex ?? createMinePayloadHex(1, Buffer.from("22".repeat(32), "hex"), "a"),
+    })),
+    negativeTxids: options.negativeTxids ?? [],
+  };
+}
+
+async function writePersistedMempoolIndexForTesting(
+  cachePath: string,
+  cache: ReturnType<typeof createPersistedMempoolIndexForTesting>,
+): Promise<void> {
+  await writeFile(cachePath, `${JSON.stringify(cache)}\n`);
+}
+
+async function readPersistedMempoolIndexForTesting(
+  cachePath: string,
+): Promise<ReturnType<typeof createPersistedMempoolIndexForTesting>> {
+  return JSON.parse(await readFile(cachePath, "utf8")) as ReturnType<typeof createPersistedMempoolIndexForTesting>;
+}
+
+test("hydrateMiningMempoolIndex prunes stale persisted negative txids and Cog contexts", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-gc-persisted");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const walletRootId = "wallet-gc-1";
+  const serviceIdentity = "service-1";
+  const visibleCogTxid = "aa".repeat(32);
+  const staleCogTxid = "bb".repeat(32);
+  const visibleNegativeTxid = "cc".repeat(32);
+  const staleNegativeTxid = "dd".repeat(32);
+
+  await writePersistedMempoolIndexForTesting(cachePath, createPersistedMempoolIndexForTesting({
+    walletRootId,
+    serviceIdentity,
+    contexts: [
+      { txid: visibleCogTxid },
+      { txid: staleCogTxid },
+    ],
+    negativeTxids: [visibleNegativeTxid, staleNegativeTxid],
+  }));
+
+  const result = await hydrateMiningMempoolIndex({
+    walletRootId,
+    serviceIdentity,
+    cachePath,
+    rpc: {
+      async getRawTransaction() {
+        throw new Error("persisted cache should cover the visible txids");
+      },
+    },
+    visibleTxids: [visibleCogTxid, visibleNegativeTxid],
+  });
+
+  assert.equal(result.indexedContextCount, 1);
+  assert.equal(result.negativeTxidCount, 1);
+  assert.equal(result.unknownTxidCount, 0);
+  assert.equal(result.hydratedCount, 0);
+
+  const persisted = await readPersistedMempoolIndexForTesting(cachePath);
+  assert.deepEqual(persisted.contexts.map((context) => context.txid), [visibleCogTxid]);
+  assert.deepEqual(persisted.negativeTxids, [visibleNegativeTxid]);
+});
+
+test("hydrateMiningMempoolIndex persists GC before reporting hydration failure", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-gc-failure");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const walletRootId = "wallet-gc-2";
+  const serviceIdentity = "service-1";
+  const visibleUnknownTxid = "aa".repeat(32);
+  const staleNegativeTxid = "bb".repeat(32);
+
+  await writePersistedMempoolIndexForTesting(cachePath, createPersistedMempoolIndexForTesting({
+    walletRootId,
+    serviceIdentity,
+    negativeTxids: [staleNegativeTxid],
+  }));
+
+  await assert.rejects(
+    async () => hydrateMiningMempoolIndex({
+      walletRootId,
+      serviceIdentity,
+      cachePath,
+      rpc: {
+        async getRawTransaction() {
+          throw new Error("mempool churn");
+        },
+      },
+      visibleTxids: [visibleUnknownTxid],
+    }),
+    /mining_mempool_index_hydration_incomplete/u,
+  );
+
+  const persisted = await readPersistedMempoolIndexForTesting(cachePath);
+  assert.deepEqual(persisted.contexts, []);
+  assert.deepEqual(persisted.negativeTxids, []);
+});
+
+class FakeMiningRawTxSubscriber implements AsyncIterable<unknown> {
+  connectedTo: string | null = null;
+  subscribedTo: string | null = null;
+  closed = false;
+  readonly queue: unknown[] = [];
+  waiter: ((result: IteratorResult<unknown>) => void) | null = null;
+
+  connect(endpoint: string): void {
+    this.connectedTo = endpoint;
+  }
+
+  subscribe(topic: string): void {
+    this.subscribedTo = topic;
+  }
+
+  close(): void {
+    this.closed = true;
+    this.waiter?.({ done: true, value: undefined });
+    this.waiter = null;
+  }
+
+  emit(frames: unknown): void {
+    if (this.waiter !== null) {
+      const waiter = this.waiter;
+      this.waiter = null;
+      waiter({ done: false, value: frames });
+      return;
+    }
+
+    this.queue.push(frames);
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<unknown> {
+    while (true) {
+      const queued = this.queue.shift();
+      if (queued !== undefined) {
+        yield queued;
+        continue;
+      }
+
+      if (this.closed) {
+        return;
+      }
+
+      const next = await new Promise<IteratorResult<unknown>>((resolve) => {
+        this.waiter = resolve;
+      });
+      if (next.done === true) {
+        return;
+      }
+      yield next.value;
+    }
+  }
+}
+
+test("rawtx mempool index subscriber ignores txids outside the active visible snapshot", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-rawtx-visible");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const walletRootId = "wallet-rawtx-1";
+  const serviceIdentity = "service-1";
+  const activeVisibleTxid = "aa".repeat(32);
+  const outsideRawHex = createRawTransactionHexForIndex("6a0161");
+  const outsideParsed = parseRawTransactionForMiningMempoolIndexTesting(outsideRawHex);
+  assert.notEqual(outsideParsed, null);
+  const outsideTxid = outsideParsed?.txid ?? "";
+  assert.notEqual(outsideTxid, activeVisibleTxid);
+
+  await hydrateMiningMempoolIndex({
+    walletRootId,
+    serviceIdentity,
+    cachePath,
+    rpc: {
+      async getRawTransaction(txid: string) {
+        return createNonCogTransaction(txid);
+      },
+    },
+    visibleTxids: [activeVisibleTxid],
+  });
+
+  const createdSubscriber = { current: null as FakeMiningRawTxSubscriber | null };
+  const ready = await ensureMiningMempoolRawTxSubscriber({
+    walletRootId,
+    serviceIdentity,
+    cachePath,
+    zmqEndpoint: "tcp://127.0.0.1:28332",
+    rawTxTopic: "rawtx",
+    async loadZeroMq() {
+      return {
+        Subscriber: class extends FakeMiningRawTxSubscriber {
+          constructor() {
+            super();
+            createdSubscriber.current = this;
+          }
+        },
+      };
+    },
+  });
+  assert.equal(ready, true);
+  const subscriber = createdSubscriber.current;
+  assert.notEqual(subscriber, null);
+  if (subscriber === null) {
+    throw new Error("expected a subscriber instance");
+  }
+  subscriber.emit([Buffer.from("rawtx"), Buffer.from(outsideRawHex, "hex")]);
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+  const persisted = await readPersistedMempoolIndexForTesting(cachePath);
+  assert.deepEqual(persisted.negativeTxids, [activeVisibleTxid]);
+  assert.equal(persisted.negativeTxids.includes(outsideTxid), false);
+});
+
+test("hydrateMiningMempoolIndex scopes large mixed-cache diagnostics to visible txids", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-gc-large");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const walletRootId = "wallet-gc-3";
+  const serviceIdentity = "service-1";
+  const cogTxids = Array.from({ length: 40 }, (_, index) => `c${index.toString(16).padStart(63, "0")}`);
+  const negativeTxids = Array.from({ length: 24 }, (_, index) => `d${index.toString(16).padStart(63, "0")}`);
+  const unknownVisibleTxid = "ee".repeat(32);
+  const visibleTxids = [
+    cogTxids[0]!,
+    cogTxids[1]!,
+    negativeTxids[0]!,
+    negativeTxids[1]!,
+    negativeTxids[2]!,
+    unknownVisibleTxid,
+  ];
+
+  await writePersistedMempoolIndexForTesting(cachePath, createPersistedMempoolIndexForTesting({
+    walletRootId,
+    serviceIdentity,
+    contexts: cogTxids.map((txid) => ({ txid })),
+    negativeTxids,
+  }));
+
+  const result = await hydrateMiningMempoolIndex({
+    walletRootId,
+    serviceIdentity,
+    cachePath,
+    rpc: {
+      async getRawTransaction(txid: string) {
+        return createNonCogTransaction(txid);
+      },
+    },
+    visibleTxids,
+  });
+
+  assert.equal(result.indexedContextCount, 2);
+  assert.equal(result.negativeTxidCount, 4);
+  assert.equal(result.unknownTxidCount, 1);
+  assert.equal(result.hydratedCount, 1);
+
+  const persisted = await readPersistedMempoolIndexForTesting(cachePath);
+  assert.deepEqual(persisted.contexts.map((context) => context.txid), [cogTxids[0], cogTxids[1]]);
+  assert.deepEqual(persisted.negativeTxids, [negativeTxids[0], negativeTxids[1], negativeTxids[2], unknownVisibleTxid].sort());
+});
+
 test("runCompetitivenessGate uses persisted indexed contexts without refetching raw transactions", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-persisted");
   const cachePath = join(homeDirectory, "mempool-index.json");
@@ -4700,6 +5002,86 @@ test("runCompetitivenessGate hydrates only unknown indexed mempool deltas", asyn
   assert.equal(decision.mempoolSequenceCacheStatus, "index-warming");
 });
 
+test("runCompetitivenessGate retries indexed hydration against a fresh mempool snapshot after churn", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-hydration-churn");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const candidate = createGateCandidate();
+  const context = createGateReadContext({
+    domains: [
+      { domainId: 1, name: "alpha" },
+      { domainId: 7, name: "cogdemo" },
+    ],
+  });
+  const disappearedTxid = "aa".repeat(32);
+  const competitorTxid = "bb".repeat(32);
+  let verboseCalls = 0;
+  let rawTransactionCalls = 0;
+
+  const decision = await runCompetitivenessGateForTesting({
+    rpc: {
+      async getRawMempoolVerbose() {
+        verboseCalls += 1;
+        return {
+          txids: verboseCalls === 1 ? [disappearedTxid, competitorTxid] : [competitorTxid],
+          mempool_sequence: `seq-${verboseCalls}`,
+        };
+      },
+      async getRawMempoolEntries() {
+        throw new Error("indexed path should not fetch full mempool metadata");
+      },
+      async getRawTransaction(txid: string) {
+        rawTransactionCalls += 1;
+        if (txid === disappearedTxid) {
+          throw new Error("mempool churn removed this tx");
+        }
+
+        return createMineTransaction({
+          txid,
+          domainId: 1,
+          senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+          referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+          sentenceFill: "a",
+        });
+      },
+      async getMempoolEntry(txid: string) {
+        assert.equal(txid, competitorTxid);
+        return {
+          vsize: 200,
+          fees: {
+            base: 0.00001,
+            ancestor: 0.00001,
+            descendant: 0.00001,
+          },
+          ancestorsize: 200,
+          descendantsize: 200,
+        };
+      },
+    } as any,
+    readContext: context,
+    candidate,
+    currentTxid: null,
+    assaySentencesImpl: createGateAssayStub({
+      ["a".repeat(60)]: 10n,
+    }) as any,
+    mempoolIndex: {
+      rawTxSupported: true,
+      cachePath,
+      serviceIdentity: "service-1",
+    },
+  });
+
+  assert.equal(verboseCalls, 2);
+  assert.equal(rawTransactionCalls, 2);
+  assert.notEqual(decision.indeterminateReason, "mempool_index_hydration_incomplete");
+  assert.equal(decision.competitivenessGateIndeterminate, false);
+  assert.equal(decision.diagnostics.visibleMempoolTxCount, 1);
+  assert.equal(decision.diagnostics.indexedContextCount, 1);
+  assert.equal(decision.diagnostics.mempoolSequence, "seq-2");
+  const persisted = await readPersistedMempoolIndexForTesting(cachePath);
+  assert.deepEqual(persisted.contexts.map((entry) => entry.txid), [competitorTxid]);
+  assert.equal(persisted.negativeTxids.includes(disappearedTxid), false);
+});
+
 test("runCompetitivenessGate stays indeterminate when indexed unknown hydration fails", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-hydration-fail");
   const cachePath = join(homeDirectory, "mempool-index.json");
@@ -4710,19 +5092,23 @@ test("runCompetitivenessGate stays indeterminate when indexed unknown hydration 
       { domainId: 7, name: "cogdemo" },
     ],
   });
+  let verboseCalls = 0;
+  let rawTransactionCalls = 0;
 
   const decision = await runCompetitivenessGateForTesting({
     rpc: {
       async getRawMempoolVerbose() {
+        verboseCalls += 1;
         return {
           txids: ["aa".repeat(32), "bb".repeat(32)],
-          mempool_sequence: "seq-1",
+          mempool_sequence: `seq-${verboseCalls}`,
         };
       },
       async getRawMempoolEntries() {
         throw new Error("failed indexed hydration must not fall back to unsafe full scan");
       },
       async getRawTransaction(txid: string) {
+        rawTransactionCalls += 1;
         if (txid === "aa".repeat(32)) {
           throw new Error("transient raw transaction failure");
         }
@@ -4754,13 +5140,15 @@ test("runCompetitivenessGate stays indeterminate when indexed unknown hydration 
   assert.equal(decision.competitivenessGateIndeterminate, true);
   assert.equal(decision.indeterminateReason, "mempool_index_hydration_incomplete");
   assert.equal(decision.mempoolSequenceCacheStatus, "index-warming");
+  assert.equal(verboseCalls, 2);
+  assert.equal(rawTransactionCalls, 3);
   assert.equal(decision.diagnostics.visibleMempoolTxCount, 2);
   assert.equal(decision.diagnostics.indexedContextCount, 1);
   assert.equal(decision.diagnostics.negativeTxCount, 0);
-  assert.equal(decision.diagnostics.unknownTxCount, 2);
-  assert.equal(decision.diagnostics.hydratedTxCount, 1);
+  assert.equal(decision.diagnostics.unknownTxCount, 1);
+  assert.equal(decision.diagnostics.hydratedTxCount, 0);
   assert.equal(decision.diagnostics.cacheStatus, "index-warming");
-  assert.equal(decision.diagnostics.mempoolSequence, "seq-1");
+  assert.equal(decision.diagnostics.mempoolSequence, "seq-2");
   assert.equal(decision.diagnostics.higherRankedCompetitorDomainCount, null);
   assert.equal(decision.diagnostics.dedupedCompetitorDomainCount, null);
 });
