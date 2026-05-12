@@ -180,6 +180,7 @@ import {
 } from "./visualizer-sync.js";
 import {
   ensureMiningMempoolRawTxSubscriber,
+  pruneMiningMempoolIndexServicesForWallet,
   resolveMiningMempoolIndexCachePath,
   resolveMiningMempoolServiceIdentity,
 } from "./mempool-index.js";
@@ -546,6 +547,11 @@ async function performMiningCycle(options: {
       rawTxTopic: serviceZmq?.rawTxTopic,
     });
     const mempoolIndexRawTxSupported = serviceZmq?.rawTxTopic === "rawtx";
+    await pruneMiningMempoolIndexServicesForWallet({
+      walletRootId: readContext.localState.state.walletRootId,
+      cachePath: mempoolIndexCachePath,
+      serviceIdentity: mempoolIndexServiceIdentity,
+    }).catch(() => undefined);
     if (mempoolIndexRawTxSupported && serviceZmq?.endpoint !== undefined) {
       await ensureMiningMempoolRawTxSubscriber({
         walletRootId: readContext.localState.state.walletRootId,

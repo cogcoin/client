@@ -68,6 +68,8 @@ import {
   ensureMiningMempoolRawTxSubscriber,
   hydrateMiningMempoolIndex,
   parseRawTransactionForMiningMempoolIndexTesting,
+  pruneMiningMempoolIndexServicesForWallet,
+  readMiningMempoolIndexStateDiagnosticsForTesting,
 } from "../src/wallet/mining/mempool-index.js";
 import {
   createMemoryWalletSecretProviderForTesting,
@@ -4573,6 +4575,54 @@ test("hydrateMiningMempoolIndex prunes stale persisted negative txids and Cog co
   assert.deepEqual(persisted.negativeTxids, [visibleNegativeTxid]);
 });
 
+test("hydrateMiningMempoolIndex compacts in-memory collections after large stale caches", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-gc-compact");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const walletRootId = "wallet-gc-compact";
+  const serviceIdentity = "service-1";
+  const visibleCogTxid = "aa".repeat(32);
+  const visibleNegativeTxid = "bb".repeat(32);
+  const staleCogTxids = Array.from({ length: 512 }, (_, index) => `c${index.toString(16).padStart(63, "0")}`);
+  const staleNegativeTxids = Array.from({ length: 2_048 }, (_, index) => `d${index.toString(16).padStart(63, "0")}`);
+
+  await writePersistedMempoolIndexForTesting(cachePath, createPersistedMempoolIndexForTesting({
+    walletRootId,
+    serviceIdentity,
+    contexts: [
+      { txid: visibleCogTxid },
+      ...staleCogTxids.map((txid) => ({ txid })),
+    ],
+    negativeTxids: [visibleNegativeTxid, ...staleNegativeTxids],
+  }));
+
+  const result = await hydrateMiningMempoolIndex({
+    walletRootId,
+    serviceIdentity,
+    cachePath,
+    rpc: {
+      async getRawTransaction() {
+        throw new Error("persisted cache should cover the visible txids");
+      },
+    },
+    visibleTxids: [visibleCogTxid, visibleNegativeTxid],
+  });
+
+  assert.equal(result.indexedContextCount, 1);
+  assert.equal(result.negativeTxidCount, 1);
+
+  const diagnostics = readMiningMempoolIndexStateDiagnosticsForTesting()
+    .find((entry) => entry.walletRootId === walletRootId && entry.serviceIdentity === serviceIdentity);
+  assert.notEqual(diagnostics, undefined);
+  assert.equal(diagnostics?.contextCount, 1);
+  assert.equal(diagnostics?.negativeTxidCount, 1);
+  assert.equal(diagnostics?.activeVisibleTxidCount, 2);
+  assert.equal(diagnostics?.compactionCount, 1);
+
+  const persisted = await readPersistedMempoolIndexForTesting(cachePath);
+  assert.deepEqual(persisted.contexts.map((context) => context.txid), [visibleCogTxid]);
+  assert.deepEqual(persisted.negativeTxids, [visibleNegativeTxid]);
+});
+
 test("hydrateMiningMempoolIndex persists GC before reporting hydration failure", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-gc-failure");
   const cachePath = join(homeDirectory, "mempool-index.json");
@@ -4716,6 +4766,97 @@ test("rawtx mempool index subscriber ignores txids outside the active visible sn
   const persisted = await readPersistedMempoolIndexForTesting(cachePath);
   assert.deepEqual(persisted.negativeTxids, [activeVisibleTxid]);
   assert.equal(persisted.negativeTxids.includes(outsideTxid), false);
+});
+
+test("pruneMiningMempoolIndexServicesForWallet retires superseded service identities only", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-service-prune");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const walletRootId = "wallet-service-prune";
+  const otherWalletRootId = "wallet-service-other";
+  const serviceA = "service-a";
+  const serviceB = "service-b";
+  const otherService = "service-other";
+  const subscriberA = { current: null as FakeMiningRawTxSubscriber | null };
+  const subscriberB = { current: null as FakeMiningRawTxSubscriber | null };
+  const otherSubscriber = { current: null as FakeMiningRawTxSubscriber | null };
+
+  async function hydrateNegativeState(rootId: string, serviceIdentity: string, txid: string): Promise<void> {
+    await hydrateMiningMempoolIndex({
+      walletRootId: rootId,
+      serviceIdentity,
+      cachePath,
+      rpc: {
+        async getRawTransaction(requestTxid: string) {
+          return createNonCogTransaction(requestTxid);
+        },
+      },
+      visibleTxids: [txid],
+    });
+  }
+
+  function createZeroMqLoader(target: { current: FakeMiningRawTxSubscriber | null }) {
+    return async () => ({
+      Subscriber: class extends FakeMiningRawTxSubscriber {
+        constructor() {
+          super();
+          target.current = this;
+        }
+      },
+    });
+  }
+
+  await hydrateNegativeState(walletRootId, serviceA, "aa".repeat(32));
+  await ensureMiningMempoolRawTxSubscriber({
+    walletRootId,
+    serviceIdentity: serviceA,
+    cachePath,
+    zmqEndpoint: "tcp://127.0.0.1:28332",
+    rawTxTopic: "rawtx",
+    loadZeroMq: createZeroMqLoader(subscriberA),
+  });
+  await hydrateNegativeState(walletRootId, serviceB, "bb".repeat(32));
+  await ensureMiningMempoolRawTxSubscriber({
+    walletRootId,
+    serviceIdentity: serviceB,
+    cachePath,
+    zmqEndpoint: "tcp://127.0.0.1:28333",
+    rawTxTopic: "rawtx",
+    loadZeroMq: createZeroMqLoader(subscriberB),
+  });
+  await hydrateNegativeState(otherWalletRootId, otherService, "cc".repeat(32));
+  await ensureMiningMempoolRawTxSubscriber({
+    walletRootId: otherWalletRootId,
+    serviceIdentity: otherService,
+    cachePath,
+    zmqEndpoint: "tcp://127.0.0.1:28334",
+    rawTxTopic: "rawtx",
+    loadZeroMq: createZeroMqLoader(otherSubscriber),
+  });
+
+  assert.equal(subscriberA.current?.closed, false);
+  assert.equal(subscriberB.current?.closed, false);
+  assert.equal(otherSubscriber.current?.closed, false);
+
+  await pruneMiningMempoolIndexServicesForWallet({
+    walletRootId,
+    cachePath,
+    serviceIdentity: serviceB,
+  });
+
+  assert.equal(subscriberA.current?.closed, true);
+  assert.equal(subscriberB.current?.closed, false);
+  assert.equal(otherSubscriber.current?.closed, false);
+
+  const diagnostics = readMiningMempoolIndexStateDiagnosticsForTesting();
+  assert.equal(diagnostics.some((entry) =>
+    entry.walletRootId === walletRootId && entry.serviceIdentity === serviceA
+  ), false);
+  assert.equal(diagnostics.some((entry) =>
+    entry.walletRootId === walletRootId && entry.serviceIdentity === serviceB && entry.negativeTxidCount === 1
+  ), true);
+  assert.equal(diagnostics.some((entry) =>
+    entry.walletRootId === otherWalletRootId && entry.serviceIdentity === otherService && entry.negativeTxidCount === 1
+  ), true);
 });
 
 test("hydrateMiningMempoolIndex scopes large mixed-cache diagnostics to visible txids", async (t) => {

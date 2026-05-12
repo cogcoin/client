@@ -70,6 +70,7 @@ interface MiningMempoolIndexState {
   contexts: Map<string, MiningMempoolTxContext>;
   negativeTxids: Set<string>;
   activeVisibleTxids: Set<string> | null;
+  compactionCount: number;
   loaded: boolean;
   savePromise: Promise<void>;
   saveScheduled: ReturnType<typeof setTimeout> | null;
@@ -88,6 +89,9 @@ interface ZeroMqModuleLike {
 
 interface RawTxSubscriberState {
   key: string;
+  walletRootId: string;
+  serviceIdentity: string;
+  cachePath: string;
   subscriber: RawTxSubscriberLike;
   loop: Promise<void>;
 }
@@ -219,6 +223,7 @@ function getOrCreateState(options: {
     contexts: new Map(),
     negativeTxids: new Set(),
     activeVisibleTxids: null,
+    compactionCount: 0,
     loaded: false,
     savePromise: Promise.resolve(),
     saveScheduled: null,
@@ -270,6 +275,46 @@ function scheduleStateSave(state: MiningMempoolIndexState): void {
   }, RAW_TX_SUBSCRIBER_SAVE_DEBOUNCE_MS);
 }
 
+function cancelScheduledStateSave(state: MiningMempoolIndexState): void {
+  if (state.saveScheduled !== null) {
+    clearTimeout(state.saveScheduled);
+    state.saveScheduled = null;
+  }
+  state.saveDirty = false;
+}
+
+export async function pruneMiningMempoolIndexServicesForWallet(options: {
+  walletRootId: string;
+  cachePath: string;
+  serviceIdentity: string;
+}): Promise<void> {
+  const subscriberLoops: Array<Promise<void>> = [];
+  for (const [key, subscriberState] of rawTxSubscribers) {
+    if (
+      subscriberState.walletRootId === options.walletRootId
+      && subscriberState.cachePath === options.cachePath
+      && subscriberState.serviceIdentity !== options.serviceIdentity
+    ) {
+      rawTxSubscribers.delete(key);
+      subscriberState.subscriber.close();
+      subscriberLoops.push(subscriberState.loop.catch(() => undefined));
+    }
+  }
+
+  for (const [key, state] of indexStates) {
+    if (
+      state.walletRootId === options.walletRootId
+      && state.cachePath === options.cachePath
+      && state.serviceIdentity !== options.serviceIdentity
+    ) {
+      cancelScheduledStateSave(state);
+      indexStates.delete(key);
+    }
+  }
+
+  await Promise.all(subscriberLoops);
+}
+
 function pruneStateToVisibleTxids(state: MiningMempoolIndexState, visibleTxids: readonly string[]): boolean {
   const visibleSet = new Set(visibleTxids);
   return pruneStateToVisibleTxidSet(state, visibleSet);
@@ -284,23 +329,39 @@ function pruneStateToActiveVisibleTxids(state: MiningMempoolIndexState): boolean
 }
 
 function pruneStateToVisibleTxidSet(state: MiningMempoolIndexState, visibleSet: ReadonlySet<string>): boolean {
-  let changed = false;
-
-  for (const txid of [...state.contexts.keys()]) {
-    if (!visibleSet.has(txid)) {
-      state.contexts.delete(txid);
-      changed = true;
+  let contextChanged = false;
+  const retainedContexts = new Map<string, MiningMempoolTxContext>();
+  for (const [txid, context] of state.contexts) {
+    if (visibleSet.has(txid)) {
+      retainedContexts.set(txid, context);
+    } else {
+      contextChanged = true;
     }
   }
 
-  for (const txid of [...state.negativeTxids]) {
-    if (!visibleSet.has(txid)) {
-      state.negativeTxids.delete(txid);
-      changed = true;
+  let negativeChanged = false;
+  const retainedNegativeTxids = new Set<string>();
+  for (const txid of state.negativeTxids) {
+    if (visibleSet.has(txid)) {
+      retainedNegativeTxids.add(txid);
+    } else {
+      negativeChanged = true;
     }
   }
 
-  return changed;
+  if (!contextChanged && !negativeChanged) {
+    return false;
+  }
+
+  if (contextChanged) {
+    state.contexts = retainedContexts;
+  }
+  if (negativeChanged) {
+    state.negativeTxids = retainedNegativeTxids;
+  }
+  state.compactionCount += 1;
+
+  return true;
 }
 
 function createContextFromRpcTransaction(
@@ -737,7 +798,14 @@ export async function ensureMiningMempoolRawTxSubscriber(options: {
     }
   })();
 
-  rawTxSubscribers.set(key, { key, subscriber, loop });
+  rawTxSubscribers.set(key, {
+    key,
+    walletRootId: options.walletRootId,
+    serviceIdentity: options.serviceIdentity,
+    cachePath: options.cachePath,
+    subscriber,
+    loop,
+  });
   return true;
 }
 
@@ -751,7 +819,36 @@ export async function closeMiningMempoolIndexSubscribersForTesting(): Promise<vo
 }
 
 export function clearMiningMempoolIndexCacheForTesting(): void {
+  for (const state of indexStates.values()) {
+    cancelScheduledStateSave(state);
+  }
   indexStates.clear();
+}
+
+export function readMiningMempoolIndexStateDiagnosticsForTesting(): Array<{
+  walletRootId: string;
+  serviceIdentity: string;
+  cachePath: string;
+  contextCount: number;
+  negativeTxidCount: number;
+  activeVisibleTxidCount: number | null;
+  compactionCount: number;
+}> {
+  return [...indexStates.values()]
+    .sort((left, right) =>
+      left.walletRootId.localeCompare(right.walletRootId)
+      || left.cachePath.localeCompare(right.cachePath)
+      || left.serviceIdentity.localeCompare(right.serviceIdentity)
+    )
+    .map((state) => ({
+      walletRootId: state.walletRootId,
+      serviceIdentity: state.serviceIdentity,
+      cachePath: state.cachePath,
+      contextCount: state.contexts.size,
+      negativeTxidCount: state.negativeTxids.size,
+      activeVisibleTxidCount: state.activeVisibleTxids?.size ?? null,
+      compactionCount: state.compactionCount,
+    }));
 }
 
 export const parseRawTransactionForMiningMempoolIndexTesting = parseRawTransactionForIndex;
