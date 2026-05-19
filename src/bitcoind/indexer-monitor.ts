@@ -63,6 +63,7 @@ export async function openManagedIndexerMonitor(options: {
   walletRootId?: string;
   startupTimeoutMs?: number;
   expectedBinaryVersion?: string | null;
+  staleBinaryAction?: "replace" | "reject";
 }): Promise<ManagedIndexerMonitor> {
   const expectedBinaryVersion = options.expectedBinaryVersion === undefined
     ? await readPackageVersionFromDisk()
@@ -88,6 +89,7 @@ export async function openManagedIndexerMonitor(options: {
     startupTimeoutMs: options.startupTimeoutMs,
     ensureBackgroundFollow: true,
     expectedBinaryVersion,
+    staleBinaryAction: options.staleBinaryAction,
   });
 
   return createManagedIndexerMonitor({

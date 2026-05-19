@@ -79,6 +79,7 @@ export interface ManagedIndexerRuntimeOptionsLike {
   startupTimeoutMs: number;
   shutdownTimeoutMs?: number;
   expectedBinaryVersion?: string | null;
+  staleBinaryAction?: "replace" | "reject";
 }
 
 export interface ManagedIndexerSnapshotLike {

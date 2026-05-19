@@ -156,12 +156,23 @@ export function isStaleIndexerDaemonVersion(
 export function resolveIndexerDaemonProbeDecision<TClient>(options: {
   probe: ManagedIndexerDaemonProbeResult<TClient>;
   expectedBinaryVersion: string | null | undefined;
+  staleBinaryAction?: "replace" | "reject";
 }): IndexerDaemonProbeDecision {
   if (options.probe.compatibility === "compatible") {
+    if (isStaleIndexerDaemonVersion(options.probe.status, options.expectedBinaryVersion)) {
+      return options.staleBinaryAction === "reject"
+        ? {
+          action: "reject",
+          error: "indexer_daemon_binary_outdated",
+        }
+        : {
+          action: "replace",
+          error: null,
+        };
+    }
+
     return {
-      action: isStaleIndexerDaemonVersion(options.probe.status, options.expectedBinaryVersion)
-        ? "replace"
-        : "attach",
+      action: "attach",
       error: null,
     };
   }

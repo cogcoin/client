@@ -256,6 +256,7 @@ export async function attachOrStartIndexerDaemon(options: {
   serviceLifetime?: ManagedIndexerDaemonServiceLifetime;
   ensureBackgroundFollow?: boolean;
   expectedBinaryVersion?: string | null;
+  staleBinaryAction?: "replace" | "reject";
 }): Promise<IndexerDaemonClient> {
   const requestBackgroundFollow = async (
     client: IndexerDaemonClient,
@@ -362,6 +363,7 @@ export async function attachOrStartIndexerDaemon(options: {
     walletRootId,
     startupTimeoutMs,
     expectedBinaryVersion,
+    staleBinaryAction: options.staleBinaryAction,
   }, {
     getPaths: (runtimeOptions) => resolveManagedServicePaths(runtimeOptions.dataDir, runtimeOptions.walletRootId),
     probeDaemon: async (runtimeOptions, runtimePaths) =>

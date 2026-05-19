@@ -66,6 +66,7 @@ export async function attachOrStartManagedIndexerRuntime<
   const existingDecision = resolveIndexerDaemonProbeDecision({
     probe: existingProbe,
     expectedBinaryVersion: options.expectedBinaryVersion ?? null,
+    staleBinaryAction: options.staleBinaryAction ?? "replace",
   });
 
   if (existingDecision.action === "attach" && existingProbe.client !== null) {
@@ -81,6 +82,9 @@ export async function attachOrStartManagedIndexerRuntime<
   }
 
   if (existingDecision.action === "reject") {
+    if (existingProbe.client !== null) {
+      await dependencies.closeClient(existingProbe.client).catch(() => undefined);
+    }
     throw new Error(existingDecision.error ?? "indexer_daemon_protocol_error");
   }
 
@@ -92,6 +96,7 @@ export async function attachOrStartManagedIndexerRuntime<
       const liveDecision = resolveIndexerDaemonProbeDecision({
         probe: liveProbe,
         expectedBinaryVersion: options.expectedBinaryVersion ?? null,
+        staleBinaryAction: options.staleBinaryAction ?? "replace",
       });
 
       if (liveDecision.action === "attach" && liveProbe.client !== null) {
@@ -105,6 +110,9 @@ export async function attachOrStartManagedIndexerRuntime<
         await dependencies.closeClient(liveProbe.client).catch(() => undefined);
         await dependencies.stopWithLockHeld(options, paths, liveProbe.status?.processId ?? null);
       } else if (liveDecision.action === "reject") {
+        if (liveProbe.client !== null) {
+          await dependencies.closeClient(liveProbe.client).catch(() => undefined);
+        }
         throw new Error(liveDecision.error ?? "indexer_daemon_protocol_error");
       }
 

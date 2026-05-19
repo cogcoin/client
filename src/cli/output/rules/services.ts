@@ -38,6 +38,14 @@ export const serviceErrorRules: readonly CliErrorPresentationRule[] = [
       };
     }
 
+    if (errorCode === "indexer_daemon_binary_outdated") {
+      return {
+        what: "The live managed indexer daemon is older than this CLI.",
+        why: "Mining will not trust an outdated managed indexer daemon for readiness or publishing.",
+        next: "Run `cogcoin repair` to update the managed indexer daemon, then rerun `cogcoin mine`.",
+      };
+    }
+
     if (errorCode.includes("tip_mismatch") || errorCode.includes("stale") || errorCode.includes("catching_up") || errorCode.includes("starting")) {
       return {
         what: "Trusted service state is not ready.",

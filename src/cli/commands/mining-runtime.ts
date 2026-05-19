@@ -1,6 +1,7 @@
 import { dirname } from "node:path";
 
 import { DEFAULT_SNAPSHOT_METADATA, resolveBootstrapPathsForTesting } from "../../bitcoind/bootstrap.js";
+import { resolveIndexerDaemonProbeDecision } from "../../bitcoind/managed-runtime/indexer-policy.js";
 import type { ManagedIndexerDaemonObservedStatus } from "../../bitcoind/types.js";
 import {
   createEmptyMiningFollowVisualizerState,
@@ -102,6 +103,32 @@ async function recordManagedMiningReadinessFailure(options: {
   }).catch(() => undefined);
 }
 
+async function rejectOutdatedManagedMiningIndexerDaemon(options: {
+  context: RequiredCliRunnerContext;
+  dataDir: string;
+  walletRootId: string;
+  expectedBinaryVersion: string;
+}): Promise<void> {
+  const probe = await options.context.probeIndexerDaemon({
+    dataDir: options.dataDir,
+    walletRootId: options.walletRootId,
+  });
+
+  try {
+    const decision = resolveIndexerDaemonProbeDecision({
+      probe,
+      expectedBinaryVersion: options.expectedBinaryVersion,
+      staleBinaryAction: "reject",
+    });
+
+    if (decision.action === "reject" && decision.error === "indexer_daemon_binary_outdated") {
+      throw new Error("indexer_daemon_binary_outdated");
+    }
+  } finally {
+    await probe.client?.close().catch(() => undefined);
+  }
+}
+
 async function pollManagedMiningReadinessWithVisualizer(options: {
   monitor: Awaited<ReturnType<RequiredCliRunnerContext["openManagedIndexerMonitor"]>>;
   context: RequiredCliRunnerContext;
@@ -166,11 +193,18 @@ async function syncManagedMiningReadinessWithVisualizer(options: {
 
   try {
     await options.context.ensureDirectory(dirname(options.databasePath));
+    await rejectOutdatedManagedMiningIndexerDaemon({
+      context: options.context,
+      dataDir: options.dataDir,
+      walletRootId: walletRoot.walletRootId,
+      expectedBinaryVersion: options.expectedBinaryVersion,
+    });
     monitor = await options.context.openManagedIndexerMonitor({
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       walletRootId: walletRoot.walletRootId,
       expectedBinaryVersion: options.expectedBinaryVersion,
+      staleBinaryAction: "reject",
     });
 
     const abortController = new AbortController();
@@ -250,11 +284,18 @@ async function syncManagedMiningReadiness(options: {
 
   try {
     await options.context.ensureDirectory(dirname(options.databasePath));
+    await rejectOutdatedManagedMiningIndexerDaemon({
+      context: options.context,
+      dataDir: options.dataDir,
+      walletRootId: walletRoot.walletRootId,
+      expectedBinaryVersion: options.expectedBinaryVersion,
+    });
     monitor = await options.context.openManagedIndexerMonitor({
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       walletRootId: walletRoot.walletRootId,
       expectedBinaryVersion: options.expectedBinaryVersion,
+      staleBinaryAction: "reject",
     });
     observer = new ManagedIndexerProgressObserver({
       quoteStatePath: resolveBootstrapPathsForTesting(

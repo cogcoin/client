@@ -89,6 +89,7 @@ export function isBlockedError(message: string): boolean {
     || message === "indexer_daemon_service_version_mismatch"
     || message === "indexer_daemon_wallet_root_mismatch"
     || message === "indexer_daemon_schema_mismatch"
+    || message === "indexer_daemon_binary_outdated"
     || message === "mine_setup_requires_tty"
     || message === "mine_prompt_requires_tty"
     || message === "mine_prompt_domain_not_mineable"

@@ -449,6 +449,60 @@ test("attachOrStartManagedIndexerRuntime replaces stale compatible daemons befor
   assert.deepEqual(closedClients, ["stale-client"]);
 });
 
+test("attachOrStartManagedIndexerRuntime rejects stale compatible daemons when requested", async () => {
+  const dataDir = "/tmp/cogcoin-data";
+  const walletRootId = "wallet-root-target";
+  const paths = createManagedPaths(dataDir, walletRootId);
+  const staleClient = { id: "stale-client" };
+  const closedClients: string[] = [];
+  let acquired = false;
+  let started = false;
+
+  await assert.rejects(
+    () => attachOrStartManagedIndexerRuntime({
+      dataDir,
+      walletRootId,
+      databasePath: "/tmp/client.sqlite",
+      startupTimeoutMs: 5_000,
+      expectedBinaryVersion: CURRENT_CLIENT_VERSION,
+      staleBinaryAction: "reject",
+    }, {
+      getPaths: () => paths,
+      probeDaemon: async () => ({
+        compatibility: "compatible",
+        status: createManagedIndexerDaemonObservedStatus({
+          walletRootId,
+          binaryVersion: "1.1.4",
+        }),
+        client: staleClient,
+        error: null,
+      }),
+      requestBackgroundFollow: async (client) => client,
+      closeClient: async (client) => {
+        closedClients.push(client.id);
+      },
+      acquireStartLock: async () => {
+        acquired = true;
+        return {
+          async release() {},
+        };
+      },
+      startDaemon: async () => {
+        started = true;
+        throw new Error("should_not_start");
+      },
+      stopWithLockHeld: async () => undefined,
+      isLockBusyError: () => false,
+      sleep: async () => undefined,
+    }),
+    /indexer_daemon_binary_outdated/,
+  );
+
+  assert.deepEqual(closedClients, ["stale-client"]);
+  assert.equal(acquired, false);
+  assert.equal(started, false);
+});
+
 test("attachOrStartManagedIndexerRuntime rejects incompatible daemon metadata", async () => {
   const dataDir = "/tmp/cogcoin-data";
   const walletRootId = "wallet-root-target";

@@ -355,3 +355,11 @@ test("CLI lock errors recommend cogcoin repair to reset the local lock state", (
   assert.match(miningLock, /Next: Run `cogcoin repair` to reset the local lock state, then retry\./);
   assert.match(genericLock, /Next: Run `cogcoin repair` to reset the local lock state, then retry\./);
 });
+
+test("CLI error text recommends repair for outdated managed indexer daemons", () => {
+  const text = (formatCliTextError(new Error("indexer_daemon_binary_outdated")) ?? []).join("\n");
+
+  assert.match(text, /What happened: The live managed indexer daemon is older than this CLI\./);
+  assert.match(text, /Why: Mining will not trust an outdated managed indexer daemon for readiness or publishing\./);
+  assert.match(text, /Next: Run `cogcoin repair` to update the managed indexer daemon, then rerun `cogcoin mine`\./);
+});

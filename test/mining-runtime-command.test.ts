@@ -759,6 +759,83 @@ test("mine reports a handled error and skips foreground mining when sync preflig
   assert.equal(runtimeError?.message, "Mining preflight stopped because managed indexer readiness failed: managed_bitcoind_protocol_error");
 });
 
+test("mine rejects an outdated live indexer daemon before auto-replacing it", async (t) => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-outdated-indexer"));
+  const runtimePaths = resolvePaths();
+  const events: string[] = [];
+  let runCalls = 0;
+  let monitorCalls = 0;
+
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {
+      ...process.env,
+      COGCOIN_DISABLE_UPDATE_CHECK: "1",
+    },
+    now: () => 234_567,
+    signalSource: QUIET_SIGNAL_SOURCE,
+    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
+    createPrompter,
+    readPackageVersion: async () => CURRENT_CLIENT_VERSION,
+    resolveWalletRuntimePaths: () => resolvePaths(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
+    ensureBuiltInMiningSetupIfNeeded: async () => true,
+    loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
+    probeIndexerDaemon: async () => ({
+      compatibility: "compatible",
+      status: createObservedIndexerStatus({
+        binaryVersion: "1.2.9",
+      }),
+      client: {
+        async close() {
+          events.push("close-probe");
+        },
+      } as any,
+      error: null,
+    }),
+    openManagedIndexerMonitor: async () => {
+      monitorCalls += 1;
+      throw new Error("monitor_should_not_open");
+    },
+    runForegroundMining: async () => {
+      runCalls += 1;
+    },
+  });
+
+  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine", "--progress", "none"]), context);
+
+  assert.notEqual(exitCode, 0);
+  assert.equal(stdout.read(), "");
+  assert.equal(runCalls, 0);
+  assert.equal(monitorCalls, 0);
+  assert.deepEqual(events, ["close-probe"]);
+  const stderrText = stderr.read();
+  assert.match(stderrText, /live managed indexer daemon is older than this CLI/i);
+  assert.match(stderrText, /Next: Run `cogcoin repair` to update the managed indexer daemon, then rerun `cogcoin mine`\./);
+
+  const runtimeStatus = await loadMiningRuntimeStatus(runtimePaths.miningStatusPath);
+  assert.equal(runtimeStatus?.updatedAtUnixMs, 234_567);
+  assert.equal(runtimeStatus?.runMode, "stopped");
+  assert.equal(runtimeStatus?.currentPhase, "waiting-indexer");
+  assert.equal(runtimeStatus?.indexerDaemonState, "failed");
+  assert.equal(runtimeStatus?.indexerHealth, "failed");
+  assert.equal(runtimeStatus?.lastError, "indexer_daemon_binary_outdated");
+
+  const miningEvents = await readMiningEvents({
+    eventsPath: runtimePaths.miningEventsPath,
+    all: true,
+  });
+  const runtimeError = miningEvents.find((event) => event.kind === "runtime-error") ?? null;
+  assert.equal(runtimeError?.level, "error");
+  assert.equal(runtimeError?.message, "Mining preflight stopped because managed indexer readiness failed: indexer_daemon_binary_outdated");
+  assert.equal(runtimeError?.timestampUnixMs, 234_567);
+  assert.equal(runtimeError?.reason, "indexer_daemon_binary_outdated");
+});
+
 test("mine preflight records background-follow recovery failures before surfacing the error", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();

@@ -266,6 +266,25 @@ test("managed indexer probe decisions centralize stale and unparseable replaceme
     "replace",
   );
 
+  assert.deepEqual(
+    resolveIndexerDaemonProbeDecision({
+      probe: {
+        compatibility: "compatible",
+        status: createManagedIndexerDaemonObservedStatus({
+          binaryVersion: "1.1.4",
+        }),
+        client: {} as any,
+        error: null,
+      },
+      expectedBinaryVersion: CURRENT_CLIENT_VERSION,
+      staleBinaryAction: "reject",
+    }),
+    {
+      action: "reject",
+      error: "indexer_daemon_binary_outdated",
+    },
+  );
+
   assert.equal(
     resolveIndexerDaemonProbeDecision({
       probe: {
