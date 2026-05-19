@@ -370,12 +370,12 @@ test("runForegroundMining writes a stopped failure snapshot when indexer backgro
       indexerHealth: "unavailable",
       targetBlockHeight: 949_802,
       referencedBlockHashDisplay: "00".repeat(32),
-      currentDomainId: 40,
-      currentDomainName: "mitfrog",
-      currentSentenceDisplay: "In the wrong winter, the grid fed twenty pulses to the organ.",
-      currentCanonicalBlend: "440029011",
-      currentTxid: "6743be72f9256a9a4a13d629dbf570babef067122e9924610c0789cc1f83563c",
-      currentWtxid: "9c926c715e72bf10b9cc93bd4a3ce6b78d527352a7050c7c4880de43b70321ea",
+      currentDomainId: 7,
+      currentDomainName: "samplemine",
+      currentSentenceDisplay: "Synthetic supervisor status preserves the prior mining sentence.",
+      currentCanonicalBlend: "123456789",
+      currentTxid: "aa".repeat(32),
+      currentWtxid: "bb".repeat(32),
       currentFeeRateSatVb: 2.079,
       currentAbsoluteFeeSats: 446,
       currentPublishDecision: "tx-confirmed-while-down",
@@ -418,9 +418,9 @@ test("runForegroundMining writes a stopped failure snapshot when indexer backgro
   assert.equal(runtimeStatus?.indexerHealth, "failed");
   assert.equal(runtimeStatus?.lastError, INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED);
   assert.match(runtimeStatus?.note ?? "", /background follow could not recover/);
-  assert.equal(runtimeStatus?.currentTxid, "6743be72f9256a9a4a13d629dbf570babef067122e9924610c0789cc1f83563c");
-  assert.equal(runtimeStatus?.currentDomainName, "mitfrog");
-  assert.equal(runtimeStatus?.currentSentenceDisplay, "In the wrong winter, the grid fed twenty pulses to the organ.");
+  assert.equal(runtimeStatus?.currentTxid, "aa".repeat(32));
+  assert.equal(runtimeStatus?.currentDomainName, "samplemine");
+  assert.equal(runtimeStatus?.currentSentenceDisplay, "Synthetic supervisor status preserves the prior mining sentence.");
   assert.equal(runtimeStatus?.currentPublishDecision, "tx-confirmed-while-down");
 
   const events = await readMiningEvents({
@@ -431,7 +431,7 @@ test("runForegroundMining writes a stopped failure snapshot when indexer backgro
   assert.equal(runtimeError?.level, "error");
   assert.equal(runtimeError?.timestampUnixMs, nowUnixMs);
   assert.equal(runtimeError?.reason, INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED);
-  assert.equal(runtimeError?.txid, "6743be72f9256a9a4a13d629dbf570babef067122e9924610c0789cc1f83563c");
+  assert.equal(runtimeError?.txid, "aa".repeat(32));
 });
 
 test("runForegroundMining clears client-password sessions after a SIGTERM-driven shutdown", async (t) => {

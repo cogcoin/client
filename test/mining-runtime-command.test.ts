@@ -6,6 +6,12 @@ import test from "node:test";
 import { createDefaultContext } from "../src/cli/context.js";
 import { runMiningRuntimeCommand } from "../src/cli/commands/mining-runtime.js";
 import { parseCliArgs } from "../src/cli/parse.js";
+import { INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED } from "../src/bitcoind/indexer-daemon.js";
+import {
+  loadMiningRuntimeStatus,
+  readMiningEvents,
+  saveMiningRuntimeStatus,
+} from "../src/wallet/mining/runtime-artifacts.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
   createMemoryWalletSecretProviderForTesting,
@@ -192,6 +198,28 @@ function createCompletedSyncMonitor(events: string[]) {
   };
 }
 
+function createSequencedSyncMonitor(
+  statuses: readonly any[],
+  options: {
+    onBeforeStatus?: (index: number) => void | Promise<void>;
+    onClose?: () => void;
+  } = {},
+) {
+  let index = 0;
+
+  return {
+    async getStatus() {
+      await options.onBeforeStatus?.(index);
+      const status = statuses[Math.min(index, statuses.length - 1)]!;
+      index += 1;
+      return status;
+    },
+    async close() {
+      options.onClose?.();
+    },
+  };
+}
+
 test("mine text auto-runs provider setup, then syncs managed services and starts foreground mining", async (t) => {
   const stdout = createStringWriter();
   const stderr = createStringWriter();
@@ -272,6 +300,127 @@ test("mine text auto-runs provider setup, then syncs managed services and starts
   assert.equal(actualRunOptions.prompter, prompter);
   assert.equal(actualRunOptions.builtInSetupEnsured, true);
   assert.deepEqual(actualRunOptions.paths, runtimePaths);
+});
+
+test("mine preflight refreshes stale mining runtime status while waiting for the indexer", async (t) => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-runtime-preflight-refresh"));
+  const runtimePaths = resolvePaths();
+  const coreHash = "11".repeat(32);
+  let runCalls = 0;
+  let observedAfterFirstPoll: Awaited<ReturnType<typeof loadMiningRuntimeStatus>> = null;
+  let nowUnixMs = 10_000;
+
+  await saveMiningRuntimeStatus(
+    runtimePaths.miningStatusPath,
+    createMiningRuntimeStatus({
+      walletRootId: "wallet-root",
+      updatedAtUnixMs: 1_000,
+      runMode: "foreground",
+      currentPhase: "waiting-indexer",
+      indexerDaemonState: "catching-up",
+      currentDomainId: 7,
+      currentDomainName: "samplemine",
+      currentSentenceDisplay: "Synthetic preflight status preserves the prior mining sentence.",
+      currentCanonicalBlend: "123456789",
+      currentTxid: "aa".repeat(32),
+      currentBlockFeeSpentSats: "1234",
+      sessionFeeSpentSats: "1234",
+      lifetimeFeeSpentSats: "1234",
+      currentPublishDecision: "tx-confirmed-while-down",
+      note: "Mining is waiting for Bitcoin Core and the indexer to align.",
+    }),
+  );
+
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {
+      ...process.env,
+      COGCOIN_DISABLE_UPDATE_CHECK: "1",
+    },
+    now: () => {
+      nowUnixMs += 1;
+      return nowUnixMs;
+    },
+    signalSource: QUIET_SIGNAL_SOURCE,
+    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
+    createPrompter,
+    resolveWalletRuntimePaths: () => resolvePaths(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
+    ensureBuiltInMiningSetupIfNeeded: async () => true,
+    loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
+    openManagedIndexerMonitor: async () => createSequencedSyncMonitor(
+      [
+        createObservedIndexerStatus({
+          state: "catching-up",
+          coreBestHeight: 20,
+          coreBestHash: coreHash,
+          appliedTipHeight: 19,
+          appliedTipHash: "22".repeat(32),
+          snapshotSeq: "2",
+          backlogBlocks: 1,
+          cogcoinSyncHeight: 19,
+          cogcoinSyncTargetHeight: 20,
+        }),
+        createObservedIndexerStatus({
+          state: "synced",
+          coreBestHeight: 20,
+          coreBestHash: coreHash,
+          appliedTipHeight: 20,
+          appliedTipHash: coreHash,
+          snapshotSeq: "3",
+          backlogBlocks: 0,
+          cogcoinSyncHeight: 20,
+          cogcoinSyncTargetHeight: 20,
+        }),
+      ],
+      {
+        onBeforeStatus: async (index) => {
+          if (index === 1) {
+            observedAfterFirstPoll = await loadMiningRuntimeStatus(runtimePaths.miningStatusPath);
+          }
+        },
+      },
+    ) as any,
+    runForegroundMining: async () => {
+      runCalls += 1;
+    },
+  });
+
+  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine", "--progress", "none"]), context);
+
+  assert.equal(exitCode, 0);
+  assert.equal(stdout.read(), "");
+  assert.equal(runCalls, 1);
+  const intermediateStatus: Awaited<ReturnType<typeof loadMiningRuntimeStatus>> = observedAfterFirstPoll;
+  assert.notEqual(intermediateStatus, null);
+  assert.equal(intermediateStatus!.runMode, "foreground");
+  assert.equal(intermediateStatus!.indexerDaemonState, "catching-up");
+  assert.equal(intermediateStatus!.indexerHealth, "catching-up");
+  assert.equal(intermediateStatus!.currentPhase, "waiting-indexer");
+  assert.equal(intermediateStatus!.coreBestHeight, 20);
+  assert.equal(intermediateStatus!.indexerTipHeight, 19);
+  assert.equal(intermediateStatus!.tipsAligned, false);
+  assert.equal(intermediateStatus!.currentTxid, "aa".repeat(32));
+  assert.equal(intermediateStatus!.currentBlockFeeSpentSats, "1234");
+
+  const finalStatus = await loadMiningRuntimeStatus(runtimePaths.miningStatusPath);
+  assert.equal(finalStatus?.runMode, "foreground");
+  assert.equal(finalStatus?.indexerDaemonState, "synced");
+  assert.equal(finalStatus?.indexerHealth, "synced");
+  assert.equal(finalStatus?.currentPhase, "waiting");
+  assert.equal(finalStatus?.coreBestHeight, 20);
+  assert.equal(finalStatus?.indexerTipHeight, 20);
+  assert.equal(finalStatus?.tipsAligned, true);
+  assert.equal(finalStatus?.targetBlockHeight, 21);
+  assert.equal(finalStatus?.referencedBlockHashDisplay, coreHash);
+  assert.equal(finalStatus?.currentDomainName, "samplemine");
+  assert.equal(finalStatus?.currentSentenceDisplay, "Synthetic preflight status preserves the prior mining sentence.");
+  assert.equal(finalStatus?.currentPublishDecision, "tx-confirmed-while-down");
+  assert.equal(stderr.read(), "");
 });
 
 test("mine uses the real setup gate before preflight when provider config is absent", async (t) => {
@@ -567,6 +716,7 @@ test("mine reports a handled error and skips foreground mining when sync preflig
   const stdout = createStringWriter();
   const stderr = createStringWriter();
   const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-preflight-fail"));
+  const runtimePaths = resolvePaths();
   let runCalls = 0;
   const context = createDefaultContext({
     stdout: stdout.stream,
@@ -596,6 +746,88 @@ test("mine reports a handled error and skips foreground mining when sync preflig
   assert.equal(stdout.read(), "");
   assert.equal(runCalls, 0);
   assert.ok(stderr.read().length > 0);
+  const runtimeStatus = await loadMiningRuntimeStatus(runtimePaths.miningStatusPath);
+  assert.equal(runtimeStatus?.runMode, "stopped");
+  assert.equal(runtimeStatus?.currentPhase, "waiting-indexer");
+  assert.equal(runtimeStatus?.indexerHealth, "failed");
+  assert.equal(runtimeStatus?.lastError, "managed_bitcoind_protocol_error");
+  const events = await readMiningEvents({
+    eventsPath: runtimePaths.miningEventsPath,
+    all: true,
+  });
+  const runtimeError = events.find((event) => event.kind === "runtime-error") ?? null;
+  assert.equal(runtimeError?.message, "Mining preflight stopped because managed indexer readiness failed: managed_bitcoind_protocol_error");
+});
+
+test("mine preflight records background-follow recovery failures before surfacing the error", async (t) => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-preflight-background-follow-fail"));
+  const runtimePaths = resolvePaths();
+  let runCalls = 0;
+
+  await saveMiningRuntimeStatus(
+    runtimePaths.miningStatusPath,
+    createMiningRuntimeStatus({
+      walletRootId: "wallet-root",
+      runMode: "foreground",
+      currentPhase: "waiting-indexer",
+      currentDomainName: "samplemine",
+      currentTxid: "bb".repeat(32),
+    }),
+  );
+
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {
+      ...process.env,
+      COGCOIN_DISABLE_UPDATE_CHECK: "1",
+    },
+    now: () => 123_456,
+    signalSource: QUIET_SIGNAL_SOURCE,
+    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
+    createPrompter,
+    resolveWalletRuntimePaths: () => resolvePaths(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
+    ensureBuiltInMiningSetupIfNeeded: async () => true,
+    loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
+    openManagedIndexerMonitor: async () => {
+      throw new Error(INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED);
+    },
+    runForegroundMining: async () => {
+      runCalls += 1;
+    },
+  });
+
+  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine", "--progress", "none"]), context);
+
+  assert.notEqual(exitCode, 0);
+  assert.equal(stdout.read(), "");
+  assert.equal(runCalls, 0);
+  assert.match(stderr.read(), /managed indexer daemon could not recover automatic background follow/i);
+  const runtimeStatus = await loadMiningRuntimeStatus(runtimePaths.miningStatusPath);
+  assert.equal(runtimeStatus?.updatedAtUnixMs, 123_456);
+  assert.equal(runtimeStatus?.runMode, "stopped");
+  assert.equal(runtimeStatus?.currentPhase, "waiting-indexer");
+  assert.equal(runtimeStatus?.indexerDaemonState, "failed");
+  assert.equal(runtimeStatus?.indexerHealth, "failed");
+  assert.equal(runtimeStatus?.lastError, INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED);
+  assert.match(runtimeStatus?.note ?? "", /background follow could not recover/);
+  assert.equal(runtimeStatus?.currentDomainName, "samplemine");
+  assert.equal(runtimeStatus?.currentTxid, "bb".repeat(32));
+
+  const events = await readMiningEvents({
+    eventsPath: runtimePaths.miningEventsPath,
+    all: true,
+  });
+  const runtimeError = events.find((event) => event.kind === "runtime-error") ?? null;
+  assert.equal(runtimeError?.level, "error");
+  assert.equal(runtimeError?.message, "Mining preflight stopped because the managed indexer background follow could not recover.");
+  assert.equal(runtimeError?.timestampUnixMs, 123_456);
+  assert.equal(runtimeError?.reason, INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED);
+  assert.equal(runtimeError?.txid, "bb".repeat(32));
 });
 
 test("mine preflight uses the managed indexer monitor instead of the foreground managed client", async (t) => {

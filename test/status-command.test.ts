@@ -87,6 +87,7 @@ function createPassiveStatus(overrides: Partial<PassiveClientStatus> = {}): Pass
     indexer: {
       statusPath: null,
       present: false,
+      binaryVersion: null,
       state: null,
       processId: null,
       walletRootId: null,
@@ -239,6 +240,7 @@ test("passive status formatter renders rich sections and derived lag hints", () 
     indexer: {
       statusPath: "/tmp/indexer-status.json",
       present: true,
+      binaryVersion: "1.2.5",
       state: "catching-up",
       processId: 2345,
       walletRootId: "wallet-root",
@@ -440,6 +442,75 @@ test("passive status formatter does not apply foreground staleness to background
   assert.doesNotMatch(output, /no recent foreground heartbeat/);
 });
 
+test("passive status formatter marks older managed indexer binaries unhealthy", () => {
+  const output = formatStatusReport(createPassiveStatus({
+    indexer: {
+      statusPath: "/tmp/indexer-status.json",
+      present: true,
+      binaryVersion: "1.2.9",
+      state: "synced",
+      processId: 1234,
+      walletRootId: "wallet-root",
+      coreBestHeight: 950_064,
+      appliedTipHeight: 950_064,
+      appliedTipHash: "11".repeat(32),
+      heartbeatAtUnixMs: 2_000,
+      updatedAtUnixMs: 2_000,
+      lastError: null,
+      error: null,
+    },
+  }), "1.2.10", { nowUnixMs: TEST_NOW_UNIX_MS });
+
+  assert.match(output, /✗ Indexer: synced/);
+  assert.match(output, /✗ Indexer binary version: 1\.2\.9/);
+  assert.match(output, /✗ Indexer note: Managed indexer daemon binary is older than this CLI; the next managed attach should recycle it\./);
+  assert.match(output, /✓ Indexer lag: 0 blocks/);
+});
+
+test("passive status formatter keeps equal and newer managed indexer binaries healthy", () => {
+  const equalOutput = formatStatusReport(createPassiveStatus({
+    indexer: {
+      statusPath: "/tmp/indexer-status.json",
+      present: true,
+      binaryVersion: "1.2.10",
+      state: "synced",
+      processId: 1234,
+      walletRootId: "wallet-root",
+      coreBestHeight: 950_064,
+      appliedTipHeight: 950_064,
+      appliedTipHash: "11".repeat(32),
+      heartbeatAtUnixMs: 2_000,
+      updatedAtUnixMs: 2_000,
+      lastError: null,
+      error: null,
+    },
+  }), "1.2.10", { nowUnixMs: TEST_NOW_UNIX_MS });
+  const newerOutput = formatStatusReport(createPassiveStatus({
+    indexer: {
+      statusPath: "/tmp/indexer-status.json",
+      present: true,
+      binaryVersion: "1.3.0",
+      state: "synced",
+      processId: 1234,
+      walletRootId: "wallet-root",
+      coreBestHeight: 950_064,
+      appliedTipHeight: 950_064,
+      appliedTipHash: "11".repeat(32),
+      heartbeatAtUnixMs: 2_000,
+      updatedAtUnixMs: 2_000,
+      lastError: null,
+      error: null,
+    },
+  }), "1.2.10", { nowUnixMs: TEST_NOW_UNIX_MS });
+
+  assert.match(equalOutput, /✓ Indexer: synced/);
+  assert.match(equalOutput, /✓ Indexer binary version: 1\.2\.10/);
+  assert.doesNotMatch(equalOutput, /older than this CLI/);
+  assert.match(newerOutput, /✓ Indexer: synced/);
+  assert.match(newerOutput, /✓ Indexer binary version: 1\.3\.0/);
+  assert.doesNotMatch(newerOutput, /older than this CLI/);
+});
+
 test("passive status formatter surfaces corrupt runtime files and store errors", () => {
   const output = formatStatusReport(createPassiveStatus({
     storeInitialized: false,
@@ -460,6 +531,7 @@ test("passive status formatter surfaces corrupt runtime files and store errors",
     indexer: {
       statusPath: "/tmp/indexer-status.json",
       present: true,
+      binaryVersion: null,
       state: null,
       processId: null,
       walletRootId: null,

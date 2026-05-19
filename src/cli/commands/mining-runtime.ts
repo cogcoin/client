@@ -2,11 +2,16 @@ import { dirname } from "node:path";
 
 import { DEFAULT_SNAPSHOT_METADATA, resolveBootstrapPathsForTesting } from "../../bitcoind/bootstrap.js";
 import type { ManagedIndexerDaemonObservedStatus } from "../../bitcoind/types.js";
-import type { MiningRuntimeStatusV1 } from "../../wallet/mining/types.js";
 import {
   createEmptyMiningFollowVisualizerState,
   MiningFollowVisualizer,
 } from "../../wallet/mining/visualizer.js";
+import {
+  createMiningReadinessSnapshot,
+  isIndexerBackgroundFollowRecoveryFailure,
+  recordMiningIndexerRuntimeError,
+  recordMiningReadinessSnapshot,
+} from "../../wallet/mining/runtime-status-snapshots.js";
 import { createMiningStopRequestedError } from "../../wallet/mining/stop.js";
 import { resolveWalletRootIdFromLocalArtifacts } from "../../wallet/root-resolution.js";
 import { withInteractiveWalletSecretProvider } from "../../wallet/state/provider.js";
@@ -74,141 +79,33 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-function mapManagedIndexerStateToMiningState(
-  state: ManagedIndexerDaemonObservedStatus["state"] | null | undefined,
-): MiningRuntimeStatusV1["indexerDaemonState"] {
-  switch (state) {
-    case "starting":
-    case "catching-up":
-    case "reorging":
-    case "synced":
-    case "failed":
-    case "schema-mismatch":
-    case "service-version-mismatch":
-      return state;
-    case "stopping":
-      return "starting";
-    default:
-      return "unavailable";
-  }
+function formatUnknownError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-function mapManagedIndexerHealth(
-  state: ManagedIndexerDaemonObservedStatus["state"] | null | undefined,
-): MiningRuntimeStatusV1["indexerHealth"] {
-  switch (state) {
-    case "synced":
-      return "synced";
-    case "catching-up":
-      return "catching-up";
-    case "reorging":
-      return "reorging";
-    case "starting":
-    case "stopping":
-      return "starting";
-    case "failed":
-      return "failed";
-    case "schema-mismatch":
-      return "schema-mismatch";
-    case "service-version-mismatch":
-      return "service-version-mismatch";
-    default:
-      return "unavailable";
-  }
-}
-
-function createMiningReadinessSnapshot(options: {
+async function recordManagedMiningReadinessFailure(options: {
+  context: RequiredCliRunnerContext;
+  runtimePaths: ReturnType<RequiredCliRunnerContext["resolveWalletRuntimePaths"]>;
   walletRootId: string | null;
-  observedStatus: ManagedIndexerDaemonObservedStatus | null;
-}): MiningRuntimeStatusV1 {
-  const status = options.observedStatus;
-  const bitcoindReachable = status?.rpcReachable === true;
-  const indexerTipAligned = status === null
-    ? null
-    : status.coreBestHeight !== null
-      && status.appliedTipHeight !== null
-      && status.appliedTipHeight === status.coreBestHeight
-      && (
-        status.coreBestHash === null
-        || status.appliedTipHash === null
-        || status.appliedTipHash === status.coreBestHash
-      );
-
-  return {
-    schemaVersion: 1,
+  error: unknown;
+}): Promise<void> {
+  const errorMessage = formatUnknownError(options.error);
+  const eventMessage = isIndexerBackgroundFollowRecoveryFailure(options.error)
+    ? "Mining preflight stopped because the managed indexer background follow could not recover."
+    : `Mining preflight stopped because managed indexer readiness failed: ${errorMessage}`;
+  await recordMiningIndexerRuntimeError({
+    paths: options.runtimePaths,
     walletRootId: options.walletRootId,
-    workerApiVersion: null,
-    workerBinaryVersion: null,
-    workerBuildId: null,
-    updatedAtUnixMs: status?.updatedAtUnixMs ?? Date.now(),
-    runMode: "foreground",
-    backgroundWorkerPid: null,
-    backgroundWorkerRunId: null,
-    backgroundWorkerHeartbeatAtUnixMs: null,
-    backgroundWorkerHealth: null,
-    indexerDaemonState: mapManagedIndexerStateToMiningState(status?.state),
-    indexerDaemonInstanceId: status?.daemonInstanceId ?? null,
-    indexerSnapshotSeq: status?.snapshotSeq ?? null,
-    indexerSnapshotOpenedAtUnixMs: null,
-    indexerTruthSource: "none",
-    indexerHeartbeatAtUnixMs: status?.heartbeatAtUnixMs ?? null,
-    coreBestHeight: status?.coreBestHeight ?? null,
-    coreBestHash: status?.coreBestHash ?? null,
-    indexerTipHeight: status?.appliedTipHeight ?? null,
-    indexerTipHash: status?.appliedTipHash ?? null,
-    indexerReorgDepth: status?.reorgDepth ?? null,
-    indexerTipAligned,
-    corePublishState: bitcoindReachable ? "healthy" : null,
-    providerState: null,
-    lastSuspendDetectedAtUnixMs: null,
-    reconnectSettledUntilUnixMs: null,
-    tipSettledUntilUnixMs: null,
-    miningState: "idle",
-    currentPhase: "waiting-indexer",
-    currentPublishState: "none",
-    targetBlockHeight: status?.coreBestHeight === null || status?.coreBestHeight === undefined
-      ? null
-      : status.coreBestHeight + 1,
-    referencedBlockHashDisplay: null,
-    currentDomainId: null,
-    currentDomainName: null,
-    currentSentenceDisplay: null,
-    currentCanonicalBlend: null,
-    currentTxid: null,
-    currentWtxid: null,
-    livePublishInMempool: null,
-    currentFeeRateSatVb: null,
-    currentAbsoluteFeeSats: null,
-    currentBlockFeeSpentSats: "0",
-    sessionFeeSpentSats: "0",
-    lifetimeFeeSpentSats: "0",
-    sameDomainCompetitorSuppressed: null,
-    higherRankedCompetitorDomainCount: null,
-    dedupedCompetitorDomainCount: null,
-    competitivenessGateIndeterminate: null,
-    competitivenessGateReason: null,
-    competitivenessGateDiagnostics: null,
-    mempoolSequenceCacheStatus: null,
-    currentPublishDecision: null,
-    lastMempoolSequence: null,
-    lastCompetitivenessGateAtUnixMs: null,
-    pauseReason: null,
-    providerConfigured: true,
-    providerKind: null,
-    bitcoindHealth: bitcoindReachable ? "ready" : status === null ? "starting" : "unavailable",
-    bitcoindServiceState: bitcoindReachable ? "ready" : status === null ? "starting" : null,
-    bitcoindReplicaStatus: "not-proven",
-    nodeHealth: bitcoindReachable ? "synced" : status === null ? "starting" : "unavailable",
-    indexerHealth: mapManagedIndexerHealth(status?.state),
-    tipsAligned: indexerTipAligned,
-    lastEventAtUnixMs: null,
-    lastError: status?.lastError ?? null,
-    note: null,
-  };
+    nowUnixMs: options.context.now(),
+    errorMessage,
+    eventMessage,
+  }).catch(() => undefined);
 }
 
 async function pollManagedMiningReadinessWithVisualizer(options: {
   monitor: Awaited<ReturnType<RequiredCliRunnerContext["openManagedIndexerMonitor"]>>;
+  context: RequiredCliRunnerContext;
+  runtimePaths: ReturnType<RequiredCliRunnerContext["resolveWalletRuntimePaths"]>;
   walletRootId: string;
   visualizer: MiningFollowVisualizer;
   signal?: AbortSignal;
@@ -222,11 +119,14 @@ async function pollManagedMiningReadinessWithVisualizer(options: {
     }
 
     const status = await options.monitor.getStatus();
+    const snapshot = await recordMiningReadinessSnapshot({
+      paths: options.runtimePaths,
+      walletRootId: options.walletRootId,
+      observedStatus: status,
+      nowUnixMs: options.context.now(),
+    });
     options.visualizer.update(
-      createMiningReadinessSnapshot({
-        walletRootId: options.walletRootId,
-        observedStatus: status,
-      }),
+      snapshot,
       EMPTY_MINING_VISUALIZER_STATE,
     );
     assertManagedIndexerStatusRecoverable(status);
@@ -256,57 +156,69 @@ async function syncManagedMiningReadinessWithVisualizer(options: {
     loadRawWalletStateEnvelope: options.context.loadRawWalletStateEnvelope,
   });
 
-  options.visualizer.update(
-    createMiningReadinessSnapshot({
-      walletRootId: walletRoot.walletRootId,
-      observedStatus: null,
-    }),
-    EMPTY_MINING_VISUALIZER_STATE,
-  );
-
-  await options.context.ensureDirectory(dirname(options.databasePath));
-  monitor = await options.context.openManagedIndexerMonitor({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
+  const initialSnapshot = await recordMiningReadinessSnapshot({
+    paths: options.runtimePaths,
     walletRootId: walletRoot.walletRootId,
-    expectedBinaryVersion: options.expectedBinaryVersion,
+    observedStatus: null,
+    nowUnixMs: options.context.now(),
   });
-
-  const abortController = new AbortController();
-  const stopWatcher = createCloseSignalWatcher({
-    signalSource: options.context.signalSource,
-    stderr: options.context.stderr,
-    closeable: {
-      close: async () => {
-        abortController.abort(new Error("managed_indexer_preflight_aborted"));
-        await monitor?.close().catch(() => undefined);
-      },
-    },
-    forceExit: options.context.forceExit,
-    firstMessage: "Stopping managed mining readiness observation...",
-    successMessage: "Stopped observing managed mining readiness.",
-    failureMessage: "Managed mining readiness observation cleanup failed.",
-  });
+  options.visualizer.update(initialSnapshot, EMPTY_MINING_VISUALIZER_STATE);
 
   try {
-    const syncOutcome = await waitForCompletionOrStop(
-      pollManagedMiningReadinessWithVisualizer({
-        monitor,
-        walletRootId: walletRoot.walletRootId,
-        visualizer: options.visualizer,
-        signal: abortController.signal,
-      }),
-      stopWatcher,
-    );
+    await options.context.ensureDirectory(dirname(options.databasePath));
+    monitor = await options.context.openManagedIndexerMonitor({
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      walletRootId: walletRoot.walletRootId,
+      expectedBinaryVersion: options.expectedBinaryVersion,
+    });
 
-    if (syncOutcome.kind === "stopped") {
-      return syncOutcome.code;
+    const abortController = new AbortController();
+    const stopWatcher = createCloseSignalWatcher({
+      signalSource: options.context.signalSource,
+      stderr: options.context.stderr,
+      closeable: {
+        close: async () => {
+          abortController.abort(new Error("managed_indexer_preflight_aborted"));
+          await monitor?.close().catch(() => undefined);
+        },
+      },
+      forceExit: options.context.forceExit,
+      firstMessage: "Stopping managed mining readiness observation...",
+      successMessage: "Stopped observing managed mining readiness.",
+      failureMessage: "Managed mining readiness observation cleanup failed.",
+    });
+
+    try {
+      const syncOutcome = await waitForCompletionOrStop(
+        pollManagedMiningReadinessWithVisualizer({
+          monitor,
+          context: options.context,
+          runtimePaths: options.runtimePaths,
+          walletRootId: walletRoot.walletRootId,
+          visualizer: options.visualizer,
+          signal: abortController.signal,
+        }),
+        stopWatcher,
+      );
+
+      if (syncOutcome.kind === "stopped") {
+        return syncOutcome.code;
+      }
+
+      return null;
+    } finally {
+      stopWatcher.cleanup();
+      await monitor?.close().catch(() => undefined);
     }
-
-    return null;
-  } finally {
-    stopWatcher.cleanup();
-    await monitor?.close().catch(() => undefined);
+  } catch (error) {
+    await recordManagedMiningReadinessFailure({
+      context: options.context,
+      runtimePaths: options.runtimePaths,
+      walletRootId: walletRoot.walletRootId,
+      error,
+    });
+    throw error;
   }
 }
 
@@ -329,63 +241,88 @@ async function syncManagedMiningReadiness(options: {
     loadRawWalletStateEnvelope: options.context.loadRawWalletStateEnvelope,
   });
 
-  await options.context.ensureDirectory(dirname(options.databasePath));
-  monitor = await options.context.openManagedIndexerMonitor({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
+  await recordMiningReadinessSnapshot({
+    paths: options.runtimePaths,
     walletRootId: walletRoot.walletRootId,
-    expectedBinaryVersion: options.expectedBinaryVersion,
-  });
-  observer = new ManagedIndexerProgressObserver({
-    quoteStatePath: resolveBootstrapPathsForTesting(
-      options.dataDir,
-      DEFAULT_SNAPSHOT_METADATA,
-    ).quoteStatePath,
-    stream: options.context.stderr,
-    progressOutput: options.parsed.progressOutput,
-    onProgress: ttyProgressActive ? undefined : createSyncProgressReporter({
-      progressOutput: options.parsed.progressOutput,
-      write: (line) => {
-        writeLine(options.context.stderr, line);
-      },
-    }),
-  });
-  const abortController = new AbortController();
-  const stopWatcher = createCloseSignalWatcher({
-    signalSource: options.context.signalSource,
-    stderr: options.context.stderr,
-    closeable: {
-      close: async () => {
-        abortController.abort(new Error("managed_indexer_preflight_aborted"));
-        await observer?.close().catch(() => undefined);
-        await monitor?.close().catch(() => undefined);
-      },
-    },
-    forceExit: options.context.forceExit,
-    firstMessage: "Stopping managed mining readiness observation...",
-    successMessage: "Stopped observing managed mining readiness.",
-    failureMessage: "Managed mining readiness observation cleanup failed.",
+    observedStatus: null,
+    nowUnixMs: options.context.now(),
   });
 
   try {
-    const syncOutcome = await waitForCompletionOrStop(
-      pollManagedIndexerUntilCaughtUp({
-        monitor,
-        observer,
-        signal: abortController.signal,
+    await options.context.ensureDirectory(dirname(options.databasePath));
+    monitor = await options.context.openManagedIndexerMonitor({
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      walletRootId: walletRoot.walletRootId,
+      expectedBinaryVersion: options.expectedBinaryVersion,
+    });
+    observer = new ManagedIndexerProgressObserver({
+      quoteStatePath: resolveBootstrapPathsForTesting(
+        options.dataDir,
+        DEFAULT_SNAPSHOT_METADATA,
+      ).quoteStatePath,
+      stream: options.context.stderr,
+      progressOutput: options.parsed.progressOutput,
+      onProgress: ttyProgressActive ? undefined : createSyncProgressReporter({
+        progressOutput: options.parsed.progressOutput,
+        write: (line) => {
+          writeLine(options.context.stderr, line);
+        },
       }),
-      stopWatcher,
-    );
+    });
+    const abortController = new AbortController();
+    const stopWatcher = createCloseSignalWatcher({
+      signalSource: options.context.signalSource,
+      stderr: options.context.stderr,
+      closeable: {
+        close: async () => {
+          abortController.abort(new Error("managed_indexer_preflight_aborted"));
+          await observer?.close().catch(() => undefined);
+          await monitor?.close().catch(() => undefined);
+        },
+      },
+      forceExit: options.context.forceExit,
+      firstMessage: "Stopping managed mining readiness observation...",
+      successMessage: "Stopped observing managed mining readiness.",
+      failureMessage: "Managed mining readiness observation cleanup failed.",
+    });
 
-    if (syncOutcome.kind === "stopped") {
-      return syncOutcome.code;
+    try {
+      const syncOutcome = await waitForCompletionOrStop(
+        pollManagedIndexerUntilCaughtUp({
+          monitor,
+          observer,
+          signal: abortController.signal,
+          onStatus: async (status) => {
+            await recordMiningReadinessSnapshot({
+              paths: options.runtimePaths,
+              walletRootId: walletRoot.walletRootId,
+              observedStatus: status,
+              nowUnixMs: options.context.now(),
+            });
+          },
+        }),
+        stopWatcher,
+      );
+
+      if (syncOutcome.kind === "stopped") {
+        return syncOutcome.code;
+      }
+
+      return null;
+    } finally {
+      stopWatcher.cleanup();
+      await observer?.close().catch(() => undefined);
+      await monitor?.close().catch(() => undefined);
     }
-
-    return null;
-  } finally {
-    stopWatcher.cleanup();
-    await observer?.close().catch(() => undefined);
-    await monitor?.close().catch(() => undefined);
+  } catch (error) {
+    await recordManagedMiningReadinessFailure({
+      context: options.context,
+      runtimePaths: options.runtimePaths,
+      walletRootId: walletRoot.walletRootId,
+      error,
+    });
+    throw error;
   }
 }
 
@@ -464,6 +401,7 @@ export async function runMiningRuntimeCommand(
             createMiningReadinessSnapshot({
               walletRootId: null,
               observedStatus: null,
+              nowUnixMs: context.now(),
             }),
             EMPTY_MINING_VISUALIZER_STATE,
           );

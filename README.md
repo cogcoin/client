@@ -1,6 +1,6 @@
 # `@cogcoin/client`
 
-`@cogcoin/client@1.2.8` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
+`@cogcoin/client@1.2.10` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
 
 Use Node 22 or newer.
 
@@ -125,6 +125,14 @@ The published package depends on:
 - `zeromq@6.5.0`
 
 `@cogcoin/vectors@1.0.1` is kept as a repository development dependency for conformance tests and is not part of the published runtime dependency surface.
+
+## Upgrade Notes For `1.2.10`
+
+`@cogcoin/client@1.2.10` keeps mining runtime status fresh while `cogcoin mine` is waiting for managed indexer preflight. Preflight now writes foreground mining snapshots before and during indexer polling, records stopped/error snapshots for managed-indexer recovery failures, and preserves useful prior mining context for diagnostics. Passive `cogcoin status` also shows the managed indexer daemon binary version and flags daemon versions older than the CLI so upgrade/recycle drift is visible.
+
+## Upgrade Notes For `1.2.9`
+
+`@cogcoin/client@1.2.9` marks stale foreground mining runtime status files as unhealthy in passive `cogcoin status` and writes a fail-safe stopped mining snapshot when foreground mining exits because the managed indexer background follow could not recover.
 
 ## Upgrade Notes For `1.2.8`
 

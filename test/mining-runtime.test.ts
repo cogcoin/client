@@ -4070,7 +4070,7 @@ test("pre-publish status on a new tip shows the pending candidate instead of sta
   const state = createWalletState({
     miningState: createMiningState({
       currentPublishState: "in-mempool",
-      currentDomain: "mitfrog",
+      currentDomain: "samplemine",
       currentDomainId: 40,
       currentTxid: "aa".repeat(32),
       currentWtxid: "bb".repeat(32),
@@ -4087,7 +4087,7 @@ test("pre-publish status on a new tip shows the pending candidate instead of sta
   });
   const candidate = createTestMiningCandidate({
     domainId: 40,
-    domainName: "mitfrog",
+    domainName: "samplemine",
     sentence: "new tip sentence",
     canonicalBlend: 384387886n,
     referencedBlockHashDisplay: "22".repeat(32),
@@ -4108,7 +4108,7 @@ test("pre-publish status on a new tip shows the pending candidate instead of sta
   assert.equal(snapshot.targetBlockHeight, 945637);
   assert.equal(snapshot.referencedBlockHashDisplay, "22".repeat(32));
   assert.equal(snapshot.currentDomainId, 40);
-  assert.equal(snapshot.currentDomainName, "mitfrog");
+  assert.equal(snapshot.currentDomainName, "samplemine");
   assert.equal(snapshot.currentSentenceDisplay, "new tip sentence");
   assert.equal(snapshot.currentCanonicalBlend, "384387886");
   assert.equal(snapshot.currentPublishState, "none");

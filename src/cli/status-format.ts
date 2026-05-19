@@ -1,8 +1,11 @@
 import type { PassiveClientStatus } from "../passive-status.js";
+import { compareSemver } from "../semver.js";
 
 const FOREGROUND_MINING_STATUS_STALE_MS = 5 * 60 * 1000;
 const FOREGROUND_MINING_STATUS_STALE_NOTE =
   "Mining runtime status is stale; no recent foreground heartbeat was written. Restart mining or inspect mine log.";
+const STALE_INDEXER_BINARY_NOTE =
+  "Managed indexer daemon binary is older than this CLI; the next managed attach should recycle it.";
 
 interface StatusRow {
   readonly ok: boolean;
@@ -146,7 +149,16 @@ function buildManagedBitcoindRows(status: PassiveClientStatus): StatusRow[] {
   ];
 }
 
-function buildIndexerRows(status: PassiveClientStatus): StatusRow[] {
+function isIndexerBinaryVersionStale(status: PassiveClientStatus, version: string): boolean {
+  if (status.indexer.binaryVersion === null) {
+    return false;
+  }
+
+  const comparison = compareSemver(status.indexer.binaryVersion, version);
+  return comparison !== null && comparison < 0;
+}
+
+function buildIndexerRows(status: PassiveClientStatus, version: string): StatusRow[] {
   if (status.indexer.error !== null) {
     return [
       row(false, "Indexer: corrupt"),
@@ -159,10 +171,12 @@ function buildIndexerRows(status: PassiveClientStatus): StatusRow[] {
     return [row(false, "Indexer: unavailable")];
   }
 
+  const indexerBinaryStale = isIndexerBinaryVersionStale(status, version);
   const rows = [
-    row(status.indexer.state === "synced", `Indexer: ${formatValue(status.indexer.state)}`),
+    row(status.indexer.state === "synced" && !indexerBinaryStale, `Indexer: ${formatValue(status.indexer.state)}`),
     row(status.indexer.processId !== null, `Indexer pid: ${formatValue(status.indexer.processId)}`),
     row(status.indexer.walletRootId !== null, `Indexer wallet root: ${formatValue(status.indexer.walletRootId)}`),
+    row(!indexerBinaryStale, `Indexer binary version: ${formatValue(status.indexer.binaryVersion)}`),
     row(status.indexer.coreBestHeight !== null, `Indexer core best height: ${formatValue(status.indexer.coreBestHeight)}`),
     row(status.indexer.appliedTipHeight !== null, `Indexer applied tip height: ${formatValue(status.indexer.appliedTipHeight)}`),
     row(status.indexer.appliedTipHash !== null, `Indexer applied tip hash: ${formatValue(status.indexer.appliedTipHash)}`),
@@ -170,6 +184,10 @@ function buildIndexerRows(status: PassiveClientStatus): StatusRow[] {
     row(status.indexer.updatedAtUnixMs !== null, `Indexer updated: ${formatValue(status.indexer.updatedAtUnixMs)}`),
     row(status.indexer.lastError === null, `Indexer last error: ${formatValue(status.indexer.lastError)}`),
   ];
+
+  if (indexerBinaryStale) {
+    rows.push(row(false, `Indexer note: ${STALE_INDEXER_BINARY_NOTE}`));
+  }
 
   if (status.indexer.coreBestHeight !== null && status.indexer.appliedTipHeight !== null) {
     const lag = Math.max(0, status.indexer.coreBestHeight - status.indexer.appliedTipHeight);
@@ -179,10 +197,10 @@ function buildIndexerRows(status: PassiveClientStatus): StatusRow[] {
   return rows;
 }
 
-function buildManagedServicesRows(status: PassiveClientStatus): StatusRow[] {
+function buildManagedServicesRows(status: PassiveClientStatus, version: string): StatusRow[] {
   return [
     ...buildManagedBitcoindRows(status),
-    ...buildIndexerRows(status),
+    ...buildIndexerRows(status, version),
   ];
 }
 
@@ -270,7 +288,7 @@ export function formatStatusReport(
     formatSection("Wallet", buildWalletRows(status)),
     formatSection("Local Store", buildLocalStoreRows(status)),
     formatSection("Bootstrap", buildBootstrapRows(status)),
-    formatSection("Managed Services", buildManagedServicesRows(status)),
+    formatSection("Managed Services", buildManagedServicesRows(status, version)),
     formatSection("Mining", buildMiningRows(status, nowUnixMs)),
     formatSection("Passive Mode", buildPassiveModeRows()),
     "Run cogcoin status --live for RPC-backed balance and full service verification.",

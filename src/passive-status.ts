@@ -64,6 +64,7 @@ export interface PassiveManagedBitcoindStatus {
 export interface PassiveIndexerStatus {
   statusPath: string | null;
   present: boolean;
+  binaryVersion: string | null;
   state: string | null;
   processId: number | null;
   walletRootId: string | null;
@@ -260,6 +261,7 @@ function emptyIndexerStatus(
   return {
     statusPath,
     present,
+    binaryVersion: null,
     state: null,
     processId: null,
     walletRootId: null,
@@ -353,6 +355,7 @@ async function inspectIndexerStatus(statusPath: string | null): Promise<PassiveI
   return {
     statusPath,
     present: true,
+    binaryVersion: result.status.binaryVersion ?? null,
     state: result.status.state ?? null,
     processId: result.status.processId ?? null,
     walletRootId: result.status.walletRootId ?? null,

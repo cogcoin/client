@@ -153,6 +153,7 @@ export class ManagedProgressController {
     this.#ticker = this.#clock.setInterval(() => {
       void this.#refresh();
     }, this.#renderIntervalMs);
+    this.#ticker.unref?.();
   }
 
   async close(): Promise<void> {

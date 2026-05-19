@@ -191,6 +191,7 @@ export async function pollManagedIndexerUntilCaughtUp(options: {
   observer: ManagedIndexerProgressObserver;
   signal?: AbortSignal;
   pollIntervalMs?: number;
+  onStatus?: (status: ManagedIndexerDaemonObservedStatus) => void | Promise<void>;
 }): Promise<ManagedIndexerDaemonObservedStatus> {
   while (true) {
     if (options.signal?.aborted) {
@@ -200,6 +201,7 @@ export async function pollManagedIndexerUntilCaughtUp(options: {
     }
 
     const status = await options.monitor.getStatus();
+    await options.onStatus?.(status);
     await options.observer.applyStatus(status);
     assertManagedIndexerStatusRecoverable(status);
 
