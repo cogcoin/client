@@ -38,7 +38,7 @@ import type { IndexerDaemonRuntimeState, IndexerSnapshotHandle, IndexerSnapshotP
 const SNAPSHOT_TTL_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 1_000;
 const FORCE_RESUME_ERROR_ENV = "COGCOIN_TEST_INDEXER_DAEMON_FORCE_RESUME_ERROR";
-const BACKGROUND_FOLLOW_RESUME_TIMEOUT_MS = 30_000;
+const BACKGROUND_FOLLOW_RESUME_TIMEOUT_MS = 120_000;
 const BACKGROUND_FOLLOW_RESUME_TIMEOUT_ERROR = "indexer_daemon_background_follow_resume_timeout";
 
 export interface ManagedIndexerDaemonRuntime {

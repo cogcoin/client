@@ -22,7 +22,16 @@ export function createIndexerDaemonServer(
   return net.createServer((socket) => {
     let buffer = "";
 
+    socket.on("error", () => {
+      // Clients can time out or close while a long-running request is still
+      // preparing its response. That should not crash the daemon.
+    });
+
     const writeResponse = (response: DaemonResponse) => {
+      if (socket.destroyed || !socket.writable) {
+        return;
+      }
+
       socket.write(`${JSON.stringify(response)}\n`);
     };
 

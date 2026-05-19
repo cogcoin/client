@@ -20,6 +20,14 @@ function formatIndexerStartupDetail(error: unknown): string | null {
     : `Startup log: ${logPath}. Last output: ${tail}`;
 }
 
+function getErrorCauseMessage(error: unknown): string | null {
+  if (!(error instanceof Error) || !(error.cause instanceof Error)) {
+    return null;
+  }
+
+  return error.cause.message;
+}
+
 export const serviceErrorRules: readonly CliErrorPresentationRule[] = [
   ({ errorCode, error }) => {
     if (errorCode.endsWith("_requires_tty") && errorCode !== "cli_update_requires_tty") {
@@ -82,10 +90,15 @@ export const serviceErrorRules: readonly CliErrorPresentationRule[] = [
     }
 
     if (errorCode === "indexer_daemon_background_follow_recovery_failed") {
+      const causeMessage = getErrorCauseMessage(error);
+      const why = causeMessage === null
+        ? "Cogcoin tried to resume or restart the compatible managed indexer daemon, but it still failed to enter background follow."
+        : `Cogcoin tried to resume or restart the compatible managed indexer daemon, but background follow failed with: ${causeMessage}.`;
+
       return {
         what: "The managed indexer daemon could not recover automatic background follow.",
-        why: "Cogcoin tried to resume or restart the compatible managed indexer daemon, but it still failed to enter background follow.",
-        next: "Run `cogcoin repair` if this persists, then retry.",
+        why,
+        next: "Check `cogcoin status` for the Indexer last error and inspect the managed indexer daemon log, then rerun `cogcoin repair` or the original command after addressing that error.",
       };
     }
 

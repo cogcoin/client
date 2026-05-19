@@ -108,6 +108,13 @@ test("indexer daemon startup diagnostics get actionable CLI presentation", () =>
       logTail: "still waiting for socket",
     }),
   );
+  const backgroundFollowFailed = createCliErrorPresentation(
+    "indexer_daemon_background_follow_recovery_failed",
+    "indexer_daemon_background_follow_recovery_failed",
+    new Error("indexer_daemon_background_follow_recovery_failed", {
+      cause: new Error("indexer_daemon_background_follow_resume_timeout"),
+    }),
+  );
 
   assert.equal(startupFailed?.what, "The managed indexer daemon exited before it opened its local IPC socket.");
   assert.match(startupFailed?.why ?? "", /Startup log: \/tmp\/cogcoin-indexer\.log/);
@@ -116,4 +123,7 @@ test("indexer daemon startup diagnostics get actionable CLI presentation", () =>
   assert.equal(nativeFailed?.what, "The managed indexer daemon could not load its SQLite native module.");
   assert.match(nativeFailed?.why ?? "", /active Node runtime/);
   assert.match(nativeFailed?.next ?? "", /npm rebuild better-sqlite3 zeromq/);
+  assert.equal(backgroundFollowFailed?.what, "The managed indexer daemon could not recover automatic background follow.");
+  assert.match(backgroundFollowFailed?.why ?? "", /indexer_daemon_background_follow_resume_timeout/);
+  assert.match(backgroundFollowFailed?.next ?? "", /cogcoin status/);
 });

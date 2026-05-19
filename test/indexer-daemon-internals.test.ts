@@ -476,6 +476,62 @@ test("createIndexerDaemonServer returns explicit invalid-json and unknown-method
   }
 });
 
+test("createIndexerDaemonServer ignores closed sockets when long requests finish", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "idx-sock-close");
+  const socketPath = join(homeDirectory, "i.sock");
+  let resolveResumeStarted: (() => void) | null = null;
+  const resumeControl: { finish: (() => void) | null } = { finish: null };
+  const resumeStarted = new Promise<void>((resolve) => {
+    resolveResumeStarted = resolve;
+  });
+  const server = createIndexerDaemonServer({
+    getStatus: () => createManagedIndexerDaemonStatus("wallet-root-test"),
+    openSnapshot: async () => createSnapshotHandleFixture(),
+    readSnapshot: async () => createSnapshotPayloadFixture(),
+    closeSnapshot: async () => undefined,
+    resumeBackgroundFollow: async () => {
+      resolveResumeStarted?.();
+      await new Promise<void>((resolve) => {
+        resumeControl.finish = resolve;
+      });
+    },
+  });
+
+  try {
+    await listenServer(server, socketPath);
+    const socket = net.createConnection(socketPath);
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write(`${JSON.stringify({
+      id: "resume-1",
+      method: "ResumeBackgroundFollow",
+    })}\n`);
+    await resumeStarted;
+    socket.destroy();
+    const finishResume = resumeControl.finish;
+    if (finishResume === null) {
+      throw new Error("resume finisher was not captured");
+    }
+    finishResume();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const response = JSON.parse(await sendRawSocketLine(socketPath, `${JSON.stringify({
+      id: "status-1",
+      method: "GetStatus",
+    })}\n`)) as {
+      id: string;
+      ok: boolean;
+    };
+
+    assert.equal(response.id, "status-1");
+    assert.equal(response.ok, true);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("createIndexerDaemonClient matches request ids and times out when a daemon stays silent", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-indexer-client-owner");
   const socketPath = join(homeDirectory, "indexer.sock");

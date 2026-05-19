@@ -19,7 +19,7 @@ import type {
 } from "./types.js";
 
 const INDEXER_DAEMON_REQUEST_TIMEOUT_MS = 15_000;
-const INDEXER_DAEMON_RESUME_BACKGROUND_FOLLOW_REQUEST_TIMEOUT_MS = 35_000;
+const INDEXER_DAEMON_RESUME_BACKGROUND_FOLLOW_REQUEST_TIMEOUT_MS = 125_000;
 
 interface IndexerDaemonClientCloseOptions {
   serviceLifetime: ManagedIndexerDaemonServiceLifetime;
