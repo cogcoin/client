@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -50,6 +51,8 @@ interface MiningLoopRunnerOptions {
   provider: WalletSecretProvider;
   paths: WalletRuntimePaths;
   runMode: "foreground" | "background";
+  foregroundPid?: number | null;
+  foregroundRunId?: string | null;
   backgroundWorkerPid: number | null;
   backgroundWorkerRunId: string | null;
   signal?: AbortSignal;
@@ -261,12 +264,13 @@ export async function takeOverMiningRuntime(options: {
   const generationActivity = await readMiningGenerationActivity(options.paths).catch(() => null);
   const shutdownGraceMs = options.shutdownGraceMs ?? MINING_SHUTDOWN_GRACE_MS;
   const controlLockPid = normalizeMiningPid(controlLockMetadata?.processId);
+  const foregroundPid = normalizeMiningPid(snapshot?.foregroundPid);
   const backgroundWorkerPid = normalizeMiningPid(snapshot?.backgroundWorkerPid);
   const generationOwnerPid = normalizeMiningPid(generationActivity?.generationOwnerPid);
   const terminatedPids: number[] = [];
   const discoveredPids = new Set<number>();
 
-  for (const pid of [controlLockPid, backgroundWorkerPid, generationOwnerPid]) {
+  for (const pid of [controlLockPid, foregroundPid, backgroundWorkerPid, generationOwnerPid]) {
     if (
       pid === null
       || pid === deps.processPid
@@ -394,6 +398,7 @@ export async function runForegroundMining(options: {
   const deps = resolveSupervisorDependencies(options.deps);
   const shutdownGraceMs = options.shutdownGraceMs ?? MINING_SHUTDOWN_GRACE_MS;
   const usesExternalSignal = options.signal !== undefined;
+  const foregroundRunId = randomUUID();
   let visualizer: MiningFollowVisualizer | null = options.visualizer ?? null;
   const ownsVisualizer = visualizer === null;
   const destroyClientPasswordSessions = createOneShotClientPasswordSessionDestroyer();
@@ -470,6 +475,8 @@ export async function runForegroundMining(options: {
           provider: options.runtime.provider,
           paths: options.runtime.paths,
           runMode: "foreground",
+          foregroundPid: deps.processPid,
+          foregroundRunId,
           backgroundWorkerPid: null,
           backgroundWorkerRunId: null,
           signal: abortController.signal,
@@ -498,6 +505,8 @@ export async function runForegroundMining(options: {
         provider: options.runtime.provider,
         paths: options.runtime.paths,
         runMode: "foreground",
+        foregroundPid: null,
+        foregroundRunId: null,
         backgroundWorkerPid: null,
         backgroundWorkerRunId: null,
         note: "Foreground mining stopped cleanly.",

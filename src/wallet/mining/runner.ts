@@ -60,7 +60,7 @@ import type {
   WalletStateV1,
 } from "../types.js";
 import { serializeMine } from "../cogop/index.js";
-import { appendMiningEvent } from "./runtime-artifacts.js";
+import { appendMiningEvent, saveForegroundMiningHeartbeatStatus } from "./runtime-artifacts.js";
 import { loadClientConfig } from "./config.js";
 import {
   MINING_LOOP_INTERVAL_MS,
@@ -368,6 +368,68 @@ function createMiningLoopState(): MiningLoopState {
   return createMiningRuntimeLoopState();
 }
 
+function resolveMiningRunId(options: {
+  runMode: "foreground" | "background";
+  foregroundRunId: string | null;
+  backgroundWorkerRunId: string | null;
+}): string | null {
+  return options.runMode === "foreground"
+    ? options.foregroundRunId
+    : options.backgroundWorkerRunId;
+}
+
+function createForegroundMiningLivenessOverrides(options: {
+  runMode: "foreground" | "background";
+  foregroundPid: number | null;
+  foregroundRunId: string | null;
+  nowUnixMs: number;
+}): Pick<MiningRuntimeStatusOverrides, "foregroundPid" | "foregroundRunId" | "foregroundHeartbeatAtUnixMs"> {
+  if (options.runMode !== "foreground" || options.foregroundRunId === null || options.foregroundPid === null) {
+    return {
+      foregroundPid: null,
+      foregroundRunId: null,
+      foregroundHeartbeatAtUnixMs: null,
+    };
+  }
+
+  return {
+    foregroundPid: options.foregroundPid,
+    foregroundRunId: options.foregroundRunId,
+    foregroundHeartbeatAtUnixMs: options.nowUnixMs,
+  };
+}
+
+function startForegroundMiningStatusHeartbeat(options: {
+  paths: WalletRuntimePaths;
+  runMode: "foreground" | "background";
+  foregroundPid: number | null;
+  foregroundRunId: string | null;
+  intervalMs: number;
+  nowUnixMs: () => number;
+}): () => void {
+  if (options.runMode !== "foreground" || options.foregroundRunId === null || options.foregroundPid === null) {
+    return () => undefined;
+  }
+
+  let pending = Promise.resolve();
+  const timer = setInterval(() => {
+    const heartbeatAtUnixMs = options.nowUnixMs();
+    pending = pending.then(async () => {
+      await saveForegroundMiningHeartbeatStatus({
+        statusPath: options.paths.miningStatusPath,
+        foregroundPid: options.foregroundPid!,
+        foregroundRunId: options.foregroundRunId!,
+        heartbeatAtUnixMs,
+      });
+    }).catch(() => undefined);
+  }, options.intervalMs);
+  timer.unref?.();
+
+  return () => {
+    clearInterval(timer);
+  };
+}
+
 async function appendEvent(paths: WalletRuntimePaths, event: MiningEventRecord): Promise<void> {
   await appendMiningEvent(paths.miningEventsPath, event);
 }
@@ -447,6 +509,8 @@ async function performMiningCycle(options: {
   provider: WalletSecretProvider;
   paths: WalletRuntimePaths;
   runMode: "foreground" | "background";
+  foregroundPid: number | null;
+  foregroundRunId: string | null;
   backgroundWorkerPid: number | null;
   backgroundWorkerRunId: string | null;
   signal?: AbortSignal;
@@ -468,6 +532,8 @@ async function performMiningCycle(options: {
   nowImpl?: () => number;
 }): Promise<void> {
   const now = options.nowImpl ?? Date.now;
+  const cycleStartedAtUnixMs = now();
+  const runtimeRunId = resolveMiningRunId(options);
   const generateCandidatesForDomainsImpl = options.generateCandidatesForDomainsImpl ?? generateCandidatesForDomains;
   const runCompetitivenessGateImpl = options.runCompetitivenessGateImpl ?? runCompetitivenessGate;
   const throwIfStopping = () => {
@@ -504,8 +570,16 @@ async function performMiningCycle(options: {
         readContext,
         overrides: {
           ...buildMiningSettleWindowStatusOverrides(options.loopState, statusNowUnixMs),
+          ...createForegroundMiningLivenessOverrides({
+            runMode: options.runMode,
+            foregroundPid: options.foregroundPid,
+            foregroundRunId: options.foregroundRunId,
+            nowUnixMs: statusNowUnixMs,
+          }),
+          cycleStartedAtUnixMs,
           ...resolvedOverrides,
         },
+        nowUnixMs: statusNowUnixMs,
         visualizer: includeVisualizer ? options.visualizer : undefined,
         visualizerState: includeVisualizer ? options.loopState.ui : undefined,
       });
@@ -513,6 +587,9 @@ async function performMiningCycle(options: {
 
     await saveCycleStatus(readContext, {
       runMode: options.runMode,
+      foregroundPid: options.runMode === "foreground" ? options.foregroundPid : null,
+      foregroundRunId: options.runMode === "foreground" ? options.foregroundRunId : null,
+      foregroundHeartbeatAtUnixMs: options.runMode === "foreground" ? now() : null,
       backgroundWorkerPid: options.backgroundWorkerPid,
       backgroundWorkerRunId: options.backgroundWorkerRunId,
       backgroundWorkerHeartbeatAtUnixMs: options.runMode === "background" ? now() : null,
@@ -753,7 +830,7 @@ async function performMiningCycle(options: {
         {
           targetBlockHeight,
           referencedBlockHashDisplay: readyReadContext.nodeStatus?.nodeBestHashHex ?? null,
-          runId: options.backgroundWorkerRunId,
+          runId: runtimeRunId,
         },
       ));
       return;
@@ -765,7 +842,7 @@ async function performMiningCycle(options: {
       provider: options.provider,
       paths: options.paths,
       runMode: options.runMode,
-      backgroundWorkerRunId: options.backgroundWorkerRunId,
+      backgroundWorkerRunId: runtimeRunId,
       readContext: readyReadContext,
       rpc,
       targetBlockHeight,
@@ -812,6 +889,8 @@ async function performMiningCycle(options: {
         provider: options.provider,
         paths: options.paths,
         runMode: options.runMode,
+        foregroundPid: options.foregroundPid,
+        foregroundRunId: options.foregroundRunId,
         backgroundWorkerPid: options.backgroundWorkerPid,
         backgroundWorkerRunId: options.backgroundWorkerRunId,
         detectedAtUnixMs: error.detectedAtUnixMs,
@@ -829,8 +908,11 @@ async function performMiningCycle(options: {
         provider: options.provider,
         paths: options.paths,
         runMode: options.runMode,
+        foregroundPid: options.foregroundPid,
+        foregroundRunId: options.foregroundRunId,
         readContext,
         loopState: options.loopState,
+        cycleStartedAtUnixMs,
         attachService: options.attachService,
         probeService: options.probeService,
         stopService: options.stopService,
@@ -854,6 +936,8 @@ async function runMiningLoop(options: {
   provider: WalletSecretProvider;
   paths: WalletRuntimePaths;
   runMode: "foreground" | "background";
+  foregroundPid?: number | null;
+  foregroundRunId?: string | null;
   backgroundWorkerPid: number | null;
   backgroundWorkerRunId: string | null;
   signal?: AbortSignal;
@@ -875,23 +959,40 @@ async function runMiningLoop(options: {
   assaySentencesImpl?: typeof assaySentences;
   cooperativeYieldImpl?: MiningCooperativeYield;
   cooperativeYieldEvery?: number;
+  foregroundHeartbeatIntervalMs?: number;
 }): Promise<void> {
+  const now = options.nowImpl ?? Date.now;
+  const foregroundPid = options.runMode === "foreground" ? options.foregroundPid ?? process.pid : null;
+  const foregroundRunId = options.runMode === "foreground" ? options.foregroundRunId ?? null : null;
+  const runtimeRunId = resolveMiningRunId({
+    runMode: options.runMode,
+    foregroundRunId,
+    backgroundWorkerRunId: options.backgroundWorkerRunId,
+  });
   const suspendDetector = createMiningSuspendDetector({
     monotonicNow: options.suspendMonotonicNowImpl,
-    nowUnixMs: options.nowImpl ?? Date.now,
+    nowUnixMs: now,
     scheduler: options.suspendScheduler,
   });
   const loopState = options.loopState ?? createMiningLoopState();
   const probeService = options.probeService ?? probeManagedBitcoindService;
   const stopService = options.stopService ?? stopManagedBitcoindService;
   const sleepImpl = options.sleepImpl ?? sleep;
+  const stopForegroundHeartbeat = startForegroundMiningStatusHeartbeat({
+    paths: options.paths,
+    runMode: options.runMode,
+    foregroundPid,
+    foregroundRunId,
+    intervalMs: options.foregroundHeartbeatIntervalMs ?? MINING_STATUS_HEARTBEAT_INTERVAL_MS,
+    nowUnixMs: now,
+  });
 
   try {
     await appendEvent(options.paths, createEvent(
       "runtime-start",
       `Started ${options.runMode} mining runtime.`,
       {
-        runId: options.backgroundWorkerRunId,
+        runId: runtimeRunId,
       },
     ));
 
@@ -915,6 +1016,8 @@ async function runMiningLoop(options: {
           provider: options.provider,
           paths: options.paths,
           runMode: options.runMode,
+          foregroundPid,
+          foregroundRunId,
           backgroundWorkerPid: options.backgroundWorkerPid,
           backgroundWorkerRunId: options.backgroundWorkerRunId,
           detectedAtUnixMs: error.detectedAtUnixMs,
@@ -928,6 +1031,8 @@ async function runMiningLoop(options: {
       try {
         await performMiningCycle({
           ...options,
+          foregroundPid,
+          foregroundRunId,
           suspendDetector,
           assaySentencesImpl: options.assaySentencesImpl,
           cooperativeYieldImpl: options.cooperativeYieldImpl,
@@ -955,7 +1060,7 @@ async function runMiningLoop(options: {
         "runtime-stop",
         `Stopped ${options.runMode} mining runtime.`,
         {
-          runId: options.backgroundWorkerRunId,
+          runId: runtimeRunId,
         },
       ));
       return;
@@ -971,17 +1076,18 @@ async function runMiningLoop(options: {
       await attemptSaveMempool({
         rpc: options.rpcFactory(service.rpc),
         paths: options.paths,
-        runId: options.backgroundWorkerRunId,
+        runId: runtimeRunId,
       });
     }
     await appendEvent(options.paths, createEvent(
       "runtime-stop",
       `Stopped ${options.runMode} mining runtime.`,
       {
-        runId: options.backgroundWorkerRunId,
+        runId: runtimeRunId,
       },
     ));
   } finally {
+    stopForegroundHeartbeat();
     stopMiningSuspendDetector(suspendDetector);
   }
 }
@@ -1056,6 +1162,8 @@ export async function performMiningCycleForTesting(options: {
   provider: WalletSecretProvider;
   paths: WalletRuntimePaths;
   runMode: "foreground" | "background";
+  foregroundPid?: number | null;
+  foregroundRunId?: string | null;
   backgroundWorkerPid: number | null;
   backgroundWorkerRunId: string | null;
   signal?: AbortSignal;
@@ -1076,6 +1184,8 @@ export async function performMiningCycleForTesting(options: {
 }): Promise<void> {
   await performMiningCycle({
     ...options,
+    foregroundPid: options.runMode === "foreground" ? options.foregroundPid ?? process.pid : null,
+    foregroundRunId: options.runMode === "foreground" ? options.foregroundRunId ?? null : null,
     probeService: options.probeService ?? probeManagedBitcoindService,
     stopService: options.stopService ?? stopManagedBitcoindService,
     loopState: options.loopState ?? createMiningLoopState(),
@@ -1088,6 +1198,8 @@ export async function runMiningLoopForTesting(options: {
   provider: WalletSecretProvider;
   paths: WalletRuntimePaths;
   runMode: "foreground" | "background";
+  foregroundPid?: number | null;
+  foregroundRunId?: string | null;
   backgroundWorkerPid: number | null;
   backgroundWorkerRunId: string | null;
   signal?: AbortSignal;
@@ -1109,6 +1221,7 @@ export async function runMiningLoopForTesting(options: {
   assaySentencesImpl?: typeof assaySentences;
   cooperativeYieldImpl?: MiningCooperativeYield;
   cooperativeYieldEvery?: number;
+  foregroundHeartbeatIntervalMs?: number;
 }): Promise<void> {
   await runMiningLoop({
     ...options,

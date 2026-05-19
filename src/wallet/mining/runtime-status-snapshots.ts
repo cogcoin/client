@@ -20,6 +20,10 @@ function createTakeoverStoppedMiningNote(livePublishInMempool: boolean | null | 
     : "Mining runtime replaced.";
 }
 
+function resolveMiningRuntimeRunId(snapshot: MiningRuntimeStatusV1): string | null {
+  return snapshot.foregroundRunId ?? snapshot.backgroundWorkerRunId;
+}
+
 function createStoppedMiningRuntimeSnapshot(options: {
   snapshot: MiningRuntimeStatusV1 | null;
   walletRootId: string | null;
@@ -31,6 +35,9 @@ function createStoppedMiningRuntimeSnapshot(options: {
       ...options.snapshot,
       updatedAtUnixMs: options.nowUnixMs,
       runMode: "stopped",
+      foregroundPid: null,
+      foregroundRunId: null,
+      foregroundHeartbeatAtUnixMs: null,
       backgroundWorkerPid: null,
       backgroundWorkerRunId: null,
       backgroundWorkerHeartbeatAtUnixMs: null,
@@ -48,6 +55,9 @@ function createStoppedMiningRuntimeSnapshot(options: {
     workerBuildId: null,
     updatedAtUnixMs: options.nowUnixMs,
     runMode: "stopped",
+    foregroundPid: null,
+    foregroundRunId: null,
+    foregroundHeartbeatAtUnixMs: null,
     backgroundWorkerPid: null,
     backgroundWorkerRunId: null,
     backgroundWorkerHeartbeatAtUnixMs: null,
@@ -62,10 +72,15 @@ function createStoppedMiningRuntimeSnapshot(options: {
     coreBestHash: null,
     indexerTipHeight: null,
     indexerTipHash: null,
+    indexerStatusTipHeight: null,
+    indexerStatusTipHash: null,
+    indexerObservedAtUnixMs: null,
     indexerReorgDepth: null,
     indexerTipAligned: null,
     corePublishState: null,
     providerState: null,
+    cycleStartedAtUnixMs: null,
+    phaseEnteredAtUnixMs: null,
     lastSuspendDetectedAtUnixMs: null,
     reconnectSettledUntilUnixMs: null,
     tipSettledUntilUnixMs: null,
@@ -147,6 +162,9 @@ export function createIndexerFailureMiningRuntimeSnapshot(options: {
     backgroundWorkerRunId: null,
     backgroundWorkerHeartbeatAtUnixMs: null,
     backgroundWorkerHealth: null,
+    foregroundPid: null,
+    foregroundRunId: null,
+    foregroundHeartbeatAtUnixMs: null,
     indexerDaemonState: "failed",
     indexerHealth: "failed",
     currentPhase: "waiting-indexer",
@@ -253,6 +271,9 @@ export function createMiningReadinessSnapshot(options: {
     walletRootId: options.walletRootId,
     updatedAtUnixMs: options.nowUnixMs,
     runMode: "foreground",
+    foregroundPid: null,
+    foregroundRunId: null,
+    foregroundHeartbeatAtUnixMs: null,
     backgroundWorkerPid: null,
     backgroundWorkerRunId: null,
     backgroundWorkerHeartbeatAtUnixMs: null,
@@ -265,8 +286,11 @@ export function createMiningReadinessSnapshot(options: {
     indexerHeartbeatAtUnixMs: status?.heartbeatAtUnixMs ?? null,
     coreBestHeight: status?.coreBestHeight ?? null,
     coreBestHash: status?.coreBestHash ?? null,
-    indexerTipHeight: status?.appliedTipHeight ?? null,
-    indexerTipHash: status?.appliedTipHash ?? null,
+    indexerTipHeight: null,
+    indexerTipHash: null,
+    indexerStatusTipHeight: status?.appliedTipHeight ?? null,
+    indexerStatusTipHash: status?.appliedTipHash ?? null,
+    indexerObservedAtUnixMs: status?.updatedAtUnixMs ?? status?.heartbeatAtUnixMs ?? null,
     indexerReorgDepth: status?.reorgDepth ?? null,
     indexerTipAligned,
     corePublishState: bitcoindReachable ? "healthy" : null,
@@ -327,7 +351,7 @@ function createRuntimeErrorEventOptions(
       : String(snapshot.currentAbsoluteFeeSats),
     score: snapshot.currentCanonicalBlend,
     reason: errorMessage,
-    runId: snapshot.backgroundWorkerRunId,
+    runId: resolveMiningRuntimeRunId(snapshot),
   };
 }
 

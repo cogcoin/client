@@ -48,6 +48,9 @@ function createStoppedBackgroundRuntimeSnapshot(
     ...snapshot,
     updatedAtUnixMs: nowUnixMs,
     runMode: "stopped",
+    foregroundPid: null,
+    foregroundRunId: null,
+    foregroundHeartbeatAtUnixMs: null,
     backgroundWorkerPid: null,
     backgroundWorkerRunId: null,
     backgroundWorkerHeartbeatAtUnixMs: null,
@@ -119,6 +122,9 @@ export function createStoppedMiningRuntimeSnapshotForRepair(options: {
     workerBuildId: null,
     updatedAtUnixMs: options.nowUnixMs,
     runMode: "stopped",
+    foregroundPid: null,
+    foregroundRunId: null,
+    foregroundHeartbeatAtUnixMs: null,
     backgroundWorkerPid: null,
     backgroundWorkerRunId: null,
     backgroundWorkerHeartbeatAtUnixMs: null,
@@ -133,10 +139,15 @@ export function createStoppedMiningRuntimeSnapshotForRepair(options: {
     coreBestHash: null,
     indexerTipHeight: null,
     indexerTipHash: null,
+    indexerStatusTipHeight: null,
+    indexerStatusTipHash: null,
+    indexerObservedAtUnixMs: null,
     indexerReorgDepth: null,
     indexerTipAligned: null,
     corePublishState: null,
     providerState: null,
+    cycleStartedAtUnixMs: null,
+    phaseEnteredAtUnixMs: null,
     lastSuspendDetectedAtUnixMs: null,
     reconnectSettledUntilUnixMs: null,
     tipSettledUntilUnixMs: null,
@@ -212,6 +223,7 @@ export async function cleanupMiningForRepair(options: {
   const controlLockMetadata = await readLockMetadata(options.paths.miningControlLockPath).catch(() => null);
   const generationActivity = await readMiningGenerationActivity(options.paths).catch(() => null);
   const controlLockPid = normalizeRepairMiningPid(controlLockMetadata?.processId);
+  const foregroundPid = normalizeRepairMiningPid(options.snapshot?.foregroundPid);
   const backgroundWorkerPid = normalizeRepairMiningPid(options.snapshot?.backgroundWorkerPid);
   const generationOwnerPid = normalizeRepairMiningPid(generationActivity?.generationOwnerPid);
   const discoveredPids = new Set<number>();
@@ -222,6 +234,7 @@ export async function cleanupMiningForRepair(options: {
     pid: number | null;
     source: "background" | "foreground";
   }> = [
+    { pid: foregroundPid, source: "foreground" },
     { pid: backgroundWorkerPid, source: "background" },
     { pid: controlLockPid, source: "foreground" },
     { pid: generationOwnerPid, source: "foreground" },

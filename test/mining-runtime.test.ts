@@ -39,6 +39,7 @@ import {
 } from "../src/wallet/mining/publish.js";
 import {
   applyMiningRuntimeStatusOverrides,
+  buildMiningRuntimeStatusSnapshot as buildMiningRuntimeStatusSnapshotForTesting,
   buildPrePublishStatusOverrides as buildPrePublishStatusOverridesForTesting,
 } from "../src/wallet/mining/projection.js";
 import {
@@ -79,6 +80,7 @@ import { MiningProviderRequestError } from "../src/wallet/mining/sentences.js";
 import type { MiningFollowVisualizerState } from "../src/wallet/mining/visualizer.js";
 import {
   createMiningControlPlaneView,
+  createMiningRuntimeStatus,
   createMiningState,
   createWalletReadContext,
   createWalletState,
@@ -209,6 +211,223 @@ function shouldKeepCurrentTipLivePublishForTesting(options: {
 }): boolean {
   return livePublishTargetsCandidateTip(options as Parameters<typeof livePublishTargetsCandidateTip>[0]);
 }
+
+test("mining runtime snapshot clears stale waiting-indexer carryover when services are healthy", async () => {
+  const context = createWalletReadContext({
+    nodeStatus: {
+      ready: true,
+      chain: "mainnet",
+      nodeBestHeight: 125,
+      nodeBestHashHex: "12".repeat(32),
+      walletReplica: {
+        proofStatus: "ready",
+      },
+    },
+    indexer: {
+      health: "synced",
+      message: null,
+      status: {
+        state: "synced",
+        heartbeatAtUnixMs: 2_000,
+        updatedAtUnixMs: 2_100,
+        coreBestHeight: 125,
+        coreBestHash: "12".repeat(32),
+        appliedTipHeight: 125,
+        appliedTipHash: "12".repeat(32),
+        reorgDepth: null,
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-status",
+      },
+      source: "lease",
+      daemonInstanceId: "daemon-1",
+      snapshotSeq: "seq-lease",
+      openedAtUnixMs: 1_900,
+      snapshotTip: {
+        height: 125,
+        blockHashHex: "12".repeat(32),
+        previousHashHex: "11".repeat(32),
+        stateHashHex: null,
+      },
+    },
+  }) as any;
+
+  const snapshot = await buildMiningRuntimeStatusSnapshotForTesting({
+    nowUnixMs: 3_000,
+    localState: context.localState,
+    bitcoind: context.bitcoind,
+    nodeStatus: context.nodeStatus,
+    provider: createMiningControlPlaneView().provider,
+    nodeHealth: "synced",
+    indexer: context.indexer,
+    tipsAligned: true,
+    lastEventAtUnixMs: null,
+    existingRuntime: createMiningRuntimeStatus({
+      currentPhase: "waiting-indexer",
+      targetBlockHeight: 100,
+      referencedBlockHashDisplay: "00".repeat(32),
+      lastError: "stale indexer wait",
+      note: "Mining is waiting for Bitcoin Core and the indexer to align.",
+    }),
+  });
+
+  assert.equal(snapshot.currentPhase, "idle");
+  assert.equal(snapshot.targetBlockHeight, 126);
+  assert.equal(snapshot.referencedBlockHashDisplay, "12".repeat(32));
+  assert.equal(snapshot.lastError, null);
+  assert.equal(snapshot.note, null);
+  assert.equal(snapshot.indexerTipHeight, 125);
+  assert.equal(snapshot.indexerTipHash, "12".repeat(32));
+  assert.equal(snapshot.indexerStatusTipHeight, 125);
+  assert.equal(snapshot.indexerStatusTipHash, "12".repeat(32));
+  assert.equal(snapshot.indexerObservedAtUnixMs, 2_100);
+});
+
+test("mining runtime snapshot clears stale waiting-bitcoin-network carryover when node publishing is healthy", async () => {
+  const context = createWalletReadContext({
+    nodeStatus: {
+      ready: true,
+      chain: "mainnet",
+      nodeBestHeight: 130,
+      nodeBestHashHex: "13".repeat(32),
+      walletReplica: {
+        proofStatus: "ready",
+      },
+    },
+    indexer: {
+      health: "synced",
+      message: null,
+      status: {
+        state: "synced",
+        heartbeatAtUnixMs: 4_000,
+        updatedAtUnixMs: 4_100,
+        coreBestHeight: 130,
+        coreBestHash: "13".repeat(32),
+        appliedTipHeight: 130,
+        appliedTipHash: "13".repeat(32),
+        reorgDepth: null,
+      },
+      source: "lease",
+      snapshotTip: {
+        height: 130,
+        blockHashHex: "13".repeat(32),
+        previousHashHex: "12".repeat(32),
+        stateHashHex: null,
+      },
+    },
+  }) as any;
+
+  const snapshot = await buildMiningRuntimeStatusSnapshotForTesting({
+    nowUnixMs: 5_000,
+    localState: context.localState,
+    bitcoind: context.bitcoind,
+    nodeStatus: context.nodeStatus,
+    provider: createMiningControlPlaneView().provider,
+    nodeHealth: "synced",
+    indexer: context.indexer,
+    tipsAligned: true,
+    lastEventAtUnixMs: null,
+    existingRuntime: createMiningRuntimeStatus({
+      currentPhase: "waiting-bitcoin-network",
+      targetBlockHeight: 100,
+      referencedBlockHashDisplay: "00".repeat(32),
+      lastError: "stale rpc wait",
+      note: "Mining is waiting for the local Bitcoin node to become publishable.",
+    }),
+  });
+
+  assert.equal(snapshot.currentPhase, "idle");
+  assert.equal(snapshot.targetBlockHeight, 131);
+  assert.equal(snapshot.referencedBlockHashDisplay, "13".repeat(32));
+  assert.equal(snapshot.lastError, null);
+  assert.equal(snapshot.note, null);
+});
+
+test("mining runtime snapshot preserves active provider wait and live publish metadata", async () => {
+  const walletState = createWalletState({
+    miningState: createMiningState({
+      currentPublishState: "in-mempool",
+      currentBlockTargetHeight: 141,
+      currentReferencedBlockHashDisplay: "14".repeat(32),
+      currentDomain: "cogdemo",
+      currentDomainId: 7,
+      currentSentence: "Live sentence",
+      currentScore: "123",
+      currentTxid: "aa".repeat(32),
+      currentWtxid: "bb".repeat(32),
+      livePublishInMempool: true,
+    }),
+  });
+  const context = createWalletReadContext({
+    localState: {
+      availability: "ready",
+      clientPasswordReadiness: "ready",
+      unlockRequired: false,
+      walletRootId: walletState.walletRootId,
+      state: walletState,
+      source: "primary",
+      hasPrimaryStateFile: true,
+      hasBackupStateFile: false,
+      message: null,
+    },
+    nodeStatus: {
+      ready: true,
+      chain: "mainnet",
+      nodeBestHeight: 140,
+      nodeBestHashHex: "14".repeat(32),
+      walletReplica: {
+        proofStatus: "ready",
+      },
+    },
+  }) as any;
+
+  const providerWaitSnapshot = await buildMiningRuntimeStatusSnapshotForTesting({
+    nowUnixMs: 6_000,
+    localState: {
+      ...context.localState,
+      state: createWalletState({
+        miningState: createMiningState({
+          livePublishInMempool: false,
+        }),
+      }),
+    },
+    bitcoind: context.bitcoind,
+    nodeStatus: context.nodeStatus,
+    provider: createMiningControlPlaneView().provider,
+    nodeHealth: "synced",
+    indexer: context.indexer,
+    tipsAligned: true,
+    lastEventAtUnixMs: null,
+    existingRuntime: createMiningRuntimeStatus({
+      currentPhase: "waiting-provider",
+      providerState: "rate-limited",
+      lastError: "rate limit",
+    }),
+  });
+  assert.equal(providerWaitSnapshot.currentPhase, "waiting-provider");
+  assert.equal(providerWaitSnapshot.providerState, "rate-limited");
+  assert.equal(providerWaitSnapshot.lastError, "rate limit");
+
+  const livePublishSnapshot = await buildMiningRuntimeStatusSnapshotForTesting({
+    nowUnixMs: 7_000,
+    localState: context.localState,
+    bitcoind: context.bitcoind,
+    nodeStatus: context.nodeStatus,
+    provider: createMiningControlPlaneView().provider,
+    nodeHealth: "synced",
+    indexer: context.indexer,
+    tipsAligned: true,
+    lastEventAtUnixMs: null,
+    existingRuntime: createMiningRuntimeStatus({
+      currentPhase: "publishing",
+      currentDomainName: "old-domain",
+      currentTxid: "cc".repeat(32),
+    }),
+  });
+  assert.equal(livePublishSnapshot.currentDomainName, "cogdemo");
+  assert.equal(livePublishSnapshot.currentSentenceDisplay, "Live sentence");
+  assert.equal(livePublishSnapshot.currentTxid, "aa".repeat(32));
+  assert.equal(livePublishSnapshot.livePublishInMempool, true);
+});
 
 async function runCompetitivenessGateForTesting(options: {
   rpc: Parameters<typeof runCompetitivenessGate>[0]["rpc"];

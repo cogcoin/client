@@ -7,7 +7,7 @@ import type {
 import type { WalletStateV1 } from "../types.js";
 import type { MiningCandidate } from "./engine-types.js";
 import { livePublishTargetsCandidateTip } from "./engine-state.js";
-import { normalizeMiningPublishState, normalizeMiningStateRecord } from "./state.js";
+import { miningPublishMayStillExist, normalizeMiningPublishState, normalizeMiningStateRecord } from "./state.js";
 import {
   MINING_WORKER_API_VERSION,
   MINING_WORKER_HEARTBEAT_STALE_MS,
@@ -16,9 +16,14 @@ import type { MiningProviderInspection, MiningRuntimeStatusV1 } from "./types.js
 
 export interface MiningRuntimeStatusOverrides {
   runMode?: MiningRuntimeStatusV1["runMode"];
+  foregroundPid?: number | null;
+  foregroundRunId?: string | null;
+  foregroundHeartbeatAtUnixMs?: number | null;
   backgroundWorkerPid?: number | null;
   backgroundWorkerRunId?: string | null;
   backgroundWorkerHeartbeatAtUnixMs?: number | null;
+  cycleStartedAtUnixMs?: number | null;
+  phaseEnteredAtUnixMs?: number | null;
   currentPhase?: MiningRuntimeStatusV1["currentPhase"];
   currentPublishState?: MiningRuntimeStatusV1["currentPublishState"];
   targetBlockHeight?: number | null;
@@ -109,6 +114,24 @@ export function buildPrePublishStatusOverrides(options: {
 
 function resolveSnapshotOverride<T>(override: T | undefined, fallback: T): T {
   return override === undefined ? fallback : override;
+}
+
+function resolveLivePublishField<T>(
+  stateValue: T | null | undefined,
+  existingValue: T | null | undefined,
+  preserveExisting: boolean,
+): T | null {
+  if (stateValue !== undefined && stateValue !== null) {
+    return stateValue;
+  }
+
+  return preserveExisting ? existingValue ?? null : null;
+}
+
+function resolveIdleTargetBlockHeight(nodeStatus: WalletNodeStatus | null): number | null {
+  return nodeStatus?.nodeBestHeight === null || nodeStatus?.nodeBestHeight === undefined
+    ? null
+    : nodeStatus.nodeBestHeight + 1;
 }
 
 async function isProcessAlive(pid: number | null): Promise<boolean> {
@@ -306,6 +329,34 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
     existingRuntime: existing,
     miningState: state,
   });
+  const preserveExistingLivePublish = state === null
+    ? false
+    : miningPublishMayStillExist(state);
+  const currentServicesHealthy = options.nodeHealth === "synced"
+    && options.indexer.health === "synced"
+    && options.tipsAligned === true;
+  const currentNodePublishHealthy = options.nodeHealth === "synced"
+    && corePublishState === "healthy";
+  const clearWaitingIndexerCarryover = existing?.currentPhase === "waiting-indexer"
+    && currentServicesHealthy;
+  const clearWaitingBitcoinCarryover = existing?.currentPhase === "waiting-bitcoin-network"
+    && currentNodePublishHealthy;
+  const clearWaitingCarryover = clearWaitingIndexerCarryover || clearWaitingBitcoinCarryover;
+  const resolvedCurrentPhase = clearWaitingCarryover
+    ? "idle"
+    : existing?.currentPhase ?? "idle";
+  const resolvedTargetBlockHeight = state?.currentBlockTargetHeight
+    ?? (
+      preserveExistingLivePublish
+        ? existing?.targetBlockHeight ?? null
+        : resolveIdleTargetBlockHeight(options.nodeStatus)
+    );
+  const resolvedReferencedBlockHashDisplay = state?.currentReferencedBlockHashDisplay
+    ?? (
+      preserveExistingLivePublish
+        ? existing?.referencedBlockHashDisplay ?? null
+        : options.nodeStatus?.nodeBestHashHex ?? null
+    );
 
   void options.bitcoind;
 
@@ -317,6 +368,9 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
     workerBuildId: existing?.workerBuildId ?? null,
     updatedAtUnixMs: options.nowUnixMs,
     runMode: state?.runMode ?? existing?.runMode ?? "stopped",
+    foregroundPid: existing?.foregroundPid ?? null,
+    foregroundRunId: existing?.foregroundRunId ?? null,
+    foregroundHeartbeatAtUnixMs: existing?.foregroundHeartbeatAtUnixMs ?? null,
     backgroundWorkerPid: existing?.backgroundWorkerPid ?? null,
     backgroundWorkerRunId: existing?.backgroundWorkerRunId ?? null,
     backgroundWorkerHeartbeatAtUnixMs: existing?.backgroundWorkerHeartbeatAtUnixMs ?? null,
@@ -329,32 +383,44 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
     indexerHeartbeatAtUnixMs: options.indexer.status?.heartbeatAtUnixMs ?? null,
     coreBestHeight: options.nodeStatus?.nodeBestHeight ?? options.indexer.status?.coreBestHeight ?? existing?.coreBestHeight ?? null,
     coreBestHash: options.nodeStatus?.nodeBestHashHex ?? options.indexer.status?.coreBestHash ?? existing?.coreBestHash ?? null,
-    indexerTipHeight: options.indexer.snapshotTip?.height ?? options.indexer.status?.appliedTipHeight ?? null,
-    indexerTipHash: options.indexer.snapshotTip?.blockHashHex ?? options.indexer.status?.appliedTipHash ?? null,
+    indexerTipHeight: options.indexer.snapshotTip?.height ?? null,
+    indexerTipHash: options.indexer.snapshotTip?.blockHashHex ?? null,
+    indexerStatusTipHeight: options.indexer.status?.appliedTipHeight ?? null,
+    indexerStatusTipHash: options.indexer.status?.appliedTipHash ?? null,
+    indexerObservedAtUnixMs: options.indexer.status?.updatedAtUnixMs
+      ?? options.indexer.status?.heartbeatAtUnixMs
+      ?? null,
     indexerReorgDepth: options.indexer.status?.reorgDepth ?? null,
     indexerTipAligned: options.tipsAligned,
     corePublishState,
     providerState,
+    cycleStartedAtUnixMs: existing?.cycleStartedAtUnixMs ?? null,
+    phaseEnteredAtUnixMs: existing?.phaseEnteredAtUnixMs ?? null,
     lastSuspendDetectedAtUnixMs: existing?.lastSuspendDetectedAtUnixMs ?? null,
     reconnectSettledUntilUnixMs: existing?.reconnectSettledUntilUnixMs ?? null,
     tipSettledUntilUnixMs: existing?.tipSettledUntilUnixMs ?? null,
     miningState: state?.state ?? existing?.miningState ?? "idle",
-    currentPhase: existing?.currentPhase ?? "idle",
+    currentPhase: resolvedCurrentPhase,
     currentPublishState: normalizeMiningPublishState(
-      state?.currentPublishState ?? options.existingRuntime?.currentPublishState ?? "none",
+      state?.currentPublishState ?? (preserveExistingLivePublish ? options.existingRuntime?.currentPublishState : "none") ?? "none",
     ),
-    targetBlockHeight: state?.currentBlockTargetHeight ?? existing?.targetBlockHeight ?? null,
-    referencedBlockHashDisplay: state?.currentReferencedBlockHashDisplay ?? existing?.referencedBlockHashDisplay ?? null,
-    currentDomainId: state?.currentDomainId ?? existing?.currentDomainId ?? null,
-    currentDomainName: state?.currentDomain ?? existing?.currentDomainName ?? null,
-    currentSentenceDisplay: state?.currentSentence ?? existing?.currentSentenceDisplay ?? null,
-    currentCanonicalBlend: state?.currentScore ?? existing?.currentCanonicalBlend ?? null,
-    currentTxid: state?.currentTxid ?? existing?.currentTxid ?? null,
-    currentWtxid: state?.currentWtxid ?? existing?.currentWtxid ?? null,
-    livePublishInMempool: state?.livePublishInMempool ?? existing?.livePublishInMempool ?? null,
-    currentFeeRateSatVb: state?.currentFeeRateSatVb ?? existing?.currentFeeRateSatVb ?? null,
-    currentAbsoluteFeeSats: state?.currentAbsoluteFeeSats ?? existing?.currentAbsoluteFeeSats ?? null,
-    currentBlockFeeSpentSats: state?.currentBlockFeeSpentSats ?? existing?.currentBlockFeeSpentSats ?? "0",
+    targetBlockHeight: resolvedTargetBlockHeight,
+    referencedBlockHashDisplay: resolvedReferencedBlockHashDisplay,
+    currentDomainId: resolveLivePublishField(state?.currentDomainId, existing?.currentDomainId, preserveExistingLivePublish),
+    currentDomainName: resolveLivePublishField(state?.currentDomain, existing?.currentDomainName, preserveExistingLivePublish),
+    currentSentenceDisplay: resolveLivePublishField(state?.currentSentence, existing?.currentSentenceDisplay, preserveExistingLivePublish),
+    currentCanonicalBlend: resolveLivePublishField(state?.currentScore, existing?.currentCanonicalBlend, preserveExistingLivePublish),
+    currentTxid: resolveLivePublishField(state?.currentTxid, existing?.currentTxid, preserveExistingLivePublish),
+    currentWtxid: resolveLivePublishField(state?.currentWtxid, existing?.currentWtxid, preserveExistingLivePublish),
+    livePublishInMempool: state?.livePublishInMempool ?? (preserveExistingLivePublish ? existing?.livePublishInMempool ?? null : null),
+    currentFeeRateSatVb: resolveLivePublishField(state?.currentFeeRateSatVb, existing?.currentFeeRateSatVb, preserveExistingLivePublish),
+    currentAbsoluteFeeSats: resolveLivePublishField(
+      state?.currentAbsoluteFeeSats,
+      existing?.currentAbsoluteFeeSats,
+      preserveExistingLivePublish,
+    ),
+    currentBlockFeeSpentSats: state?.currentBlockFeeSpentSats
+      ?? (preserveExistingLivePublish ? existing?.currentBlockFeeSpentSats ?? "0" : "0"),
     sessionFeeSpentSats: state?.sessionFeeSpentSats ?? existing?.sessionFeeSpentSats ?? "0",
     lifetimeFeeSpentSats: state?.lifetimeFeeSpentSats ?? existing?.lifetimeFeeSpentSats ?? "0",
     sameDomainCompetitorSuppressed: existing?.sameDomainCompetitorSuppressed ?? null,
@@ -364,10 +430,11 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
     competitivenessGateReason: existing?.competitivenessGateReason ?? null,
     competitivenessGateDiagnostics: existing?.competitivenessGateDiagnostics ?? null,
     mempoolSequenceCacheStatus: existing?.mempoolSequenceCacheStatus ?? null,
-    currentPublishDecision: state?.currentPublishDecision ?? existing?.currentPublishDecision ?? null,
+    currentPublishDecision: state?.currentPublishDecision
+      ?? (preserveExistingLivePublish ? existing?.currentPublishDecision ?? null : null),
     lastMempoolSequence: existing?.lastMempoolSequence ?? null,
     lastCompetitivenessGateAtUnixMs: existing?.lastCompetitivenessGateAtUnixMs ?? null,
-    pauseReason: state?.pauseReason ?? options.existingRuntime?.pauseReason ?? null,
+    pauseReason: state?.pauseReason ?? (clearWaitingCarryover ? null : options.existingRuntime?.pauseReason ?? null),
     providerConfigured: options.provider.configured,
     providerKind: options.provider.provider,
     bitcoindHealth: options.bitcoind.health,
@@ -379,7 +446,9 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
     lastEventAtUnixMs: options.lastEventAtUnixMs,
     lastError: reuseExistingProviderWait
       ? existing?.lastError ?? null
-      : existing?.currentPhase === "waiting-bitcoin-network" || existing?.currentPhase === "waiting-indexer"
+      : clearWaitingCarryover
+        ? options.provider.message ?? options.indexer.message ?? null
+        : existing?.currentPhase === "waiting-bitcoin-network" || existing?.currentPhase === "waiting-indexer"
         ? existing?.lastError ?? options.provider.message ?? options.indexer.message ?? null
         : options.provider.message ?? options.indexer.message ?? null,
     note: state?.pauseReason === "zero-reward"
@@ -388,6 +457,8 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
         ? "Mining discarded stale in-flight work after a large local runtime gap and is rechecking health."
         : reuseExistingProviderWait
           ? resolveWaitingProviderNote(existing?.providerState ?? providerState)
+          : clearWaitingCarryover
+            ? null
           : existing?.currentPhase === "waiting-indexer"
             ? "Mining is waiting for Bitcoin Core and the indexer to align."
             : existing?.currentPhase === "waiting-bitcoin-network"
@@ -417,20 +488,38 @@ export function applyMiningRuntimeStatusOverrides(options: {
   nowUnixMs?: number;
 }): MiningRuntimeStatusV1 {
   const overrides = options.overrides ?? {};
+  const nowUnixMs = options.nowUnixMs ?? Date.now();
   const resolvedCurrentPhase = resolveSnapshotOverride(overrides.currentPhase, options.runtime.currentPhase);
   const clearProviderWaitCarryover = overrides.currentPhase !== undefined
     && overrides.currentPhase !== "waiting-provider"
     && options.runtime.currentPhase === "waiting-provider";
+  const phaseEnteredAtUnixMs = resolveSnapshotOverride(
+    overrides.phaseEnteredAtUnixMs,
+    resolvedCurrentPhase === options.runtime.currentPhase
+      ? options.runtime.phaseEnteredAtUnixMs ?? null
+      : nowUnixMs,
+  );
 
   return {
     ...options.runtime,
     runMode: resolveSnapshotOverride(overrides.runMode, options.runtime.runMode),
+    foregroundPid: resolveSnapshotOverride(overrides.foregroundPid, options.runtime.foregroundPid ?? null),
+    foregroundRunId: resolveSnapshotOverride(overrides.foregroundRunId, options.runtime.foregroundRunId ?? null),
+    foregroundHeartbeatAtUnixMs: resolveSnapshotOverride(
+      overrides.foregroundHeartbeatAtUnixMs,
+      options.runtime.foregroundHeartbeatAtUnixMs ?? null,
+    ),
     backgroundWorkerPid: resolveSnapshotOverride(overrides.backgroundWorkerPid, options.runtime.backgroundWorkerPid),
     backgroundWorkerRunId: resolveSnapshotOverride(overrides.backgroundWorkerRunId, options.runtime.backgroundWorkerRunId),
     backgroundWorkerHeartbeatAtUnixMs: resolveSnapshotOverride(
       overrides.backgroundWorkerHeartbeatAtUnixMs,
       options.runtime.backgroundWorkerHeartbeatAtUnixMs,
     ),
+    cycleStartedAtUnixMs: resolveSnapshotOverride(
+      overrides.cycleStartedAtUnixMs,
+      options.runtime.cycleStartedAtUnixMs ?? null,
+    ),
+    phaseEnteredAtUnixMs,
     currentPhase: resolvedCurrentPhase,
     currentPublishState: resolveSnapshotOverride(overrides.currentPublishState, options.runtime.currentPublishState),
     targetBlockHeight: resolveSnapshotOverride(overrides.targetBlockHeight, options.runtime.targetBlockHeight),
@@ -527,6 +616,6 @@ export function applyMiningRuntimeStatusOverrides(options: {
       overrides.livePublishInMempool,
       options.runtime.livePublishInMempool,
     ),
-    updatedAtUnixMs: options.nowUnixMs ?? Date.now(),
+    updatedAtUnixMs: nowUnixMs,
   };
 }

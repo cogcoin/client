@@ -111,6 +111,9 @@ export interface MiningRuntimeStatusV1 {
   workerBuildId: string | null;
   updatedAtUnixMs: number;
   runMode: "stopped" | "foreground" | "background";
+  foregroundPid?: number | null;
+  foregroundRunId?: string | null;
+  foregroundHeartbeatAtUnixMs?: number | null;
   backgroundWorkerPid: number | null;
   backgroundWorkerRunId: string | null;
   backgroundWorkerHeartbeatAtUnixMs: number | null;
@@ -136,6 +139,9 @@ export interface MiningRuntimeStatusV1 {
   coreBestHash: string | null;
   indexerTipHeight: number | null;
   indexerTipHash: string | null;
+  indexerStatusTipHeight?: number | null;
+  indexerStatusTipHash?: string | null;
+  indexerObservedAtUnixMs?: number | null;
   indexerReorgDepth: number | null;
   indexerTipAligned: boolean | null;
   corePublishState:
@@ -147,6 +153,8 @@ export interface MiningRuntimeStatusV1 {
     | "healthy"
     | null;
   providerState: "ready" | "backoff" | "unavailable" | "rate-limited" | "auth-error" | "not-found" | null;
+  cycleStartedAtUnixMs?: number | null;
+  phaseEnteredAtUnixMs?: number | null;
   lastSuspendDetectedAtUnixMs: number | null;
   reconnectSettledUntilUnixMs: number | null;
   tipSettledUntilUnixMs: number | null;

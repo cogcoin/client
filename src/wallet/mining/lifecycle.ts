@@ -47,6 +47,7 @@ export async function refreshAndSaveMiningRuntimeStatus(options: {
   provider: WalletSecretProvider;
   readContext: WalletReadContext;
   overrides?: MiningRuntimeStatusOverrides;
+  nowUnixMs?: number;
   visualizer?: MiningFollowVisualizer;
   visualizerState?: MiningFollowVisualizerState;
 }): Promise<MiningRuntimeStatusV1> {
@@ -57,12 +58,14 @@ export async function refreshAndSaveMiningRuntimeStatus(options: {
     nodeStatus: options.readContext.nodeStatus,
     nodeHealth: options.readContext.nodeHealth,
     indexer: options.readContext.indexer,
+    nowUnixMs: options.nowUnixMs,
     paths: options.paths,
   });
   const snapshot = applyMiningRuntimeStatusOverrides({
     runtime: view.runtime,
     provider: view.provider,
     overrides: options.overrides,
+    nowUnixMs: options.nowUnixMs,
   });
   await saveMiningRuntimeStatus(options.paths.miningStatusPath, snapshot);
   options.visualizer?.update(snapshot, options.visualizerState);
@@ -251,8 +254,11 @@ export async function handleRecoverableMiningBitcoindFailure(options: {
   provider: WalletSecretProvider;
   paths: WalletRuntimePaths;
   runMode: "foreground" | "background";
+  foregroundPid?: number | null;
+  foregroundRunId?: string | null;
   readContext: WalletReadContext;
   loopState: MiningRuntimeLoopState;
+  cycleStartedAtUnixMs?: number | null;
   attachService: typeof attachOrStartManagedBitcoindService;
   probeService: typeof probeManagedBitcoindService;
   stopService: typeof stopManagedBitcoindService;
@@ -349,6 +355,10 @@ export async function handleRecoverableMiningBitcoindFailure(options: {
     readContext: options.readContext,
     overrides: {
       runMode: options.runMode,
+      foregroundPid: options.runMode === "foreground" ? options.foregroundPid ?? null : null,
+      foregroundRunId: options.runMode === "foreground" ? options.foregroundRunId ?? null : null,
+      foregroundHeartbeatAtUnixMs: options.runMode === "foreground" ? options.nowUnixMs : null,
+      cycleStartedAtUnixMs: options.cycleStartedAtUnixMs ?? null,
       currentPhase: "waiting-bitcoin-network",
       lastError: failureMessage,
       note: MINING_BITCOIN_RECOVERY_NOTE,
@@ -365,6 +375,8 @@ export async function handleDetectedMiningRuntimeResume(options: {
   provider: WalletSecretProvider;
   paths: WalletRuntimePaths;
   runMode: "foreground" | "background";
+  foregroundPid?: number | null;
+  foregroundRunId?: string | null;
   backgroundWorkerPid: number | null;
   backgroundWorkerRunId: string | null;
   detectedAtUnixMs: number;
@@ -388,6 +400,9 @@ export async function handleDetectedMiningRuntimeResume(options: {
       readContext,
       overrides: {
         runMode: options.runMode,
+        foregroundPid: options.runMode === "foreground" ? options.foregroundPid ?? null : null,
+        foregroundRunId: options.runMode === "foreground" ? options.foregroundRunId ?? null : null,
+        foregroundHeartbeatAtUnixMs: options.runMode === "foreground" ? options.detectedAtUnixMs : null,
         backgroundWorkerPid: options.backgroundWorkerPid,
         backgroundWorkerRunId: options.backgroundWorkerRunId,
         backgroundWorkerHeartbeatAtUnixMs: options.runMode === "background" ? Date.now() : null,
@@ -410,7 +425,7 @@ export async function handleDetectedMiningRuntimeResume(options: {
       "Detected a large local runtime gap, discarded stale in-flight mining work, and resumed health checks from scratch.",
       {
         level: "warn",
-        runId: options.backgroundWorkerRunId,
+        runId: options.foregroundRunId ?? options.backgroundWorkerRunId,
         timestampUnixMs: options.detectedAtUnixMs,
       },
     ),
@@ -423,6 +438,8 @@ export async function saveStopSnapshot(options: {
   provider: WalletSecretProvider;
   paths: WalletRuntimePaths;
   runMode: "foreground" | "background";
+  foregroundPid?: number | null;
+  foregroundRunId?: string | null;
   backgroundWorkerPid: number | null;
   backgroundWorkerRunId: string | null;
   note: string | null;
@@ -482,9 +499,12 @@ export async function saveStopSnapshot(options: {
       },
       overrides: {
         runMode: "stopped",
-        backgroundWorkerPid: options.runMode === "background" ? null : options.backgroundWorkerPid,
-        backgroundWorkerRunId: options.runMode === "background" ? null : options.backgroundWorkerRunId,
-        backgroundWorkerHeartbeatAtUnixMs: options.runMode === "background" ? null : Date.now(),
+        foregroundPid: null,
+        foregroundRunId: null,
+        foregroundHeartbeatAtUnixMs: null,
+        backgroundWorkerPid: null,
+        backgroundWorkerRunId: null,
+        backgroundWorkerHeartbeatAtUnixMs: null,
         currentPhase: "idle",
         note: options.note,
       },

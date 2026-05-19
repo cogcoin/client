@@ -8,6 +8,7 @@ import type { MiningEventRecord, MiningRuntimeStatusV1 } from "./types.js";
 
 const MAX_EVENT_LOG_BYTES = 10 * 1024 * 1024;
 const MAX_EVENT_LOG_ROTATIONS = 4;
+const miningStatusWriteQueues = new Map<string, Promise<void>>();
 
 export function resolveRotatedMiningEventsPath(eventsPath: string): string {
   return `${eventsPath}.1`;
@@ -49,11 +50,19 @@ export async function loadMiningRuntimeStatus(
     };
     return {
       ...parsed,
+      foregroundPid: parsed.foregroundPid ?? null,
+      foregroundRunId: parsed.foregroundRunId ?? null,
+      foregroundHeartbeatAtUnixMs: parsed.foregroundHeartbeatAtUnixMs ?? null,
       miningState: normalizeMiningLifecycleStatus(parsed.miningState),
       providerState: normalizeLegacyMiningProviderState(parsed.providerState),
       currentPublishState: normalizeMiningPublishState(parsed.currentPublishState),
       livePublishInMempool: parsed.livePublishInMempool ?? parsed.liveMiningFamilyInMempool ?? null,
+      indexerStatusTipHeight: parsed.indexerStatusTipHeight ?? null,
+      indexerStatusTipHash: parsed.indexerStatusTipHash ?? null,
+      indexerObservedAtUnixMs: parsed.indexerObservedAtUnixMs ?? null,
       indexerReorgDepth: parsed.indexerReorgDepth ?? null,
+      cycleStartedAtUnixMs: parsed.cycleStartedAtUnixMs ?? null,
+      phaseEnteredAtUnixMs: parsed.phaseEnteredAtUnixMs ?? null,
       sameDomainCompetitorSuppressed: parsed.sameDomainCompetitorSuppressed ?? null,
       dedupedCompetitorDomainCount: parsed.dedupedCompetitorDomainCount ?? null,
       competitivenessGateIndeterminate: parsed.competitivenessGateIndeterminate ?? null,
@@ -74,9 +83,71 @@ export async function saveMiningRuntimeStatus(
   statusPath: string,
   snapshot: MiningRuntimeStatusV1,
 ): Promise<void> {
+  await runSerializedMiningStatusWrite(statusPath, async () => {
+    await writeMiningRuntimeStatusSnapshot(statusPath, snapshot);
+  });
+}
+
+async function runSerializedMiningStatusWrite<T>(
+  statusPath: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = miningStatusWriteQueues.get(statusPath) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  let cleanup: Promise<void>;
+  cleanup = current.then(
+    () => undefined,
+    () => undefined,
+  ).then(() => {
+    if (miningStatusWriteQueues.get(statusPath) === cleanup) {
+      miningStatusWriteQueues.delete(statusPath);
+    }
+  });
+
+  miningStatusWriteQueues.set(statusPath, cleanup);
+  return await current;
+}
+
+async function writeMiningRuntimeStatusSnapshot(
+  statusPath: string,
+  snapshot: MiningRuntimeStatusV1,
+): Promise<void> {
   await writeRuntimeStatusFile(statusPath, {
     ...snapshot,
     providerState: normalizeLegacyMiningProviderState(snapshot.providerState),
+  });
+}
+
+export async function saveForegroundMiningHeartbeatStatus(options: {
+  statusPath: string;
+  foregroundPid: number;
+  foregroundRunId: string;
+  heartbeatAtUnixMs: number;
+}): Promise<MiningRuntimeStatusV1 | null> {
+  return await runSerializedMiningStatusWrite(options.statusPath, async () => {
+    const snapshot = await loadMiningRuntimeStatus(options.statusPath);
+
+    if (
+      snapshot === null
+      || snapshot.runMode !== "foreground"
+      || snapshot.foregroundRunId !== options.foregroundRunId
+    ) {
+      return snapshot;
+    }
+
+    const currentHeartbeatAtUnixMs = snapshot.foregroundHeartbeatAtUnixMs ?? null;
+    if (currentHeartbeatAtUnixMs !== null && currentHeartbeatAtUnixMs > options.heartbeatAtUnixMs) {
+      return snapshot;
+    }
+
+    const nextSnapshot: MiningRuntimeStatusV1 = {
+      ...snapshot,
+      foregroundPid: options.foregroundPid,
+      foregroundRunId: options.foregroundRunId,
+      foregroundHeartbeatAtUnixMs: options.heartbeatAtUnixMs,
+    };
+    await writeMiningRuntimeStatusSnapshot(options.statusPath, nextSnapshot);
+    return nextSnapshot;
   });
 }
 

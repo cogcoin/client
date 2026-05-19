@@ -209,8 +209,10 @@ function isForegroundMiningStatusStale(status: PassiveClientStatus, nowUnixMs: n
     return false;
   }
 
-  return status.mining.updatedAtUnixMs === null
-    || (nowUnixMs - status.mining.updatedAtUnixMs) > FOREGROUND_MINING_STATUS_STALE_MS;
+  const livenessUnixMs = status.mining.foregroundHeartbeatAtUnixMs ?? status.mining.updatedAtUnixMs;
+
+  return livenessUnixMs === null
+    || (nowUnixMs - livenessUnixMs) > FOREGROUND_MINING_STATUS_STALE_MS;
 }
 
 function buildMiningRows(status: PassiveClientStatus, nowUnixMs: number): StatusRow[] {

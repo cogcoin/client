@@ -83,6 +83,7 @@ export interface PassiveMiningStatus {
   runMode: string | null;
   miningState: string | null;
   currentPhase: string | null;
+  foregroundHeartbeatAtUnixMs: number | null;
   backgroundWorkerPid: number | null;
   backgroundWorkerHealth: string | null;
   competitivenessGateReason: MiningRuntimeStatusV1["competitivenessGateReason"];
@@ -286,6 +287,7 @@ function emptyMiningStatus(
     runMode: null,
     miningState: null,
     currentPhase: null,
+    foregroundHeartbeatAtUnixMs: null,
     backgroundWorkerPid: null,
     backgroundWorkerHealth: null,
     competitivenessGateReason: null,
@@ -382,6 +384,7 @@ async function inspectMiningStatus(statusPath: string | null): Promise<PassiveMi
     runMode: result.status.runMode ?? null,
     miningState: result.status.miningState ?? null,
     currentPhase: result.status.currentPhase ?? null,
+    foregroundHeartbeatAtUnixMs: result.status.foregroundHeartbeatAtUnixMs ?? null,
     backgroundWorkerPid: result.status.backgroundWorkerPid ?? null,
     backgroundWorkerHealth: result.status.backgroundWorkerHealth ?? null,
     competitivenessGateReason: result.status.competitivenessGateReason ?? null,

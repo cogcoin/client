@@ -402,7 +402,8 @@ test("mine preflight refreshes stale mining runtime status while waiting for the
   assert.equal(intermediateStatus!.indexerHealth, "catching-up");
   assert.equal(intermediateStatus!.currentPhase, "waiting-indexer");
   assert.equal(intermediateStatus!.coreBestHeight, 20);
-  assert.equal(intermediateStatus!.indexerTipHeight, 19);
+  assert.equal(intermediateStatus!.indexerTipHeight, null);
+  assert.equal(intermediateStatus!.indexerStatusTipHeight, 19);
   assert.equal(intermediateStatus!.tipsAligned, false);
   assert.equal(intermediateStatus!.currentTxid, "aa".repeat(32));
   assert.equal(intermediateStatus!.currentBlockFeeSpentSats, "1234");
@@ -413,10 +414,13 @@ test("mine preflight refreshes stale mining runtime status while waiting for the
   assert.equal(finalStatus?.indexerHealth, "synced");
   assert.equal(finalStatus?.currentPhase, "waiting");
   assert.equal(finalStatus?.coreBestHeight, 20);
-  assert.equal(finalStatus?.indexerTipHeight, 20);
+  assert.equal(finalStatus?.indexerTipHeight, null);
+  assert.equal(finalStatus?.indexerStatusTipHeight, 20);
   assert.equal(finalStatus?.tipsAligned, true);
   assert.equal(finalStatus?.targetBlockHeight, 21);
   assert.equal(finalStatus?.referencedBlockHashDisplay, coreHash);
+  assert.equal(finalStatus?.lastError, null);
+  assert.equal(finalStatus?.note, "Mining preflight completed; starting foreground mining.");
   assert.equal(finalStatus?.currentDomainName, "samplemine");
   assert.equal(finalStatus?.currentSentenceDisplay, "Synthetic preflight status preserves the prior mining sentence.");
   assert.equal(finalStatus?.currentPublishDecision, "tx-confirmed-while-down");

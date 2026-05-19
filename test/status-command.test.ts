@@ -49,7 +49,12 @@ function createTestRuntimePaths(homeDirectory: string) {
   });
 }
 
-function createPassiveStatus(overrides: Partial<PassiveClientStatus> = {}): PassiveClientStatus {
+function createPassiveStatus(overrides: Partial<Omit<PassiveClientStatus, "wallet" | "managedBitcoind" | "indexer" | "mining">> & {
+  wallet?: Partial<PassiveClientStatus["wallet"]>;
+  managedBitcoind?: Partial<PassiveClientStatus["managedBitcoind"]>;
+  indexer?: Partial<PassiveClientStatus["indexer"]>;
+  mining?: Partial<PassiveClientStatus["mining"]>;
+} = {}): PassiveClientStatus {
   const base: PassiveClientStatus = {
     dbPath: "/tmp/cogcoin.db",
     bitcoinDataDir: "/tmp/bitcoind",
@@ -105,6 +110,7 @@ function createPassiveStatus(overrides: Partial<PassiveClientStatus> = {}): Pass
       runMode: null,
       miningState: null,
       currentPhase: null,
+      foregroundHeartbeatAtUnixMs: null,
       backgroundWorkerPid: null,
       backgroundWorkerHealth: null,
       competitivenessGateReason: null,
@@ -413,6 +419,33 @@ test("passive status formatter marks stale foreground mining snapshots unhealthy
     output,
     /✗ Mining note: Mining runtime status is stale; no recent foreground heartbeat was written\. Restart mining or inspect mine log\./,
   );
+});
+
+test("passive status formatter uses foreground heartbeat before updated time", () => {
+  const output = formatStatusReport(createPassiveStatus({
+    mining: {
+      statusPath: "/tmp/mining-status.json",
+      present: true,
+      runMode: "foreground",
+      miningState: "idle",
+      currentPhase: "waiting-indexer",
+      foregroundHeartbeatAtUnixMs: 1_000 + 5 * 60 * 1000,
+      backgroundWorkerPid: null,
+      backgroundWorkerHealth: null,
+      competitivenessGateReason: null,
+      competitivenessGateDiagnostics: null,
+      mempoolSequenceCacheStatus: null,
+      lastMempoolSequence: null,
+      lastCompetitivenessGateAtUnixMs: null,
+      updatedAtUnixMs: 1_000,
+      lastError: null,
+      note: null,
+      error: null,
+    },
+  }), "1.2.5", { nowUnixMs: 1_000 + 5 * 60 * 1000 + 1 });
+
+  assert.match(output, /Mining\n✓ Mining run mode: foreground/);
+  assert.doesNotMatch(output, /no recent foreground heartbeat/);
 });
 
 test("passive status formatter does not apply foreground staleness to background mining", () => {
