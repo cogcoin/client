@@ -1,5 +1,9 @@
 import type { PassiveClientStatus } from "../passive-status.js";
 
+const FOREGROUND_MINING_STATUS_STALE_MS = 5 * 60 * 1000;
+const FOREGROUND_MINING_STATUS_STALE_NOTE =
+  "Mining runtime status is stale; no recent foreground heartbeat was written. Restart mining or inspect mine log.";
+
 interface StatusRow {
   readonly ok: boolean;
   readonly text: string;
@@ -182,7 +186,16 @@ function buildManagedServicesRows(status: PassiveClientStatus): StatusRow[] {
   ];
 }
 
-function buildMiningRows(status: PassiveClientStatus): StatusRow[] {
+function isForegroundMiningStatusStale(status: PassiveClientStatus, nowUnixMs: number): boolean {
+  if (status.mining.runMode !== "foreground") {
+    return false;
+  }
+
+  return status.mining.updatedAtUnixMs === null
+    || (nowUnixMs - status.mining.updatedAtUnixMs) > FOREGROUND_MINING_STATUS_STALE_MS;
+}
+
+function buildMiningRows(status: PassiveClientStatus, nowUnixMs: number): StatusRow[] {
   if (status.mining.error !== null) {
     return [
       row(false, "Mining state: corrupt"),
@@ -195,7 +208,11 @@ function buildMiningRows(status: PassiveClientStatus): StatusRow[] {
     return [row(false, "Mining state: unavailable")];
   }
 
-  const miningHasError = status.mining.lastError !== null;
+  const miningStatusStale = isForegroundMiningStatusStale(status, nowUnixMs);
+  const miningHasError = status.mining.lastError !== null || miningStatusStale;
+  const miningNote = miningStatusStale
+    ? FOREGROUND_MINING_STATUS_STALE_NOTE
+    : status.mining.note;
   const needsBackgroundWorker = status.mining.runMode === "background";
   const diagnostics = status.mining.competitivenessGateDiagnostics;
   const gateRows = status.mining.competitivenessGateReason === null
@@ -225,7 +242,7 @@ function buildMiningRows(status: PassiveClientStatus): StatusRow[] {
     row(!needsBackgroundWorker || status.mining.backgroundWorkerHealth !== null, `Mining background worker health: ${formatValue(status.mining.backgroundWorkerHealth)}`),
     row(status.mining.updatedAtUnixMs !== null, `Mining updated: ${formatValue(status.mining.updatedAtUnixMs)}`),
     row(!miningHasError, `Mining last error: ${formatValue(status.mining.lastError)}`),
-    row(status.mining.note === null, `Mining note: ${formatValue(status.mining.note)}`),
+    row(miningNote === null, `Mining note: ${formatValue(miningNote)}`),
     ...gateRows,
   ];
 }
@@ -238,7 +255,15 @@ function buildPassiveModeRows(): StatusRow[] {
   ];
 }
 
-export function formatStatusReport(status: PassiveClientStatus, version: string): string {
+export function formatStatusReport(
+  status: PassiveClientStatus,
+  version: string,
+  options: {
+    nowUnixMs?: number;
+  } = {},
+): string {
+  const nowUnixMs = options.nowUnixMs ?? Date.now();
+
   return [
     `⛭ Cogcoin Status v${version} (passive) ⛭`,
     formatSection("Paths", buildPathsRows(status)),
@@ -246,7 +271,7 @@ export function formatStatusReport(status: PassiveClientStatus, version: string)
     formatSection("Local Store", buildLocalStoreRows(status)),
     formatSection("Bootstrap", buildBootstrapRows(status)),
     formatSection("Managed Services", buildManagedServicesRows(status)),
-    formatSection("Mining", buildMiningRows(status)),
+    formatSection("Mining", buildMiningRows(status, nowUnixMs)),
     formatSection("Passive Mode", buildPassiveModeRows()),
     "Run cogcoin status --live for RPC-backed balance and full service verification.",
   ].join("\n\n");

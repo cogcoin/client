@@ -18,7 +18,9 @@ export async function runStatusCommand(
 
   if (!parsed.statusLive) {
     const status = await context.inspectPassiveClientStatus(dbPath, dataDir, runtimePaths);
-    writeLine(context.stdout, formatStatusReport(status, packageVersion));
+    writeLine(context.stdout, formatStatusReport(status, packageVersion, {
+      nowUnixMs: context.now(),
+    }));
     return 0;
   }
 

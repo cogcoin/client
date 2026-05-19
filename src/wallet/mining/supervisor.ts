@@ -2,6 +2,7 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createRpcClient } from "../../bitcoind/node.js";
+import { INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED } from "../../bitcoind/indexer-daemon.js";
 import { attachOrStartManagedBitcoindService } from "../../bitcoind/service.js";
 import type { ProgressOutputMode } from "../../bitcoind/types.js";
 import {
@@ -23,7 +24,9 @@ import {
 } from "./constants.js";
 import { saveStopSnapshot } from "./lifecycle.js";
 import type { MiningRpcClient } from "./engine-types.js";
+import { createMiningEventRecord } from "./events.js";
 import {
+  appendMiningEvent,
   loadMiningRuntimeStatus,
   saveMiningRuntimeStatus,
 } from "./runtime-artifacts.js";
@@ -38,6 +41,9 @@ type RequestMiningPreemption = typeof requestMiningGenerationPreemption;
 type SaveStopSnapshot = typeof saveStopSnapshot;
 type ProcessKill = typeof process.kill;
 type ForceExit = (code: number) => never | void;
+
+const INDEXER_BACKGROUND_FOLLOW_RECOVERY_FAILURE_NOTE =
+  "Managed indexer background follow could not recover; mining stopped before writing a fresh cycle snapshot. Run `cogcoin repair` if this persists, then retry.";
 
 interface MiningLoopRunnerOptions {
   dataDir: string;
@@ -280,6 +286,69 @@ function createStoppedMiningRuntimeSnapshotForTakeover(options: {
     lastError: null,
     note,
   };
+}
+
+function isIndexerBackgroundFollowRecoveryFailure(error: unknown): boolean {
+  return error instanceof Error
+    && error.message === INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED;
+}
+
+function createIndexerRecoveryFailureMiningRuntimeSnapshot(options: {
+  snapshot: MiningRuntimeStatusV1 | null;
+  walletRootId: string | null;
+  nowUnixMs: number;
+}): MiningRuntimeStatusV1 {
+  return {
+    ...createStoppedMiningRuntimeSnapshotForTakeover(options),
+    updatedAtUnixMs: options.nowUnixMs,
+    runMode: "stopped",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    backgroundWorkerHeartbeatAtUnixMs: null,
+    backgroundWorkerHealth: null,
+    indexerDaemonState: "failed",
+    indexerHealth: "failed",
+    currentPhase: "waiting-indexer",
+    lastEventAtUnixMs: options.nowUnixMs,
+    lastError: INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED,
+    note: INDEXER_BACKGROUND_FOLLOW_RECOVERY_FAILURE_NOTE,
+  };
+}
+
+async function recordForegroundMiningIndexerRecoveryFailure(options: {
+  paths: WalletRuntimePaths;
+  nowUnixMs: number;
+}): Promise<void> {
+  const snapshot = await loadMiningRuntimeStatus(options.paths.miningStatusPath).catch(() => null);
+  const nextSnapshot = createIndexerRecoveryFailureMiningRuntimeSnapshot({
+    snapshot,
+    walletRootId: snapshot?.walletRootId ?? null,
+    nowUnixMs: options.nowUnixMs,
+  });
+  await saveMiningRuntimeStatus(options.paths.miningStatusPath, nextSnapshot);
+  await appendMiningEvent(
+    options.paths.miningEventsPath,
+    createMiningEventRecord(
+      "runtime-error",
+      "Foreground mining stopped because the managed indexer background follow could not recover.",
+      {
+        level: "error",
+        timestampUnixMs: options.nowUnixMs,
+        targetBlockHeight: nextSnapshot.targetBlockHeight,
+        referencedBlockHashDisplay: nextSnapshot.referencedBlockHashDisplay,
+        domainId: nextSnapshot.currentDomainId,
+        domainName: nextSnapshot.currentDomainName,
+        txid: nextSnapshot.currentTxid,
+        feeRateSatVb: nextSnapshot.currentFeeRateSatVb,
+        feeSats: nextSnapshot.currentAbsoluteFeeSats === null
+          ? null
+          : String(nextSnapshot.currentAbsoluteFeeSats),
+        score: nextSnapshot.currentCanonicalBlend,
+        reason: INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED,
+        runId: nextSnapshot.backgroundWorkerRunId,
+      },
+    ),
+  );
 }
 
 async function waitForMiningProcessExit(
@@ -556,22 +625,33 @@ export async function runForegroundMining(options: {
         });
       }
 
-      await deps.runMiningLoop({
-        dataDir: options.dataDir,
-        databasePath: options.databasePath,
-        provider: options.runtime.provider,
-        paths: options.runtime.paths,
-        runMode: "foreground",
-        backgroundWorkerPid: null,
-        backgroundWorkerRunId: null,
-        signal: abortController.signal,
-        fetchImpl: options.fetchImpl,
-        openReadContext: options.runtime.openReadContext,
-        attachService: options.runtime.attachService,
-        rpcFactory: options.runtime.rpcFactory,
-        stdout: options.stdout,
-        visualizer,
-      });
+      try {
+        await deps.runMiningLoop({
+          dataDir: options.dataDir,
+          databasePath: options.databasePath,
+          provider: options.runtime.provider,
+          paths: options.runtime.paths,
+          runMode: "foreground",
+          backgroundWorkerPid: null,
+          backgroundWorkerRunId: null,
+          signal: abortController.signal,
+          fetchImpl: options.fetchImpl,
+          openReadContext: options.runtime.openReadContext,
+          attachService: options.runtime.attachService,
+          rpcFactory: options.runtime.rpcFactory,
+          stdout: options.stdout,
+          visualizer,
+        });
+      } catch (error) {
+        if (isIndexerBackgroundFollowRecoveryFailure(error)) {
+          await recordForegroundMiningIndexerRecoveryFailure({
+            paths: options.runtime.paths,
+            nowUnixMs: deps.nowUnixMs(),
+          }).catch(() => undefined);
+        }
+
+        throw error;
+      }
       await deps.saveStopSnapshot({
         dataDir: options.dataDir,
         databasePath: options.databasePath,

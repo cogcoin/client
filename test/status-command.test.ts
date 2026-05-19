@@ -33,6 +33,7 @@ const QUIET_SIGNAL_SOURCE = {
   on() {},
   off() {},
 };
+const TEST_NOW_UNIX_MS = 10_200;
 
 function createTestRuntimePaths(homeDirectory: string) {
   return () => resolveWalletRuntimePathsForTesting({
@@ -167,6 +168,7 @@ test("default status uses passive inspection and does not open live wallet servi
       readPackageVersionCalls += 1;
       return version;
     },
+    now: () => TEST_NOW_UNIX_MS,
     resolveWalletRuntimePaths: () => runtimePaths,
     resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
     resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
@@ -211,7 +213,7 @@ test("default status uses passive inspection and does not open live wallet servi
     dataDir: "/tmp/bitcoind",
     runtimePaths,
   });
-  assert.equal(stdout.read(), `${formatStatusReport(passiveStatus, version)}\n`);
+  assert.equal(stdout.read(), `${formatStatusReport(passiveStatus, version, { nowUnixMs: TEST_NOW_UNIX_MS })}\n`);
 });
 
 test("passive status formatter renders rich sections and derived lag hints", () => {
@@ -268,7 +270,7 @@ test("passive status formatter renders rich sections and derived lag hints", () 
     },
   });
 
-  const output = formatStatusReport(status, "1.2.5");
+  const output = formatStatusReport(status, "1.2.5", { nowUnixMs: TEST_NOW_UNIX_MS });
 
   assert.match(output, /^⛭ Cogcoin Status v1\.2\.5 \(passive\) ⛭/);
   assert.match(output, /Paths\n✓ DB path: \/tmp\/cogcoin\.db\n✓ Bitcoin datadir: \/tmp\/bitcoind/);
@@ -292,7 +294,7 @@ test("passive status formatter marks missing service files as unavailable", () =
       source: "none",
       error: null,
     },
-  }), "1.2.5");
+  }), "1.2.5", { nowUnixMs: TEST_NOW_UNIX_MS });
 
   assert.match(output, /Wallet\n✗ Wallet root: unknown \(none\)/);
   assert.match(output, /Local Store[\s\S]*✗ Store exists: no/);
@@ -334,7 +336,7 @@ test("passive status formatter surfaces mining gate diagnostics when present", (
       note: "Mining skipped this tick because the mempool competitiveness gate could not be verified safely.",
       error: null,
     },
-  }), "1.2.5");
+  }), "1.2.5", { nowUnixMs: TEST_NOW_UNIX_MS });
 
   assert.match(output, /✗ Competitiveness gate reason: mempool_index_hydration_incomplete/);
   assert.match(output, /✓ Gate cache: index-warming/);
@@ -372,11 +374,70 @@ test("passive status formatter does not show stale mining gate diagnostics when 
       note: null,
       error: null,
     },
-  }), "1.2.5");
+  }), "1.2.5", { nowUnixMs: TEST_NOW_UNIX_MS });
 
   assert.doesNotMatch(output, /Competitiveness gate reason/);
   assert.doesNotMatch(output, /Visible mempool txs/);
   assert.doesNotMatch(output, /Missing mempool entries/);
+});
+
+test("passive status formatter marks stale foreground mining snapshots unhealthy", () => {
+  const output = formatStatusReport(createPassiveStatus({
+    mining: {
+      statusPath: "/tmp/mining-status.json",
+      present: true,
+      runMode: "foreground",
+      miningState: "idle",
+      currentPhase: "waiting-indexer",
+      backgroundWorkerPid: null,
+      backgroundWorkerHealth: null,
+      competitivenessGateReason: null,
+      competitivenessGateDiagnostics: null,
+      mempoolSequenceCacheStatus: null,
+      lastMempoolSequence: null,
+      lastCompetitivenessGateAtUnixMs: null,
+      updatedAtUnixMs: 1_000,
+      lastError: null,
+      note: null,
+      error: null,
+    },
+  }), "1.2.5", { nowUnixMs: 1_000 + 5 * 60 * 1000 + 1 });
+
+  assert.match(output, /Mining\n✗ Mining run mode: foreground/);
+  assert.match(output, /✗ Mining state: idle/);
+  assert.match(output, /✗ Mining phase: waiting-indexer/);
+  assert.match(output, /✗ Mining last error: none/);
+  assert.match(
+    output,
+    /✗ Mining note: Mining runtime status is stale; no recent foreground heartbeat was written\. Restart mining or inspect mine log\./,
+  );
+});
+
+test("passive status formatter does not apply foreground staleness to background mining", () => {
+  const output = formatStatusReport(createPassiveStatus({
+    mining: {
+      statusPath: "/tmp/mining-status.json",
+      present: true,
+      runMode: "background",
+      miningState: "idle",
+      currentPhase: "waiting",
+      backgroundWorkerPid: null,
+      backgroundWorkerHealth: null,
+      competitivenessGateReason: null,
+      competitivenessGateDiagnostics: null,
+      mempoolSequenceCacheStatus: null,
+      lastMempoolSequence: null,
+      lastCompetitivenessGateAtUnixMs: null,
+      updatedAtUnixMs: 1_000,
+      lastError: null,
+      note: null,
+      error: null,
+    },
+  }), "1.2.5", { nowUnixMs: 1_000 + 5 * 60 * 1000 + 1 });
+
+  assert.match(output, /Mining\n✓ Mining run mode: background/);
+  assert.match(output, /✗ Mining background worker pid: none/);
+  assert.doesNotMatch(output, /no recent foreground heartbeat/);
 });
 
 test("passive status formatter surfaces corrupt runtime files and store errors", () => {
@@ -428,7 +489,7 @@ test("passive status formatter surfaces corrupt runtime files and store errors",
       note: null,
       error: "invalid mining status",
     },
-  }), "1.2.5");
+  }), "1.2.5", { nowUnixMs: TEST_NOW_UNIX_MS });
 
   assert.match(output, /✗ Store error: sqlite native version mismatch/);
   assert.match(output, /✗ Managed bitcoind: corrupt/);

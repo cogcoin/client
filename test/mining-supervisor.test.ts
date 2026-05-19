@@ -7,7 +7,8 @@ import {
   runForegroundMining,
   takeOverMiningRuntime,
 } from "../src/wallet/mining/supervisor.js";
-import { loadMiningRuntimeStatus, saveMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
+import { INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED } from "../src/bitcoind/indexer-daemon.js";
+import { loadMiningRuntimeStatus, readMiningEvents, saveMiningRuntimeStatus } from "../src/wallet/mining/runtime-artifacts.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../src/wallet/runtime.js";
 import { createMemoryWalletSecretProviderForTesting } from "../src/wallet/state/provider.js";
 import {
@@ -349,6 +350,88 @@ test("runForegroundMining reuses an injected visualizer without closing it", asy
   assert.equal(receivedVisualizer, visualizer);
   assert.equal(closeCalls, 0);
   assert.deepEqual(events, ["run", "save-stop"]);
+});
+
+test("runForegroundMining writes a stopped failure snapshot when indexer background follow recovery fails", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-supervisor-mine-fg-indexer-recovery-failed");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const runtime = createSupervisorRuntime(paths, provider);
+  const nowUnixMs = 123_456;
+  let saveStopSnapshotCalls = 0;
+
+  await saveMiningRuntimeStatus(
+    paths.miningStatusPath,
+    createMiningRuntimeStatus({
+      walletRootId: "wallet-root",
+      runMode: "foreground",
+      currentPhase: "waiting-indexer",
+      indexerDaemonState: "catching-up",
+      indexerHealth: "unavailable",
+      targetBlockHeight: 949_802,
+      referencedBlockHashDisplay: "00".repeat(32),
+      currentDomainId: 40,
+      currentDomainName: "mitfrog",
+      currentSentenceDisplay: "In the wrong winter, the grid fed twenty pulses to the organ.",
+      currentCanonicalBlend: "440029011",
+      currentTxid: "6743be72f9256a9a4a13d629dbf570babef067122e9924610c0789cc1f83563c",
+      currentWtxid: "9c926c715e72bf10b9cc93bd4a3ce6b78d527352a7050c7c4880de43b70321ea",
+      currentFeeRateSatVb: 2.079,
+      currentAbsoluteFeeSats: 446,
+      currentPublishDecision: "tx-confirmed-while-down",
+      lastError: null,
+      note: "Mining is waiting for Bitcoin Core and the indexer to align.",
+    }),
+  );
+
+  await assert.rejects(
+    runForegroundMining({
+      dataDir: homeDirectory,
+      databasePath: join(homeDirectory, "indexer.sqlite"),
+      runtime,
+      visualizer: {
+        close() {},
+      } as any,
+      deps: {
+        runMiningLoop: async () => {
+          throw new Error(INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED);
+        },
+        saveStopSnapshot: async () => {
+          saveStopSnapshotCalls += 1;
+        },
+        nowUnixMs: () => nowUnixMs,
+      },
+    }),
+    new RegExp(INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED),
+  );
+
+  assert.equal(saveStopSnapshotCalls, 0);
+  const runtimeStatus = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(runtimeStatus?.updatedAtUnixMs, nowUnixMs);
+  assert.equal(runtimeStatus?.runMode, "stopped");
+  assert.equal(runtimeStatus?.backgroundWorkerPid, null);
+  assert.equal(runtimeStatus?.backgroundWorkerRunId, null);
+  assert.equal(runtimeStatus?.backgroundWorkerHeartbeatAtUnixMs, null);
+  assert.equal(runtimeStatus?.backgroundWorkerHealth, null);
+  assert.equal(runtimeStatus?.currentPhase, "waiting-indexer");
+  assert.equal(runtimeStatus?.indexerDaemonState, "failed");
+  assert.equal(runtimeStatus?.indexerHealth, "failed");
+  assert.equal(runtimeStatus?.lastError, INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED);
+  assert.match(runtimeStatus?.note ?? "", /background follow could not recover/);
+  assert.equal(runtimeStatus?.currentTxid, "6743be72f9256a9a4a13d629dbf570babef067122e9924610c0789cc1f83563c");
+  assert.equal(runtimeStatus?.currentDomainName, "mitfrog");
+  assert.equal(runtimeStatus?.currentSentenceDisplay, "In the wrong winter, the grid fed twenty pulses to the organ.");
+  assert.equal(runtimeStatus?.currentPublishDecision, "tx-confirmed-while-down");
+
+  const events = await readMiningEvents({
+    eventsPath: paths.miningEventsPath,
+    all: true,
+  });
+  const runtimeError = events.find((event) => event.kind === "runtime-error") ?? null;
+  assert.equal(runtimeError?.level, "error");
+  assert.equal(runtimeError?.timestampUnixMs, nowUnixMs);
+  assert.equal(runtimeError?.reason, INDEXER_DAEMON_BACKGROUND_FOLLOW_RECOVERY_FAILED);
+  assert.equal(runtimeError?.txid, "6743be72f9256a9a4a13d629dbf570babef067122e9924610c0789cc1f83563c");
 });
 
 test("runForegroundMining clears client-password sessions after a SIGTERM-driven shutdown", async (t) => {
