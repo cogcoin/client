@@ -116,6 +116,7 @@ test("repairManagedIndexerStage clears stale artifacts, resets a corrupt DB, and
     daemonInstanceId: "daemon-stale",
   });
   await writeFile(fixture.databasePath, "not a sqlite database", "utf8");
+  let attachOptions: unknown = null;
 
   const context = resolveWalletRepairContext({
     dataDir: fixture.dataDir,
@@ -130,7 +131,10 @@ test("repairManagedIndexerStage clears stale artifacts, resets a corrupt DB, and
       client: null,
       error: null,
     }) as any,
-    attachIndexerDaemon: async () => createFakeIndexerDaemon(fixture.state!.walletRootId, "daemon-after") as any,
+    attachIndexerDaemon: async (options) => {
+      attachOptions = options;
+      return createFakeIndexerDaemon(fixture.state!.walletRootId, "daemon-after") as any;
+    },
   });
 
   const result = await repairManagedIndexerStage({
@@ -144,6 +148,12 @@ test("repairManagedIndexerStage clears stale artifacts, resets a corrupt DB, and
     indexerDaemonAction: "restarted-managed-daemon",
     indexerCompatibilityIssue: "none",
     indexerPostRepairHealth: "synced",
+  });
+  assert.deepEqual(attachOptions, {
+    dataDir: fixture.dataDir,
+    databasePath: fixture.databasePath,
+    walletRootId: fixture.state!.walletRootId,
+    ensureBackgroundFollow: true,
   });
 });
 
@@ -185,5 +195,45 @@ test("repairManagedIndexerStage restarts a compatible daemon and verifies rotate
     indexerDaemonAction: "restarted-managed-daemon",
     indexerCompatibilityIssue: "none",
     indexerPostRepairHealth: "synced",
+  });
+});
+
+test("repairManagedIndexerStage surfaces background follow activation failures", async (t) => {
+  const fixture = await createWalletLifecycleFixture(t);
+  const servicePaths = resolveManagedServicePaths(fixture.dataDir, fixture.state!.walletRootId);
+  let attachOptions: unknown = null;
+
+  const context = resolveWalletRepairContext({
+    dataDir: fixture.dataDir,
+    databasePath: fixture.databasePath,
+    provider: fixture.provider,
+    paths: fixture.paths,
+    assumeYes: true,
+    nowUnixMs: 10_000,
+    probeIndexerDaemon: async () => ({
+      compatibility: "unreachable",
+      status: null,
+      client: null,
+      error: null,
+    }) as any,
+    attachIndexerDaemon: async (options) => {
+      attachOptions = options;
+      throw new Error("indexer_daemon_background_follow_recovery_failed");
+    },
+  });
+
+  await assert.rejects(
+    () => repairManagedIndexerStage({
+      context,
+      servicePaths,
+      state: fixture.state!,
+    }),
+    /indexer_daemon_background_follow_recovery_failed/,
+  );
+  assert.deepEqual(attachOptions, {
+    dataDir: fixture.dataDir,
+    databasePath: fixture.databasePath,
+    walletRootId: fixture.state!.walletRootId,
+    ensureBackgroundFollow: true,
   });
 });

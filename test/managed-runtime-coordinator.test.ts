@@ -355,6 +355,7 @@ test("attachOrStartManagedIndexerRuntime reuses a compatible daemon without lock
   const paths = createManagedPaths(dataDir, walletRootId);
   const existingClient = { id: "attached-client" };
   let acquired = false;
+  let backgroundFollowRequests = 0;
 
   const result = await attachOrStartManagedIndexerRuntime({
     dataDir,
@@ -369,11 +370,18 @@ test("attachOrStartManagedIndexerRuntime reuses a compatible daemon without lock
       status: createManagedIndexerDaemonObservedStatus({
         walletRootId,
         binaryVersion: CURRENT_CLIENT_VERSION,
+        backgroundFollowActive: false,
+        bootstrapPhase: "paused",
       }),
       client: existingClient,
       error: null,
     }),
-    requestBackgroundFollow: async (client) => client,
+    requestBackgroundFollow: async (client, observedStatus) => {
+      backgroundFollowRequests += 1;
+      assert.equal(observedStatus?.backgroundFollowActive, false);
+      assert.equal(observedStatus?.bootstrapPhase, "paused");
+      return client;
+    },
     closeClient: async () => undefined,
     acquireStartLock: async () => {
       acquired = true;
@@ -391,6 +399,7 @@ test("attachOrStartManagedIndexerRuntime reuses a compatible daemon without lock
 
   assert.equal(result, existingClient);
   assert.equal(acquired, false);
+  assert.equal(backgroundFollowRequests, 1);
 });
 
 test("attachOrStartManagedIndexerRuntime replaces stale compatible daemons before starting a new one", async () => {

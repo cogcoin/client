@@ -104,6 +104,7 @@ export async function startManagedIndexerAfterRepair(options: {
     dataDir: options.context.dataDir,
     databasePath: options.context.databasePath,
     walletRootId: options.state.walletRootId,
+    ensureBackgroundFollow: true,
   });
 
   try {
