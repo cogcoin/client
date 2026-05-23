@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 import { assaySentences, deriveBlendSeed } from "@cogcoin/scoring";
 import { lookupDomain, lookupDomainById } from "@cogcoin/indexer/queries";
@@ -19,6 +20,7 @@ import {
   tieBreakHash,
 } from "./engine-utils.js";
 import type { MiningSentenceBoardEntry } from "./visualizer.js";
+import { createMiningEventRecord } from "./events.js";
 import { getIndexerTruthKey } from "./candidate.js";
 import {
   hydrateMiningMempoolIndex,
@@ -26,6 +28,7 @@ import {
   type MiningMempoolIndexHydrationDiagnostics,
   type MiningMempoolTxContext,
 } from "./mempool-index.js";
+import type { MiningEventRecord } from "./types.js";
 
 interface CachedCompetitorEntry {
   txid: string;
@@ -763,6 +766,8 @@ export async function runCompetitivenessGate(options: {
   cooperativeYieldEvery?: number;
   throwIfStopping?: () => void;
   onWarmupProgress?: (progress: MiningGateWarmupProgress) => Promise<void> | void;
+  runId?: string | null;
+  appendEvent?: (event: MiningEventRecord) => Promise<void> | void;
   mempoolIndex?: {
     rawTxSupported: boolean;
     cachePath: string;
@@ -915,21 +920,125 @@ export async function runCompetitivenessGate(options: {
     mempoolSequenceCacheStatus: "index-warming",
     lastMempoolSequence: mempoolSequence,
   });
+  const appendTimingEvent = async (
+    kind: string,
+    message: string,
+    eventOptions: Partial<MiningEventRecord>,
+  ): Promise<void> => {
+    if (options.appendEvent === undefined) {
+      return;
+    }
 
-  if (options.mempoolIndex?.rawTxSupported === true) {
-    let indexed: Awaited<ReturnType<typeof hydrateMiningMempoolIndex>>;
     try {
-      indexed = await hydrateMiningMempoolIndex({
+      await options.appendEvent(createMiningEventRecord(kind, message, eventOptions));
+    } catch {
+      // Timing telemetry must not alter gate behavior.
+    }
+  };
+  const hydrationMetrics = (
+    attempt: string,
+    attemptVisibleTxids: readonly string[],
+    sequence: string | null,
+    diagnostics: MiningMempoolIndexHydrationDiagnostics | null,
+    outcome: string,
+  ): MiningEventRecord["metrics"] => ({
+    outcome,
+    attempt,
+    visibleMempoolTxCount: attemptVisibleTxids.length,
+    indexedContextCount: diagnostics?.indexedContextCount ?? null,
+    negativeTxCount: diagnostics?.negativeTxidCount ?? null,
+    unknownTxCount: diagnostics?.unknownTxidCount ?? null,
+    hydratedTxCount: diagnostics?.hydratedCount ?? null,
+    cacheStatus: diagnostics?.cacheStatus ?? null,
+    mempoolSequence: sequence,
+  });
+  const hydrateIndexWithTiming = async (
+    attempt: "primary" | "retry",
+    attemptVisibleTxids: readonly string[],
+    sequence: string,
+  ): Promise<Awaited<ReturnType<typeof hydrateMiningMempoolIndex>>> => {
+    await appendTimingEvent(
+      "timing-mempool-hydration-start",
+      "Started mining mempool index hydration.",
+      {
+        runId: options.runId ?? null,
+        targetBlockHeight: options.candidate.targetBlockHeight,
+        referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+        domainId: options.candidate.domainId,
+        domainName: options.candidate.domainName,
+        score: options.candidate.canonicalBlend.toString(),
+        metrics: {
+          outcome: "started",
+          attempt,
+          visibleMempoolTxCount: attemptVisibleTxids.length,
+          mempoolSequence: sequence,
+        },
+      },
+    );
+    const startedAt = performance.now();
+    try {
+      const result = await hydrateMiningMempoolIndex({
         walletRootId,
-        serviceIdentity: options.mempoolIndex.serviceIdentity,
-        cachePath: options.mempoolIndex.cachePath,
+        serviceIdentity: options.mempoolIndex!.serviceIdentity,
+        cachePath: options.mempoolIndex!.cachePath,
         rpc: options.rpc,
-        visibleTxids,
+        visibleTxids: attemptVisibleTxids,
         cooperativeYield: options.cooperativeYield,
         cooperativeYieldEvery: options.cooperativeYieldEvery,
         throwIfStopping: options.throwIfStopping,
         onWarmupProgress: options.onWarmupProgress,
       });
+      await appendTimingEvent(
+        "timing-mempool-hydration-end",
+        "Finished mining mempool index hydration.",
+        {
+          runId: options.runId ?? null,
+          targetBlockHeight: options.candidate.targetBlockHeight,
+          referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+          domainId: options.candidate.domainId,
+          domainName: options.candidate.domainName,
+          score: options.candidate.canonicalBlend.toString(),
+          durationMs: performance.now() - startedAt,
+          metrics: hydrationMetrics(attempt, attemptVisibleTxids, sequence, result, "success"),
+        },
+      );
+      return result;
+    } catch (error) {
+      const diagnostics = error instanceof MiningMempoolIndexHydrationIncompleteError
+        ? error.diagnostics
+        : null;
+      await appendTimingEvent(
+        "timing-mempool-hydration-end",
+        "Finished mining mempool index hydration.",
+        {
+          level: "warn",
+          runId: options.runId ?? null,
+          targetBlockHeight: options.candidate.targetBlockHeight,
+          referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+          domainId: options.candidate.domainId,
+          domainName: options.candidate.domainName,
+          score: options.candidate.canonicalBlend.toString(),
+          durationMs: performance.now() - startedAt,
+          metrics: {
+            ...hydrationMetrics(
+              attempt,
+              attemptVisibleTxids,
+              sequence,
+              diagnostics,
+              error instanceof MiningMempoolIndexHydrationIncompleteError ? "incomplete" : "error",
+            ),
+            errorName: error instanceof Error ? error.name : "unknown",
+          },
+        },
+      );
+      throw error;
+    }
+  };
+
+  if (options.mempoolIndex?.rawTxSupported === true) {
+    let indexed: Awaited<ReturnType<typeof hydrateMiningMempoolIndex>>;
+    try {
+      indexed = await hydrateIndexWithTiming("primary", visibleTxids, mempoolSequence);
     } catch (error) {
       if (!(error instanceof MiningMempoolIndexHydrationIncompleteError)) {
         return createMempoolIndexHydrationIncompleteDecision();
@@ -949,17 +1058,7 @@ export async function runCompetitivenessGate(options: {
       visibleMempoolTxCount = visibleTxids.length;
 
       try {
-        indexed = await hydrateMiningMempoolIndex({
-          walletRootId,
-          serviceIdentity: options.mempoolIndex.serviceIdentity,
-          cachePath: options.mempoolIndex.cachePath,
-          rpc: options.rpc,
-          visibleTxids,
-          cooperativeYield: options.cooperativeYield,
-          cooperativeYieldEvery: options.cooperativeYieldEvery,
-          throwIfStopping: options.throwIfStopping,
-          onWarmupProgress: options.onWarmupProgress,
-        });
+        indexed = await hydrateIndexWithTiming("retry", visibleTxids, mempoolSequence);
       } catch (retryError) {
         if (retryError instanceof MiningMempoolIndexHydrationIncompleteError) {
           applyIndexDiagnostics(retryError.diagnostics);

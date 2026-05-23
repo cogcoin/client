@@ -68,6 +68,8 @@ export interface MiningEventRecord {
   level: "info" | "warn" | "error";
   kind: string;
   message: string;
+  durationMs?: number | null;
+  metrics?: Record<string, string | number | boolean | null>;
   targetBlockHeight?: number | null;
   referencedBlockHashDisplay?: string | null;
   domainId?: number | null;

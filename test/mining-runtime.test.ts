@@ -61,6 +61,7 @@ import {
   loadMiningRuntimeStatus,
   readMiningEvents,
 } from "../src/wallet/mining/runtime-artifacts.js";
+import { createMiningEventRecord } from "../src/wallet/mining/events.js";
 import { serializeMine } from "../src/wallet/cogop/index.js";
 import { resolveWalletRuntimePathsForTesting } from "../src/wallet/runtime.js";
 import {
@@ -91,6 +92,27 @@ import { CURRENT_CLIENT_VERSION } from "./version-helpers.js";
 
 const MANAGED_CORE_WALLET_LOCKED_ERROR =
   "bitcoind_rpc_walletprocesspsbt_-13_Please enter the wallet passphrase with walletpassphrase first.";
+
+test("mining event records preserve optional timing duration and metrics", () => {
+  const event = createMiningEventRecord("timing-wallet-build", "Built mining wallet transaction.", {
+    durationMs: 12.5,
+    metrics: {
+      outcome: "success",
+      utxoCount: 2,
+      hasConflictOutpoint: false,
+      cacheStatus: null,
+    },
+  });
+
+  assert.equal(event.schemaVersion, 1);
+  assert.equal(event.durationMs, 12.5);
+  assert.deepEqual(event.metrics, {
+    outcome: "success",
+    utxoCount: 2,
+    hasConflictOutpoint: false,
+    cacheStatus: null,
+  });
+});
 
 async function startFakeIndexerDaemonStatusServer(
   t: TestContext,
@@ -447,6 +469,8 @@ async function runCompetitivenessGateForTesting(options: {
   cooperativeYieldImpl?: Parameters<typeof runCompetitivenessGate>[0]["cooperativeYield"];
   cooperativeYieldEvery?: Parameters<typeof runCompetitivenessGate>[0]["cooperativeYieldEvery"];
   onWarmupProgress?: Parameters<typeof runCompetitivenessGate>[0]["onWarmupProgress"];
+  runId?: Parameters<typeof runCompetitivenessGate>[0]["runId"];
+  appendEvent?: Parameters<typeof runCompetitivenessGate>[0]["appendEvent"];
   mempoolIndex?: Parameters<typeof runCompetitivenessGate>[0]["mempoolIndex"];
 }) {
   return await runCompetitivenessGate({
@@ -458,6 +482,8 @@ async function runCompetitivenessGateForTesting(options: {
     cooperativeYield: options.cooperativeYieldImpl,
     cooperativeYieldEvery: options.cooperativeYieldEvery,
     onWarmupProgress: options.onWarmupProgress,
+    runId: options.runId,
+    appendEvent: options.appendEvent,
     mempoolIndex: options.mempoolIndex,
   });
 }
@@ -2465,11 +2491,20 @@ test("performMiningCycle retries publish-time snapshot lease loss without markin
   });
 
   const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  const events = await readMiningEvents({
+    eventsPath: paths.miningEventsPath,
+    all: true,
+  });
   assert.equal(loopState.attemptedTipKey, null);
   assert.equal(snapshot?.currentPhase, "waiting-indexer");
   assert.equal(snapshot?.readinessBlocker, "indexer-snapshot");
   assert.equal(snapshot?.currentPublishDecision, "publish-retry-pending");
   assert.equal(snapshot?.note, "Mining is waiting for a coherent indexer snapshot lease before broadcasting the selected candidate.");
+  assert.equal(events.some((event) =>
+    event.kind === "timing-prepublish-status-write"
+    && event.metrics?.outcome === "success"
+    && event.durationMs !== undefined
+  ), true);
 });
 
 test("performMiningCycle retries a synced status-file indexer view before waiting for snapshot lease", async (t) => {
@@ -3520,6 +3555,7 @@ test("performMiningCycle persists competitiveness gate diagnostics on indetermin
     provider,
     paths,
     runMode: "foreground",
+    foregroundRunId: "run-1",
     backgroundWorkerPid: null,
     backgroundWorkerRunId: "run-1",
     openReadContext: async () => readContext,
@@ -3566,6 +3602,19 @@ test("performMiningCycle persists competitiveness gate diagnostics on indetermin
   assert.equal(skippedEvent?.reason, "mempool_index_hydration_incomplete");
   assert.match(skippedEvent?.message ?? "", /visible=12/);
   assert.match(skippedEvent?.message ?? "", /missingEntries=1/);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-mempool-gate-start"
+    && event.runId === "run-1"
+    && event.metrics?.outcome === "started"
+  ), true);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-mempool-gate-end"
+    && event.runId === "run-1"
+    && event.metrics?.outcome === "success"
+    && event.metrics?.allowed === false
+    && event.metrics?.decision === "indeterminate-mempool-gate"
+    && event.durationMs !== undefined
+  ), true);
 });
 
 test("pre-publish status overrides clear stale competitiveness gate diagnostics", () => {
@@ -4404,9 +4453,9 @@ test("publish candidate returns a same-tip retry result after missing inputs", a
   assert.equal(result.decision, "publish-retry-pending");
   assert.match(result.note, /retried on the current tip/i);
   assert.equal(result.candidate.sentence, createTestMiningCandidate().sentence);
-  assert.equal(events.length, 1);
-  assert.equal(events[0]?.kind, "publish-retry-pending");
-  assert.equal(events[0]?.reason, "missing-inputs");
+  const retryEvent = events.find((event) => event.kind === "publish-retry-pending");
+  assert.notEqual(retryEvent, undefined);
+  assert.equal(retryEvent?.reason, "missing-inputs");
 });
 
 test("publish candidate pauses with a waiting result after insufficient funds", async () => {
@@ -4447,11 +4496,11 @@ test("publish candidate pauses with a waiting result after insufficient funds", 
   assert.equal(result.note, "Insufficient BTC to mine.");
   assert.equal(result.lastError, "Bitcoin Core could not fund the next mining publish with safe BTC.");
   assert.equal(result.candidate, null);
-  assert.equal(events.length, 1);
-  assert.equal(events[0]?.kind, "publish-paused-insufficient-funds");
-  assert.equal(events[0]?.reason, "insufficient-funds");
-  assert.doesNotMatch(events[0]?.message ?? "", /walletcreatefundedpsbt/i);
-  assert.match(events[0]?.message ?? "", /with safe BTC/i);
+  const pausedEvent = events.find((event) => event.kind === "publish-paused-insufficient-funds");
+  assert.notEqual(pausedEvent, undefined);
+  assert.equal(pausedEvent?.reason, "insufficient-funds");
+  assert.doesNotMatch(pausedEvent?.message ?? "", /walletcreatefundedpsbt/i);
+  assert.match(pausedEvent?.message ?? "", /with safe BTC/i);
 });
 
 test("publish candidate broadcasts when only safe 0-conf BTC funding is available", async (t) => {
@@ -4680,6 +4729,35 @@ test("publish candidate recovers a managed Core wallet relock and continues broa
     && event.reason === "managed-core-wallet-locked"
   ), true);
   assert.equal(events.some((event) => event.kind === "tx-broadcast"), true);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-read-context-refresh"
+    && event.metrics?.outcome === "success"
+    && event.durationMs >= 0
+  ), true);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-wallet-build"
+    && event.metrics?.outcome === "success"
+    && event.metrics?.managedCoreWalletRelockOutcome === "recovered"
+    && event.durationMs >= 0
+  ), true);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-sendrawtransaction"
+    && event.metrics?.outcome === "accepted"
+    && event.txid === "bb".repeat(32)
+    && event.durationMs >= 0
+  ), true);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-wallet-state-save"
+    && event.metrics?.stage === "pre-broadcast"
+    && event.metrics?.outcome === "success"
+    && event.durationMs >= 0
+  ), true);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-wallet-state-save"
+    && event.metrics?.stage === "post-broadcast"
+    && event.metrics?.outcome === "success"
+    && event.durationMs >= 0
+  ), true);
 });
 
 test("publish candidate retries when the managed Core wallet stays locked after the immediate retry", async (t) => {
@@ -4756,9 +4834,9 @@ test("publish candidate retries when the managed Core wallet stays locked after 
   assert.equal(walletPassphraseCalls, 2);
   assert.equal(walletProcessPsbtCalls, 2);
   assert.equal(walletLockCalls, 1);
-  assert.equal(events.length, 1);
-  assert.equal(events[0]?.kind, "publish-retry-pending");
-  assert.equal(events[0]?.reason, "managed-core-wallet-locked");
+  const retryEvent = events.find((event) => event.kind === "publish-retry-pending");
+  assert.notEqual(retryEvent, undefined);
+  assert.equal(retryEvent?.reason, "managed-core-wallet-locked");
 });
 
 test("pre-publish status on a new tip shows the pending candidate instead of stale prior-tip tx metadata", () => {
@@ -4971,9 +5049,9 @@ test("publish candidate retries when publish-time read context has no snapshot l
   assert.equal(result.readinessBlocker, "indexer-snapshot");
   assert.equal(result.note, "Mining is waiting for a coherent indexer snapshot lease before broadcasting the selected candidate.");
   assert.equal(result.candidate.sentence, createTestMiningCandidate().sentence);
-  assert.equal(events.length, 1);
-  assert.equal(events[0]?.kind, "publish-retry-pending");
-  assert.equal(events[0]?.reason, "snapshot-unavailable");
+  const retryEvent = events.find((event) => event.kind === "publish-retry-pending");
+  assert.notEqual(retryEvent, undefined);
+  assert.equal(retryEvent?.reason, "snapshot-unavailable");
 });
 
 test("publish candidate refresh uses domain ID even when the read model omits the domain", async () => {
@@ -5226,8 +5304,10 @@ test("publish candidate flags owner authorization loss as an invariant failure",
   assert.equal(result.skipped, true);
   assert.equal(result.decision, "publish-skipped-authorization-lost");
   assert.match(result.lastError ?? "", /owner authorization invariant failed/i);
-  assert.equal(events[0]?.level, "error");
-  assert.equal(events[0]?.reason, "authorization-lost");
+  const skipEvent = events.find((event) => event.kind === "publish-skipped-authorization-lost");
+  assert.notEqual(skipEvent, undefined);
+  assert.equal(skipEvent?.level, "error");
+  assert.equal(skipEvent?.reason, "authorization-lost");
 });
 
 test("runCompetitivenessGate keeps same-domain mempool suppression semantics", async () => {
@@ -5708,7 +5788,7 @@ class FakeMiningRawTxSubscriber implements AsyncIterable<unknown> {
   }
 }
 
-test("rawtx mempool index subscriber ignores txids outside the active visible snapshot", async (t) => {
+test("rawtx mempool index subscriber prewarms non-Cog txids outside the active visible snapshot", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-rawtx-visible");
   const cachePath = join(homeDirectory, "mempool-index.json");
   const walletRootId = "wallet-rawtx-1";
@@ -5762,6 +5842,104 @@ test("rawtx mempool index subscriber ignores txids outside the active visible sn
   const persisted = await readPersistedMempoolIndexForTesting(cachePath);
   assert.deepEqual(persisted.negativeTxids, [activeVisibleTxid]);
   assert.equal(persisted.negativeTxids.includes(outsideTxid), false);
+
+  let rawTransactionCalls = 0;
+  const hydrated = await hydrateMiningMempoolIndex({
+    walletRootId,
+    serviceIdentity,
+    cachePath,
+    rpc: {
+      async getRawTransaction() {
+        rawTransactionCalls += 1;
+        throw new Error("prewarmed negative txid should not be hydrated by RPC");
+      },
+    },
+    visibleTxids: [outsideTxid],
+  });
+  assert.equal(rawTransactionCalls, 0);
+  assert.equal(hydrated.unknownTxidCount, 0);
+  assert.equal(hydrated.hydratedCount, 0);
+  assert.equal(hydrated.negativeTxidCount, 1);
+
+  const persistedAfterHydration = await readPersistedMempoolIndexForTesting(cachePath);
+  assert.deepEqual(persistedAfterHydration.negativeTxids, [outsideTxid]);
+});
+
+test("rawtx mempool index subscriber does not cache Cog payload txids as negative", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-index-rawtx-cog");
+  const cachePath = join(homeDirectory, "mempool-index.json");
+  const walletRootId = "wallet-rawtx-cog";
+  const serviceIdentity = "service-cog";
+  const referencedBlockHashInternal = Buffer.from("22".repeat(32), "hex");
+  const cogPayloadHex = createMinePayloadHex(1, referencedBlockHashInternal, "a");
+  const cogRawHex = createRawTransactionHexForIndex(
+    `6a4c${(cogPayloadHex.length / 2).toString(16).padStart(2, "0")}${cogPayloadHex}`,
+  );
+  const cogParsed = parseRawTransactionForMiningMempoolIndexTesting(cogRawHex);
+  assert.notEqual(cogParsed, null);
+  const cogTxid = cogParsed?.txid ?? "";
+
+  await hydrateMiningMempoolIndex({
+    walletRootId,
+    serviceIdentity,
+    cachePath,
+    rpc: {
+      async getRawTransaction() {
+        throw new Error("empty visible snapshot should not hydrate raw transactions");
+      },
+    },
+    visibleTxids: [],
+  });
+
+  const createdSubscriber = { current: null as FakeMiningRawTxSubscriber | null };
+  const ready = await ensureMiningMempoolRawTxSubscriber({
+    walletRootId,
+    serviceIdentity,
+    cachePath,
+    zmqEndpoint: "tcp://127.0.0.1:28332",
+    rawTxTopic: "rawtx",
+    async loadZeroMq() {
+      return {
+        Subscriber: class extends FakeMiningRawTxSubscriber {
+          constructor() {
+            super();
+            createdSubscriber.current = this;
+          }
+        },
+      };
+    },
+  });
+  assert.equal(ready, true);
+  const subscriber = createdSubscriber.current;
+  assert.notEqual(subscriber, null);
+  if (subscriber === null) {
+    throw new Error("expected a subscriber instance");
+  }
+  subscriber.emit([Buffer.from("rawtx"), Buffer.from(cogRawHex, "hex")]);
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+  let rawTransactionCalls = 0;
+  const hydrated = await hydrateMiningMempoolIndex({
+    walletRootId,
+    serviceIdentity,
+    cachePath,
+    rpc: {
+      async getRawTransaction(txid: string) {
+        rawTransactionCalls += 1;
+        return createMineTransaction({
+          txid,
+          domainId: 1,
+          senderScriptPubKeyHex: "0014" + "11".repeat(20),
+          referencedBlockHashInternal,
+          sentenceFill: "a",
+        });
+      },
+    },
+    visibleTxids: [cogTxid],
+  });
+  assert.equal(rawTransactionCalls, 1);
+  assert.equal(hydrated.indexedContextCount, 1);
+  assert.equal(hydrated.negativeTxidCount, 0);
 });
 
 test("pruneMiningMempoolIndexServicesForWallet retires superseded service identities only", async (t) => {
@@ -5913,6 +6091,7 @@ test("runCompetitivenessGate uses persisted indexed contexts without refetching 
   });
   const txid = "aa".repeat(32);
   let rawTransactionCalls = 0;
+  const events: any[] = [];
 
   const rpc = {
     ...(createGateRpc({
@@ -5950,6 +6129,10 @@ test("runCompetitivenessGate uses persisted indexed contexts without refetching 
     assaySentencesImpl: createGateAssayStub({
       ["a".repeat(60)]: 10n,
     }) as any,
+    runId: "run-gate-1",
+    appendEvent: async (event) => {
+      events.push(event);
+    },
     mempoolIndex: {
       rawTxSupported: true,
       cachePath,
@@ -5958,6 +6141,20 @@ test("runCompetitivenessGate uses persisted indexed contexts without refetching 
   });
 
   assert.equal(rawTransactionCalls, 1);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-mempool-hydration-start"
+    && event.runId === "run-gate-1"
+    && event.metrics?.visibleMempoolTxCount === 1
+    && event.metrics?.mempoolSequence === "seq-1"
+  ), true);
+  const hydrationEnd = events.find((event) => event.kind === "timing-mempool-hydration-end");
+  assert.notEqual(hydrationEnd, undefined);
+  assert.equal(hydrationEnd?.durationMs >= 0, true);
+  assert.equal(hydrationEnd?.metrics?.outcome, "success");
+  assert.equal(hydrationEnd?.metrics?.cacheStatus, "index-warming");
+  assert.equal(hydrationEnd?.metrics?.visibleMempoolTxCount, 1);
+  assert.equal(hydrationEnd?.metrics?.unknownTxCount, 1);
+  assert.equal(hydrationEnd?.metrics?.hydratedTxCount, 1);
   clearMiningGateCache(context.localState.walletRootId);
   clearMiningMempoolIndexCacheForTesting();
 

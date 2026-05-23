@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 import { getBlockWinners } from "@cogcoin/indexer/queries";
 import { deriveBlendSeed, displayToInternalBlockhash } from "@cogcoin/scoring";
@@ -77,6 +78,55 @@ class ManagedCoreWalletRelockPendingError extends Error {
     super(message);
     this.name = "ManagedCoreWalletRelockPendingError";
   }
+}
+
+async function appendPublishTimingEvent(
+  appendEventFn: AppendMiningEventFn | undefined,
+  paths: WalletRuntimePaths,
+  kind: string,
+  message: string,
+  options: Partial<MiningEventRecord>,
+): Promise<void> {
+  if (appendEventFn === undefined) {
+    return;
+  }
+
+  try {
+    await appendEventFn(paths, createMiningEventRecord(kind, message, options));
+  } catch {
+    // Timing telemetry must not alter the publish path.
+  }
+}
+
+function createPublishTimingContext(options: {
+  candidate: MiningCandidate;
+  runId: string | null;
+  txid?: string | null;
+  feeRateSatVb?: number | null;
+  feeSats?: string | null;
+  level?: MiningEventRecord["level"];
+  durationMs?: number | null;
+  metrics: MiningEventRecord["metrics"];
+}): Partial<MiningEventRecord> {
+  const event: Partial<MiningEventRecord> = {
+    runId: options.runId,
+    targetBlockHeight: options.candidate.targetBlockHeight,
+    referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+    domainId: options.candidate.domainId,
+    domainName: options.candidate.domainName,
+    txid: options.txid ?? null,
+    feeRateSatVb: options.feeRateSatVb ?? null,
+    feeSats: options.feeSats ?? null,
+    score: options.candidate.canonicalBlend.toString(),
+    metrics: options.metrics,
+  };
+  if (options.level !== undefined) {
+    event.level = options.level;
+  }
+  if (options.durationMs !== undefined) {
+    event.durationMs = options.durationMs;
+  }
+  return event;
 }
 
 export function createStaleMiningCandidateWaitingNote(): string {
@@ -605,45 +655,126 @@ export async function publishCandidateOnce(options: {
     snapshotState: options.readContext.snapshot.state,
   })).state;
   options.throwIfStopping?.();
-  const allUtxos = await rpc.listUnspent(state.managedCoreWallet.walletName, MINING_FUNDING_MIN_CONF);
-  options.throwIfStopping?.();
-  const conflictOutpoint = resolveMiningConflictOutpoint({
-    state,
-    allUtxos,
-  });
-  const priorMiningState = cloneMiningState(state.miningState);
+  const saveWalletStateWithTiming = async (
+    stage: string,
+    stateToSave: WalletStateV1,
+  ): Promise<void> => {
+    const startedAt = performance.now();
+    try {
+      await saveWalletStatePreservingUnlock({
+        state: stateToSave,
+        provider: options.provider,
+        paths: options.paths,
+      });
+      await appendPublishTimingEvent(
+        appendEventFn,
+        options.paths,
+        "timing-wallet-state-save",
+        "Saved mining wallet state.",
+        createPublishTimingContext({
+          candidate: options.candidate,
+          runId: options.runId,
+          txid: stateToSave.miningState.currentTxid,
+          feeRateSatVb: stateToSave.miningState.currentFeeRateSatVb,
+          durationMs: performance.now() - startedAt,
+          metrics: {
+            outcome: "success",
+            stage,
+            currentPublishState: stateToSave.miningState.currentPublishState,
+            currentPublishDecision: stateToSave.miningState.currentPublishDecision,
+          },
+        }),
+      );
+    } catch (error) {
+      await appendPublishTimingEvent(
+        appendEventFn,
+        options.paths,
+        "timing-wallet-state-save",
+        "Saved mining wallet state.",
+        createPublishTimingContext({
+          candidate: options.candidate,
+          runId: options.runId,
+          txid: stateToSave.miningState.currentTxid,
+          feeRateSatVb: stateToSave.miningState.currentFeeRateSatVb,
+          level: "warn",
+          durationMs: performance.now() - startedAt,
+          metrics: {
+            outcome: "error",
+            stage,
+            currentPublishState: stateToSave.miningState.currentPublishState,
+            currentPublishDecision: stateToSave.miningState.currentPublishDecision,
+            errorName: error instanceof Error ? error.name : "unknown",
+          },
+        }),
+      );
+      throw error;
+    }
+  };
 
-  if (
-    livePublishTargetsCandidateTip({
-      liveState: state.miningState,
-      candidate: options.candidate,
-    })
-  ) {
-    return {
-      state: defaultMiningStatePatch(state, {
-        currentPublishDecision: "kept-live-publish",
-      }),
-      txid: state.miningState.currentTxid,
-      decision: "kept-live-publish",
-    };
-  }
-
-  const feeSelection = await resolveWalletMutationFeeSelection({
-    rpc,
-  });
-  options.throwIfStopping?.();
-  const nextFeeRate = feeSelection.feeRateSatVb;
-
-  const plan = createMiningPlan({
-    state,
-    candidate: options.candidate,
-    conflictOutpoint,
-    allUtxos,
-    feeRateSatVb: nextFeeRate,
-  });
+  let allUtxos: Awaited<ReturnType<MiningRpcClient["listUnspent"]>> | null = null;
+  let conflictOutpoint: OutpointRecord | null = null;
+  let priorMiningState!: MiningStateRecord;
+  let nextFeeRate!: number;
   let managedCoreWalletRelockOutcome: "recovered" | "still-locked" | null = null;
-  let built: Awaited<ReturnType<typeof buildMiningTransaction>>;
+  let built!: Awaited<ReturnType<typeof buildMiningTransaction>>;
+  const walletBuildStartedAt = performance.now();
+
   try {
+    allUtxos = await rpc.listUnspent(state.managedCoreWallet.walletName, MINING_FUNDING_MIN_CONF);
+    options.throwIfStopping?.();
+    conflictOutpoint = resolveMiningConflictOutpoint({
+      state,
+      allUtxos,
+    });
+    priorMiningState = cloneMiningState(state.miningState);
+
+    if (
+      livePublishTargetsCandidateTip({
+        liveState: state.miningState,
+        candidate: options.candidate,
+      })
+    ) {
+      await appendPublishTimingEvent(
+        appendEventFn,
+        options.paths,
+        "timing-wallet-build",
+        "Built mining wallet transaction.",
+        createPublishTimingContext({
+          candidate: options.candidate,
+          runId: options.runId,
+          txid: state.miningState.currentTxid,
+          durationMs: performance.now() - walletBuildStartedAt,
+          metrics: {
+            outcome: "kept-live-publish",
+            utxoCount: allUtxos.length,
+            hasConflictOutpoint: conflictOutpoint !== null,
+            feeRateSatVb: null,
+            managedCoreWalletRelockOutcome,
+          },
+        }),
+      );
+      return {
+        state: defaultMiningStatePatch(state, {
+          currentPublishDecision: "kept-live-publish",
+        }),
+        txid: state.miningState.currentTxid,
+        decision: "kept-live-publish",
+      };
+    }
+
+    const feeSelection = await resolveWalletMutationFeeSelection({
+      rpc,
+    });
+    options.throwIfStopping?.();
+    nextFeeRate = feeSelection.feeRateSatVb;
+
+    const plan = createMiningPlan({
+      state,
+      candidate: options.candidate,
+      conflictOutpoint,
+      allUtxos,
+      feeRateSatVb: nextFeeRate,
+    });
     built = await buildMiningTransaction({
       rpc,
       walletName: state.managedCoreWallet.walletName,
@@ -656,12 +787,73 @@ export async function publishCandidateOnce(options: {
     });
   } catch (error) {
     if (managedCoreWalletRelockOutcome === "still-locked" && error instanceof Error) {
+      await appendPublishTimingEvent(
+        appendEventFn,
+        options.paths,
+        "timing-wallet-build",
+        "Built mining wallet transaction.",
+        createPublishTimingContext({
+          candidate: options.candidate,
+          runId: options.runId,
+          level: "warn",
+          durationMs: performance.now() - walletBuildStartedAt,
+          metrics: {
+            outcome: "error",
+            errorName: "ManagedCoreWalletRelockPendingError",
+            utxoCount: allUtxos?.length ?? null,
+            hasConflictOutpoint: conflictOutpoint !== null,
+            feeRateSatVb: nextFeeRate ?? null,
+            managedCoreWalletRelockOutcome,
+          },
+        }),
+      );
       throw new ManagedCoreWalletRelockPendingError(error.message);
     }
 
+    await appendPublishTimingEvent(
+      appendEventFn,
+      options.paths,
+      "timing-wallet-build",
+      "Built mining wallet transaction.",
+      createPublishTimingContext({
+        candidate: options.candidate,
+        runId: options.runId,
+        level: "warn",
+        durationMs: performance.now() - walletBuildStartedAt,
+        metrics: {
+          outcome: "error",
+          errorName: error instanceof Error ? error.name : "unknown",
+          utxoCount: allUtxos?.length ?? null,
+          hasConflictOutpoint: conflictOutpoint !== null,
+          feeRateSatVb: nextFeeRate ?? null,
+          managedCoreWalletRelockOutcome,
+        },
+      }),
+    );
     throw error;
   }
   options.throwIfStopping?.();
+  await appendPublishTimingEvent(
+    appendEventFn,
+    options.paths,
+    "timing-wallet-build",
+    "Built mining wallet transaction.",
+    createPublishTimingContext({
+      candidate: options.candidate,
+      runId: options.runId,
+      txid: built.txid,
+      feeRateSatVb: nextFeeRate,
+      feeSats: numberToSats(built.funded.fee).toString(),
+      durationMs: performance.now() - walletBuildStartedAt,
+      metrics: {
+        outcome: "success",
+        utxoCount: allUtxos?.length ?? null,
+        hasConflictOutpoint: conflictOutpoint !== null,
+        feeRateSatVb: nextFeeRate,
+        managedCoreWalletRelockOutcome,
+      },
+    }),
+  );
   if (managedCoreWalletRelockOutcome === "recovered" && appendEventFn !== undefined) {
     await appendEventFn(options.paths, createMiningEventRecord(
       "managed-core-wallet-relock-recovered",
@@ -705,27 +897,55 @@ export async function publishCandidateOnce(options: {
       ? "publishing"
       : "replacing",
   });
-  await saveWalletStatePreservingUnlock({
-    state,
-    provider: options.provider,
-    paths: options.paths,
-  });
+  await saveWalletStateWithTiming("pre-broadcast", state);
   options.throwIfStopping?.();
 
+  const sendRawTransactionStartedAt = performance.now();
   try {
     await rpc.sendRawTransaction(built.rawHex);
     options.throwIfStopping?.();
+    await appendPublishTimingEvent(
+      appendEventFn,
+      options.paths,
+      "timing-sendrawtransaction",
+      "Sent mining transaction to Bitcoin Core.",
+      createPublishTimingContext({
+        candidate: options.candidate,
+        runId: options.runId,
+        txid: built.txid,
+        feeRateSatVb: nextFeeRate,
+        feeSats: numberToSats(built.funded.fee).toString(),
+        durationMs: performance.now() - sendRawTransactionStartedAt,
+        metrics: {
+          outcome: "accepted",
+        },
+      }),
+    );
   } catch (error) {
     if (isAlreadyAcceptedError(error)) {
+      await appendPublishTimingEvent(
+        appendEventFn,
+        options.paths,
+        "timing-sendrawtransaction",
+        "Sent mining transaction to Bitcoin Core.",
+        createPublishTimingContext({
+          candidate: options.candidate,
+          runId: options.runId,
+          txid: built.txid,
+          feeRateSatVb: nextFeeRate,
+          feeSats: numberToSats(built.funded.fee).toString(),
+          durationMs: performance.now() - sendRawTransactionStartedAt,
+          metrics: {
+            outcome: "already-accepted",
+            errorName: error instanceof Error ? error.name : "unknown",
+          },
+        }),
+      );
       state = defaultMiningStatePatch(state, {
         currentPublishState: "in-mempool",
         livePublishInMempool: true,
       });
-      await saveWalletStatePreservingUnlock({
-        state,
-        provider: options.provider,
-        paths: options.paths,
-      });
+      await saveWalletStateWithTiming("already-accepted", state);
       if (appendEventFn !== undefined) {
         await appendEventFn(options.paths, createMiningEventRecord(
           state.miningState.currentPublishDecision === "replacing" ? "tx-replaced" : "tx-broadcast",
@@ -753,15 +973,30 @@ export async function publishCandidateOnce(options: {
     }
 
     if (isBroadcastUnknownError(error)) {
+      await appendPublishTimingEvent(
+        appendEventFn,
+        options.paths,
+        "timing-sendrawtransaction",
+        "Sent mining transaction to Bitcoin Core.",
+        createPublishTimingContext({
+          candidate: options.candidate,
+          runId: options.runId,
+          txid: built.txid,
+          feeRateSatVb: nextFeeRate,
+          feeSats: numberToSats(built.funded.fee).toString(),
+          level: "warn",
+          durationMs: performance.now() - sendRawTransactionStartedAt,
+          metrics: {
+            outcome: "broadcast-unknown",
+            errorName: error instanceof Error ? error.name : "unknown",
+          },
+        }),
+      );
       state = defaultMiningStatePatch(state, {
         currentPublishState: "broadcast-unknown",
         currentPublishDecision: "broadcast-unknown",
       });
-      await saveWalletStatePreservingUnlock({
-        state,
-        provider: options.provider,
-        paths: options.paths,
-      });
+      await saveWalletStateWithTiming("broadcast-unknown", state);
       if (appendEventFn !== undefined) {
         await appendEventFn(options.paths, createMiningEventRecord(
           "error",
@@ -788,15 +1023,30 @@ export async function publishCandidateOnce(options: {
       };
     }
 
+    await appendPublishTimingEvent(
+      appendEventFn,
+      options.paths,
+      "timing-sendrawtransaction",
+      "Sent mining transaction to Bitcoin Core.",
+      createPublishTimingContext({
+        candidate: options.candidate,
+        runId: options.runId,
+        txid: built.txid,
+        feeRateSatVb: nextFeeRate,
+        feeSats: numberToSats(built.funded.fee).toString(),
+        level: "warn",
+        durationMs: performance.now() - sendRawTransactionStartedAt,
+        metrics: {
+          outcome: "rejected",
+          errorName: error instanceof Error ? error.name : "unknown",
+        },
+      }),
+    );
     state = {
       ...state,
       miningState: cloneMiningState(priorMiningState),
     };
-    await saveWalletStatePreservingUnlock({
-      state,
-      provider: options.provider,
-      paths: options.paths,
-    });
+    await saveWalletStateWithTiming("reverted-after-rejection", state);
     throw new MiningPublishRejectedError(
       error instanceof Error ? error.message : String(error),
       state,
@@ -819,11 +1069,7 @@ export async function publishCandidateOnce(options: {
     sessionFeeSpentSats: (BigInt(state.miningState.sessionFeeSpentSats) + absoluteFeeSats).toString(),
     lifetimeFeeSpentSats: (BigInt(state.miningState.lifetimeFeeSpentSats) + absoluteFeeSats).toString(),
   });
-  await saveWalletStatePreservingUnlock({
-    state,
-    provider: options.provider,
-    paths: options.paths,
-  });
+  await saveWalletStateWithTiming("post-broadcast", state);
   if (appendEventFn !== undefined) {
     await appendEventFn(options.paths, createMiningEventRecord(
       state.miningState.currentPublishDecision === "replaced"
@@ -977,17 +1223,62 @@ export async function publishCandidate(options: {
   };
 
   options.throwIfStopping?.();
-  const lockedReadContext = await options.openReadContext({
-    dataDir: options.dataDir,
-    databasePath: options.databasePath,
-    secretProvider: options.provider,
-    walletControlLockHeld: true,
-    paths: options.paths,
-  });
+  const readContextRefreshStartedAt = performance.now();
+  let lockedReadContext: WalletReadContext;
+  try {
+    lockedReadContext = await options.openReadContext({
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      secretProvider: options.provider,
+      walletControlLockHeld: true,
+      paths: options.paths,
+    });
+  } catch (error) {
+    await appendPublishTimingEvent(
+      options.appendEventFn,
+      options.paths,
+      "timing-read-context-refresh",
+      "Refreshed mining read context before publish.",
+      createPublishTimingContext({
+        candidate: options.candidate,
+        runId: options.runId,
+        level: "warn",
+        durationMs: performance.now() - readContextRefreshStartedAt,
+        metrics: {
+          outcome: "error",
+          errorName: error instanceof Error ? error.name : "unknown",
+        },
+      }),
+    );
+    throw error;
+  }
 
   try {
     options.throwIfStopping?.();
     const readyReadContext = resolveReadyMiningReadContext(lockedReadContext);
+    await appendPublishTimingEvent(
+      options.appendEventFn,
+      options.paths,
+      "timing-read-context-refresh",
+      "Refreshed mining read context before publish.",
+      createPublishTimingContext({
+        candidate: options.candidate,
+        runId: options.runId,
+        durationMs: performance.now() - readContextRefreshStartedAt,
+        metrics: {
+          outcome: readyReadContext === null ? "snapshot-unavailable" : "success",
+          indexerTruthSource: lockedReadContext.indexer.source ?? null,
+          snapshotSeq: lockedReadContext.snapshot?.snapshotSeq ?? lockedReadContext.indexer.snapshotSeq ?? null,
+          daemonInstanceId: lockedReadContext.snapshot?.daemonInstanceId ?? lockedReadContext.indexer.daemonInstanceId ?? null,
+          hasSnapshot: lockedReadContext.snapshot !== null,
+          hasModel: lockedReadContext.model !== null,
+          coreBestHeight: lockedReadContext.nodeStatus?.nodeBestHeight ?? null,
+          coreBestHash: lockedReadContext.nodeStatus?.nodeBestHashHex ?? null,
+          indexerTipHeight: lockedReadContext.snapshot?.tip?.height ?? lockedReadContext.indexer.snapshotTip?.height ?? null,
+          indexerTipHash: lockedReadContext.snapshot?.tip?.blockHashHex ?? lockedReadContext.indexer.snapshotTip?.blockHashHex ?? null,
+        },
+      }),
+    );
     if (readyReadContext === null) {
       return await createSnapshotUnavailableRetryResult();
     }

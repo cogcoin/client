@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import { assaySentences } from "@cogcoin/scoring";
 import { acquireFileLock } from "../fs/lock.js";
 import { openWalletReadContext, type WalletReadContext } from "../read/index.js";
@@ -101,6 +103,19 @@ function formatGateDiagnosticsSummary(
   ].filter((part): part is string => part !== null);
 
   return parts.length === 0 ? "" : ` ${parts.join(" ")}`;
+}
+
+async function appendTimingEvent(
+  appendEvent: (event: MiningEventRecord) => Promise<void>,
+  kind: string,
+  message: string,
+  options: Partial<MiningEventRecord>,
+): Promise<void> {
+  try {
+    await appendEvent(createMiningEventRecord(kind, message, options));
+  } catch {
+    // Timing telemetry must not alter the mining decision path.
+  }
 }
 
 export async function runMiningPhaseMachine(options: {
@@ -537,47 +552,113 @@ export async function runMiningPhaseMachine(options: {
         let lastScoringProgressProcessed = -1;
         let lastScoringProgressSavedAtUnixMs = 0;
         let scoringProgressWrite = Promise.resolve();
-        const gate = await runGateImpl({
-          rpc: options.rpc,
-          readContext: options.readContext,
-          candidate: best,
-          currentTxid: options.readContext.localState.state.miningState.currentTxid,
-          assaySentencesImpl: options.assaySentencesImpl,
-          cooperativeYield: options.cooperativeYieldImpl,
-          cooperativeYieldEvery: options.cooperativeYieldEvery,
-          mempoolIndex: options.mempoolIndex,
-          throwIfStopping: options.throwIfStopping,
-          onWarmupProgress: async (progress) => {
-            if (progress.total <= 0) {
-              return;
-            }
-
-            const nowUnixMs = now();
-            if (
-              progress.processed === lastScoringProgressProcessed
-              || (
-                progress.processed !== 0
-                && progress.processed !== progress.total
-                && (nowUnixMs - lastScoringProgressSavedAtUnixMs) < 500
-              )
-            ) {
-              return;
-            }
-
-            lastScoringProgressProcessed = progress.processed;
-            lastScoringProgressSavedAtUnixMs = nowUnixMs;
-            scoringProgressWrite = scoringProgressWrite.then(async () => {
-              await options.saveCycleStatus(options.readContext, {
-                runMode: options.runMode,
-                currentPhase: "scoring",
-                currentPublishDecision: null,
-                lastError: null,
-                note: `Scoring mining candidates for the current tip (mempool ${progress.processed}/${progress.total}).`,
-              });
-            });
-            await scoringProgressWrite;
+        await appendTimingEvent(
+          options.appendEvent,
+          "timing-mempool-gate-start",
+          "Started mining mempool competitiveness gate.",
+          {
+            runId: options.backgroundWorkerRunId,
+            targetBlockHeight: best.targetBlockHeight,
+            referencedBlockHashDisplay: best.referencedBlockHashDisplay,
+            domainId: best.domainId,
+            domainName: best.domainName,
+            score: best.canonicalBlend.toString(),
+            metrics: {
+              outcome: "started",
+              currentTxid: options.readContext.localState.state.miningState.currentTxid,
+            },
           },
-        });
+        );
+        const gateStartedAt = performance.now();
+        let gate: CompetitivenessDecision;
+        try {
+          gate = await runGateImpl({
+            rpc: options.rpc,
+            readContext: options.readContext,
+            candidate: best,
+            currentTxid: options.readContext.localState.state.miningState.currentTxid,
+            assaySentencesImpl: options.assaySentencesImpl,
+            cooperativeYield: options.cooperativeYieldImpl,
+            cooperativeYieldEvery: options.cooperativeYieldEvery,
+            mempoolIndex: options.mempoolIndex,
+            runId: options.backgroundWorkerRunId,
+            appendEvent: options.appendEvent,
+            throwIfStopping: options.throwIfStopping,
+            onWarmupProgress: async (progress) => {
+              if (progress.total <= 0) {
+                return;
+              }
+
+              const nowUnixMs = now();
+              if (
+                progress.processed === lastScoringProgressProcessed
+                || (
+                  progress.processed !== 0
+                  && progress.processed !== progress.total
+                  && (nowUnixMs - lastScoringProgressSavedAtUnixMs) < 500
+                )
+              ) {
+                return;
+              }
+
+              lastScoringProgressProcessed = progress.processed;
+              lastScoringProgressSavedAtUnixMs = nowUnixMs;
+              scoringProgressWrite = scoringProgressWrite.then(async () => {
+                await options.saveCycleStatus(options.readContext, {
+                  runMode: options.runMode,
+                  currentPhase: "scoring",
+                  currentPublishDecision: null,
+                  lastError: null,
+                  note: `Scoring mining candidates for the current tip (mempool ${progress.processed}/${progress.total}).`,
+                });
+              });
+              await scoringProgressWrite;
+            },
+          });
+        } catch (error) {
+          await appendTimingEvent(
+            options.appendEvent,
+            "timing-mempool-gate-end",
+            "Finished mining mempool competitiveness gate.",
+            {
+              level: "warn",
+              runId: options.backgroundWorkerRunId,
+              targetBlockHeight: best.targetBlockHeight,
+              referencedBlockHashDisplay: best.referencedBlockHashDisplay,
+              domainId: best.domainId,
+              domainName: best.domainName,
+              score: best.canonicalBlend.toString(),
+              durationMs: performance.now() - gateStartedAt,
+              metrics: {
+                outcome: "error",
+                errorName: error instanceof Error ? error.name : "unknown",
+              },
+            },
+          );
+          throw error;
+        }
+        await appendTimingEvent(
+          options.appendEvent,
+          "timing-mempool-gate-end",
+          "Finished mining mempool competitiveness gate.",
+          {
+            runId: options.backgroundWorkerRunId,
+            targetBlockHeight: best.targetBlockHeight,
+            referencedBlockHashDisplay: best.referencedBlockHashDisplay,
+            domainId: best.domainId,
+            domainName: best.domainName,
+            score: best.canonicalBlend.toString(),
+            durationMs: performance.now() - gateStartedAt,
+            metrics: {
+              outcome: "success",
+              allowed: gate.allowed,
+              decision: gate.decision,
+              indeterminate: gate.competitivenessGateIndeterminate,
+              cacheStatus: gate.mempoolSequenceCacheStatus,
+              mempoolSequence: gate.lastMempoolSequence,
+            },
+          },
+        );
         await scoringProgressWrite;
         throwIfInterrupted();
         state.gateSnapshot = {
@@ -663,13 +744,54 @@ export async function runMiningPhaseMachine(options: {
           return;
         }
 
-        await options.saveCycleStatus(options.readContext, {
-          runMode: options.runMode,
-          ...buildPrePublishStatusOverrides({
-            state: options.readContext.localState.state,
-            candidate: selectedCandidate,
-          }),
-        });
+        const prePublishStatusStartedAt = performance.now();
+        try {
+          await options.saveCycleStatus(options.readContext, {
+            runMode: options.runMode,
+            ...buildPrePublishStatusOverrides({
+              state: options.readContext.localState.state,
+              candidate: selectedCandidate,
+            }),
+          });
+          await appendTimingEvent(
+            options.appendEvent,
+            "timing-prepublish-status-write",
+            "Wrote pre-publish mining status.",
+            {
+              runId: options.backgroundWorkerRunId,
+              targetBlockHeight: selectedCandidate.targetBlockHeight,
+              referencedBlockHashDisplay: selectedCandidate.referencedBlockHashDisplay,
+              domainId: selectedCandidate.domainId,
+              domainName: selectedCandidate.domainName,
+              score: selectedCandidate.canonicalBlend.toString(),
+              durationMs: performance.now() - prePublishStatusStartedAt,
+              metrics: {
+                outcome: "success",
+              },
+            },
+          );
+        } catch (error) {
+          await appendTimingEvent(
+            options.appendEvent,
+            "timing-prepublish-status-write",
+            "Wrote pre-publish mining status.",
+            {
+              level: "warn",
+              runId: options.backgroundWorkerRunId,
+              targetBlockHeight: selectedCandidate.targetBlockHeight,
+              referencedBlockHashDisplay: selectedCandidate.referencedBlockHashDisplay,
+              domainId: selectedCandidate.domainId,
+              domainName: selectedCandidate.domainName,
+              score: selectedCandidate.canonicalBlend.toString(),
+              durationMs: performance.now() - prePublishStatusStartedAt,
+              metrics: {
+                outcome: "error",
+                errorName: error instanceof Error ? error.name : "unknown",
+              },
+            },
+          );
+          throw error;
+        }
 
         const publishLock = await acquireFileLock(options.paths.walletControlLockPath, {
           purpose: "wallet-mine",

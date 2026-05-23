@@ -5,7 +5,7 @@ export function createMiningEventRecord(
   message: string,
   options: Partial<MiningEventRecord> = {},
 ): MiningEventRecord {
-  return {
+  const event: MiningEventRecord = {
     schemaVersion: 1,
     timestampUnixMs: options.timestampUnixMs ?? Date.now(),
     level: options.level ?? "info",
@@ -22,4 +22,11 @@ export function createMiningEventRecord(
     reason: options.reason ?? null,
     runId: options.runId ?? null,
   };
+  if (options.durationMs !== undefined) {
+    event.durationMs = options.durationMs;
+  }
+  if (options.metrics !== undefined) {
+    event.metrics = options.metrics;
+  }
+  return event;
 }

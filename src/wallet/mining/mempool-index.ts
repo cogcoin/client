@@ -783,13 +783,12 @@ export async function ensureMiningMempoolRawTxSubscriber(options: {
           continue;
         }
 
-        if (state.activeVisibleTxids === null || !state.activeVisibleTxids.has(parsed.txid)) {
-          continue;
-        }
-
         const previousSize = state.negativeTxids.size;
         state.negativeTxids.add(parsed.txid);
-        if (state.negativeTxids.size !== previousSize) {
+        if (
+          state.negativeTxids.size !== previousSize
+          && state.activeVisibleTxids?.has(parsed.txid) === true
+        ) {
           scheduleStateSave(state);
         }
       }
