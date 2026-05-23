@@ -156,7 +156,21 @@ test("inspectMiningControlPlane drops stale provider wait details when paused li
   });
 
   const baseReadContext = createWalletReadContext();
+  const tipHashHex = "11".repeat(32);
   const readContext = createWalletReadContext({
+    snapshot: {
+      source: "lease",
+      daemonInstanceId: "daemon-1",
+      snapshotSeq: "seq-100",
+      openedAtUnixMs: 1,
+      state: null,
+      tip: {
+        height: 100,
+        blockHashHex: tipHashHex,
+        previousHashHex: "00".repeat(32),
+        stateHashHex: null,
+      },
+    },
     localState: {
       availability: "ready",
       clientPasswordReadiness: "ready",
@@ -178,6 +192,44 @@ test("inspectMiningControlPlane drops stale provider wait details when paused li
       hasPrimaryStateFile: true,
       hasBackupStateFile: false,
       message: null,
+    },
+    nodeStatus: {
+      ready: true,
+      chain: "mainnet",
+      pid: 1,
+      walletRootId: "wallet-root",
+      nodeBestHeight: 100,
+      nodeBestHashHex: tipHashHex,
+      nodeHeaderHeight: 100,
+      serviceUpdatedAtUnixMs: 1,
+      serviceStatus: null,
+      walletReplica: {
+        proofStatus: "ready",
+      },
+    },
+    indexer: {
+      health: "synced",
+      message: null,
+      status: {
+        state: "synced",
+        heartbeatAtUnixMs: 1,
+        updatedAtUnixMs: 1,
+        coreBestHeight: 100,
+        coreBestHash: tipHashHex,
+        appliedTipHeight: 100,
+        appliedTipHash: tipHashHex,
+        reorgDepth: null,
+      },
+      source: "lease",
+      daemonInstanceId: "daemon-1",
+      snapshotSeq: "seq-100",
+      openedAtUnixMs: 1,
+      snapshotTip: {
+        height: 100,
+        blockHashHex: tipHashHex,
+        previousHashHex: "00".repeat(32),
+        stateHashHex: null,
+      },
     },
   });
 

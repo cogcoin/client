@@ -104,7 +104,13 @@ async function startFakeIndexerDaemonStatusServer(
   const paths = resolveManagedServicePaths(options.dataDir, options.walletRootId);
   await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
 
+  const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.once("close", () => {
+      sockets.delete(socket);
+    });
+
     let buffer = "";
 
     socket.on("data", (chunk) => {
@@ -177,6 +183,9 @@ async function startFakeIndexerDaemonStatusServer(
   });
 
   t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
     });
@@ -953,6 +962,12 @@ function createReadyMiningReadContext(options: {
         }],
       },
       snapshot: {
+        tip: {
+          height: 100,
+          blockHashHex: "11".repeat(32),
+          previousHashHex: "00".repeat(32),
+          stateHashHex: null,
+        },
         state: {
           consensus: {
             domainIdsByName: new Map([["cogdemo", 7]]),
@@ -970,6 +985,32 @@ function createReadyMiningReadContext(options: {
             foundingMessageByDomain: new Map(),
             blockWinnersByHeight: new Map(),
           },
+        },
+      },
+      indexer: {
+        health: "synced",
+        message: null,
+        status: {
+          state: "synced",
+          heartbeatAtUnixMs: 1,
+          updatedAtUnixMs: 1,
+          ipcReady: true,
+          rpcReachable: true,
+          coreBestHeight: 100,
+          coreBestHash: "11".repeat(32),
+          appliedTipHeight: 100,
+          appliedTipHash: "11".repeat(32),
+          reorgDepth: null,
+        },
+        source: "lease",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-100",
+        openedAtUnixMs: 1,
+        snapshotTip: {
+          height: 100,
+          blockHashHex: "11".repeat(32),
+          previousHashHex: "00".repeat(32),
+          stateHashHex: null,
         },
       },
       nodeStatus: {
@@ -2275,6 +2316,288 @@ test("performMiningCycle waits instead of crashing when mining read context is m
   const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
   assert.equal(snapshot?.currentPhase, "waiting-indexer");
   assert.equal(snapshot?.lastError, null);
+  assert.equal(snapshot?.readinessBlocker, "indexer-snapshot");
+  assert.equal(snapshot?.note, "Mining is waiting for a coherent indexer snapshot lease.");
+});
+
+test("performMiningCycle retries a synced status-file indexer view before waiting for snapshot lease", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-status-file-retry-wait");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const state = createWalletState({
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+  });
+  let openCalls = 0;
+  let closeCalls = 0;
+
+  const createStatusFileContext = () => ({
+    ...createWalletReadContext({
+      localState: {
+        availability: "ready",
+        clientPasswordReadiness: "ready",
+        unlockRequired: false,
+        walletRootId: state.walletRootId,
+        state,
+        source: "primary",
+        hasPrimaryStateFile: true,
+        hasBackupStateFile: false,
+        message: null,
+      },
+      nodeStatus: {
+        ready: true,
+        chain: "mainnet",
+        nodeBestHeight: 100,
+        nodeBestHashHex: "11".repeat(32),
+        walletReplica: {
+          proofStatus: "ready",
+        },
+      },
+      nodeHealth: "synced",
+      snapshot: null,
+      model: null,
+      indexer: {
+        health: "unavailable",
+        message: "indexer_boom",
+        status: {
+          state: "synced",
+          heartbeatAtUnixMs: 1_000,
+          updatedAtUnixMs: 1_100,
+          ipcReady: true,
+          rpcReachable: true,
+          coreBestHeight: 100,
+          coreBestHash: "11".repeat(32),
+          appliedTipHeight: 100,
+          appliedTipHash: "11".repeat(32),
+          reorgDepth: null,
+        },
+        source: "status-file",
+        daemonInstanceId: "daemon-status",
+        snapshotSeq: "seq-status",
+        openedAtUnixMs: null,
+        snapshotTip: null,
+      },
+    }),
+    close: async () => {
+      closeCalls += 1;
+    },
+  }) as any;
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => {
+      openCalls += 1;
+      return createStatusFileContext();
+    },
+    attachService: async () => ({ rpc: {} } as any),
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(openCalls, 4);
+  assert.equal(closeCalls, 4);
+  assert.equal(snapshot?.currentPhase, "waiting-indexer");
+  assert.equal(snapshot?.readinessBlocker, "indexer-snapshot");
+  assert.equal(snapshot?.indexerDaemonState, "synced");
+  assert.equal(snapshot?.indexerHealth, "unavailable");
+  assert.equal(snapshot?.indexerTruthSource, "status-file");
+  assert.equal(snapshot?.indexerStatusTipHeight, 100);
+  assert.equal(snapshot?.indexerStatusTipHash, "11".repeat(32));
+  assert.equal(snapshot?.lastError, "indexer_boom");
+  assert.equal(snapshot?.note, "Mining is waiting for a coherent indexer snapshot lease.");
+});
+
+test("performMiningCycle clears waiting-indexer after retrying into a coherent snapshot lease", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-status-file-retry-success");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const state = createWalletState({
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+  });
+  const statusFileContext = {
+    ...createWalletReadContext({
+      localState: {
+        availability: "ready",
+        clientPasswordReadiness: "ready",
+        unlockRequired: false,
+        walletRootId: state.walletRootId,
+        state,
+        source: "primary",
+        hasPrimaryStateFile: true,
+        hasBackupStateFile: false,
+        message: null,
+      },
+      nodeStatus: {
+        ready: true,
+        chain: "mainnet",
+        nodeBestHeight: 100,
+        nodeBestHashHex: "11".repeat(32),
+        walletReplica: {
+          proofStatus: "ready",
+        },
+      },
+      nodeHealth: "synced",
+      snapshot: null,
+      model: null,
+      indexer: {
+        health: "unavailable",
+        message: "indexer_boom",
+        status: {
+          state: "synced",
+          heartbeatAtUnixMs: 1_000,
+          updatedAtUnixMs: 1_100,
+          ipcReady: true,
+          rpcReachable: true,
+          coreBestHeight: 100,
+          coreBestHash: "11".repeat(32),
+          appliedTipHeight: 100,
+          appliedTipHash: "11".repeat(32),
+          reorgDepth: null,
+        },
+        source: "status-file",
+        daemonInstanceId: "daemon-status",
+        snapshotSeq: "seq-status",
+        openedAtUnixMs: null,
+        snapshotTip: null,
+      },
+    }),
+    close: async () => undefined,
+  } as any;
+  const readyContext = createReadyMiningReadContext({
+    miningState: state.miningState,
+    readContextOverrides: {
+      localState: {
+        availability: "ready",
+        clientPasswordReadiness: "ready",
+        unlockRequired: false,
+        walletRootId: state.walletRootId,
+        state,
+        source: "primary",
+        hasPrimaryStateFile: true,
+        hasBackupStateFile: false,
+        message: null,
+      },
+      model: {
+        walletScriptPubKeyHex: "0014" + "11".repeat(20),
+        domains: [],
+      },
+    },
+  });
+  const contexts = [statusFileContext, readyContext];
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => contexts.shift()!,
+    attachService: async () => ({ rpc: {} } as any),
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(contexts.length, 0);
+  assert.equal(snapshot?.readinessBlocker, null);
+  assert.notEqual(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
+  assert.notEqual(snapshot?.note, "Mining is waiting for a coherent indexer snapshot lease.");
+});
+
+test("performMiningCycle uses align wording only for real Core/indexer tip mismatch", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-tip-mismatch");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => createReadyMiningReadContext({
+      readContextOverrides: {
+        snapshot: {
+          tip: {
+            height: 99,
+            blockHashHex: "10".repeat(32),
+            previousHashHex: "00".repeat(32),
+            stateHashHex: null,
+          },
+          state: {
+            consensus: {
+              domainIdsByName: new Map(),
+              domainsById: new Map(),
+              balances: new Map(),
+            },
+            history: {
+              foundingMessageByDomain: new Map(),
+              blockWinnersByHeight: new Map(),
+            },
+          },
+        },
+        indexer: {
+          health: "synced",
+          message: null,
+          status: {
+            state: "synced",
+            heartbeatAtUnixMs: 1_000,
+            updatedAtUnixMs: 1_100,
+            ipcReady: true,
+            rpcReachable: true,
+            coreBestHeight: 100,
+            coreBestHash: "11".repeat(32),
+            appliedTipHeight: 99,
+            appliedTipHash: "10".repeat(32),
+            reorgDepth: null,
+          },
+          source: "lease",
+          daemonInstanceId: "daemon-1",
+          snapshotSeq: "seq-99",
+          openedAtUnixMs: 900,
+          snapshotTip: {
+            height: 99,
+            blockHashHex: "10".repeat(32),
+            previousHashHex: "00".repeat(32),
+            stateHashHex: null,
+          },
+        },
+      },
+    }),
+    attachService: async () => ({ rpc: {} } as any),
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "waiting-indexer");
+  assert.equal(snapshot?.readinessBlocker, "tip-alignment");
   assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
 });
 
@@ -2761,7 +3084,8 @@ test("performMiningCycle clears transient recovery errors once Bitcoin RPC recov
   const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
   assert.equal(snapshot?.currentPhase, "waiting-indexer");
   assert.equal(snapshot?.lastError, null);
-  assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
+  assert.equal(snapshot?.readinessBlocker, "indexer-daemon");
+  assert.equal(snapshot?.note, "Mining is waiting for managed indexer readiness.");
 });
 
 test("performMiningCycle does not downgrade a tolerated 2-block header lead into waiting-bitcoin-network", async (t) => {

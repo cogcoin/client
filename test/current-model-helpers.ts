@@ -160,6 +160,7 @@ export function createMiningRuntimeStatus(
     nodeHealth: "synced",
     indexerHealth: "synced",
     tipsAligned: true,
+    readinessBlocker: null,
     lastEventAtUnixMs: null,
     lastError: null,
     note: null,

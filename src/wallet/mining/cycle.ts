@@ -188,6 +188,7 @@ export async function runMiningPhaseMachine(options: {
             runMode: options.runMode,
             currentPhase: "waiting-bitcoin-network",
             corePublishState: options.corePublishState,
+            readinessBlocker: "bitcoin-core",
             note: "Mining is waiting for the local Bitcoin node to become publishable.",
           });
           return;
@@ -200,8 +201,11 @@ export async function runMiningPhaseMachine(options: {
             currentPhase: options.readContext.indexer.health !== "synced"
               ? "waiting-indexer"
               : "waiting-bitcoin-network",
+            readinessBlocker: options.readContext.indexer.health !== "synced"
+              ? "indexer-daemon"
+              : "bitcoin-core",
             note: options.readContext.indexer.health !== "synced"
-              ? "Mining is waiting for Bitcoin Core and the indexer to align."
+              ? "Mining is waiting for managed indexer readiness."
               : "Mining is waiting for the local Bitcoin node to become publishable.",
           });
           return;
@@ -212,6 +216,7 @@ export async function runMiningPhaseMachine(options: {
           await options.saveCycleStatus(options.readContext, {
             runMode: options.runMode,
             currentPhase: "waiting-bitcoin-network",
+            readinessBlocker: "bitcoin-core",
             note: "Mining is waiting for the local Bitcoin node to become publishable.",
           });
           return;

@@ -91,6 +91,7 @@ export interface PassiveMiningStatus {
   mempoolSequenceCacheStatus: MiningRuntimeStatusV1["mempoolSequenceCacheStatus"];
   lastMempoolSequence: string | null;
   lastCompetitivenessGateAtUnixMs: number | null;
+  readinessBlocker: MiningRuntimeStatusV1["readinessBlocker"];
   updatedAtUnixMs: number | null;
   lastError: string | null;
   note: string | null;
@@ -295,6 +296,7 @@ function emptyMiningStatus(
     mempoolSequenceCacheStatus: null,
     lastMempoolSequence: null,
     lastCompetitivenessGateAtUnixMs: null,
+    readinessBlocker: null,
     updatedAtUnixMs: null,
     lastError: null,
     note: null,
@@ -392,6 +394,7 @@ async function inspectMiningStatus(statusPath: string | null): Promise<PassiveMi
     mempoolSequenceCacheStatus: result.status.mempoolSequenceCacheStatus ?? null,
     lastMempoolSequence: result.status.lastMempoolSequence ?? null,
     lastCompetitivenessGateAtUnixMs: result.status.lastCompetitivenessGateAtUnixMs ?? null,
+    readinessBlocker: result.status.readinessBlocker ?? null,
     updatedAtUnixMs: result.status.updatedAtUnixMs ?? null,
     lastError: result.status.lastError ?? null,
     note: result.status.note ?? null,

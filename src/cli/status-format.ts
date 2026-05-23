@@ -261,6 +261,7 @@ function buildMiningRows(status: PassiveClientStatus, nowUnixMs: number): Status
     row(!needsBackgroundWorker || status.mining.backgroundWorkerPid !== null, `Mining background worker pid: ${formatValue(status.mining.backgroundWorkerPid)}`),
     row(!needsBackgroundWorker || status.mining.backgroundWorkerHealth !== null, `Mining background worker health: ${formatValue(status.mining.backgroundWorkerHealth)}`),
     row(status.mining.updatedAtUnixMs !== null, `Mining updated: ${formatValue(status.mining.updatedAtUnixMs)}`),
+    row(status.mining.readinessBlocker === null, `Mining readiness blocker: ${formatValue(status.mining.readinessBlocker)}`),
     row(!miningHasError, `Mining last error: ${formatValue(status.mining.lastError)}`),
     row(miningNote === null, `Mining note: ${formatValue(miningNote)}`),
     ...gateRows,

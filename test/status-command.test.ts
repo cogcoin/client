@@ -113,6 +113,7 @@ function createPassiveStatus(overrides: Partial<Omit<PassiveClientStatus, "walle
       foregroundHeartbeatAtUnixMs: null,
       backgroundWorkerPid: null,
       backgroundWorkerHealth: null,
+      readinessBlocker: null,
       competitivenessGateReason: null,
       competitivenessGateDiagnostics: null,
       mempoolSequenceCacheStatus: null,

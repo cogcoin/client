@@ -126,6 +126,9 @@ export function formatMineStatusReport(mining: MiningControlPlaneView): string {
   }
   lines.push(`Bitcoin service: ${mining.runtime.nodeHealth}`);
   lines.push(`Indexer service: ${mining.runtime.indexerHealth}`);
+  if (mining.runtime.readinessBlocker !== null && mining.runtime.readinessBlocker !== undefined) {
+    lines.push(`Readiness blocker: ${mining.runtime.readinessBlocker}`);
+  }
   lines.push(`Indexer truth source: ${formatIndexerTruthSource(mining.runtime.indexerTruthSource)}`);
   if (mining.runtime.indexerDaemonInstanceId !== null) {
     lines.push(`Indexer daemon instance: ${mining.runtime.indexerDaemonInstanceId}`);

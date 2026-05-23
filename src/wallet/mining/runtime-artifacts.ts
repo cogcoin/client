@@ -57,6 +57,7 @@ export async function loadMiningRuntimeStatus(
       providerState: normalizeLegacyMiningProviderState(parsed.providerState),
       currentPublishState: normalizeMiningPublishState(parsed.currentPublishState),
       livePublishInMempool: parsed.livePublishInMempool ?? parsed.liveMiningFamilyInMempool ?? null,
+      readinessBlocker: parsed.readinessBlocker ?? null,
       indexerStatusTipHeight: parsed.indexerStatusTipHeight ?? null,
       indexerStatusTipHash: parsed.indexerStatusTipHash ?? null,
       indexerObservedAtUnixMs: parsed.indexerObservedAtUnixMs ?? null,

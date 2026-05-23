@@ -43,6 +43,7 @@ function createStoppedMiningRuntimeSnapshot(options: {
       backgroundWorkerHeartbeatAtUnixMs: null,
       backgroundWorkerHealth: null,
       currentPhase: "idle",
+      readinessBlocker: null,
       note: options.note,
     };
   }
@@ -120,6 +121,7 @@ function createStoppedMiningRuntimeSnapshot(options: {
     nodeHealth: "unavailable",
     indexerHealth: "unavailable",
     tipsAligned: null,
+    readinessBlocker: null,
     lastEventAtUnixMs: null,
     lastError: null,
     note: options.note,
@@ -168,6 +170,7 @@ export function createIndexerFailureMiningRuntimeSnapshot(options: {
     indexerDaemonState: "failed",
     indexerHealth: "failed",
     currentPhase: "waiting-indexer",
+    readinessBlocker: "indexer-daemon",
     lastEventAtUnixMs: options.nowUnixMs,
     lastError: options.errorMessage,
     note: options.note,
@@ -265,6 +268,13 @@ export function createMiningReadinessSnapshot(options: {
     note: null,
   });
   const waitingForIndexer = !isObservedIndexerReady(status);
+  const readinessBlocker: MiningRuntimeStatusV1["readinessBlocker"] = status === null
+    ? "indexer-daemon"
+    : status.state !== "synced"
+      ? "indexer-daemon"
+      : indexerTipAligned !== true
+        ? "tip-alignment"
+        : null;
 
   return {
     ...base,
@@ -306,11 +316,14 @@ export function createMiningReadinessSnapshot(options: {
     nodeHealth: bitcoindReachable ? "synced" : status === null ? "starting" : "unavailable",
     indexerHealth: mapManagedIndexerHealth(status?.state),
     tipsAligned: indexerTipAligned,
+    readinessBlocker,
     lastError: status?.lastError ?? null,
     note: status === null
       ? "Mining is waiting for managed indexer readiness."
       : waitingForIndexer
-        ? MINING_INDEXER_ALIGNMENT_NOTE
+        ? readinessBlocker === "tip-alignment"
+          ? MINING_INDEXER_ALIGNMENT_NOTE
+          : "Mining is waiting for managed indexer readiness."
         : "Mining preflight completed; starting foreground mining.",
   };
 }

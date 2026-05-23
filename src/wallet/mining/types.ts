@@ -213,6 +213,13 @@ export interface MiningRuntimeStatusV1 {
   nodeHealth: MiningServiceHealth;
   indexerHealth: MiningServiceHealth;
   tipsAligned: boolean | null;
+  readinessBlocker?:
+    | "wallet-state"
+    | "bitcoin-core"
+    | "indexer-daemon"
+    | "indexer-snapshot"
+    | "tip-alignment"
+    | null;
   lastEventAtUnixMs: number | null;
   lastError: string | null;
   note: string | null;

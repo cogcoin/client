@@ -262,7 +262,13 @@ async function startFakeIndexerDaemonStatusServer(
   const paths = resolveManagedServicePaths(options.dataDir, options.walletRootId);
   await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
 
+  const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.once("close", () => {
+      sockets.delete(socket);
+    });
+
     let buffer = "";
 
     socket.on("data", (chunk) => {
@@ -335,6 +341,9 @@ async function startFakeIndexerDaemonStatusServer(
   });
 
   t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
     });
@@ -466,7 +475,7 @@ test("runMiningLoop survives a recoverable managed Bitcoin RPC failure and reach
       backgroundWorkerPid: null,
       backgroundWorkerRunId: null,
       signal: abortController.signal,
-      openReadContext: async () => createLoopReadContext(),
+      openReadContext: async () => createSynchronizedLoopReadContext(),
       attachService: async () => ({
         rpc: {},
         pid: 9_001,
@@ -500,6 +509,7 @@ test("runMiningLoop survives a recoverable managed Bitcoin RPC failure and reach
           };
         },
       }) as any,
+      generateCandidatesForDomainsImpl: async () => [],
       sleepImpl: async () => {
         sleepCalls += 1;
         if (sleepCalls >= 2) {
@@ -511,9 +521,10 @@ test("runMiningLoop survives a recoverable managed Bitcoin RPC failure and reach
 
   const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
   assert.equal(blockchainCalls, 2);
-  assert.equal(snapshot?.currentPhase, "waiting-indexer");
+  assert.equal(snapshot?.currentPhase, "idle");
   assert.equal(snapshot?.lastError, null);
-  assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
+  assert.equal(snapshot?.readinessBlocker, null);
+  assert.notEqual(snapshot?.note, "Mining is waiting for managed indexer readiness.");
 });
 
 test("runMiningLoop stays alive when mining read context is not structurally ready yet", async (t) => {
@@ -569,7 +580,8 @@ test("runMiningLoop stays alive when mining read context is not structurally rea
   assert.equal(generateCalls, 0);
   assert.equal(snapshot?.currentPhase, "waiting-indexer");
   assert.equal(snapshot?.lastError, null);
-  assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
+  assert.equal(snapshot?.readinessBlocker, "indexer-daemon");
+  assert.equal(snapshot?.note, "Mining is waiting for managed indexer readiness.");
 });
 
 test("heartbeat-backed suspend detection ignores long work while heartbeats keep advancing", () => {
@@ -1170,7 +1182,7 @@ test("runMiningLoop aborts mining-scoped managed RPC calls before the request ti
     backgroundWorkerPid: null,
     backgroundWorkerRunId: null,
     signal: abortController.signal,
-    openReadContext: async () => createLoopReadContext(),
+    openReadContext: async () => createSynchronizedLoopReadContext(),
     attachService: async () => ({
       rpc: {
         url: "http://127.0.0.1:18443",

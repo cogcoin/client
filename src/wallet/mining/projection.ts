@@ -52,6 +52,7 @@ export interface MiningRuntimeStatusOverrides {
   mempoolSequenceCacheStatus?: MiningRuntimeStatusV1["mempoolSequenceCacheStatus"];
   lastMempoolSequence?: string | null;
   lastCompetitivenessGateAtUnixMs?: number | null;
+  readinessBlocker?: MiningRuntimeStatusV1["readinessBlocker"];
   lastError?: string | null;
   note?: string | null;
   livePublishInMempool?: boolean | null;
@@ -253,7 +254,7 @@ function mapCorePublishState(
   nodeHealth: MiningRuntimeStatusV1["nodeHealth"],
   nodeStatus: WalletNodeStatus | null,
 ): MiningRuntimeStatusV1["corePublishState"] {
-  if (nodeStatus === null || !nodeStatus.ready) {
+  if (nodeStatus === null || nodeStatus.ready === false) {
     return "unknown";
   }
 
@@ -262,6 +263,108 @@ function mapCorePublishState(
   }
 
   return "healthy";
+}
+
+function statusTipMatchesCore(options: {
+  indexer: WalletIndexerStatus;
+  nodeStatus: WalletNodeStatus | null;
+}): boolean {
+  const status = options.indexer.status;
+  const nodeBestHeight = options.nodeStatus?.nodeBestHeight ?? null;
+  const nodeBestHash = options.nodeStatus?.nodeBestHashHex ?? null;
+
+  return status !== null
+    && status.state === "synced"
+    && status.ipcReady === true
+    && status.rpcReachable === true
+    && nodeBestHeight !== null
+    && status.appliedTipHeight === nodeBestHeight
+    && (
+      status.appliedTipHash === null
+      || status.appliedTipHash === undefined
+      || nodeBestHash === null
+      || nodeBestHash === undefined
+      || status.appliedTipHash === nodeBestHash
+    );
+}
+
+function inferMiningReadinessBlocker(options: {
+  localState: WalletLocalStateStatus;
+  nodeHealth: MiningRuntimeStatusV1["nodeHealth"];
+  nodeStatus: WalletNodeStatus | null;
+  indexer: WalletIndexerStatus;
+  tipsAligned: boolean | null;
+  corePublishState: MiningRuntimeStatusV1["corePublishState"];
+}): MiningRuntimeStatusV1["readinessBlocker"] {
+  if (options.localState.availability !== "ready" || options.localState.state === null) {
+    return "wallet-state";
+  }
+
+  if (options.nodeHealth !== "synced" || options.corePublishState !== "healthy") {
+    return "bitcoin-core";
+  }
+
+  const hasCoherentLease = options.indexer.source === "lease" && options.indexer.snapshotTip !== null;
+  if (!hasCoherentLease && statusTipMatchesCore(options)) {
+    return "indexer-snapshot";
+  }
+
+  if (options.indexer.health !== "synced") {
+    return "indexer-daemon";
+  }
+
+  if (!hasCoherentLease) {
+    return "indexer-snapshot";
+  }
+
+  if (options.tipsAligned !== true) {
+    return "tip-alignment";
+  }
+
+  return null;
+}
+
+export function resolveReadinessBlockerNote(
+  blocker: MiningRuntimeStatusV1["readinessBlocker"],
+  indexerHealth?: WalletIndexerStatus["health"],
+): string | null {
+  switch (blocker) {
+    case "wallet-state":
+      return "Wallet state must be locally available for mining to continue.";
+    case "bitcoin-core":
+      return "Mining is waiting for the local Bitcoin node to become publishable.";
+    case "indexer-daemon":
+      return indexerHealth === "reorging"
+        ? "Mining remains stopped while the indexer replays a reorg and refreshes the coherent snapshot."
+        : "Mining is waiting for managed indexer readiness.";
+    case "indexer-snapshot":
+      return "Mining is waiting for a coherent indexer snapshot lease.";
+    case "tip-alignment":
+      return "Mining is waiting for Bitcoin Core and the indexer to align.";
+    default:
+      return null;
+  }
+}
+
+function resolveReadinessBlockerLastError(options: {
+  blocker: MiningRuntimeStatusV1["readinessBlocker"];
+  localState: WalletLocalStateStatus;
+  bitcoind: WalletBitcoindStatus;
+  indexer: WalletIndexerStatus;
+}): string | null {
+  switch (options.blocker) {
+    case "wallet-state":
+      return options.localState.message;
+    case "bitcoin-core":
+      return options.bitcoind.message;
+    case "indexer-snapshot":
+      return options.indexer.message;
+    case "indexer-daemon":
+    case "tip-alignment":
+      return null;
+    default:
+      return null;
+  }
 }
 
 async function deriveBackgroundWorkerHealth(options: {
@@ -324,6 +427,14 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
   const providerState = mapProviderState(options.provider, options.localState, options.existingRuntime);
   const indexerDaemonState = mapIndexerDaemonState(options.indexer);
   const corePublishState = mapCorePublishState(options.nodeHealth, options.nodeStatus);
+  const readinessBlocker = inferMiningReadinessBlocker({
+    localState: options.localState,
+    nodeHealth: options.nodeHealth,
+    nodeStatus: options.nodeStatus,
+    indexer: options.indexer,
+    tipsAligned: options.tipsAligned,
+    corePublishState,
+  });
   const existing = options.existingRuntime;
   const reuseExistingProviderWait = shouldReuseExistingProviderWait({
     existingRuntime: existing,
@@ -332,9 +443,7 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
   const preserveExistingLivePublish = state === null
     ? false
     : miningPublishMayStillExist(state);
-  const currentServicesHealthy = options.nodeHealth === "synced"
-    && options.indexer.health === "synced"
-    && options.tipsAligned === true;
+  const currentServicesHealthy = readinessBlocker === null;
   const currentNodePublishHealthy = options.nodeHealth === "synced"
     && corePublishState === "healthy";
   const clearWaitingIndexerCarryover = existing?.currentPhase === "waiting-indexer"
@@ -342,9 +451,16 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
   const clearWaitingBitcoinCarryover = existing?.currentPhase === "waiting-bitcoin-network"
     && currentNodePublishHealthy;
   const clearWaitingCarryover = clearWaitingIndexerCarryover || clearWaitingBitcoinCarryover;
+  const blockerPhase = readinessBlocker === "bitcoin-core"
+    ? "waiting-bitcoin-network"
+    : readinessBlocker === null
+      ? null
+      : readinessBlocker === "wallet-state"
+        ? "waiting"
+        : "waiting-indexer";
   const resolvedCurrentPhase = clearWaitingCarryover
     ? "idle"
-    : existing?.currentPhase ?? "idle";
+    : existing?.currentPhase ?? blockerPhase ?? "idle";
   const resolvedTargetBlockHeight = state?.currentBlockTargetHeight
     ?? (
       preserveExistingLivePublish
@@ -357,8 +473,6 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
         ? existing?.referencedBlockHashDisplay ?? null
         : options.nodeStatus?.nodeBestHashHex ?? null
     );
-
-  void options.bitcoind;
 
   return {
     schemaVersion: 1,
@@ -443,13 +557,17 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
     nodeHealth: options.nodeHealth,
     indexerHealth: options.indexer.health,
     tipsAligned: options.tipsAligned,
+    readinessBlocker,
     lastEventAtUnixMs: options.lastEventAtUnixMs,
     lastError: reuseExistingProviderWait
       ? existing?.lastError ?? null
-      : clearWaitingCarryover
-        ? options.provider.message ?? options.indexer.message ?? null
-        : existing?.currentPhase === "waiting-bitcoin-network" || existing?.currentPhase === "waiting-indexer"
-        ? existing?.lastError ?? options.provider.message ?? options.indexer.message ?? null
+      : clearWaitingCarryover || readinessBlocker !== null
+        ? resolveReadinessBlockerLastError({
+          blocker: readinessBlocker,
+          localState: options.localState,
+          bitcoind: options.bitcoind,
+          indexer: options.indexer,
+        })
         : options.provider.message ?? options.indexer.message ?? null,
     note: state?.pauseReason === "zero-reward"
       ? "Mining is disabled because the target block reward is zero."
@@ -459,25 +577,19 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
           ? resolveWaitingProviderNote(existing?.providerState ?? providerState)
           : clearWaitingCarryover
             ? null
-          : existing?.currentPhase === "waiting-indexer"
-            ? "Mining is waiting for Bitcoin Core and the indexer to align."
-            : existing?.currentPhase === "waiting-bitcoin-network"
-              ? "Mining is waiting for the local Bitcoin node to become publishable."
-              : state?.state === "repair-required"
-                ? "Mining is blocked until the current mining publish is reconciled or `cogcoin repair` completes."
-                : state?.state === "paused-stale" && state.livePublishInMempool
-                  ? "A previously broadcast mining transaction is still in mempool for an older tip context. Wait for confirmation or rerun mining to replace it."
-                  : state?.state === "paused" && state.livePublishInMempool
-                    ? "Mining is paused, but the last mining transaction may still confirm from mempool without further fee bumps."
-                    : state?.state === "paused"
-                      ? "Mining is paused by another wallet command or local policy."
-                      : options.provider.status === "missing"
-                        ? "Run `cogcoin mine setup` to configure the built-in mining provider."
-                        : options.indexer.health === "reorging"
-                          ? "Mining remains stopped while the indexer replays a reorg and refreshes the coherent snapshot."
-                          : options.indexer.health !== "synced" || options.nodeHealth !== "synced"
-                            ? "Mining remains stopped until Bitcoin Core and the indexer are both healthy and aligned."
-                            : null,
+          : readinessBlocker !== null
+            ? resolveReadinessBlockerNote(readinessBlocker, options.indexer.health)
+            : state?.state === "repair-required"
+              ? "Mining is blocked until the current mining publish is reconciled or `cogcoin repair` completes."
+              : state?.state === "paused-stale" && state.livePublishInMempool
+                ? "A previously broadcast mining transaction is still in mempool for an older tip context. Mining will replace it once the next candidate is ready."
+                : state?.state === "paused" && state.livePublishInMempool
+                  ? "Mining is paused, but the last mining transaction may still confirm from mempool without further fee bumps."
+                  : state?.state === "paused"
+                    ? "Mining is paused by another wallet command or local policy."
+                    : options.provider.status === "missing"
+                      ? "Run `cogcoin mine setup` to configure the built-in mining provider."
+                      : null,
   };
 }
 
@@ -603,6 +715,10 @@ export function applyMiningRuntimeStatusOverrides(options: {
     lastCompetitivenessGateAtUnixMs: resolveSnapshotOverride(
       overrides.lastCompetitivenessGateAtUnixMs,
       options.runtime.lastCompetitivenessGateAtUnixMs,
+    ),
+    readinessBlocker: resolveSnapshotOverride(
+      overrides.readinessBlocker,
+      options.runtime.readinessBlocker ?? null,
     ),
     lastError: resolveSnapshotOverride(
       overrides.lastError,

@@ -94,6 +94,15 @@ export type ReadyMiningReadContext = WalletReadContext & {
   model: NonNullable<WalletReadContext["model"]>;
 };
 
+export type MiningReadinessBlocker = NonNullable<MiningRuntimeStatusV1["readinessBlocker"]>;
+
+export interface MiningReadinessResult {
+  ready: boolean;
+  blocker: MiningRuntimeStatusV1["readinessBlocker"];
+  currentPhase: MiningRuntimeStatusV1["currentPhase"];
+  note: string | null;
+}
+
 export function resolveReadyMiningReadContext(
   readContext: WalletReadContext,
 ): ReadyMiningReadContext | null {
@@ -107,6 +116,117 @@ export function resolveReadyMiningReadContext(
   }
 
   return readContext as ReadyMiningReadContext;
+}
+
+function hashesMatchOrUnknown(left: string | null | undefined, right: string | null | undefined): boolean {
+  return left === null || left === undefined || right === null || right === undefined || left === right;
+}
+
+export function observedIndexerStatusMatchesCoreTip(readContext: WalletReadContext): boolean {
+  const status = readContext.indexer.status;
+  const nodeHeight = readContext.nodeStatus?.nodeBestHeight ?? null;
+
+  return status !== null
+    && status.state === "synced"
+    && status.ipcReady === true
+    && status.rpcReachable === true
+    && nodeHeight !== null
+    && status.appliedTipHeight === nodeHeight
+    && hashesMatchOrUnknown(status.appliedTipHash, readContext.nodeStatus?.nodeBestHashHex ?? null);
+}
+
+export function resolveMiningReadiness(readContext: WalletReadContext, options: {
+  corePublishState?: MiningRuntimeStatusV1["corePublishState"];
+} = {}): MiningReadinessResult {
+  if (readContext.localState.availability !== "ready" || readContext.localState.state === null) {
+    return {
+      ready: false,
+      blocker: "wallet-state",
+      currentPhase: "waiting",
+      note: "Wallet state must be locally available for mining to continue.",
+    };
+  }
+
+  if (
+    readContext.nodeHealth !== "synced"
+    || (
+      options.corePublishState !== undefined
+      && options.corePublishState !== null
+      && options.corePublishState !== "healthy"
+    )
+  ) {
+    return {
+      ready: false,
+      blocker: "bitcoin-core",
+      currentPhase: "waiting-bitcoin-network",
+      note: "Mining is waiting for the local Bitcoin node to become publishable.",
+    };
+  }
+
+  const hasCoherentSnapshotLease = readContext.indexer.source === "lease"
+    && readContext.snapshot !== null
+    && readContext.model !== null;
+
+  if (!hasCoherentSnapshotLease && observedIndexerStatusMatchesCoreTip(readContext)) {
+    return {
+      ready: false,
+      blocker: "indexer-snapshot",
+      currentPhase: "waiting-indexer",
+      note: "Mining is waiting for a coherent indexer snapshot lease.",
+    };
+  }
+
+  if (readContext.indexer.health !== "synced") {
+    return {
+      ready: false,
+      blocker: "indexer-daemon",
+      currentPhase: "waiting-indexer",
+      note: readContext.indexer.health === "reorging"
+        ? "Mining remains stopped while the indexer replays a reorg and refreshes the coherent snapshot."
+        : "Mining is waiting for managed indexer readiness.",
+    };
+  }
+
+  if (!hasCoherentSnapshotLease) {
+    return {
+      ready: false,
+      blocker: "indexer-snapshot",
+      currentPhase: "waiting-indexer",
+      note: "Mining is waiting for a coherent indexer snapshot lease.",
+    };
+  }
+
+  const indexedTip = readContext.snapshot?.tip ?? readContext.indexer.snapshotTip ?? null;
+  if (indexedTip === null) {
+    return {
+      ready: false,
+      blocker: "indexer-snapshot",
+      currentPhase: "waiting-indexer",
+      note: "Mining is waiting for a coherent indexer snapshot lease.",
+    };
+  }
+
+  const nodeBestHeight = readContext.nodeStatus?.nodeBestHeight ?? null;
+  const nodeBestHash = readContext.nodeStatus?.nodeBestHashHex ?? null;
+  if (
+    nodeBestHeight === null
+    || indexedTip.height !== nodeBestHeight
+    || !hashesMatchOrUnknown(indexedTip.blockHashHex, nodeBestHash)
+  ) {
+    return {
+      ready: false,
+      blocker: "tip-alignment",
+      currentPhase: "waiting-indexer",
+      note: "Mining is waiting for Bitcoin Core and the indexer to align.",
+    };
+  }
+
+  return {
+    ready: true,
+    blocker: null,
+    currentPhase: "idle",
+    note: null,
+  };
 }
 
 export interface MiningPublishSkipResult {

@@ -135,7 +135,11 @@ import type {
   MiningPublishOutcome,
   MiningRpcClient,
 } from "./engine-types.js";
-import { resolveReadyMiningReadContext } from "./engine-types.js";
+import {
+  observedIndexerStatusMatchesCoreTip,
+  resolveMiningReadiness,
+  resolveReadyMiningReadContext,
+} from "./engine-types.js";
 import {
   isMiningGenerationAbortRequested,
   markMiningGenerationActive,
@@ -247,6 +251,9 @@ const defaultMiningSuspendScheduler: MiningSuspendScheduler = {
   },
 };
 
+const MINING_INDEXER_SNAPSHOT_REACQUIRE_ATTEMPTS = 3;
+const MINING_INDEXER_SNAPSHOT_REACQUIRE_DELAY_MS = 50;
+
 function refreshMiningSuspendDetector(detector: MiningSuspendDetector | undefined): void {
   if (detector === undefined) {
     return;
@@ -346,6 +353,51 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       resolve();
     }, { once: true });
   });
+}
+
+function shouldReacquireIndexerSnapshot(readContext: WalletReadContext): boolean {
+  return observedIndexerStatusMatchesCoreTip(readContext)
+    && (
+      readContext.indexer.source !== "lease"
+      || readContext.snapshot === null
+      || readContext.model === null
+    );
+}
+
+async function reacquireIndexerSnapshotReadContext(options: {
+  readContext: WalletReadContext;
+  dataDir: string;
+  databasePath: string;
+  provider: WalletSecretProvider;
+  paths: WalletRuntimePaths;
+  openReadContext: typeof openWalletReadContext;
+  signal?: AbortSignal;
+  throwIfInterrupted: () => void;
+}): Promise<WalletReadContext> {
+  let current = options.readContext;
+
+  for (let attempt = 0; attempt < MINING_INDEXER_SNAPSHOT_REACQUIRE_ATTEMPTS; attempt += 1) {
+    if (!shouldReacquireIndexerSnapshot(current)) {
+      break;
+    }
+
+    options.throwIfInterrupted();
+    if (attempt > 0) {
+      await sleep(MINING_INDEXER_SNAPSHOT_REACQUIRE_DELAY_MS, options.signal);
+      options.throwIfInterrupted();
+    }
+
+    const next = await options.openReadContext({
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      secretProvider: options.provider,
+      paths: options.paths,
+    });
+    await current.close().catch(() => undefined);
+    current = next;
+  }
+
+  return current;
 }
 
 function writeStdout(stream: { write(chunk: string): void } | undefined, line: string): void {
@@ -585,6 +637,20 @@ async function performMiningCycle(options: {
       });
     };
 
+    readContext = await reacquireIndexerSnapshotReadContext({
+      readContext,
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      provider: options.provider,
+      paths: options.paths,
+      openReadContext: options.openReadContext,
+      signal: options.signal,
+      throwIfInterrupted: () => {
+        throwIfStopping();
+        throwIfMiningSuspendDetected(options.suspendDetector);
+      },
+    });
+
     await saveCycleStatus(readContext, {
       runMode: options.runMode,
       foregroundPid: options.runMode === "foreground" ? options.foregroundPid : null,
@@ -600,6 +666,7 @@ async function performMiningCycle(options: {
       await saveCycleStatus(readContext, {
         runMode: options.runMode,
         currentPhase: "waiting",
+        readinessBlocker: "wallet-state",
         lastError: null,
         note: "Wallet state must be locally available for mining to continue.",
       });
@@ -651,13 +718,11 @@ async function performMiningCycle(options: {
     let effectiveReadContext = readContext as WalletReadContext & {
       localState: { availability: "ready"; state: WalletStateV1 };
     };
+    const reconciledMiningStateChanged = JSON.stringify(reconciledState.miningState) !== JSON.stringify(
+      readContext.localState.state.miningState,
+    );
 
-    if (JSON.stringify(reconciledState.miningState) !== JSON.stringify(readContext.localState.state.miningState)) {
-      await saveWalletStatePreservingUnlock({
-        state: reconciledState,
-        provider: options.provider,
-        paths: options.paths,
-      });
+    if (reconciledMiningStateChanged) {
       effectiveReadContext = {
         ...readContext,
         localState: {
@@ -702,14 +767,34 @@ async function performMiningCycle(options: {
     const displaySats = await resolveFundingDisplaySats(effectiveReadContext.localState.state, rpc).catch(() => null);
     syncMiningVisualizerBalances(options.loopState, effectiveReadContext, displaySats);
 
+    const readiness = resolveMiningReadiness(effectiveReadContext);
+    if (!readiness.ready) {
+      clearMiningProviderWait(options.loopState);
+      await saveCycleStatus(effectiveReadContext, {
+        runMode: options.runMode,
+        currentPhase: readiness.currentPhase,
+        readinessBlocker: readiness.blocker,
+        note: readiness.note,
+      });
+      return;
+    }
+
+    if (reconciledMiningStateChanged) {
+      await saveWalletStatePreservingUnlock({
+        state: reconciledState,
+        provider: options.provider,
+        paths: options.paths,
+      });
+    }
+
     const readyReadContext = resolveReadyMiningReadContext(effectiveReadContext);
     if (readyReadContext === null) {
       clearMiningProviderWait(options.loopState);
       await saveCycleStatus(effectiveReadContext, {
         runMode: options.runMode,
         currentPhase: "waiting-indexer",
-        lastError: null,
-        note: "Mining is waiting for Bitcoin Core and the indexer to align.",
+        readinessBlocker: "indexer-snapshot",
+        note: "Mining is waiting for a coherent indexer snapshot lease.",
       });
       return;
     }
@@ -799,6 +884,19 @@ async function performMiningCycle(options: {
       options.loopState,
       readyReadContext.nodeStatus?.serviceStatus ?? { pid: service.pid },
     );
+
+    const publishReadiness = resolveMiningReadiness(readyReadContext, { corePublishState });
+    if (!publishReadiness.ready) {
+      clearMiningProviderWait(options.loopState);
+      await saveCycleStatus(readyReadContext, {
+        runMode: options.runMode,
+        currentPhase: publishReadiness.currentPhase,
+        corePublishState,
+        readinessBlocker: publishReadiness.blocker,
+        note: publishReadiness.note,
+      });
+      return;
+    }
 
     if (targetBlockHeight !== null && getBlockRewardCogtoshi(targetBlockHeight) === 0n) {
       clearMiningProviderWait(options.loopState);
