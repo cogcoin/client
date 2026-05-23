@@ -7,6 +7,7 @@ import {
   getWords,
   settleBlock,
 } from "@cogcoin/scoring";
+import { lookupDomainById } from "@cogcoin/indexer/queries";
 import { probeIndexerDaemon } from "../../bitcoind/indexer-daemon.js";
 import { loadClientConfig } from "./config.js";
 import {
@@ -14,7 +15,13 @@ import {
   markMiningGenerationActive,
   markMiningGenerationInactive,
 } from "./coordination.js";
-import type { MiningCandidate, MiningRpcClient, ReadyMiningReadContext } from "./engine-types.js";
+import type {
+  MiningCandidate,
+  MiningCandidateAuthorizationRole,
+  MiningCandidateProvenance,
+  MiningRpcClient,
+  ReadyMiningReadContext,
+} from "./engine-types.js";
 import type { WalletRuntimePaths } from "../runtime.js";
 import type { WalletSecretProvider } from "../state/provider.js";
 import type { WalletReadContext } from "../read/index.js";
@@ -33,6 +40,20 @@ export interface MiningEligibleAnchoredRoot {
   localIndex: number;
   sender: MiningCandidate["sender"];
 }
+
+export type MiningCandidateRefreshFailureReason =
+  | "domain-not-found"
+  | "domain-not-root"
+  | "domain-unanchored"
+  | "authorization-lost";
+
+export type MiningCandidateRefreshResult =
+  | { ok: true; candidate: MiningCandidate }
+  | {
+    ok: false;
+    reason: MiningCandidateRefreshFailureReason;
+    diagnostic: string;
+  };
 
 export interface IndexerTruthKey {
   walletRootId: string;
@@ -57,6 +78,52 @@ export function getIndexerTruthKey(
     walletRootId: readContext.localState.state.walletRootId,
     daemonInstanceId: readContext.snapshot.daemonInstanceId,
     snapshotSeq: readContext.snapshot.snapshotSeq,
+  };
+}
+
+function bytesToHex(value: Uint8Array | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  return Buffer.from(value).toString("hex");
+}
+
+function resolveAuthorizationRole(options: {
+  domain: {
+    ownerScriptPubKey?: Uint8Array | null;
+    delegate?: Uint8Array | null;
+    miner?: Uint8Array | null;
+  };
+  walletScriptPubKeyHex: string;
+}): MiningCandidateAuthorizationRole | null {
+  if (bytesToHex(options.domain.ownerScriptPubKey) === options.walletScriptPubKeyHex) {
+    return "owner";
+  }
+
+  if (bytesToHex(options.domain.delegate) === options.walletScriptPubKeyHex) {
+    return "delegate";
+  }
+
+  if (bytesToHex(options.domain.miner) === options.walletScriptPubKeyHex) {
+    return "miner";
+  }
+
+  return null;
+}
+
+function createMiningCandidateProvenance(
+  context: ReadyMiningReadContext,
+  authorizationRole: MiningCandidateAuthorizationRole,
+): MiningCandidateProvenance {
+  return {
+    walletRootId: context.localState.state.walletRootId,
+    walletScriptPubKeyHex: context.model.walletScriptPubKeyHex,
+    indexerDaemonInstanceId: context.snapshot.daemonInstanceId ?? context.indexer.daemonInstanceId ?? null,
+    indexerSnapshotSeq: context.snapshot.snapshotSeq ?? context.indexer.snapshotSeq ?? null,
+    snapshotTipHeight: context.snapshot.tip?.height ?? context.indexer.snapshotTip?.height ?? null,
+    snapshotTipHash: context.snapshot.tip?.blockHashHex ?? context.indexer.snapshotTip?.blockHashHex ?? null,
+    authorizationRole,
   };
 }
 
@@ -149,16 +216,72 @@ export function refreshMiningCandidateFromCurrentState(
   context: ReadyMiningReadContext,
   candidate: MiningCandidate,
 ): MiningCandidate | null {
-  const refreshed = resolveEligibleAnchoredRoots(context).find((domain) => domain.domainId === candidate.domainId);
-  if (refreshed === undefined) {
-    return null;
+  const result = refreshMiningCandidateFromCurrentStateDetailed(context, candidate);
+  return result.ok ? result.candidate : null;
+}
+
+export function refreshMiningCandidateFromCurrentStateDetailed(
+  context: ReadyMiningReadContext,
+  candidate: MiningCandidate,
+): MiningCandidateRefreshResult {
+  const chainDomain = lookupDomainById(context.snapshot.state, candidate.domainId);
+  if (chainDomain === null) {
+    return {
+      ok: false,
+      reason: "domain-not-found",
+      diagnostic: `domain_id=${candidate.domainId}`,
+    };
+  }
+
+  if (chainDomain.name.includes("-")) {
+    return {
+      ok: false,
+      reason: "domain-not-root",
+      diagnostic: `domain_id=${candidate.domainId} domain_name=${chainDomain.name}`,
+    };
+  }
+
+  if (!chainDomain.anchored) {
+    return {
+      ok: false,
+      reason: "domain-unanchored",
+      diagnostic: `domain_id=${candidate.domainId} domain_name=${chainDomain.name}`,
+    };
+  }
+
+  const authorizationRole = resolveAuthorizationRole({
+    domain: chainDomain,
+    walletScriptPubKeyHex: context.model.walletScriptPubKeyHex,
+  });
+  if (authorizationRole === null || context.model.walletAddress === null) {
+    return {
+      ok: false,
+      reason: "authorization-lost",
+      diagnostic: [
+        `domain_id=${candidate.domainId}`,
+        `domain_name=${chainDomain.name}`,
+        `wallet_script=${context.model.walletScriptPubKeyHex}`,
+        `owner_script=${bytesToHex(chainDomain.ownerScriptPubKey) ?? "null"}`,
+        `delegate_script=${bytesToHex(chainDomain.delegate) ?? "null"}`,
+        `miner_script=${bytesToHex(chainDomain.miner) ?? "null"}`,
+        `wallet_address=${context.model.walletAddress ?? "null"}`,
+      ].join(" "),
+    };
   }
 
   return {
-    ...candidate,
-    domainName: refreshed.domainName,
-    localIndex: refreshed.localIndex,
-    sender: refreshed.sender,
+    ok: true,
+    candidate: {
+      ...candidate,
+      domainName: chainDomain.name,
+      localIndex: 0,
+      sender: {
+        localIndex: 0,
+        scriptPubKeyHex: context.model.walletScriptPubKeyHex,
+        address: context.model.walletAddress,
+      },
+      provenance: createMiningCandidateProvenance(context, authorizationRole),
+    },
   };
 }
 
@@ -367,7 +490,7 @@ export async function generateCandidatesForDomains(options: {
         continue;
       }
 
-      candidates.push({
+      const candidate: MiningCandidate = {
         domainId: domain.domainId,
         domainName: domain.domainName,
         localIndex: domain.localIndex,
@@ -380,7 +503,11 @@ export async function generateCandidatesForDomains(options: {
         referencedBlockHashDisplay: bestBlockHash,
         referencedBlockHashInternal,
         targetBlockHeight,
-      });
+      };
+      const refreshed = refreshMiningCandidateFromCurrentStateDetailed(options.readContext, candidate);
+      if (refreshed.ok) {
+        candidates.push(refreshed.candidate);
+      }
     }
 
     return candidates;

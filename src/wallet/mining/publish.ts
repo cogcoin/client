@@ -24,8 +24,10 @@ import type { MiningStateRecord, OutpointRecord, WalletStateV1 } from "../types.
 import { createMiningEventRecord } from "./events.js";
 import {
   type MiningCandidate,
+  type MiningCandidateProvenance,
   type MiningMutationPlan,
   type MiningPublishOutcome,
+  type MiningPublishRestartResult,
   type MiningPublishSkipResult,
   type MiningPublishRetryResult,
   type MiningRpcClient,
@@ -48,7 +50,11 @@ import {
   clearMiningPublishState,
   miningPublishMayStillExist,
 } from "./state.js";
-import { refreshMiningCandidateFromCurrentState, type MiningEligibleAnchoredRoot } from "./candidate.js";
+import {
+  refreshMiningCandidateFromCurrentStateDetailed,
+  type MiningCandidateRefreshFailureReason,
+  type MiningEligibleAnchoredRoot,
+} from "./candidate.js";
 import type { MiningEventRecord } from "./types.js";
 import type { MiningRecentWinSummary } from "./visualizer.js";
 import { attachOrStartManagedBitcoindService } from "../../bitcoind/service.js";
@@ -74,7 +80,32 @@ class ManagedCoreWalletRelockPendingError extends Error {
 }
 
 export function createStaleMiningCandidateWaitingNote(): string {
-  return "Mining candidate changed before broadcast: the selected root domain is no longer locally mineable. Skipping this tip and waiting for the next block.";
+  return "Mining candidate changed before broadcast: wallet authorization for the selected root domain was lost. Skipping this tip and waiting for the next block.";
+}
+
+export function createSnapshotUnavailableMiningPublishWaitingNote(): string {
+  return "Mining is waiting for a coherent indexer snapshot lease before broadcasting the selected candidate.";
+}
+
+export function createSnapshotChangedMiningPublishWaitingNote(): string {
+  return "Mining indexer truth changed before broadcast; restarting candidate selection with the latest coherent snapshot.";
+}
+
+export function createTipChangedMiningPublishWaitingNote(): string {
+  return "Bitcoin tip changed before broadcast; restarting candidate selection for the current block.";
+}
+
+function createCandidateRefreshFailureWaitingNote(reason: MiningCandidateRefreshFailureReason): string {
+  switch (reason) {
+    case "domain-not-found":
+      return "Mining candidate changed before broadcast: the selected root domain ID is not present in the current indexer snapshot.";
+    case "domain-not-root":
+      return "Mining candidate changed before broadcast: the selected domain is no longer a root domain.";
+    case "domain-unanchored":
+      return "Mining candidate changed before broadcast: the selected root domain is no longer anchored.";
+    case "authorization-lost":
+      return createStaleMiningCandidateWaitingNote();
+  }
 }
 
 export function createRetryableMiningPublishWaitingNote(): string {
@@ -344,6 +375,47 @@ function computeIntentFingerprint(state: WalletStateV1, candidate: MiningCandida
       Buffer.from(candidate.encodedSentenceBytes).toString("hex"),
     ].join("\n"))
     .digest("hex");
+}
+
+function resolveCurrentCandidateProvenanceSnapshot(context: ReadyMiningReadContext): Omit<MiningCandidateProvenance, "authorizationRole"> {
+  return {
+    walletRootId: context.localState.state.walletRootId,
+    walletScriptPubKeyHex: context.model.walletScriptPubKeyHex,
+    indexerDaemonInstanceId: context.snapshot.daemonInstanceId ?? context.indexer.daemonInstanceId ?? null,
+    indexerSnapshotSeq: context.snapshot.snapshotSeq ?? context.indexer.snapshotSeq ?? null,
+    snapshotTipHeight: context.snapshot.tip?.height ?? context.indexer.snapshotTip?.height ?? null,
+    snapshotTipHash: context.snapshot.tip?.blockHashHex ?? context.indexer.snapshotTip?.blockHashHex ?? null,
+  };
+}
+
+function candidateProvenanceSnapshotChanged(
+  context: ReadyMiningReadContext,
+  candidate: MiningCandidate,
+): boolean {
+  const provenance = candidate.provenance;
+  if (provenance === undefined) {
+    return false;
+  }
+
+  const current = resolveCurrentCandidateProvenanceSnapshot(context);
+  return provenance.walletRootId !== current.walletRootId
+    || provenance.walletScriptPubKeyHex !== current.walletScriptPubKeyHex
+    || provenance.indexerDaemonInstanceId !== current.indexerDaemonInstanceId
+    || provenance.indexerSnapshotSeq !== current.indexerSnapshotSeq
+    || provenance.snapshotTipHeight !== current.snapshotTipHeight
+    || provenance.snapshotTipHash !== current.snapshotTipHash;
+}
+
+function candidateTargetsCurrentNodeTip(
+  context: ReadyMiningReadContext,
+  candidate: MiningCandidate,
+): boolean {
+  const nodeBestHeight = context.nodeStatus?.nodeBestHeight ?? null;
+  const nodeBestHash = context.nodeStatus?.nodeBestHashHex ?? null;
+  return nodeBestHeight !== null
+    && nodeBestHash !== null
+    && candidate.targetBlockHeight === nodeBestHeight + 1
+    && candidate.referencedBlockHashDisplay === nodeBestHash;
 }
 
 export async function reconcileLiveMiningState(options: {
@@ -802,11 +874,11 @@ export async function publishCandidate(options: {
 }): Promise<MiningPublishOutcome> {
   const publishAttempt = options.publishAttempt ?? publishCandidateOnce;
 
-  const createStaleCandidateSkipResult = async (state: WalletStateV1): Promise<MiningPublishSkipResult> => {
-    const note = createStaleMiningCandidateWaitingNote();
+  const createSnapshotUnavailableRetryResult = async (): Promise<MiningPublishRetryResult> => {
+    const note = createSnapshotUnavailableMiningPublishWaitingNote();
     await options.appendEventFn(options.paths, createMiningEventRecord(
-      "publish-skipped-stale-candidate",
-      "Skipped mining publish for the current tip because the selected root domain is no longer locally mineable.",
+      "publish-retry-pending",
+      "Mining publish is waiting for a coherent indexer snapshot lease before broadcasting.",
       {
         level: "warn",
         runId: options.runId,
@@ -815,18 +887,95 @@ export async function publishCandidate(options: {
         domainId: options.candidate.domainId,
         domainName: options.candidate.domainName,
         score: options.candidate.canonicalBlend.toString(),
-        reason: "candidate-unavailable",
+        reason: "snapshot-unavailable",
+      },
+    ));
+    return {
+      state: options.fallbackState,
+      txid: null,
+      decision: "publish-retry-pending",
+      note,
+      currentPhase: "waiting-indexer",
+      readinessBlocker: "indexer-snapshot",
+      retryable: true,
+      candidate: options.candidate,
+    };
+  };
+
+  const createRestartResult = async (
+    state: WalletStateV1,
+    decision: MiningPublishRestartResult["decision"],
+    note: string,
+    reason: "snapshot-changed" | "tip-changed",
+  ): Promise<MiningPublishRestartResult> => {
+    await options.appendEventFn(options.paths, createMiningEventRecord(
+      decision,
+      reason === "snapshot-changed"
+        ? "Mining indexer truth changed before broadcast; restarting candidate selection."
+        : "Bitcoin tip changed before broadcast; restarting candidate selection.",
+      {
+        level: "warn",
+        runId: options.runId,
+        targetBlockHeight: options.candidate.targetBlockHeight,
+        referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+        domainId: options.candidate.domainId,
+        domainName: options.candidate.domainName,
+        score: options.candidate.canonicalBlend.toString(),
+        reason,
       },
     ));
     return {
       state,
       txid: null,
-      decision: "publish-skipped-stale-candidate",
+      decision,
       note,
+      currentPhase: "waiting",
+      restart: true,
+      candidate: null,
+    };
+  };
+
+  const createCandidateRefreshSkipResult = async (
+    state: WalletStateV1,
+    reason: MiningCandidateRefreshFailureReason,
+    diagnostic: string,
+  ): Promise<MiningPublishSkipResult> => {
+    const decision = `publish-skipped-${reason}` as MiningPublishSkipResult["decision"];
+    const note = createCandidateRefreshFailureWaitingNote(reason);
+    const ownerAuthorizationInvariantFailed = reason === "authorization-lost"
+      && options.candidate.provenance?.authorizationRole === "owner";
+    const lastError = ownerAuthorizationInvariantFailed
+      ? `Mining candidate owner authorization invariant failed before broadcast: ${diagnostic}`
+      : null;
+
+    await options.appendEventFn(options.paths, createMiningEventRecord(
+      decision,
+      reason === "authorization-lost"
+        ? `Skipped mining publish for the current tip because wallet authorization for the selected root domain was lost. ${diagnostic}`
+        : `Skipped mining publish for the current tip because the selected root domain failed publish-time validation: ${diagnostic}`,
+      {
+        level: ownerAuthorizationInvariantFailed ? "error" : "warn",
+        runId: options.runId,
+        targetBlockHeight: options.candidate.targetBlockHeight,
+        referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+        domainId: options.candidate.domainId,
+        domainName: options.candidate.domainName,
+        score: options.candidate.canonicalBlend.toString(),
+        reason,
+      },
+    ));
+
+    return {
+      state,
+      txid: null,
+      decision,
+      note,
+      lastError,
       skipped: true,
       candidate: null,
     };
   };
+
   options.throwIfStopping?.();
   const lockedReadContext = await options.openReadContext({
     dataDir: options.dataDir,
@@ -840,12 +989,33 @@ export async function publishCandidate(options: {
     options.throwIfStopping?.();
     const readyReadContext = resolveReadyMiningReadContext(lockedReadContext);
     if (readyReadContext === null) {
-      return await createStaleCandidateSkipResult(options.fallbackState);
+      return await createSnapshotUnavailableRetryResult();
     }
-    const refreshedCandidate = refreshMiningCandidateFromCurrentState(readyReadContext, options.candidate);
-    if (refreshedCandidate === null) {
-      return await createStaleCandidateSkipResult(readyReadContext.localState.state);
+    if (!candidateTargetsCurrentNodeTip(readyReadContext, options.candidate)) {
+      return await createRestartResult(
+        readyReadContext.localState.state,
+        "publish-restart-tip-changed",
+        createTipChangedMiningPublishWaitingNote(),
+        "tip-changed",
+      );
     }
+    if (candidateProvenanceSnapshotChanged(readyReadContext, options.candidate)) {
+      return await createRestartResult(
+        readyReadContext.localState.state,
+        "publish-restart-snapshot-changed",
+        createSnapshotChangedMiningPublishWaitingNote(),
+        "snapshot-changed",
+      );
+    }
+    const refreshResult = refreshMiningCandidateFromCurrentStateDetailed(readyReadContext, options.candidate);
+    if (!refreshResult.ok) {
+      return await createCandidateRefreshSkipResult(
+        readyReadContext.localState.state,
+        refreshResult.reason,
+        refreshResult.diagnostic,
+      );
+    }
+    const refreshedCandidate = refreshResult.candidate;
 
     try {
       options.throwIfStopping?.();

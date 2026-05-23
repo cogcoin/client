@@ -86,6 +86,19 @@ export interface MiningCandidate {
   referencedBlockHashDisplay: string;
   referencedBlockHashInternal: Uint8Array;
   targetBlockHeight: number;
+  provenance?: MiningCandidateProvenance;
+}
+
+export type MiningCandidateAuthorizationRole = "owner" | "delegate" | "miner";
+
+export interface MiningCandidateProvenance {
+  walletRootId: string;
+  walletScriptPubKeyHex: string;
+  indexerDaemonInstanceId: string | null;
+  indexerSnapshotSeq: string | null;
+  snapshotTipHeight: number | null;
+  snapshotTipHash: string | null;
+  authorizationRole: MiningCandidateAuthorizationRole;
 }
 
 export type ReadyMiningReadContext = WalletReadContext & {
@@ -109,6 +122,7 @@ export function resolveReadyMiningReadContext(
   if (
     readContext.localState.availability !== "ready"
     || readContext.localState.state === null
+    || readContext.indexer.source !== "lease"
     || readContext.snapshot === null
     || readContext.model === null
   ) {
@@ -232,11 +246,17 @@ export function resolveMiningReadiness(readContext: WalletReadContext, options: 
 export interface MiningPublishSkipResult {
   state: WalletStateV1;
   txid: null;
-  decision: "publish-skipped-stale-candidate" | "publish-paused-insufficient-funds";
+  decision:
+    | "publish-skipped-domain-not-found"
+    | "publish-skipped-domain-not-root"
+    | "publish-skipped-domain-unanchored"
+    | "publish-skipped-authorization-lost"
+    | "publish-paused-insufficient-funds";
   note: string;
   lastError?: string | null;
   skipped: true;
   retryable?: false;
+  restart?: false;
   candidate: null;
 }
 
@@ -246,9 +266,28 @@ export interface MiningPublishRetryResult {
   decision: "publish-retry-pending";
   note: string;
   lastError?: string | null;
+  currentPhase?: MiningRuntimeStatusV1["currentPhase"];
+  readinessBlocker?: MiningRuntimeStatusV1["readinessBlocker"];
   skipped?: false;
   retryable: true;
+  restart?: false;
   candidate: MiningCandidate;
+}
+
+export interface MiningPublishRestartResult {
+  state: WalletStateV1;
+  txid: null;
+  decision:
+    | "publish-restart-snapshot-changed"
+    | "publish-restart-tip-changed";
+  note: string;
+  lastError?: string | null;
+  currentPhase?: MiningRuntimeStatusV1["currentPhase"];
+  readinessBlocker?: MiningRuntimeStatusV1["readinessBlocker"];
+  skipped?: false;
+  retryable?: false;
+  restart: true;
+  candidate: null;
 }
 
 export interface MiningPublishSuccessResult {
@@ -258,13 +297,15 @@ export interface MiningPublishSuccessResult {
   note?: null;
   skipped?: false;
   retryable?: false;
+  restart?: false;
   candidate: MiningCandidate;
 }
 
 export type MiningPublishOutcome =
   | MiningPublishSuccessResult
   | MiningPublishSkipResult
-  | MiningPublishRetryResult;
+  | MiningPublishRetryResult
+  | MiningPublishRestartResult;
 
 export interface CompetitivenessDecision {
   allowed: boolean;

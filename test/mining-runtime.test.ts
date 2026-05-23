@@ -517,6 +517,19 @@ function createTestMiningCandidate(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
+function createTestMiningCandidateProvenance(overrides: Record<string, unknown> = {}) {
+  return {
+    walletRootId: "wallet-root",
+    walletScriptPubKeyHex: "0014" + "11".repeat(20),
+    indexerDaemonInstanceId: "daemon-1",
+    indexerSnapshotSeq: "seq-100",
+    snapshotTipHeight: 100,
+    snapshotTipHash: "11".repeat(32),
+    authorizationRole: "owner",
+    ...overrides,
+  };
+}
+
 let gateWalletRootCounter = 0;
 
 function createEncodedMiningSentence(fill: string): Uint8Array {
@@ -2318,6 +2331,145 @@ test("performMiningCycle waits instead of crashing when mining read context is m
   assert.equal(snapshot?.lastError, null);
   assert.equal(snapshot?.readinessBlocker, "indexer-snapshot");
   assert.equal(snapshot?.note, "Mining is waiting for a coherent indexer snapshot lease.");
+});
+
+test("performMiningCycle retries publish-time snapshot lease loss without marking the tip attempted", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-publish-snapshot-loss");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const readyReadContext = createReadyMiningReadContext({
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+    readContextOverrides: {
+      dataDir: homeDirectory,
+      databasePath: `${homeDirectory}/client.sqlite`,
+      snapshot: {
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-100",
+        tip: {
+          height: 100,
+          blockHashHex: "11".repeat(32),
+          previousHashHex: "00".repeat(32),
+          stateHashHex: null,
+        },
+        state: {
+          consensus: {
+            domainIdsByName: new Map([["cogdemo", 7]]),
+            domainsById: new Map([[7, {
+              domainId: 7,
+              name: "cogdemo",
+              anchored: true,
+              anchorHeight: 100,
+              ownerScriptPubKey: Buffer.from("0014" + "11".repeat(20), "hex"),
+              endpoint: null,
+            }]]),
+            balances: new Map(),
+          },
+          history: {
+            foundingMessageByDomain: new Map(),
+            blockWinnersByHeight: new Map(),
+          },
+        },
+      },
+      indexer: {
+        health: "synced",
+        message: null,
+        status: null,
+        source: "lease",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-100",
+        openedAtUnixMs: 1,
+        snapshotTip: {
+          height: 100,
+          blockHashHex: "11".repeat(32),
+          previousHashHex: "00".repeat(32),
+          stateHashHex: null,
+        },
+      },
+      nodeHealth: "synced",
+    },
+  });
+  const missingSnapshotContext = {
+    ...createWalletReadContext({
+      localState: readyReadContext.localState,
+      nodeStatus: readyReadContext.nodeStatus,
+      nodeHealth: "synced",
+      snapshot: null,
+      model: null,
+      indexer: {
+        health: "unavailable",
+        message: "snapshot unavailable",
+        status: {
+          state: "synced",
+          heartbeatAtUnixMs: 1,
+          updatedAtUnixMs: 1,
+          ipcReady: true,
+          rpcReachable: true,
+          coreBestHeight: 100,
+          coreBestHash: "11".repeat(32),
+          appliedTipHeight: 100,
+          appliedTipHash: "11".repeat(32),
+          reorgDepth: null,
+        },
+        source: "status-file",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-100",
+        openedAtUnixMs: null,
+        snapshotTip: null,
+      },
+    }),
+    close: async () => undefined,
+  } as any;
+  const contexts = [readyReadContext, missingSnapshotContext];
+
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: readyReadContext.localState.state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+  });
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => contexts.shift()!,
+    attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+    nowImpl: () => 1_000,
+    generateCandidatesForDomainsImpl: async () => [createTestMiningCandidate({
+      provenance: createTestMiningCandidateProvenance(),
+    })],
+    runCompetitivenessGateImpl: async () => ({
+      allowed: true,
+      decision: "allowed",
+      sameDomainCompetitorSuppressed: false,
+      higherRankedCompetitorDomainCount: 0,
+      dedupedCompetitorDomainCount: 0,
+      competitivenessGateIndeterminate: false,
+      mempoolSequenceCacheStatus: "reused",
+      lastMempoolSequence: "seq-1",
+      visibleBoardEntries: [],
+      candidateRank: 1,
+    }) as any,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(loopState.attemptedTipKey, null);
+  assert.equal(snapshot?.currentPhase, "waiting-indexer");
+  assert.equal(snapshot?.readinessBlocker, "indexer-snapshot");
+  assert.equal(snapshot?.currentPublishDecision, "publish-retry-pending");
+  assert.equal(snapshot?.note, "Mining is waiting for a coherent indexer snapshot lease before broadcasting the selected candidate.");
 });
 
 test("performMiningCycle retries a synced status-file indexer view before waiting for snapshot lease", async (t) => {
@@ -4744,11 +4896,138 @@ test("publish candidate reuses the same selected sentence across same-tip retrie
   assert.deepEqual(closeCalls, [1, 2]);
 });
 
-test("publish candidate skips the tip when the selected domain is no longer locally mineable", async () => {
+test("publish candidate retries when publish-time read context has no snapshot lease", async () => {
+  const events: any[] = [];
+  const fallbackState = createReadyMiningReadContext({}).localState.state;
+
+  const result = await publishCandidateForTesting({
+    candidate: createTestMiningCandidate(),
+    dataDir: "/tmp",
+    databasePath: "/tmp/test.db",
+    provider: {} as any,
+    paths: {} as any,
+    fallbackState,
+    openReadContext: async () => ({
+      ...createWalletReadContext({
+        localState: {
+          availability: "ready",
+          clientPasswordReadiness: "ready",
+          unlockRequired: false,
+          walletRootId: fallbackState.walletRootId,
+          state: fallbackState,
+          source: "primary",
+          hasPrimaryStateFile: true,
+          hasBackupStateFile: false,
+          message: null,
+        },
+        snapshot: null,
+        model: null,
+        indexer: {
+          health: "unavailable",
+          message: "snapshot unavailable",
+          status: {
+            state: "synced",
+            heartbeatAtUnixMs: 1_000,
+            updatedAtUnixMs: 1_100,
+            ipcReady: true,
+            rpcReachable: true,
+            coreBestHeight: 100,
+            coreBestHash: "11".repeat(32),
+            appliedTipHeight: 100,
+            appliedTipHash: "11".repeat(32),
+            reorgDepth: null,
+          },
+          source: "status-file",
+          daemonInstanceId: "daemon-status",
+          snapshotSeq: "seq-status",
+          openedAtUnixMs: null,
+          snapshotTip: null,
+        },
+      }),
+      close: async () => undefined,
+    }) as any,
+    attachService: async () => {
+      throw new Error("attachService should not run without a snapshot lease");
+    },
+    rpcFactory: () => {
+      throw new Error("rpcFactory should not run without a snapshot lease");
+    },
+    runId: "run-1",
+    publishAttempt: async () => {
+      throw new Error("publishAttempt should not run without a snapshot lease");
+    },
+    appendEventFn: async (_paths, event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(result.retryable, true);
+  if (result.retryable !== true) {
+    assert.fail("expected snapshot-unavailable publish result to be retryable");
+  }
+  assert.equal(result.txid, null);
+  assert.equal(result.decision, "publish-retry-pending");
+  assert.equal(result.currentPhase, "waiting-indexer");
+  assert.equal(result.readinessBlocker, "indexer-snapshot");
+  assert.equal(result.note, "Mining is waiting for a coherent indexer snapshot lease before broadcasting the selected candidate.");
+  assert.equal(result.candidate.sentence, createTestMiningCandidate().sentence);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.kind, "publish-retry-pending");
+  assert.equal(events[0]?.reason, "snapshot-unavailable");
+});
+
+test("publish candidate refresh uses domain ID even when the read model omits the domain", async () => {
+  let attempts = 0;
+
+  const result = await publishCandidateForTesting({
+    candidate: createTestMiningCandidate(),
+    dataDir: "/tmp",
+    databasePath: "/tmp/test.db",
+    provider: {} as any,
+    paths: {} as any,
+    fallbackState: createReadyMiningReadContext({}).localState.state,
+    openReadContext: async () => createReadyMiningReadContext({
+      readContextOverrides: {
+        model: {
+          walletScriptPubKeyHex: "0014" + "11".repeat(20),
+          domains: [],
+        },
+      },
+    }),
+    attachService: async () => {
+      throw new Error("attachService should not be called when publishAttempt is stubbed");
+    },
+    rpcFactory: () => {
+      throw new Error("rpcFactory should not be called when publishAttempt is stubbed");
+    },
+    runId: "run-1",
+    publishAttempt: async ({ readContext, candidate }) => {
+      attempts += 1;
+      assert.equal(candidate.domainId, 7);
+      assert.equal(candidate.domainName, "cogdemo");
+      assert.equal(candidate.sender.address, "bc1qfunding");
+      assert.equal(candidate.provenance?.authorizationRole, "owner");
+      return {
+        state: readContext.localState.state,
+        txid: "ff".repeat(32),
+        decision: "broadcast",
+      };
+    },
+    appendEventFn: async () => undefined,
+  });
+
+  assert.equal(attempts, 1);
+  assert.equal(result.decision, "broadcast");
+  assert.equal(result.txid, "ff".repeat(32));
+  assert.equal(result.candidate?.provenance?.authorizationRole, "owner");
+});
+
+test("publish candidate restarts when candidate provenance points at older indexer truth", async () => {
   const result = await publishCandidateForTesting({
     candidate: createTestMiningCandidate({
-      domainId: 99,
-      domainName: "mitmissing",
+      provenance: createTestMiningCandidateProvenance({
+        indexerSnapshotSeq: "seq-99",
+      }),
     }),
     dataDir: "/tmp",
     databasePath: "/tmp/test.db",
@@ -4756,6 +5035,112 @@ test("publish candidate skips the tip when the selected domain is no longer loca
     paths: {} as any,
     fallbackState: createReadyMiningReadContext({}).localState.state,
     openReadContext: async () => createReadyMiningReadContext({}),
+    attachService: async () => {
+      throw new Error("attachService should not run when indexer truth changed");
+    },
+    rpcFactory: () => {
+      throw new Error("rpcFactory should not run when indexer truth changed");
+    },
+    runId: "run-1",
+    publishAttempt: async () => {
+      throw new Error("publishAttempt should not run when indexer truth changed");
+    },
+    appendEventFn: async () => undefined,
+  });
+
+  assert.equal(result.restart, true);
+  assert.equal(result.txid, null);
+  assert.equal(result.decision, "publish-restart-snapshot-changed");
+  assert.equal(result.candidate, null);
+  assert.match(result.note, /indexer truth changed/i);
+});
+
+test("publish candidate restarts when the Bitcoin tip changes before broadcast", async () => {
+  const result = await publishCandidateForTesting({
+    candidate: createTestMiningCandidate(),
+    dataDir: "/tmp",
+    databasePath: "/tmp/test.db",
+    provider: {} as any,
+    paths: {} as any,
+    fallbackState: createReadyMiningReadContext({}).localState.state,
+    openReadContext: async () => createReadyMiningReadContext({
+      readContextOverrides: {
+        nodeStatus: {
+          chain: "mainnet",
+          nodeBestHeight: 101,
+          nodeBestHashHex: "12".repeat(32),
+          walletReplica: {
+            proofStatus: "ready",
+          },
+        },
+      },
+    }),
+    attachService: async () => {
+      throw new Error("attachService should not run when the Bitcoin tip changed");
+    },
+    rpcFactory: () => {
+      throw new Error("rpcFactory should not run when the Bitcoin tip changed");
+    },
+    runId: "run-1",
+    publishAttempt: async () => {
+      throw new Error("publishAttempt should not run when the Bitcoin tip changed");
+    },
+    appendEventFn: async () => undefined,
+  });
+
+  assert.equal(result.restart, true);
+  assert.equal(result.txid, null);
+  assert.equal(result.decision, "publish-restart-tip-changed");
+  assert.equal(result.candidate, null);
+  assert.match(result.note, /Bitcoin tip changed/i);
+});
+
+test("publish candidate reports authorization loss without blaming snapshot alignment", async () => {
+  const result = await publishCandidateForTesting({
+    candidate: createTestMiningCandidate({
+      provenance: createTestMiningCandidateProvenance({
+        authorizationRole: "miner",
+      }),
+    }),
+    dataDir: "/tmp",
+    databasePath: "/tmp/test.db",
+    provider: {} as any,
+    paths: {} as any,
+    fallbackState: createReadyMiningReadContext({}).localState.state,
+    openReadContext: async () => createReadyMiningReadContext({
+      readContextOverrides: {
+        snapshot: {
+          daemonInstanceId: "daemon-1",
+          snapshotSeq: "seq-100",
+          tip: {
+            height: 100,
+            blockHashHex: "11".repeat(32),
+            previousHashHex: "00".repeat(32),
+            stateHashHex: null,
+          },
+          state: {
+            consensus: {
+              domainIdsByName: new Map([["cogdemo", 7]]),
+              domainsById: new Map([[7, {
+                domainId: 7,
+                name: "cogdemo",
+                anchored: true,
+                anchorHeight: 100,
+                ownerScriptPubKey: Buffer.from("0014" + "22".repeat(20), "hex"),
+                delegate: null,
+                miner: null,
+                endpoint: null,
+              }]]),
+              balances: new Map(),
+            },
+            history: {
+              foundingMessageByDomain: new Map(),
+              blockWinnersByHeight: new Map(),
+            },
+          },
+        },
+      },
+    }),
     attachService: async () => {
       throw new Error("attachService should not be called when publishAttempt is stubbed");
     },
@@ -4772,9 +5157,77 @@ test("publish candidate skips the tip when the selected domain is no longer loca
   assert.equal(result.skipped, true);
   assert.equal(result.retryable, undefined);
   assert.equal(result.txid, null);
-  assert.equal(result.decision, "publish-skipped-stale-candidate");
+  assert.equal(result.decision, "publish-skipped-authorization-lost");
   assert.equal(result.candidate, null);
-  assert.match(result.note, /no longer locally mineable/i);
+  assert.match(result.note, /wallet authorization/i);
+  assert.doesNotMatch(result.note, /Bitcoin Core and the indexer to align/i);
+});
+
+test("publish candidate flags owner authorization loss as an invariant failure", async () => {
+  const events: any[] = [];
+  const result = await publishCandidateForTesting({
+    candidate: createTestMiningCandidate({
+      provenance: createTestMiningCandidateProvenance({
+        authorizationRole: "owner",
+      }),
+    }),
+    dataDir: "/tmp",
+    databasePath: "/tmp/test.db",
+    provider: {} as any,
+    paths: {} as any,
+    fallbackState: createReadyMiningReadContext({}).localState.state,
+    openReadContext: async () => createReadyMiningReadContext({
+      readContextOverrides: {
+        snapshot: {
+          daemonInstanceId: "daemon-1",
+          snapshotSeq: "seq-100",
+          tip: {
+            height: 100,
+            blockHashHex: "11".repeat(32),
+            previousHashHex: "00".repeat(32),
+            stateHashHex: null,
+          },
+          state: {
+            consensus: {
+              domainIdsByName: new Map([["cogdemo", 7]]),
+              domainsById: new Map([[7, {
+                domainId: 7,
+                name: "cogdemo",
+                anchored: true,
+                anchorHeight: 100,
+                ownerScriptPubKey: Buffer.from("0014" + "33".repeat(20), "hex"),
+                endpoint: null,
+              }]]),
+              balances: new Map(),
+            },
+            history: {
+              foundingMessageByDomain: new Map(),
+              blockWinnersByHeight: new Map(),
+            },
+          },
+        },
+      },
+    }),
+    attachService: async () => {
+      throw new Error("attachService should not run after owner authorization invariant failure");
+    },
+    rpcFactory: () => {
+      throw new Error("rpcFactory should not run after owner authorization invariant failure");
+    },
+    runId: "run-1",
+    publishAttempt: async () => {
+      throw new Error("publishAttempt should not run after owner authorization invariant failure");
+    },
+    appendEventFn: async (_paths, event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(result.skipped, true);
+  assert.equal(result.decision, "publish-skipped-authorization-lost");
+  assert.match(result.lastError ?? "", /owner authorization invariant failed/i);
+  assert.equal(events[0]?.level, "error");
+  assert.equal(events[0]?.reason, "authorization-lost");
 });
 
 test("runCompetitivenessGate keeps same-domain mempool suppression semantics", async () => {

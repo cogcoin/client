@@ -701,9 +701,39 @@ export async function runMiningPhaseMachine(options: {
           if (
             state.tipKey !== null
             && published.retryable !== true
+            && published.restart !== true
             && published.decision !== "publish-paused-insufficient-funds"
           ) {
             options.loopState.attemptedTipKey = state.tipKey;
+          }
+          if (published.restart === true) {
+            clearSelectedCandidate(options.loopState);
+            options.loopState.waitingNote = published.note;
+            await options.saveCycleStatus({
+              ...options.readContext,
+              localState: {
+                ...options.readContext.localState,
+                state: published.state,
+              },
+            }, {
+              runMode: options.runMode,
+              currentPhase: published.currentPhase ?? "waiting",
+              readinessBlocker: published.readinessBlocker,
+              currentPublishDecision: published.decision,
+              sameDomainCompetitorSuppressed: false,
+              higherRankedCompetitorDomainCount: state.gateSnapshot.higherRankedCompetitorDomainCount,
+              dedupedCompetitorDomainCount: state.gateSnapshot.dedupedCompetitorDomainCount,
+              competitivenessGateIndeterminate: false,
+              competitivenessGateReason: null,
+              competitivenessGateDiagnostics: null,
+              mempoolSequenceCacheStatus: state.gateSnapshot.mempoolSequenceCacheStatus,
+              lastMempoolSequence: state.gateSnapshot.lastMempoolSequence,
+              lastCompetitivenessGateAtUnixMs: now(),
+              lastError: published.lastError ?? null,
+              note: published.note,
+              livePublishInMempool: published.state.miningState.livePublishInMempool,
+            });
+            return;
           }
           if (published.retryable === true) {
             cacheSelectedCandidateForTip(
@@ -721,7 +751,8 @@ export async function runMiningPhaseMachine(options: {
               },
             }, {
               runMode: options.runMode,
-              currentPhase: "waiting",
+              currentPhase: published.currentPhase ?? "waiting",
+              readinessBlocker: published.readinessBlocker,
               currentPublishDecision: published.decision,
               sameDomainCompetitorSuppressed: false,
               higherRankedCompetitorDomainCount: state.gateSnapshot.higherRankedCompetitorDomainCount,
@@ -748,7 +779,7 @@ export async function runMiningPhaseMachine(options: {
             options.loopState.waitingNote = published.note;
             const lastError = published.decision === "publish-paused-insufficient-funds"
               ? published.lastError ?? createInsufficientFundsMiningPublishErrorMessage()
-              : null;
+              : published.lastError ?? null;
             await options.saveCycleStatus({
               ...options.readContext,
               localState: {
