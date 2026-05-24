@@ -229,20 +229,32 @@ export async function writeIndexerDaemonStatus(
   return status;
 }
 
+export interface RefreshIndexerDaemonStatusDependencies {
+  readAppliedTipStatus: typeof readAppliedTipStatus;
+  readCoreTipStatus: typeof readCoreTipStatus;
+  writeIndexerDaemonStatus: typeof writeIndexerDaemonStatus;
+  now: () => number;
+}
+
+const DEFAULT_REFRESH_INDEXER_DAEMON_STATUS_DEPENDENCIES: RefreshIndexerDaemonStatusDependencies = {
+  readAppliedTipStatus,
+  readCoreTipStatus,
+  writeIndexerDaemonStatus,
+  now: Date.now,
+};
+
 export async function refreshIndexerDaemonStatus(options: {
   databasePath: string;
   paths: ReturnType<typeof resolveManagedServicePaths>;
   state: IndexerDaemonRuntimeState;
-}): Promise<ManagedIndexerDaemonStatus> {
-  const now = Date.now();
+}, dependencies: RefreshIndexerDaemonStatusDependencies = DEFAULT_REFRESH_INDEXER_DAEMON_STATUS_DEPENDENCIES): Promise<ManagedIndexerDaemonStatus> {
+  const indexedStatus = await dependencies.readAppliedTipStatus(options.databasePath);
+  const backgroundStatus = await options.state.backgroundClient?.getNodeStatus().catch(() => null) ?? null;
+  const coreStatus = await dependencies.readCoreTipStatus(options.paths);
+  const now = dependencies.now();
   options.state.heartbeatAtUnixMs = now;
   options.state.updatedAtUnixMs = now;
 
-  const [coreStatus, indexedStatus] = await Promise.all([
-    readCoreTipStatus(options.paths),
-    readAppliedTipStatus(options.databasePath),
-  ]);
-  const backgroundStatus = await options.state.backgroundClient?.getNodeStatus().catch(() => null) ?? null;
   if (backgroundStatus?.following === true) {
     options.state.backgroundFollowError = null;
   }
@@ -275,7 +287,7 @@ export async function refreshIndexerDaemonStatus(options: {
     };
     options.state.cogcoinSyncHeight = indexedStatus.appliedTip?.height ?? null;
     options.state.cogcoinSyncTargetHeight = coreStatus.coreBestHeight;
-    return writeIndexerDaemonStatus(options.paths, options.state);
+    return dependencies.writeIndexerDaemonStatus(options.paths, options.state);
   }
 
   if (indexedStatus.schemaMismatch) {
@@ -289,7 +301,7 @@ export async function refreshIndexerDaemonStatus(options: {
       lastError: indexedStatus.error,
       updatedAt: now,
     };
-    return writeIndexerDaemonStatus(options.paths, options.state);
+    return dependencies.writeIndexerDaemonStatus(options.paths, options.state);
   }
 
   if (indexedStatus.error !== null) {
@@ -303,7 +315,7 @@ export async function refreshIndexerDaemonStatus(options: {
       lastError: indexedStatus.error,
       updatedAt: now,
     };
-    return writeIndexerDaemonStatus(options.paths, options.state);
+    return dependencies.writeIndexerDaemonStatus(options.paths, options.state);
   }
 
   const leaseState = deriveIndexerDaemonLeaseState({
@@ -336,5 +348,5 @@ export async function refreshIndexerDaemonStatus(options: {
     options.state.cogcoinSyncTargetHeight = coreStatus.coreBestHeight;
   }
 
-  return writeIndexerDaemonStatus(options.paths, options.state);
+  return dependencies.writeIndexerDaemonStatus(options.paths, options.state);
 }

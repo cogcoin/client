@@ -21,11 +21,14 @@ import {
   stopIndexerDaemonServiceWithLockHeld,
   writeIndexerDaemonStatusForTesting,
 } from "../src/bitcoind/indexer-daemon/process.js";
+import { createIndexerDaemonRuntime } from "../src/bitcoind/indexer-daemon/runtime.js";
 import { createIndexerDaemonServer } from "../src/bitcoind/indexer-daemon/server.js";
 import {
   buildIndexerDaemonStatus,
   createIndexerSnapshotKey,
   deriveIndexerDaemonLeaseState,
+  observeIndexerAppliedTip,
+  refreshIndexerDaemonStatus,
 } from "../src/bitcoind/indexer-daemon/status.js";
 import {
   closeSnapshotLease,
@@ -48,7 +51,7 @@ import type {
   IndexerSnapshotPayload,
   LoadedSnapshotMaterial,
 } from "../src/bitcoind/indexer-daemon/types.js";
-import { createTrackedTempDirectory } from "./bitcoind-helpers.js";
+import { createTrackedTempDirectory, waitForCondition } from "./bitcoind-helpers.js";
 import { CURRENT_CLIENT_VERSION } from "./version-helpers.js";
 
 function createRuntimeState(
@@ -188,6 +191,16 @@ function createSnapshotPayloadFixture(
     expiresAtUnixMs: Date.now() + 5_000,
     ...overrides,
   };
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function installProcessKillMock(
@@ -342,6 +355,191 @@ test("deriveIndexerDaemonLeaseState preserves starting, catching-up, and synced 
   assert.equal(synced.state, "synced");
   assert.equal(synced.lastError, null);
   assert.equal(synced.hasSuccessfulCoreTipRefresh, true);
+});
+
+test("refreshIndexerDaemonStatus reads applied tip before live Core tip", async () => {
+  const oldHash = "11".repeat(32);
+  const newHash = "22".repeat(32);
+  const appliedTip = {
+    height: 950_777,
+    blockHashHex: oldHash,
+    previousHashHex: "00".repeat(32),
+    stateHashHex: null,
+  };
+  const state = createRuntimeState({
+    state: "synced",
+    coreBestHeight: 950_777,
+    coreBestHash: oldHash,
+    appliedTipHeight: 950_777,
+    appliedTipHash: oldHash,
+    hasSuccessfulCoreTipRefresh: true,
+  });
+  const paths = resolveManagedServicePaths("/tmp/cogcoin-refresh-order/bitcoin", "wallet-root-test");
+  let coreHeight = 950_777;
+  let coreHash = oldHash;
+
+  const status = await refreshIndexerDaemonStatus({
+    databasePath: "/tmp/cogcoin-refresh-order/client.sqlite",
+    paths,
+    state,
+  }, {
+    async readAppliedTipStatus() {
+      coreHeight = 950_779;
+      coreHash = newHash;
+      return {
+        appliedTip,
+        error: null,
+        schemaMismatch: false,
+      };
+    },
+    async readCoreTipStatus() {
+      return {
+        rpcReachable: true,
+        coreBestHeight: coreHeight,
+        coreBestHash: coreHash,
+        error: null,
+        prerequisiteUnavailable: false,
+      };
+    },
+    async writeIndexerDaemonStatus(_paths, currentState) {
+      return buildIndexerDaemonStatus(currentState);
+    },
+    now: () => 1_700_000_000_200,
+  });
+
+  assert.equal(status.state, "catching-up");
+  assert.equal(status.coreBestHeight, 950_779);
+  assert.equal(status.coreBestHash, newHash);
+  assert.equal(status.appliedTipHeight, 950_777);
+  assert.equal(status.appliedTipHash, oldHash);
+  assert.equal(status.backlogBlocks, 2);
+});
+
+test("indexer daemon snapshot open cannot overwrite newer Core status with stale synced truth", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-indexer-status-regression");
+  const dataDir = join(homeDirectory, "bitcoin");
+  const databasePath = join(homeDirectory, "client.sqlite");
+  const walletRootId = "wallet-root-test";
+  const paths = resolveManagedServicePaths(dataDir, walletRootId);
+  const oldHash = "11".repeat(32);
+  const newHash = "22".repeat(32);
+  const appliedTip = {
+    height: 950_777,
+    blockHashHex: oldHash,
+    previousHashHex: "00".repeat(32),
+    stateHashHex: null,
+  };
+  const snapshotStarted = createDeferred<void>();
+  const snapshotMaterial = createDeferred<LoadedSnapshotMaterial>();
+  const writtenStatuses: ManagedIndexerDaemonStatus[] = [];
+  let coreHeight = 950_777;
+  let coreHash = oldHash;
+  let nowUnixMs = 1_700_000_000_000;
+
+  const writeStatus = async (_paths: ReturnType<typeof resolveManagedServicePaths>, state: IndexerDaemonRuntimeState) => {
+    const status = buildIndexerDaemonStatus(state);
+    writtenStatuses.push(status);
+    return status;
+  };
+
+  const runtime = createIndexerDaemonRuntime({
+    dataDir,
+    databasePath,
+    walletRootId,
+    paths,
+    binaryVersion: CURRENT_CLIENT_VERSION,
+    genesisParameters: { genesisBlock: 0 } as never,
+    heartbeatIntervalMs: 5,
+    dependencies: {
+      async assertIndexerDaemonNativeDependencies() {},
+      async loadSnapshotMaterial() {
+        snapshotStarted.resolve();
+        return await snapshotMaterial.promise;
+      },
+      async readCoreTipStatus() {
+        return {
+          rpcReachable: true,
+          coreBestHeight: coreHeight,
+          coreBestHash: coreHash,
+          error: null,
+          prerequisiteUnavailable: false,
+        };
+      },
+      async refreshIndexerDaemonStatus({ state }) {
+        nowUnixMs += 10;
+        state.heartbeatAtUnixMs = nowUnixMs;
+        state.updatedAtUnixMs = nowUnixMs;
+        state.rpcReachable = true;
+        state.coreBestHeight = coreHeight;
+        state.coreBestHash = coreHash;
+        observeIndexerAppliedTip(state, appliedTip, nowUnixMs);
+        state.state = coreHeight === appliedTip.height && coreHash === appliedTip.blockHashHex
+          ? "synced"
+          : "catching-up";
+        state.lastError = null;
+        state.backgroundFollowActive = true;
+        state.bootstrapPhase = state.state === "synced" ? "follow_tip" : "paused";
+        state.bootstrapProgress = createBootstrapProgress(state.bootstrapPhase, DEFAULT_SNAPSHOT_METADATA);
+        state.cogcoinSyncHeight = appliedTip.height;
+        state.cogcoinSyncTargetHeight = coreHeight;
+        return await writeStatus(paths, state);
+      },
+      writeIndexerDaemonStatus: writeStatus,
+      now: () => {
+        nowUnixMs += 1;
+        return nowUnixMs;
+      },
+    },
+  });
+
+  let client: IndexerDaemonClient | null = null;
+  try {
+    await mkdir(dataDir, { recursive: true });
+    await runtime.start();
+    client = createIndexerDaemonClient(paths.indexerDaemonSocketPath);
+    const openSnapshotPromise = client.openSnapshot();
+    await snapshotStarted.promise;
+
+    coreHeight = 950_779;
+    coreHash = newHash;
+    await waitForCondition(() => writtenStatuses.some((status) =>
+      status.state === "catching-up"
+      && status.coreBestHeight === 950_779
+      && status.appliedTipHeight === 950_777
+    ), 1_000, 10);
+
+    snapshotMaterial.resolve({
+      token: "lease-old-tip",
+      stateBase64: "state-base64",
+      tip: appliedTip,
+      expiresAtUnixMs: nowUnixMs + 30_000,
+    });
+
+    const handle = await openSnapshotPromise;
+    const finalStatus = await client.getStatus();
+
+    assert.equal(handle.state, "catching-up");
+    assert.equal(handle.coreBestHeight, 950_779);
+    assert.equal(handle.appliedTipHeight, 950_777);
+    assert.equal(handle.backlogBlocks, 2);
+    assert.equal(finalStatus.state, "catching-up");
+    assert.equal(finalStatus.coreBestHeight, 950_779);
+    assert.equal(finalStatus.appliedTipHeight, 950_777);
+    assert.equal(finalStatus.backlogBlocks, 2);
+    assert.equal(
+      writtenStatuses.some((status) =>
+        status.updatedAtUnixMs > 1_700_000_000_000
+        && status.state === "synced"
+        && status.coreBestHeight === 950_777
+      ),
+      true,
+    );
+    assert.equal(writtenStatuses.at(-1)?.state, "catching-up");
+    assert.equal(writtenStatuses.at(-1)?.coreBestHeight, 950_779);
+  } finally {
+    await client?.close().catch(() => undefined);
+    await runtime.shutdown().catch(() => undefined);
+  }
 });
 
 test("snapshot lease helpers keep rotation and expiry bookkeeping stable", () => {

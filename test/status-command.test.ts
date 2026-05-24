@@ -501,6 +501,51 @@ test("passive status formatter marks older managed indexer binaries unhealthy", 
   assert.match(output, /✓ Indexer lag: 0 blocks/);
 });
 
+test("passive status formatter preserves catching-up indexer lag while mining waits", () => {
+  const output = formatStatusReport(createPassiveStatus({
+    indexer: {
+      statusPath: "/tmp/indexer-status.json",
+      present: true,
+      binaryVersion: "1.2.15",
+      state: "catching-up",
+      processId: 1234,
+      walletRootId: "wallet-root",
+      coreBestHeight: 950_779,
+      appliedTipHeight: 950_777,
+      appliedTipHash: "11".repeat(32),
+      heartbeatAtUnixMs: 2_000,
+      updatedAtUnixMs: 2_000,
+      lastError: null,
+      error: null,
+    },
+    mining: {
+      statusPath: "/tmp/mining-status.json",
+      present: true,
+      runMode: "foreground",
+      miningState: "idle",
+      currentPhase: "waiting-indexer",
+      backgroundWorkerPid: null,
+      backgroundWorkerHealth: null,
+      readinessBlocker: "indexer-daemon",
+      competitivenessGateReason: null,
+      competitivenessGateDiagnostics: null,
+      mempoolSequenceCacheStatus: null,
+      lastMempoolSequence: null,
+      lastCompetitivenessGateAtUnixMs: null,
+      updatedAtUnixMs: 2_100,
+      lastError: null,
+      note: "Mining is waiting for managed indexer readiness.",
+      error: null,
+    },
+  }), "1.2.15", { nowUnixMs: TEST_NOW_UNIX_MS });
+
+  assert.match(output, /✗ Indexer: catching-up/);
+  assert.match(output, /✗ Indexer lag: 2 blocks/);
+  assert.match(output, /✗ Mining readiness blocker: indexer-daemon/);
+  assert.doesNotMatch(output, /✓ Indexer: synced/);
+  assert.doesNotMatch(output, /✓ Indexer lag: 0 blocks/);
+});
+
 test("passive status formatter keeps equal and newer managed indexer binaries healthy", () => {
   const equalOutput = formatStatusReport(createPassiveStatus({
     indexer: {

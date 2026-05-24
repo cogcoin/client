@@ -21,6 +21,7 @@ import {
   buildIndexerDaemonStatus,
   deriveIndexerDaemonLeaseState,
   observeIndexerAppliedTip,
+  readAppliedTipStatus,
   readCoreTipStatus,
   refreshIndexerDaemonStatus,
   writeIndexerDaemonStatus,
@@ -47,6 +48,26 @@ export interface ManagedIndexerDaemonRuntime {
   getStatus(): ManagedIndexerDaemonStatus;
 }
 
+interface IndexerDaemonRuntimeDependencies {
+  assertIndexerDaemonNativeDependencies: typeof assertIndexerDaemonNativeDependencies;
+  loadSnapshotMaterial: typeof loadSnapshotMaterial;
+  readAppliedTipStatus: typeof readAppliedTipStatus;
+  readCoreTipStatus: typeof readCoreTipStatus;
+  refreshIndexerDaemonStatus: typeof refreshIndexerDaemonStatus;
+  writeIndexerDaemonStatus: typeof writeIndexerDaemonStatus;
+  now: () => number;
+}
+
+const DEFAULT_INDEXER_DAEMON_RUNTIME_DEPENDENCIES: IndexerDaemonRuntimeDependencies = {
+  assertIndexerDaemonNativeDependencies,
+  loadSnapshotMaterial,
+  readAppliedTipStatus,
+  readCoreTipStatus,
+  refreshIndexerDaemonStatus,
+  writeIndexerDaemonStatus,
+  now: Date.now,
+};
+
 export function createIndexerDaemonRuntime(options: {
   dataDir: string;
   databasePath: string;
@@ -61,7 +82,12 @@ export function createIndexerDaemonRuntime(options: {
   backgroundFollowResumeTimeoutMs?: number;
   backgroundFollowResumeTimeoutError?: string;
   forceResumeErrorEnv?: string;
+  dependencies?: Partial<IndexerDaemonRuntimeDependencies>;
 }): ManagedIndexerDaemonRuntime {
+  const dependencies = {
+    ...DEFAULT_INDEXER_DAEMON_RUNTIME_DEPENDENCIES,
+    ...options.dependencies,
+  };
   const walletRootId = options.walletRootId ?? UNINITIALIZED_WALLET_ROOT_ID;
   const paths = options.paths ?? resolveManagedServicePaths(options.dataDir, walletRootId);
   const snapshotTtlMs = options.snapshotTtlMs ?? SNAPSHOT_TTL_MS;
@@ -105,63 +131,116 @@ export function createIndexerDaemonRuntime(options: {
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let server: net.Server | null = null;
   let shutdownPromise: Promise<void> | null = null;
+  let statusMutationQueue: Promise<void> = Promise.resolve();
+  let heartbeatRefreshScheduled = false;
+  let heartbeatRefreshRequested = false;
 
-  const writeStatus = async (): Promise<ManagedIndexerDaemonStatus> => writeIndexerDaemonStatus(paths, state);
+  const writeStatus = async (): Promise<ManagedIndexerDaemonStatus> => dependencies.writeIndexerDaemonStatus(paths, state);
+
+  const enqueueStatusMutation = <T>(mutation: () => Promise<T>): Promise<T> => {
+    const run = statusMutationQueue.then(mutation, mutation);
+    statusMutationQueue = run.then(() => undefined, () => undefined);
+    return run;
+  };
+
+  const refreshStatusAndPruneLeases = async (): Promise<void> => {
+    await dependencies.refreshIndexerDaemonStatus({
+      databasePath: options.databasePath,
+      paths,
+      state,
+    }, {
+      readAppliedTipStatus: dependencies.readAppliedTipStatus,
+      readCoreTipStatus: dependencies.readCoreTipStatus,
+      writeIndexerDaemonStatus: dependencies.writeIndexerDaemonStatus,
+      now: dependencies.now,
+    });
+
+    const now = dependencies.now();
+    if (pruneExpiredSnapshotLeases(state, now)) {
+      await writeStatus();
+    }
+  };
+
+  const requestHeartbeatRefresh = () => {
+    heartbeatRefreshRequested = true;
+
+    if (heartbeatRefreshScheduled) {
+      return;
+    }
+
+    heartbeatRefreshScheduled = true;
+    void (async () => {
+      while (heartbeatRefreshRequested) {
+        heartbeatRefreshRequested = false;
+        await enqueueStatusMutation(refreshStatusAndPruneLeases);
+      }
+    })().catch(() => undefined).finally(() => {
+      heartbeatRefreshScheduled = false;
+      if (heartbeatRefreshRequested) {
+        requestHeartbeatRefresh();
+      }
+    });
+  };
 
   const openSnapshot = async (): Promise<IndexerSnapshotHandle> => {
-    const [snapshotMaterial, coreStatus] = await Promise.all([
-      loadSnapshotMaterial(options.databasePath, snapshotTtlMs),
-      readCoreTipStatus(paths),
-    ]);
-    const now = Date.now();
-    state.heartbeatAtUnixMs = now;
-    state.updatedAtUnixMs = now;
-    state.rpcReachable = coreStatus.rpcReachable;
-    state.coreBestHeight = coreStatus.coreBestHeight;
-    state.coreBestHash = coreStatus.coreBestHash;
-    observeIndexerAppliedTip(state, snapshotMaterial.tip, now);
-    const leaseState = deriveIndexerDaemonLeaseState({
-      coreStatus,
-      appliedTip: snapshotMaterial.tip,
-      hasSuccessfulCoreTipRefresh: state.hasSuccessfulCoreTipRefresh,
-    });
-    state.hasSuccessfulCoreTipRefresh = leaseState.hasSuccessfulCoreTipRefresh;
-    state.state = leaseState.state;
-    state.lastError = leaseState.lastError;
-    const snapshot = storeSnapshotLease({
-      state,
-      material: snapshotMaterial,
-      nowUnixMs: now,
-    });
-    const status = await writeStatus();
-    return createSnapshotHandle({
-      snapshot,
-      status,
-      binaryVersion: state.binaryVersion,
+    const snapshotMaterial = await dependencies.loadSnapshotMaterial(options.databasePath, snapshotTtlMs);
+
+    return await enqueueStatusMutation(async () => {
+      const coreStatus = await dependencies.readCoreTipStatus(paths);
+      const now = dependencies.now();
+      state.heartbeatAtUnixMs = now;
+      state.updatedAtUnixMs = now;
+      state.rpcReachable = coreStatus.rpcReachable;
+      state.coreBestHeight = coreStatus.coreBestHeight;
+      state.coreBestHash = coreStatus.coreBestHash;
+      observeIndexerAppliedTip(state, snapshotMaterial.tip, now);
+      const leaseState = deriveIndexerDaemonLeaseState({
+        coreStatus,
+        appliedTip: snapshotMaterial.tip,
+        hasSuccessfulCoreTipRefresh: state.hasSuccessfulCoreTipRefresh,
+      });
+      state.hasSuccessfulCoreTipRefresh = leaseState.hasSuccessfulCoreTipRefresh;
+      state.state = leaseState.state;
+      state.lastError = leaseState.lastError;
+      const snapshot = storeSnapshotLease({
+        state,
+        material: snapshotMaterial,
+        nowUnixMs: now,
+      });
+      const status = await writeStatus();
+      return createSnapshotHandle({
+        snapshot,
+        status,
+        binaryVersion: state.binaryVersion,
+      });
     });
   };
 
   const readSnapshot = async (token?: string): Promise<IndexerSnapshotPayload> => {
-    const result = readSnapshotLease({
-      state,
-      token,
+    return await enqueueStatusMutation(async () => {
+      const result = readSnapshotLease({
+        state,
+        token,
+      });
+
+      if (result.changed) {
+        await writeStatus();
+      }
+
+      if (result.error !== null || result.payload === null) {
+        throw new Error(result.error ?? "indexer_daemon_snapshot_invalid");
+      }
+
+      return result.payload;
     });
-
-    if (result.changed) {
-      await writeStatus();
-    }
-
-    if (result.error !== null || result.payload === null) {
-      throw new Error(result.error ?? "indexer_daemon_snapshot_invalid");
-    }
-
-    return result.payload;
   };
 
   const closeSnapshot = async (token?: string): Promise<void> => {
-    if (closeSnapshotLease(state, token)) {
-      await writeStatus();
-    }
+    await enqueueStatusMutation(async () => {
+      if (closeSnapshotLease(state, token)) {
+        await writeStatus();
+      }
+    });
   };
 
   const resumeFollow = async (): Promise<void> => {
@@ -175,7 +254,7 @@ export function createIndexerDaemonRuntime(options: {
           state,
           genesisParameters: options.genesisParameters,
           forceResumeErrorEnv,
-          writeStatus,
+          writeStatus: async () => enqueueStatusMutation(writeStatus),
         }),
         backgroundFollowResumeTimeoutMs,
         backgroundFollowResumeTimeoutError,
@@ -185,27 +264,18 @@ export function createIndexerDaemonRuntime(options: {
         error instanceof Error
         && error.message === backgroundFollowResumeTimeoutError
       ) {
-        await recordBackgroundFollowFailure({
+        await enqueueStatusMutation(() => recordBackgroundFollowFailure({
           state,
           message: error.message,
           writeStatus,
-        }).catch(() => undefined);
+        })).catch(() => undefined);
       }
       throw error;
     }
   };
 
   const tick = () => {
-    void refreshIndexerDaemonStatus({
-      databasePath: options.databasePath,
-      paths,
-      state,
-    }).catch(() => undefined);
-
-    const now = Date.now();
-    if (pruneExpiredSnapshotLeases(state, now)) {
-      void writeStatus();
-    }
+    requestHeartbeatRefresh();
   };
 
   return {
@@ -219,9 +289,9 @@ export function createIndexerDaemonRuntime(options: {
 
       await mkdir(paths.indexerServiceRoot, { recursive: true });
       try {
-        await assertIndexerDaemonNativeDependencies();
+        await dependencies.assertIndexerDaemonNativeDependencies();
       } catch (error) {
-        const now = Date.now();
+        const now = dependencies.now();
         state.state = "failed";
         state.lastError = error instanceof Error ? error.message : String(error);
         state.heartbeatAtUnixMs = now;
@@ -246,19 +316,16 @@ export function createIndexerDaemonRuntime(options: {
         resumeBackgroundFollow: resumeFollow,
       });
 
-      heartbeat = setInterval(tick, heartbeatIntervalMs);
-      heartbeat.unref();
-
       await new Promise<void>((resolve, reject) => {
         server?.once("error", reject);
         server?.listen(paths.indexerDaemonSocketPath, async () => {
           server?.off("error", reject);
-          await writeStatus();
-          await refreshIndexerDaemonStatus({
-            databasePath: options.databasePath,
-            paths,
-            state,
+          await enqueueStatusMutation(async () => {
+            await writeStatus();
+            await refreshStatusAndPruneLeases();
           }).catch(() => undefined);
+          heartbeat = setInterval(tick, heartbeatIntervalMs);
+          heartbeat.unref();
           resolve();
         });
       });
@@ -273,11 +340,13 @@ export function createIndexerDaemonRuntime(options: {
           clearInterval(heartbeat);
           heartbeat = null;
         }
-        await pauseBackgroundFollow({ state }).catch(() => undefined);
-        state.state = "stopping";
-        state.heartbeatAtUnixMs = Date.now();
-        state.updatedAtUnixMs = state.heartbeatAtUnixMs;
-        await writeStatus().catch(() => undefined);
+        await enqueueStatusMutation(async () => {
+          await pauseBackgroundFollow({ state }).catch(() => undefined);
+          state.state = "stopping";
+          state.heartbeatAtUnixMs = dependencies.now();
+          state.updatedAtUnixMs = state.heartbeatAtUnixMs;
+          await writeStatus();
+        }).catch(() => undefined);
         if (server !== null) {
           await new Promise<void>((resolve) => {
             server?.close(() => resolve());
