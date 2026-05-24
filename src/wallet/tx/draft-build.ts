@@ -183,7 +183,7 @@ export async function buildWalletMutationTransaction<TPlan>(options: {
       psbt: funded.psbt,
       finalizeErrorCode: options.finalizeErrorCode,
       mempoolRejectPrefix: options.mempoolRejectPrefix,
-      recoverManagedCoreWalletLockedOnce: options.recoverManagedCoreWalletLockedOnce,
+      recoverManagedCoreWalletLockedOnce: options.recoverManagedCoreWalletLockedOnce ?? true,
       onManagedCoreWalletLockedRecoveryOutcome: options.onManagedCoreWalletLockedRecoveryOutcome,
     });
 
@@ -223,6 +223,8 @@ export async function buildWalletMutationTransactionWithReserveFallback<TPlan>(o
   mempoolRejectPrefix: string;
   feeRate?: number;
   availableFundingMinConf?: number;
+  recoverManagedCoreWalletLockedOnce?: boolean;
+  onManagedCoreWalletLockedRecoveryOutcome?: (outcome: "recovered" | "still-locked") => void;
 }): Promise<BuiltWalletMutationTransaction> {
   void isReserveFloorFundingError;
   void computeRemainingFundingValueSats;
@@ -236,5 +238,7 @@ export async function buildWalletMutationTransactionWithReserveFallback<TPlan>(o
     mempoolRejectPrefix: options.mempoolRejectPrefix,
     feeRate: options.feeRate,
     availableFundingMinConf: options.availableFundingMinConf,
+    recoverManagedCoreWalletLockedOnce: options.recoverManagedCoreWalletLockedOnce,
+    onManagedCoreWalletLockedRecoveryOutcome: options.onManagedCoreWalletLockedRecoveryOutcome,
   });
 }

@@ -14,6 +14,9 @@ type TransferAttachServiceOptions = Parameters<
   NonNullable<Parameters<typeof transferBitcoin>[0]["attachService"]>
 >[0];
 
+const LOCKED_WALLET_ERROR =
+  "bitcoind_rpc_walletprocesspsbt_-13_Please enter the wallet passphrase with walletpassphrase first.";
+
 function createStringWriter() {
   let text = "";
 
@@ -149,6 +152,8 @@ test("transferBitcoin succeeds without indexer state when bitcoind and wallet st
   });
   let sendRawTransactionCalls = 0;
   let attachServiceLifetime: string | null = null;
+  let walletPassphraseCalls = 0;
+  let walletProcessPsbtCalls = 0;
 
   const result = await transferBitcoin({
     amountSatsText: "1234",
@@ -224,9 +229,15 @@ test("transferBitcoin succeeds without indexer state when bitcoind and wallet st
         } as never;
       },
       async walletPassphrase() {
+        walletPassphraseCalls += 1;
         return null;
       },
       async walletProcessPsbt() {
+        walletProcessPsbtCalls += 1;
+        if (walletProcessPsbtCalls === 1) {
+          throw new Error(LOCKED_WALLET_ERROR);
+        }
+
         return {
           psbt: "signed-psbt",
           complete: true,
@@ -266,6 +277,8 @@ test("transferBitcoin succeeds without indexer state when bitcoind and wallet st
   assert.equal(result.txid, "txid-1");
   assert.equal(result.wtxid, "wtxid-1");
   assert.equal(sendRawTransactionCalls, 1);
+  assert.equal(walletPassphraseCalls, 2);
+  assert.equal(walletProcessPsbtCalls, 2);
   assert.equal(attachServiceLifetime, null);
 });
 

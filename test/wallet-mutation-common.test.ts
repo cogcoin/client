@@ -13,6 +13,108 @@ import {
 } from "../src/wallet/tx/common.js";
 import { createWalletReadContext, createWalletState } from "./current-model-helpers.js";
 
+const LOCKED_WALLET_ERROR =
+  "bitcoind_rpc_walletprocesspsbt_-13_Please enter the wallet passphrase with walletpassphrase first.";
+const WRONG_PASSPHRASE_ERROR =
+  "bitcoind_rpc_walletprocesspsbt_-14_The wallet passphrase entered was incorrect.";
+
+function createDefaultWalletMutationPlan(state: ReturnType<typeof createWalletState>) {
+  return {
+    fixedInputs: [],
+    outputs: [{ data: "ff" }],
+    changeAddress: state.funding.address,
+    changePosition: 1,
+    allowedFundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    eligibleFundingOutpointKeys: new Set<string>(),
+  };
+}
+
+function createWalletMutationBuilderRpc(
+  state: ReturnType<typeof createWalletState>,
+  options: {
+    walletProcessPsbt(call: number): Promise<{ psbt: string; complete: boolean }>;
+  },
+) {
+  const counters = {
+    walletPassphraseCalls: 0,
+    walletProcessPsbtCalls: 0,
+    walletLockCalls: 0,
+    finalizePsbtCalls: 0,
+    decodeRawTransactionCalls: 0,
+  };
+
+  return {
+    counters,
+    rpc: {
+      async listUnspent() {
+        return [{
+          txid: "aa".repeat(32),
+          vout: 0,
+          scriptPubKey: state.funding.scriptPubKeyHex,
+          amount: 0.0001,
+          confirmations: 1,
+          spendable: true,
+          safe: true,
+        }];
+      },
+      async walletCreateFundedPsbt() {
+        return {
+          psbt: "funded-psbt",
+          fee: 0.00000011,
+          changepos: 1,
+        };
+      },
+      async decodePsbt() {
+        return {
+          tx: {
+            vin: [{ txid: "aa".repeat(32), vout: 0 }],
+            vout: [
+              {
+                value: 0.00005,
+                scriptPubKey: { hex: "6a01ff" },
+              },
+              {
+                value: 0.0000489,
+                scriptPubKey: { hex: state.funding.scriptPubKeyHex },
+              },
+            ],
+          },
+          inputs: [],
+        } as never;
+      },
+      async walletPassphrase() {
+        counters.walletPassphraseCalls += 1;
+        return null;
+      },
+      async walletProcessPsbt() {
+        counters.walletProcessPsbtCalls += 1;
+        return await options.walletProcessPsbt(counters.walletProcessPsbtCalls);
+      },
+      async walletLock() {
+        counters.walletLockCalls += 1;
+        return null;
+      },
+      async finalizePsbt() {
+        counters.finalizePsbtCalls += 1;
+        return {
+          complete: true,
+          hex: "raw-hex",
+        };
+      },
+      async decodeRawTransaction() {
+        counters.decodeRawTransactionCalls += 1;
+        return {
+          txid: "bb".repeat(32),
+          hash: "cc".repeat(32),
+        } as never;
+      },
+      async testMempoolAccept() {
+        return [{ allowed: true }];
+      },
+    },
+  };
+}
+
 test("funding mutation sender always resolves to the wallet address", () => {
   const state = createWalletState();
   const sender = createFundingMutationSender(state);
@@ -203,6 +305,96 @@ test("wallet mutation builder forwards availableFundingMinConf to PSBT funding a
 
   assert.equal(built.txid, "bb".repeat(32));
   assert.equal(built.wtxid, "cc".repeat(32));
+});
+
+test("wallet mutation builder retries one managed Core relock by default", async () => {
+  const state = createWalletState();
+  const { rpc, counters } = createWalletMutationBuilderRpc(state, {
+    async walletProcessPsbt(call) {
+      if (call === 1) {
+        throw new Error(LOCKED_WALLET_ERROR);
+      }
+
+      return {
+        psbt: "signed-psbt",
+        complete: true,
+      };
+    },
+  });
+
+  const built = await buildWalletMutationTransaction({
+    rpc,
+    walletName: state.managedCoreWallet.walletName,
+    state,
+    plan: createDefaultWalletMutationPlan(state),
+    validateFundedDraft() {},
+    finalizeErrorCode: "wallet_mutation_finalize_failed",
+    mempoolRejectPrefix: "wallet_mutation_mempool_rejected",
+  });
+
+  assert.equal(built.txid, "bb".repeat(32));
+  assert.equal(built.wtxid, "cc".repeat(32));
+  assert.equal(counters.walletPassphraseCalls, 2);
+  assert.equal(counters.walletProcessPsbtCalls, 2);
+  assert.equal(counters.walletLockCalls, 1);
+  assert.equal(counters.finalizePsbtCalls, 1);
+  assert.equal(counters.decodeRawTransactionCalls, 1);
+});
+
+test("wallet mutation builder propagates persistent managed Core relocks after one retry", async () => {
+  const state = createWalletState();
+  const { rpc, counters } = createWalletMutationBuilderRpc(state, {
+    async walletProcessPsbt() {
+      throw new Error(LOCKED_WALLET_ERROR);
+    },
+  });
+
+  await assert.rejects(
+    buildWalletMutationTransaction({
+      rpc,
+      walletName: state.managedCoreWallet.walletName,
+      state,
+      plan: createDefaultWalletMutationPlan(state),
+      validateFundedDraft() {},
+      finalizeErrorCode: "wallet_mutation_finalize_failed",
+      mempoolRejectPrefix: "wallet_mutation_mempool_rejected",
+    }),
+    /walletpassphrase first/,
+  );
+
+  assert.equal(counters.walletPassphraseCalls, 2);
+  assert.equal(counters.walletProcessPsbtCalls, 2);
+  assert.equal(counters.walletLockCalls, 1);
+  assert.equal(counters.finalizePsbtCalls, 0);
+  assert.equal(counters.decodeRawTransactionCalls, 0);
+});
+
+test("wallet mutation builder does not retry wrong-passphrase signing failures", async () => {
+  const state = createWalletState();
+  const { rpc, counters } = createWalletMutationBuilderRpc(state, {
+    async walletProcessPsbt() {
+      throw new Error(WRONG_PASSPHRASE_ERROR);
+    },
+  });
+
+  await assert.rejects(
+    buildWalletMutationTransaction({
+      rpc,
+      walletName: state.managedCoreWallet.walletName,
+      state,
+      plan: createDefaultWalletMutationPlan(state),
+      validateFundedDraft() {},
+      finalizeErrorCode: "wallet_mutation_finalize_failed",
+      mempoolRejectPrefix: "wallet_mutation_mempool_rejected",
+    }),
+    /passphrase entered was incorrect/,
+  );
+
+  assert.equal(counters.walletPassphraseCalls, 1);
+  assert.equal(counters.walletProcessPsbtCalls, 1);
+  assert.equal(counters.walletLockCalls, 1);
+  assert.equal(counters.finalizePsbtCalls, 0);
+  assert.equal(counters.decodeRawTransactionCalls, 0);
 });
 
 test("wallet mutation readiness tolerates a 1-2 block header lead when nodeHealth stays synced", () => {
