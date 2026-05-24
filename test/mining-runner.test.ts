@@ -785,6 +785,150 @@ test("runMiningLoop refreshes status and restarts immediately after stale indexe
   });
 });
 
+test("runMiningLoop refreshes status and restarts immediately after stale scoring tip", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-loop-stale-scoring-restart");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const abortController = new AbortController();
+  const databasePath = join(homeDirectory, "indexer.sqlite");
+  const oldHashHex = "11".repeat(32);
+  const freshHashHex = "22".repeat(32);
+  const oldContext = createSynchronizedLoopReadContextAtTip({
+    dataDir: homeDirectory,
+    databasePath,
+    height: 100,
+    blockHashHex: oldHashHex,
+    snapshotSeq: "seq-100",
+  });
+  const freshContext = createSynchronizedLoopReadContextAtTip({
+    dataDir: homeDirectory,
+    databasePath,
+    height: 101,
+    blockHashHex: freshHashHex,
+    previousHashHex: oldHashHex,
+    snapshotSeq: "seq-101",
+  });
+  const candidate = createLoopMiningCandidate({
+    targetBlockHeight: 101,
+    referencedBlockHashDisplay: oldHashHex,
+    provenance: {
+      walletRootId: oldContext.localState.walletRootId,
+      walletScriptPubKeyHex: oldContext.localState.state.funding.scriptPubKeyHex,
+      indexerDaemonInstanceId: "daemon-1",
+      indexerSnapshotSeq: "seq-100",
+      snapshotTipHeight: 100,
+      snapshotTipHash: oldHashHex,
+      authorizationRole: "owner",
+    },
+  });
+  let openReadContextCalls = 0;
+  let blockchainInfoCalls = 0;
+  let generateCalls = 0;
+  let sendRawTransactionCalls = 0;
+  let sleepCalls = 0;
+  let scoringSnapshot: MiningRuntimeStatusV1 | null = null;
+
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: oldContext.localState.state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+  });
+
+  await assert.doesNotReject(async () => {
+    await runMiningLoopForTesting({
+      dataDir: homeDirectory,
+      databasePath,
+      provider,
+      paths,
+      runMode: "foreground",
+      foregroundPid: 555,
+      foregroundRunId: "foreground-run-stale-scoring",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      signal: abortController.signal,
+      openReadContext: async () => {
+        openReadContextCalls += 1;
+        return openReadContextCalls === 1 ? oldContext : freshContext;
+      },
+      attachService: async () => ({
+        rpc: {},
+        pid: 9_001,
+        refreshServiceStatus: async () => ({
+          serviceInstanceId: "svc-1",
+          processId: 9_001,
+        }),
+      }) as any,
+      rpcFactory: () => createLoopMiningRpc({
+        async getBlockchainInfo() {
+          blockchainInfoCalls += 1;
+          return blockchainInfoCalls === 1
+            ? {
+              blocks: 100,
+              bestblockhash: oldHashHex,
+              initialblockdownload: false,
+            }
+            : {
+              blocks: 101,
+              bestblockhash: freshHashHex,
+              initialblockdownload: false,
+            };
+        },
+        async getRawMempoolVerbose() {
+          scoringSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+          return {
+            txids: [],
+            mempool_sequence: "seq-stale",
+          };
+        },
+        async getRawMempoolEntries() {
+          return {};
+        },
+        async sendRawTransaction() {
+          sendRawTransactionCalls += 1;
+          return "bb".repeat(32);
+        },
+      }) as any,
+      generateCandidatesForDomainsImpl: async () => {
+        generateCalls += 1;
+        if (generateCalls > 1) {
+          abortController.abort(createMiningStopRequestedError());
+          return [];
+        }
+        return [candidate];
+      },
+      sleepImpl: async () => {
+        sleepCalls += 1;
+      },
+    });
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  const events = await readMiningEvents({
+    eventsPath: paths.miningEventsPath,
+    all: true,
+  });
+
+  assert.equal(generateCalls, 2);
+  assert.equal(sendRawTransactionCalls, 0);
+  assert.equal(sleepCalls, 0);
+  assert.ok(openReadContextCalls >= 4);
+  const scoringSnapshotValue = scoringSnapshot as unknown as MiningRuntimeStatusV1;
+  assert.equal(scoringSnapshotValue.currentPhase, "scoring");
+  assert.equal(scoringSnapshotValue.coreBestHeight, 101);
+  assert.equal(scoringSnapshotValue.targetBlockHeight, 102);
+  assert.equal(scoringSnapshotValue.attemptTargetBlockHeight, 101);
+  assert.equal(scoringSnapshotValue.attemptReferencedBlockHashDisplay, oldHashHex);
+  assert.equal(scoringSnapshotValue.attemptIndexerSnapshotSeq, "seq-100");
+  assert.equal(snapshot?.coreBestHeight, 101);
+  assert.equal(snapshot?.coreBestHash, freshHashHex);
+  assert.equal(snapshot?.indexerTipHeight, 101);
+  assert.equal(snapshot?.indexerTipHash, freshHashHex);
+  assert.equal(snapshot?.targetBlockHeight, 102);
+  assert.equal(snapshot?.referencedBlockHashDisplay, freshHashHex);
+  assert.equal(events.filter((event) => event.kind === "generation-restarted-stale-tip").length, 1);
+});
+
 test("heartbeat-backed suspend detection ignores long work while heartbeats keep advancing", () => {
   const suspendClock = createMiningSuspendTestClock();
   const detector = createMiningSuspendDetectorForTesting({
@@ -1363,7 +1507,7 @@ test("runMiningLoop refreshes the scoring note with mempool warmup progress duri
 
   assert.notEqual(progressSnapshot, null);
   assert.equal(progressSnapshot?.currentPhase, "scoring");
-  assert.match(progressSnapshot?.note ?? "", /Scoring mining candidates for the current tip \(mempool \d+\/60\)\./);
+  assert.match(progressSnapshot?.note ?? "", /Hydrating mempool context for block #101 \(mempool \d+\/60\)\./);
 });
 
 test("runMiningLoop aborts mining-scoped managed RPC calls before the request timeout", async (t) => {

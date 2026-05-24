@@ -62,6 +62,52 @@ interface MiningCompetitivenessCacheState {
 type MiningMempoolGateCacheStatus =
   NonNullable<CompetitivenessDecision["mempoolSequenceCacheStatus"]>;
 
+export type MiningScoringFreshnessCheckpoint =
+  | "mempool-verbose-loaded"
+  | "mempool-hydration-start"
+  | "mempool-hydration-complete"
+  | "mempool-entry-fetch-start"
+  | "competitor-scan"
+  | "competitor-scan-complete"
+  | "rank-evaluation-start"
+  | "decision-complete";
+
+export type MiningGateEvaluationStage =
+  | "mempool-hydrated"
+  | "evaluating-competitors";
+
+export class MiningScoringAttemptStaleError extends Error {
+  readonly candidateTargetBlockHeight: number;
+  readonly candidateReferencedBlockHashDisplay: string;
+  readonly observedBestHeight: number;
+  readonly observedBestHash: string;
+  readonly checkpoint: MiningScoringFreshnessCheckpoint;
+
+  constructor(options: {
+    candidateTargetBlockHeight: number;
+    candidateReferencedBlockHashDisplay: string;
+    observedBestHeight: number;
+    observedBestHash: string;
+    checkpoint: MiningScoringFreshnessCheckpoint;
+  }) {
+    super("mining_scoring_stale_tip");
+    this.name = "MiningScoringAttemptStaleError";
+    this.candidateTargetBlockHeight = options.candidateTargetBlockHeight;
+    this.candidateReferencedBlockHashDisplay = options.candidateReferencedBlockHashDisplay;
+    this.observedBestHeight = options.observedBestHeight;
+    this.observedBestHash = options.observedBestHash;
+    this.checkpoint = options.checkpoint;
+  }
+}
+
+export function isMiningScoringAttemptStaleError(error: unknown): error is MiningScoringAttemptStaleError {
+  return error instanceof MiningScoringAttemptStaleError
+    || (
+      error instanceof Error
+      && error.message === "mining_scoring_stale_tip"
+    );
+}
+
 interface OverlayDomainState {
   domainId: number;
   name: string | null;
@@ -766,6 +812,8 @@ export async function runCompetitivenessGate(options: {
   cooperativeYieldEvery?: number;
   throwIfStopping?: () => void;
   onWarmupProgress?: (progress: MiningGateWarmupProgress) => Promise<void> | void;
+  ensureCandidateFresh?: (checkpoint: MiningScoringFreshnessCheckpoint, options?: { force?: boolean }) => Promise<void>;
+  onEvaluationStage?: (stage: MiningGateEvaluationStage) => Promise<void> | void;
   runId?: string | null;
   appendEvent?: (event: MiningEventRecord) => Promise<void> | void;
   mempoolIndex?: {
@@ -819,6 +867,15 @@ export async function runCompetitivenessGate(options: {
   });
   const walletRootId = options.readContext.localState.walletRootId ?? "uninitialized-wallet-root";
   const assaySentencesImpl = options.assaySentencesImpl ?? assaySentences;
+  const ensureCandidateFresh = async (
+    checkpoint: MiningScoringFreshnessCheckpoint,
+    freshnessOptions: { force?: boolean } = {},
+  ): Promise<void> => {
+    await options.ensureCandidateFresh?.(checkpoint, freshnessOptions);
+  };
+  const noteEvaluationStage = async (stage: MiningGateEvaluationStage): Promise<void> => {
+    await options.onEvaluationStage?.(stage);
+  };
   const indexerTruthKey = getIndexerTruthKey(
     options.readContext as WalletReadContext & {
       localState: { availability: "ready"; state: WalletStateV1 };
@@ -868,6 +925,7 @@ export async function runCompetitivenessGate(options: {
 
   let mempoolSequence = String(mempoolVerbose.mempool_sequence);
   mempoolSequenceForDiagnostics = mempoolSequence;
+  await ensureCandidateFresh("mempool-verbose-loaded", { force: true });
   const cached = cacheState.decisionReuse;
   const cachedTruthMatches = cached !== null
     && indexerTruthKey !== null
@@ -888,6 +946,7 @@ export async function runCompetitivenessGate(options: {
     && cached.excludedTxidsKey === excludedTxids.join(",")
     && cached.mempoolSequence === mempoolSequence
   ) {
+    await ensureCandidateFresh("decision-complete", { force: true });
     return {
       ...cached.decision,
       mempoolSequenceCacheStatus: "reused",
@@ -957,6 +1016,7 @@ export async function runCompetitivenessGate(options: {
     attemptVisibleTxids: readonly string[],
     sequence: string,
   ): Promise<Awaited<ReturnType<typeof hydrateMiningMempoolIndex>>> => {
+    await ensureCandidateFresh("mempool-hydration-start", { force: true });
     await appendTimingEvent(
       "timing-mempool-hydration-start",
       "Started mining mempool index hydration.",
@@ -988,6 +1048,8 @@ export async function runCompetitivenessGate(options: {
         throwIfStopping: options.throwIfStopping,
         onWarmupProgress: options.onWarmupProgress,
       });
+      await ensureCandidateFresh("mempool-hydration-complete", { force: true });
+      await noteEvaluationStage("mempool-hydrated");
       await appendTimingEvent(
         "timing-mempool-hydration-end",
         "Finished mining mempool index hydration.",
@@ -1040,6 +1102,9 @@ export async function runCompetitivenessGate(options: {
     try {
       indexed = await hydrateIndexWithTiming("primary", visibleTxids, mempoolSequence);
     } catch (error) {
+      if (isMiningScoringAttemptStaleError(error)) {
+        throw error;
+      }
       if (!(error instanceof MiningMempoolIndexHydrationIncompleteError)) {
         return createMempoolIndexHydrationIncompleteDecision();
       }
@@ -1060,6 +1125,9 @@ export async function runCompetitivenessGate(options: {
       try {
         indexed = await hydrateIndexWithTiming("retry", visibleTxids, mempoolSequence);
       } catch (retryError) {
+        if (isMiningScoringAttemptStaleError(retryError)) {
+          throw retryError;
+        }
         if (retryError instanceof MiningMempoolIndexHydrationIncompleteError) {
           applyIndexDiagnostics(retryError.diagnostics);
         }
@@ -1070,6 +1138,7 @@ export async function runCompetitivenessGate(options: {
     rawTxContexts = indexed.contexts;
     applyIndexDiagnostics(indexed);
     const indexedTxids = visibleTxids.filter((txid) => rawTxContexts.has(txid));
+    await ensureCandidateFresh("mempool-entry-fetch-start", { force: true });
     const indexedEntries = await fetchIndexedMempoolEntries({
       rpc: options.rpc,
       txids: indexedTxids,
@@ -1114,6 +1183,8 @@ export async function runCompetitivenessGate(options: {
       throwIfStopping: options.throwIfStopping,
       onWarmupProgress: options.onWarmupProgress,
     });
+    await ensureCandidateFresh("mempool-hydration-complete", { force: true });
+    await noteEvaluationStage("mempool-hydrated");
     indexedContextCount = rawTxContexts.size;
     negativeTxCount = null;
     unknownTxCount = Math.max(0, visibleTxids.length - rawTxContexts.size);
@@ -1145,6 +1216,8 @@ export async function runCompetitivenessGate(options: {
       throwIfStopping: options.throwIfStopping,
       onWarmupProgress: options.onWarmupProgress,
     });
+    await ensureCandidateFresh("mempool-hydration-complete", { force: true });
+    await noteEvaluationStage("mempool-hydrated");
     indexedContextCount = rawTxContexts.size;
     negativeTxCount = null;
     unknownTxCount = Math.max(0, visibleTxids.length - rawTxContexts.size);
@@ -1152,12 +1225,15 @@ export async function runCompetitivenessGate(options: {
   }
 
   const entries = new Map<string, CachedCompetitorEntry>();
+  await ensureCandidateFresh("competitor-scan", { force: true });
+  await noteEvaluationStage("evaluating-competitors");
   for (let index = 0; index < visibleTxids.length; index += 1) {
     await maybeYieldDuringMempoolScan({
       iteration: index,
       cooperativeYield: options.cooperativeYield,
       cooperativeYieldEvery: options.cooperativeYieldEvery,
     });
+    await ensureCandidateFresh("competitor-scan");
     options.throwIfStopping?.();
     const txid = visibleTxids[index]!;
     const context = rawTxContexts.get(txid);
@@ -1219,6 +1295,7 @@ export async function runCompetitivenessGate(options: {
       canonicalBlend: scored.canonicalBlend,
     });
   }
+  await ensureCandidateFresh("competitor-scan-complete", { force: true });
 
   const blendSeed = deriveBlendSeed(options.candidate.referencedBlockHashInternal);
   const visibleBestByDomain = new Map<number, CachedCompetitorEntry>();
@@ -1266,6 +1343,7 @@ export async function runCompetitivenessGate(options: {
   }
 
   if (sameDomainCompetitorSuppressed) {
+    await ensureCandidateFresh("rank-evaluation-start", { force: true });
     decision = createDecision({
       allowed: false,
       decision: "suppressed-same-domain-mempool",
@@ -1279,6 +1357,7 @@ export async function runCompetitivenessGate(options: {
     });
   } else {
     try {
+      await ensureCandidateFresh("rank-evaluation-start", { force: true });
       const candidateRankedEntries = rankMiningSentenceEntries([
         {
           domainId: options.candidate.domainId,
@@ -1336,7 +1415,10 @@ export async function runCompetitivenessGate(options: {
           candidateRank,
         });
       }
-    } catch {
+    } catch (error) {
+      if (isMiningScoringAttemptStaleError(error)) {
+        throw error;
+      }
       decision = createDecision({
         allowed: false,
         decision: "indeterminate-mempool-gate",
@@ -1352,6 +1434,7 @@ export async function runCompetitivenessGate(options: {
     }
   }
 
+  await ensureCandidateFresh("decision-complete", { force: true });
   setDecisionReuse(decision);
 
   return decision;

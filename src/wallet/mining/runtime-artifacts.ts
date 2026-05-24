@@ -28,9 +28,9 @@ export interface MiningRuntimeTipStatusRefresh {
   indexerTipAligned?: boolean | null;
   targetBlockHeight: number | null;
   referencedBlockHashDisplay: string | null;
-  attemptTargetBlockHeight: number | null;
-  attemptReferencedBlockHashDisplay: string | null;
-  attemptIndexerSnapshotSeq: string | null;
+  attemptTargetBlockHeight?: number | null;
+  attemptReferencedBlockHashDisplay?: string | null;
+  attemptIndexerSnapshotSeq?: string | null;
 }
 
 export function resolveRotatedMiningEventsPath(eventsPath: string): string {

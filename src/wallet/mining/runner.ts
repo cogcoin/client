@@ -200,6 +200,7 @@ type MiningRunnerStatusOverrides = MiningRuntimeStatusOverrides;
 
 interface MiningCycleResult {
   restartImmediately: boolean;
+  restartNote?: string | null;
 }
 
 function continueMiningCycleNormally(): MiningCycleResult {
@@ -208,9 +209,10 @@ function continueMiningCycleNormally(): MiningCycleResult {
   };
 }
 
-function restartMiningCycleImmediately(): MiningCycleResult {
+function restartMiningCycleImmediately(note?: string | null): MiningCycleResult {
   return {
     restartImmediately: true,
+    restartNote: note,
   };
 }
 
@@ -471,7 +473,10 @@ function createForegroundMiningLivenessOverrides(options: {
   };
 }
 
-function resolveMiningRuntimeTipStatusRefresh(readContext: WalletReadContext): MiningRuntimeTipStatusRefresh {
+function resolveMiningRuntimeTipStatusRefresh(
+  readContext: WalletReadContext,
+  options: { includeAttemptFields?: boolean } = {},
+): MiningRuntimeTipStatusRefresh {
   const coreBestHeight = readContext.nodeStatus?.nodeBestHeight ?? readContext.indexer.status?.coreBestHeight ?? null;
   const coreBestHash = readContext.nodeStatus?.nodeBestHashHex ?? readContext.indexer.status?.coreBestHash ?? null;
   const indexerTipHeight = readContext.indexer.snapshotTip?.height ?? null;
@@ -485,7 +490,7 @@ function resolveMiningRuntimeTipStatusRefresh(readContext: WalletReadContext): M
         || coreBestHash === indexerTipHash
       );
 
-  return {
+  const liveStatus: MiningRuntimeTipStatusRefresh = {
     indexerDaemonState: readContext.indexer.health,
     indexerDaemonInstanceId: readContext.indexer.daemonInstanceId ?? null,
     indexerSnapshotSeq: readContext.indexer.snapshotSeq ?? null,
@@ -505,6 +510,14 @@ function resolveMiningRuntimeTipStatusRefresh(readContext: WalletReadContext): M
     indexerTipAligned: tipsAligned,
     targetBlockHeight: coreBestHeight === null ? null : coreBestHeight + 1,
     referencedBlockHashDisplay: coreBestHash,
+  };
+
+  if (options.includeAttemptFields === false) {
+    return liveStatus;
+  }
+
+  return {
+    ...liveStatus,
     attemptTargetBlockHeight: coreBestHeight === null ? null : coreBestHeight + 1,
     attemptReferencedBlockHashDisplay: coreBestHash,
     attemptIndexerSnapshotSeq: readContext.indexer.snapshotSeq ?? null,
@@ -519,27 +532,50 @@ function startForegroundMiningStatusHeartbeat(options: {
   intervalMs: number;
   nowUnixMs: () => number;
   loadTipStatus?: () => Promise<MiningRuntimeTipStatusRefresh | null>;
+  onSavedSnapshot?: (snapshot: MiningRuntimeStatusV1) => void;
 }): () => void {
   if (options.runMode !== "foreground" || options.foregroundRunId === null || options.foregroundPid === null) {
     return () => undefined;
   }
 
-  let pending = Promise.resolve();
-  const timer = setInterval(() => {
-    const heartbeatAtUnixMs = options.nowUnixMs();
-    pending = pending.then(async () => {
-      const tipStatus = await options.loadTipStatus?.().catch(() => null) ?? null;
-      await saveForegroundMiningHeartbeatStatus({
-        statusPath: options.paths.miningStatusPath,
-        foregroundPid: options.foregroundPid!,
-        foregroundRunId: options.foregroundRunId!,
-        heartbeatAtUnixMs,
-        tipStatus,
-      });
-    }).catch(() => undefined);
-  }, options.intervalMs);
-  timer.unref?.();
+  let refreshRunning = false;
+  let refreshRequested = false;
+  const runRefresh = () => {
+    refreshRequested = true;
+    if (refreshRunning) {
+      return;
+    }
 
+    refreshRunning = true;
+    void (async () => {
+      while (refreshRequested) {
+        refreshRequested = false;
+        const heartbeatAtUnixMs = options.nowUnixMs();
+        const tipStatus = await options.loadTipStatus?.().catch(() => null) ?? null;
+        const snapshot = await saveForegroundMiningHeartbeatStatus({
+          statusPath: options.paths.miningStatusPath,
+          foregroundPid: options.foregroundPid!,
+          foregroundRunId: options.foregroundRunId!,
+          heartbeatAtUnixMs,
+          tipStatus,
+        });
+        if (snapshot !== null) {
+          options.onSavedSnapshot?.(snapshot);
+        }
+      }
+    })().catch(() => undefined).finally(() => {
+      refreshRunning = false;
+      if (refreshRequested) {
+        runRefresh();
+      }
+    });
+  };
+
+  const timer = setInterval(() => {
+    runRefresh();
+  }, options.intervalMs);
+
+  timer.unref();
   return () => {
     clearInterval(timer);
   };
@@ -699,6 +735,51 @@ async function performMiningCycle(options: {
         visualizer: includeVisualizer ? options.visualizer : undefined,
         visualizerState: includeVisualizer ? options.loopState.ui : undefined,
       });
+    };
+    const saveLiveCycleStatus = async (
+      overrides: MiningRunnerStatusOverrides,
+    ): Promise<MiningRuntimeStatusV1 | null> => {
+      let liveReadContext: WalletReadContext | null = null;
+      try {
+        liveReadContext = await options.openReadContext({
+          dataDir: options.dataDir,
+          databasePath: options.databasePath,
+          secretProvider: options.provider,
+          paths: options.paths,
+        });
+        const statusNowUnixMs = now();
+        const resolvedOverrides = clearRecoveredBitcoindError && overrides.lastError === undefined
+          ? {
+            ...overrides,
+            lastError: null,
+          }
+          : overrides;
+
+        return await refreshAndSaveMiningRuntimeStatus({
+          paths: options.paths,
+          provider: options.provider,
+          readContext: liveReadContext,
+          overrides: {
+            ...buildMiningSettleWindowStatusOverrides(options.loopState, statusNowUnixMs),
+            ...createForegroundMiningLivenessOverrides({
+              runMode: options.runMode,
+              foregroundPid: options.foregroundPid,
+              foregroundRunId: options.foregroundRunId,
+              nowUnixMs: statusNowUnixMs,
+            }),
+            cycleStartedAtUnixMs,
+            ...resolveMiningRuntimeTipStatusRefresh(liveReadContext, { includeAttemptFields: false }),
+            ...resolvedOverrides,
+          },
+          nowUnixMs: statusNowUnixMs,
+          visualizer: options.visualizer,
+          visualizerState: options.loopState.ui,
+        });
+      } catch {
+        return null;
+      } finally {
+        await liveReadContext?.close().catch(() => undefined);
+      }
     };
 
     readContext = await reacquireIndexerSnapshotReadContext({
@@ -1027,6 +1108,7 @@ async function performMiningCycle(options: {
       },
       nowImpl: now,
       saveCycleStatus: async (context, overrides) => await saveCycleStatus(context, overrides),
+      saveLiveCycleStatus: options.foregroundRunId === null ? undefined : saveLiveCycleStatus,
       appendEvent: async (event) => await appendEvent(options.paths, event),
       stopSignal: options.signal,
       throwIfStopping,
@@ -1074,9 +1156,9 @@ async function performMiningCycle(options: {
         targetBlockHeight: freshTargetBlockHeight,
         referencedBlockHashDisplay: freshReadContext.nodeStatus?.nodeBestHashHex ?? null,
         lastError: null,
-        note: freshReadiness.ready ? null : freshReadiness.note,
+        note: phaseResult.restartNote ?? (freshReadiness.ready ? null : freshReadiness.note),
       });
-      return restartMiningCycleImmediately();
+      return restartMiningCycleImmediately(phaseResult.restartNote);
     }
 
     return continueMiningCycleNormally();
@@ -1205,10 +1287,13 @@ async function runMiningLoop(options: {
         paths: options.paths,
       });
       try {
-        return resolveMiningRuntimeTipStatusRefresh(readContext);
+        return resolveMiningRuntimeTipStatusRefresh(readContext, { includeAttemptFields: false });
       } finally {
         await readContext.close().catch(() => undefined);
       }
+    },
+    onSavedSnapshot: (snapshot) => {
+      options.visualizer?.update(snapshot, loopState.ui);
     },
   });
 

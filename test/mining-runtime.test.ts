@@ -48,6 +48,7 @@ import {
 } from "../src/wallet/mining/candidate.js";
 import {
   clearMiningGateCache,
+  MiningScoringAttemptStaleError,
   runCompetitivenessGate,
   topologicallyOrderAncestorTxidsForTesting,
 } from "../src/wallet/mining/competitiveness.js";
@@ -576,6 +577,8 @@ async function runCompetitivenessGateForTesting(options: {
   cooperativeYieldImpl?: Parameters<typeof runCompetitivenessGate>[0]["cooperativeYield"];
   cooperativeYieldEvery?: Parameters<typeof runCompetitivenessGate>[0]["cooperativeYieldEvery"];
   onWarmupProgress?: Parameters<typeof runCompetitivenessGate>[0]["onWarmupProgress"];
+  ensureCandidateFresh?: Parameters<typeof runCompetitivenessGate>[0]["ensureCandidateFresh"];
+  onEvaluationStage?: Parameters<typeof runCompetitivenessGate>[0]["onEvaluationStage"];
   runId?: Parameters<typeof runCompetitivenessGate>[0]["runId"];
   appendEvent?: Parameters<typeof runCompetitivenessGate>[0]["appendEvent"];
   mempoolIndex?: Parameters<typeof runCompetitivenessGate>[0]["mempoolIndex"];
@@ -589,6 +592,8 @@ async function runCompetitivenessGateForTesting(options: {
     cooperativeYield: options.cooperativeYieldImpl,
     cooperativeYieldEvery: options.cooperativeYieldEvery,
     onWarmupProgress: options.onWarmupProgress,
+    ensureCandidateFresh: options.ensureCandidateFresh,
+    onEvaluationStage: options.onEvaluationStage,
     runId: options.runId,
     appendEvent: options.appendEvent,
     mempoolIndex: options.mempoolIndex,
@@ -4158,11 +4163,12 @@ test("performMiningCycle backs off transient provider failures and retries witho
 
   await runCycle(31_000);
   snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
-  assert.equal(snapshot?.currentPhase, "scoring");
+  assert.equal(snapshot?.currentPhase, "idle");
   assert.equal(snapshot?.currentPublishDecision, null);
   assert.equal(snapshot?.providerState, "unavailable");
   assert.equal(snapshot?.lastError, null);
-  assert.equal(snapshot?.note, "Scoring mining candidates for the current tip.");
+  assert.equal(snapshot?.note, null);
+  assert.equal(loopState.attemptedTipKey, null);
   assert.equal(loopState.providerTransientFailureCount, 0);
   assert.equal(loopState.providerWaitNextRetryAtUnixMs, null);
   assert.equal(generateCalls, 2);
@@ -5939,6 +5945,78 @@ test("runCompetitivenessGate uses bulk mempool metadata instead of per-tx mempoo
 
   assert.equal(mempoolEntryCalls, 0);
 });
+
+for (const testCase of [
+  {
+    name: "after raw tx hydration",
+    checkpoint: "mempool-hydration-complete" as const,
+    txid: "91".repeat(32),
+    sentenceFill: "m",
+  },
+  {
+    name: "before indexed mempool entry fetch",
+    checkpoint: "mempool-entry-fetch-start" as const,
+    txid: "92".repeat(32),
+    sentenceFill: "n",
+  },
+  {
+    name: "during competitor scan and ranking",
+    checkpoint: "rank-evaluation-start" as const,
+    txid: "93".repeat(32),
+    sentenceFill: "o",
+  },
+]) {
+  test(`runCompetitivenessGate aborts stale scoring ${testCase.name}`, async (t) => {
+    const homeDirectory = await createTrackedTempDirectory(t, `cogcoin-gate-stale-${testCase.name.replaceAll(" ", "-")}`);
+    const candidate = createGateCandidate();
+    const context = createGateReadContext({
+      domains: [{ domainId: candidate.domainId, name: candidate.domainName }],
+    });
+    const checkpoints: string[] = [];
+
+    await assert.rejects(async () => {
+      await runCompetitivenessGateForTesting({
+        rpc: createGateRpc({
+          txids: [testCase.txid],
+          rawTransactions: {
+            [testCase.txid]: createMineTransaction({
+              txid: testCase.txid,
+              domainId: candidate.domainId,
+              senderScriptPubKeyHex: candidate.sender.scriptPubKeyHex,
+              referencedBlockHashInternal: candidate.referencedBlockHashInternal,
+              sentenceFill: testCase.sentenceFill,
+            }),
+          },
+        }) as any,
+        readContext: context,
+        candidate,
+        currentTxid: null,
+        assaySentencesImpl: createGateAssayStub({
+          [testCase.sentenceFill.repeat(60)]: 1n,
+        }) as any,
+        mempoolIndex: {
+          rawTxSupported: true,
+          cachePath: join(homeDirectory, "mempool-index.json"),
+          serviceIdentity: `svc-${testCase.name}`,
+        },
+        ensureCandidateFresh: async (checkpoint) => {
+          checkpoints.push(checkpoint);
+          if (checkpoint === testCase.checkpoint) {
+            throw new MiningScoringAttemptStaleError({
+              candidateTargetBlockHeight: candidate.targetBlockHeight,
+              candidateReferencedBlockHashDisplay: candidate.referencedBlockHashDisplay,
+              observedBestHeight: candidate.targetBlockHeight,
+              observedBestHash: "ff".repeat(32),
+              checkpoint,
+            });
+          }
+        },
+      });
+    }, MiningScoringAttemptStaleError);
+
+    assert.ok(checkpoints.includes(testCase.checkpoint));
+  });
+}
 
 test("raw transaction parser extracts txid, inputs, and OP_RETURN payload for the mempool index", () => {
   const rawHex = createRawTransactionHexForIndex("6a0161");

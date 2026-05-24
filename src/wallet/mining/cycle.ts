@@ -23,7 +23,14 @@ import {
   resolveEligibleAnchoredRoots,
   chooseBestLocalCandidate,
 } from "./candidate.js";
-import { clearMiningGateCache, runCompetitivenessGate } from "./competitiveness.js";
+import {
+  clearMiningGateCache,
+  isMiningScoringAttemptStaleError,
+  MiningScoringAttemptStaleError,
+  runCompetitivenessGate,
+  type MiningGateEvaluationStage,
+  type MiningScoringFreshnessCheckpoint,
+} from "./competitiveness.js";
 import {
   createInsufficientFundsMiningPublishErrorMessage,
   createInsufficientFundsMiningPublishWaitingNote,
@@ -51,6 +58,7 @@ import {
   type MiningRuntimeStatusOverrides,
 } from "./projection.js";
 import type { MiningMempoolIndexGateOptions } from "./mempool-index.js";
+import { isMiningStopRequestedError } from "./stop.js";
 
 interface RuntimeMiningCycleState extends MiningCycleState {
   generatedCandidates: MiningCandidate[] | null;
@@ -58,6 +66,7 @@ interface RuntimeMiningCycleState extends MiningCycleState {
 
 export interface MiningPhaseMachineResult {
   restartImmediately: boolean;
+  restartNote?: string | null;
 }
 
 function continueMiningNormally(): MiningPhaseMachineResult {
@@ -66,9 +75,10 @@ function continueMiningNormally(): MiningPhaseMachineResult {
   };
 }
 
-function restartMiningImmediately(): MiningPhaseMachineResult {
+function restartMiningImmediately(note?: string | null): MiningPhaseMachineResult {
   return {
     restartImmediately: true,
+    restartNote: note,
   };
 }
 
@@ -134,6 +144,22 @@ async function appendTimingEvent(
   }
 }
 
+function formatMiningAttemptBlock(targetBlockHeight: number | null): string {
+  return targetBlockHeight === null ? "the selected block" : `block #${targetBlockHeight}`;
+}
+
+function buildMiningAttemptStatusOverrides(
+  readContext: ReadyMiningReadContext,
+  candidate: Pick<MiningCandidate, "targetBlockHeight" | "referencedBlockHashDisplay" | "provenance"> | null,
+  fallbackTargetBlockHeight: number | null,
+): Pick<MiningRuntimeStatusOverrides, "attemptTargetBlockHeight" | "attemptReferencedBlockHashDisplay" | "attemptIndexerSnapshotSeq"> {
+  return {
+    attemptTargetBlockHeight: candidate?.targetBlockHeight ?? fallbackTargetBlockHeight,
+    attemptReferencedBlockHashDisplay: candidate?.referencedBlockHashDisplay ?? readContext.nodeStatus?.nodeBestHashHex ?? null,
+    attemptIndexerSnapshotSeq: candidate?.provenance?.indexerSnapshotSeq ?? readContext.indexer.snapshotSeq ?? null,
+  };
+}
+
 export async function runMiningPhaseMachine(options: {
   dataDir: string;
   databasePath: string;
@@ -163,6 +189,9 @@ export async function runMiningPhaseMachine(options: {
     readContext: WalletReadContext,
     overrides: MiningRuntimeStatusOverrides,
   ) => Promise<MiningRuntimeStatusV1>;
+  saveLiveCycleStatus?: (
+    overrides: MiningRuntimeStatusOverrides,
+  ) => Promise<MiningRuntimeStatusV1 | null>;
   appendEvent: (event: MiningEventRecord) => Promise<void>;
   throwIfStopping?: () => void;
   throwIfSuspendDetected?: () => void;
@@ -199,7 +228,7 @@ export async function runMiningPhaseMachine(options: {
       clearMiningGateCache(walletRootId);
       await options.appendEvent(createMiningEventRecord(
         "generation-restarted-indexer-truth",
-        "Detected updated coherent indexer truth during mining; restarting on the next tick.",
+        "Detected updated coherent indexer truth during mining; restarting immediately.",
         {
           level: "warn",
           targetBlockHeight: state.targetBlockHeight,
@@ -207,8 +236,55 @@ export async function runMiningPhaseMachine(options: {
           runId: options.backgroundWorkerRunId,
         },
       ));
-      return continueMiningNormally();
+      return restartMiningImmediately();
     }
+  };
+  const saveAttemptStatus = async (
+    candidate: Pick<MiningCandidate, "targetBlockHeight" | "referencedBlockHashDisplay" | "provenance"> | null,
+    overrides: MiningRuntimeStatusOverrides,
+  ): Promise<void> => {
+    const attemptOverrides = buildMiningAttemptStatusOverrides(options.readContext, candidate, state.targetBlockHeight);
+    if (options.saveLiveCycleStatus !== undefined) {
+      const saved = await options.saveLiveCycleStatus({
+        ...attemptOverrides,
+        ...overrides,
+      });
+      if (saved !== null) {
+        return;
+      }
+    }
+
+    await options.saveCycleStatus(options.readContext, {
+      ...attemptOverrides,
+      ...overrides,
+    });
+  };
+  const createScoringFreshnessGuard = (candidate: MiningCandidate) => {
+    let lastCheckedAtMs = Number.NEGATIVE_INFINITY;
+    return async (
+      checkpoint: MiningScoringFreshnessCheckpoint,
+      guardOptions: { force?: boolean } = {},
+    ): Promise<void> => {
+      const nowMs = performance.now();
+      if (guardOptions.force !== true && (nowMs - lastCheckedAtMs) < 1_000) {
+        return;
+      }
+
+      lastCheckedAtMs = nowMs;
+      const coreTip = await options.rpc.getBlockchainInfo();
+      if (
+        coreTip.blocks + 1 !== candidate.targetBlockHeight
+        || coreTip.bestblockhash !== candidate.referencedBlockHashDisplay
+      ) {
+        throw new MiningScoringAttemptStaleError({
+          candidateTargetBlockHeight: candidate.targetBlockHeight,
+          candidateReferencedBlockHashDisplay: candidate.referencedBlockHashDisplay,
+          observedBestHeight: coreTip.blocks,
+          observedBestHash: coreTip.bestblockhash,
+          checkpoint,
+        });
+      }
+    };
   };
   const throwIfInterrupted = () => {
     options.throwIfSuspendDetected?.();
@@ -392,6 +468,13 @@ export async function runMiningPhaseMachine(options: {
           });
           throwIfInterrupted();
         } catch (error) {
+          if (
+            isMiningStopRequestedError(error)
+            || (error instanceof Error && error.message === "mining_runtime_resumed")
+          ) {
+            throw error;
+          }
+
           if (error instanceof MiningProviderRequestError) {
             if (isTransientMiningProviderError(error)) {
               recordTransientMiningProviderWait({
@@ -510,14 +593,14 @@ export async function runMiningPhaseMachine(options: {
       }
       case "scoring": {
         clearMiningProviderWait(options.loopState);
-        await options.saveCycleStatus(options.readContext, {
+        await saveAttemptStatus(null, {
           runMode: options.runMode,
           currentPhase: "scoring",
           currentPublishDecision: null,
           competitivenessGateReason: null,
           competitivenessGateDiagnostics: null,
           lastError: null,
-          note: "Scoring mining candidates for the current tip.",
+          note: `Scoring mining candidates for ${formatMiningAttemptBlock(state.targetBlockHeight)}.`,
         });
 
         const best = await chooseBestLocalCandidate(state.generatedCandidates ?? []);
@@ -560,6 +643,7 @@ export async function runMiningPhaseMachine(options: {
           options.readContext.localState.state.miningState,
         );
         state.selectedCandidate = best;
+        const ensureCandidateFresh = createScoringFreshnessGuard(best);
         await options.appendEvent(createMiningEventRecord(
           "candidate-selected",
           `Selected ${best.domainName} with score ${best.canonicalBlend.toString()}.`,
@@ -608,6 +692,22 @@ export async function runMiningPhaseMachine(options: {
             runId: options.backgroundWorkerRunId,
             appendEvent: options.appendEvent,
             throwIfStopping: options.throwIfStopping,
+            ensureCandidateFresh,
+            onEvaluationStage: async (stage: MiningGateEvaluationStage) => {
+              const note = stage === "mempool-hydrated"
+                ? `Hydrated mempool context for ${formatMiningAttemptBlock(best.targetBlockHeight)}.`
+                : `Evaluating mempool competitors for ${formatMiningAttemptBlock(best.targetBlockHeight)}.`;
+              scoringProgressWrite = scoringProgressWrite.then(async () => {
+                await saveAttemptStatus(best, {
+                  runMode: options.runMode,
+                  currentPhase: "scoring",
+                  currentPublishDecision: null,
+                  lastError: null,
+                  note,
+                });
+              });
+              await scoringProgressWrite;
+            },
             onWarmupProgress: async (progress) => {
               if (progress.total <= 0) {
                 return;
@@ -628,12 +728,12 @@ export async function runMiningPhaseMachine(options: {
               lastScoringProgressProcessed = progress.processed;
               lastScoringProgressSavedAtUnixMs = nowUnixMs;
               scoringProgressWrite = scoringProgressWrite.then(async () => {
-                await options.saveCycleStatus(options.readContext, {
+                await saveAttemptStatus(best, {
                   runMode: options.runMode,
                   currentPhase: "scoring",
                   currentPublishDecision: null,
                   lastError: null,
-                  note: `Scoring mining candidates for the current tip (mempool ${progress.processed}/${progress.total}).`,
+                  note: `Hydrating mempool context for ${formatMiningAttemptBlock(best.targetBlockHeight)} (mempool ${progress.processed}/${progress.total}).`,
                 });
               });
               await scoringProgressWrite;
@@ -654,11 +754,34 @@ export async function runMiningPhaseMachine(options: {
               score: best.canonicalBlend.toString(),
               durationMs: performance.now() - gateStartedAt,
               metrics: {
-                outcome: "error",
+                outcome: isMiningScoringAttemptStaleError(error) ? "stale" : "error",
                 errorName: error instanceof Error ? error.name : "unknown",
+                checkpoint: isMiningScoringAttemptStaleError(error) ? error.checkpoint : null,
               },
             },
           );
+          await scoringProgressWrite;
+          if (isMiningScoringAttemptStaleError(error)) {
+            clearTransientRestartWork();
+            clearMiningGateCache(walletRootId);
+            options.loopState.waitingNote = "Bitcoin tip advanced; restarting mining scoring on the fresh tip.";
+            await options.appendEvent(createMiningEventRecord(
+              "generation-restarted-stale-tip",
+              "Detected updated Bitcoin tip during mining scoring; restarting immediately.",
+              {
+                level: "warn",
+                targetBlockHeight: best.targetBlockHeight,
+                referencedBlockHashDisplay: best.referencedBlockHashDisplay,
+                runId: options.backgroundWorkerRunId,
+                reason: error.checkpoint,
+                metrics: {
+                  observedBestHeight: error.observedBestHeight,
+                  observedBestHash: error.observedBestHash,
+                },
+              },
+            ));
+            return restartMiningImmediately("Bitcoin tip advanced; restarting mining scoring on the fresh tip.");
+          }
           throw error;
         }
         await appendTimingEvent(
