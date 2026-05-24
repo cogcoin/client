@@ -28,6 +28,9 @@ export interface MiningRuntimeStatusOverrides {
   currentPublishState?: MiningRuntimeStatusV1["currentPublishState"];
   targetBlockHeight?: number | null;
   referencedBlockHashDisplay?: string | null;
+  attemptTargetBlockHeight?: number | null;
+  attemptReferencedBlockHashDisplay?: string | null;
+  attemptIndexerSnapshotSeq?: string | null;
   currentDomainId?: number | null;
   currentDomainName?: string | null;
   currentSentenceDisplay?: string | null;
@@ -56,6 +59,11 @@ export interface MiningRuntimeStatusOverrides {
   lastError?: string | null;
   note?: string | null;
   livePublishInMempool?: boolean | null;
+  livePublishTargetBlockHeight?: number | null;
+  livePublishReferencedBlockHashDisplay?: string | null;
+  livePublishTxid?: string | null;
+  livePublishDecision?: string | null;
+  livePublishStaleToCoreTip?: boolean | null;
 }
 
 export function resolveWaitingProviderNote(
@@ -90,6 +98,9 @@ export function buildPrePublishStatusOverrides(options: {
     currentPublishDecision: replacing ? "replacing" : "publishing",
     targetBlockHeight: options.candidate.targetBlockHeight,
     referencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+    attemptTargetBlockHeight: options.candidate.targetBlockHeight,
+    attemptReferencedBlockHashDisplay: options.candidate.referencedBlockHashDisplay,
+    attemptIndexerSnapshotSeq: options.candidate.provenance?.indexerSnapshotSeq ?? null,
     currentDomainId: options.candidate.domainId,
     currentDomainName: options.candidate.domainName,
     currentSentenceDisplay: options.candidate.sentence,
@@ -127,6 +138,108 @@ function resolveLivePublishField<T>(
   }
 
   return preserveExisting ? existingValue ?? null : null;
+}
+
+interface MiningCurrentTipStatus {
+  coreBestHeight: number | null;
+  coreBestHash: string | null;
+  targetBlockHeight: number | null;
+  referencedBlockHashDisplay: string | null;
+  attemptIndexerSnapshotSeq: string | null;
+}
+
+interface MiningLivePublishStatus {
+  targetBlockHeight: number | null;
+  referencedBlockHashDisplay: string | null;
+  txid: string | null;
+  decision: string | null;
+  staleToCoreTip: boolean | null;
+}
+
+function resolveCurrentTipStatus(options: {
+  nodeStatus: WalletNodeStatus | null;
+  indexer: WalletIndexerStatus;
+  existingRuntime: MiningRuntimeStatusV1 | null;
+}): MiningCurrentTipStatus {
+  const coreBestHeight = options.nodeStatus?.nodeBestHeight
+    ?? options.indexer.status?.coreBestHeight
+    ?? options.existingRuntime?.coreBestHeight
+    ?? null;
+  const coreBestHash = options.nodeStatus?.nodeBestHashHex
+    ?? options.indexer.status?.coreBestHash
+    ?? options.existingRuntime?.coreBestHash
+    ?? null;
+
+  return {
+    coreBestHeight,
+    coreBestHash,
+    targetBlockHeight: coreBestHeight === null ? null : coreBestHeight + 1,
+    referencedBlockHashDisplay: coreBestHash,
+    attemptIndexerSnapshotSeq: options.indexer.snapshotSeq ?? null,
+  };
+}
+
+function livePublishIsStaleToCurrentTip(options: {
+  liveTargetBlockHeight: number | null;
+  liveReferencedBlockHashDisplay: string | null;
+  currentTip: MiningCurrentTipStatus;
+}): boolean | null {
+  if (
+    options.liveTargetBlockHeight === null
+    || options.liveReferencedBlockHashDisplay === null
+    || options.currentTip.targetBlockHeight === null
+    || options.currentTip.referencedBlockHashDisplay === null
+  ) {
+    return null;
+  }
+
+  return options.liveTargetBlockHeight !== options.currentTip.targetBlockHeight
+    || options.liveReferencedBlockHashDisplay !== options.currentTip.referencedBlockHashDisplay;
+}
+
+function resolveLivePublishStatus(options: {
+  miningState: ReturnType<typeof normalizeMiningStateRecord> | null;
+  existingRuntime: MiningRuntimeStatusV1 | null;
+  currentTip: MiningCurrentTipStatus;
+}): MiningLivePublishStatus {
+  const state = options.miningState;
+  const existing = options.existingRuntime;
+  const stateHasLivePublish = state !== null && miningPublishMayStillExist(state);
+  const existingHasLivePublish = existing?.livePublishInMempool === true
+    || existing?.livePublishTxid != null
+    || existing?.currentTxid != null;
+  const targetBlockHeight = stateHasLivePublish
+    ? state.currentBlockTargetHeight ?? null
+    : existingHasLivePublish
+      ? existing?.livePublishTargetBlockHeight ?? existing?.targetBlockHeight ?? null
+      : null;
+  const referencedBlockHashDisplay = stateHasLivePublish
+    ? state.currentReferencedBlockHashDisplay ?? null
+    : existingHasLivePublish
+      ? existing?.livePublishReferencedBlockHashDisplay ?? existing?.referencedBlockHashDisplay ?? null
+      : null;
+  const txid = stateHasLivePublish
+    ? state.currentTxid ?? null
+    : existingHasLivePublish
+      ? existing?.livePublishTxid ?? existing?.currentTxid ?? null
+      : null;
+  const decision = stateHasLivePublish
+    ? state.currentPublishDecision ?? null
+    : existingHasLivePublish
+      ? existing?.livePublishDecision ?? existing?.currentPublishDecision ?? null
+      : null;
+
+  return {
+    targetBlockHeight,
+    referencedBlockHashDisplay,
+    txid,
+    decision,
+    staleToCoreTip: livePublishIsStaleToCurrentTip({
+      liveTargetBlockHeight: targetBlockHeight,
+      liveReferencedBlockHashDisplay: referencedBlockHashDisplay,
+      currentTip: options.currentTip,
+    }),
+  };
 }
 
 function resolveIdleTargetBlockHeight(nodeStatus: WalletNodeStatus | null): number | null {
@@ -440,6 +553,16 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
     existingRuntime: existing,
     miningState: state,
   });
+  const currentTipStatus = resolveCurrentTipStatus({
+    nodeStatus: options.nodeStatus,
+    indexer: options.indexer,
+    existingRuntime: existing,
+  });
+  const livePublishStatus = resolveLivePublishStatus({
+    miningState: state,
+    existingRuntime: existing,
+    currentTip: currentTipStatus,
+  });
   const preserveExistingLivePublish = state === null
     ? false
     : miningPublishMayStillExist(state);
@@ -461,18 +584,11 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
   const resolvedCurrentPhase = clearWaitingCarryover
     ? "idle"
     : existing?.currentPhase ?? blockerPhase ?? "idle";
-  const resolvedTargetBlockHeight = state?.currentBlockTargetHeight
-    ?? (
-      preserveExistingLivePublish
-        ? existing?.targetBlockHeight ?? null
-        : resolveIdleTargetBlockHeight(options.nodeStatus)
-    );
-  const resolvedReferencedBlockHashDisplay = state?.currentReferencedBlockHashDisplay
-    ?? (
-      preserveExistingLivePublish
-        ? existing?.referencedBlockHashDisplay ?? null
-        : options.nodeStatus?.nodeBestHashHex ?? null
-    );
+  const resolvedTargetBlockHeight = currentTipStatus.targetBlockHeight
+    ?? resolveIdleTargetBlockHeight(options.nodeStatus);
+  const resolvedReferencedBlockHashDisplay = currentTipStatus.referencedBlockHashDisplay
+    ?? options.nodeStatus?.nodeBestHashHex
+    ?? null;
 
   return {
     schemaVersion: 1,
@@ -495,8 +611,8 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
     indexerSnapshotOpenedAtUnixMs: options.indexer.openedAtUnixMs ?? null,
     indexerTruthSource: options.indexer.source ?? "none",
     indexerHeartbeatAtUnixMs: options.indexer.status?.heartbeatAtUnixMs ?? null,
-    coreBestHeight: options.nodeStatus?.nodeBestHeight ?? options.indexer.status?.coreBestHeight ?? existing?.coreBestHeight ?? null,
-    coreBestHash: options.nodeStatus?.nodeBestHashHex ?? options.indexer.status?.coreBestHash ?? existing?.coreBestHash ?? null,
+    coreBestHeight: currentTipStatus.coreBestHeight,
+    coreBestHash: currentTipStatus.coreBestHash,
     indexerTipHeight: options.indexer.snapshotTip?.height ?? null,
     indexerTipHash: options.indexer.snapshotTip?.blockHashHex ?? null,
     indexerStatusTipHeight: options.indexer.status?.appliedTipHeight ?? null,
@@ -520,6 +636,9 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
     ),
     targetBlockHeight: resolvedTargetBlockHeight,
     referencedBlockHashDisplay: resolvedReferencedBlockHashDisplay,
+    attemptTargetBlockHeight: resolvedTargetBlockHeight,
+    attemptReferencedBlockHashDisplay: resolvedReferencedBlockHashDisplay,
+    attemptIndexerSnapshotSeq: currentTipStatus.attemptIndexerSnapshotSeq,
     currentDomainId: resolveLivePublishField(state?.currentDomainId, existing?.currentDomainId, preserveExistingLivePublish),
     currentDomainName: resolveLivePublishField(state?.currentDomain, existing?.currentDomainName, preserveExistingLivePublish),
     currentSentenceDisplay: resolveLivePublishField(state?.currentSentence, existing?.currentSentenceDisplay, preserveExistingLivePublish),
@@ -527,6 +646,11 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
     currentTxid: resolveLivePublishField(state?.currentTxid, existing?.currentTxid, preserveExistingLivePublish),
     currentWtxid: resolveLivePublishField(state?.currentWtxid, existing?.currentWtxid, preserveExistingLivePublish),
     livePublishInMempool: state?.livePublishInMempool ?? (preserveExistingLivePublish ? existing?.livePublishInMempool ?? null : null),
+    livePublishTargetBlockHeight: livePublishStatus.targetBlockHeight,
+    livePublishReferencedBlockHashDisplay: livePublishStatus.referencedBlockHashDisplay,
+    livePublishTxid: livePublishStatus.txid,
+    livePublishDecision: livePublishStatus.decision,
+    livePublishStaleToCoreTip: livePublishStatus.staleToCoreTip,
     currentFeeRateSatVb: resolveLivePublishField(state?.currentFeeRateSatVb, existing?.currentFeeRateSatVb, preserveExistingLivePublish),
     currentAbsoluteFeeSats: resolveLivePublishField(
       state?.currentAbsoluteFeeSats,
@@ -639,6 +763,18 @@ export function applyMiningRuntimeStatusOverrides(options: {
       overrides.referencedBlockHashDisplay,
       options.runtime.referencedBlockHashDisplay,
     ),
+    attemptTargetBlockHeight: resolveSnapshotOverride(
+      overrides.attemptTargetBlockHeight,
+      options.runtime.attemptTargetBlockHeight ?? options.runtime.targetBlockHeight,
+    ),
+    attemptReferencedBlockHashDisplay: resolveSnapshotOverride(
+      overrides.attemptReferencedBlockHashDisplay,
+      options.runtime.attemptReferencedBlockHashDisplay ?? options.runtime.referencedBlockHashDisplay,
+    ),
+    attemptIndexerSnapshotSeq: resolveSnapshotOverride(
+      overrides.attemptIndexerSnapshotSeq,
+      options.runtime.attemptIndexerSnapshotSeq ?? options.runtime.indexerSnapshotSeq ?? null,
+    ),
     currentDomainId: resolveSnapshotOverride(overrides.currentDomainId, options.runtime.currentDomainId),
     currentDomainName: resolveSnapshotOverride(overrides.currentDomainName, options.runtime.currentDomainName),
     currentSentenceDisplay: resolveSnapshotOverride(
@@ -731,6 +867,26 @@ export function applyMiningRuntimeStatusOverrides(options: {
     livePublishInMempool: resolveSnapshotOverride(
       overrides.livePublishInMempool,
       options.runtime.livePublishInMempool,
+    ),
+    livePublishTargetBlockHeight: resolveSnapshotOverride(
+      overrides.livePublishTargetBlockHeight,
+      options.runtime.livePublishTargetBlockHeight ?? null,
+    ),
+    livePublishReferencedBlockHashDisplay: resolveSnapshotOverride(
+      overrides.livePublishReferencedBlockHashDisplay,
+      options.runtime.livePublishReferencedBlockHashDisplay ?? null,
+    ),
+    livePublishTxid: resolveSnapshotOverride(
+      overrides.livePublishTxid,
+      options.runtime.livePublishTxid ?? null,
+    ),
+    livePublishDecision: resolveSnapshotOverride(
+      overrides.livePublishDecision,
+      options.runtime.livePublishDecision ?? null,
+    ),
+    livePublishStaleToCoreTip: resolveSnapshotOverride(
+      overrides.livePublishStaleToCoreTip,
+      options.runtime.livePublishStaleToCoreTip ?? null,
     ),
     updatedAtUnixMs: nowUnixMs,
   };

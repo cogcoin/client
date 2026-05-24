@@ -468,6 +468,61 @@ function candidateTargetsCurrentNodeTip(
     && candidate.referencedBlockHashDisplay === nodeBestHash;
 }
 
+interface MiningCoreTip {
+  height: number | null;
+  hash: string | null;
+}
+
+class MiningPublishFreshnessRestartError extends Error {
+  readonly reason: "snapshot-changed" | "tip-changed";
+
+  constructor(reason: "snapshot-changed" | "tip-changed") {
+    super(reason === "snapshot-changed"
+      ? "mining_publish_indexer_truth_not_current"
+      : "mining_publish_bitcoin_tip_not_current");
+    this.reason = reason;
+  }
+}
+
+function candidateTargetsCoreTip(
+  coreTip: MiningCoreTip,
+  candidate: MiningCandidate,
+): boolean {
+  return coreTip.height !== null
+    && coreTip.hash !== null
+    && candidate.targetBlockHeight === coreTip.height + 1
+    && candidate.referencedBlockHashDisplay === coreTip.hash;
+}
+
+function readContextIndexerTargetsCoreTip(
+  context: ReadyMiningReadContext,
+  coreTip: MiningCoreTip,
+): boolean {
+  if (coreTip.height === null || coreTip.hash === null) {
+    return false;
+  }
+
+  const snapshotTip = context.snapshot.tip ?? context.indexer.snapshotTip ?? null;
+  if (
+    snapshotTip === null
+    || snapshotTip.height !== coreTip.height
+    || snapshotTip.blockHashHex !== coreTip.hash
+  ) {
+    return false;
+  }
+
+  const status = context.indexer.status;
+  if (status === null) {
+    return true;
+  }
+
+  return status.appliedTipHeight === coreTip.height
+    && (
+      status.appliedTipHash === null
+      || status.appliedTipHash === coreTip.hash
+    );
+}
+
 export async function reconcileLiveMiningState(options: {
   state: WalletStateV1;
   rpc: MiningRpcClient;
@@ -647,6 +702,18 @@ export async function publishCandidateOnce(options: {
   });
   options.throwIfStopping?.();
   const rpc = options.rpcFactory(service.rpc);
+  const blockchain = await rpc.getBlockchainInfo();
+  options.throwIfStopping?.();
+  const coreTip: MiningCoreTip = {
+    height: blockchain.blocks ?? null,
+    hash: blockchain.bestblockhash ?? null,
+  };
+  if (!candidateTargetsCoreTip(coreTip, options.candidate)) {
+    throw new MiningPublishFreshnessRestartError("tip-changed");
+  }
+  if (!readContextIndexerTargetsCoreTip(options.readContext, coreTip)) {
+    throw new MiningPublishFreshnessRestartError("snapshot-changed");
+  }
   let state = (await reconcileLiveMiningState({
     state: options.readContext.localState.state,
     rpc,
@@ -1327,6 +1394,19 @@ export async function publishCandidate(options: {
         candidate: refreshedCandidate,
       };
     } catch (error) {
+      if (error instanceof MiningPublishFreshnessRestartError) {
+        return await createRestartResult(
+          readyReadContext.localState.state,
+          error.reason === "snapshot-changed"
+            ? "publish-restart-snapshot-changed"
+            : "publish-restart-tip-changed",
+          error.reason === "snapshot-changed"
+            ? createSnapshotChangedMiningPublishWaitingNote()
+            : createTipChangedMiningPublishWaitingNote(),
+          error.reason,
+        );
+      }
+
       if (error instanceof ManagedCoreWalletRelockPendingError) {
         const note = createManagedCoreWalletRelockRetryWaitingNote();
         const lastError = error.message;

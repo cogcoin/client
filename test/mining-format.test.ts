@@ -77,6 +77,35 @@ test("mine status text shows the insufficient-funds next step from publish decis
   assert.doesNotMatch(report, /Note: Insufficient funds for mining\./);
 });
 
+test("mine status text separates current target from stale live publish tx", () => {
+  const report = formatMineStatusReport(createMiningControlPlaneView({
+    runtime: createMiningRuntimeStatus({
+      currentPhase: "idle",
+      miningState: "paused-stale",
+      targetBlockHeight: 102,
+      referencedBlockHashDisplay: "22".repeat(32),
+      currentTxid: "aa".repeat(32),
+      livePublishInMempool: true,
+      livePublishTargetBlockHeight: 101,
+      livePublishReferencedBlockHashDisplay: "11".repeat(32),
+      livePublishTxid: "aa".repeat(32),
+      livePublishDecision: "paused-stale-mempool",
+      livePublishStaleToCoreTip: true,
+      currentPublishDecision: "publish-skipped-no-candidate",
+    }),
+  }));
+
+  assert.match(report, /Current target height: 102/);
+  assert.match(report, new RegExp(`Current referenced block: ${"22".repeat(32)}`));
+  assert.match(report, new RegExp(`Live publish txid: ${"aa".repeat(32)}`));
+  assert.match(report, /Live publish target height: 101/);
+  assert.match(report, new RegExp(`Live publish referenced block: ${"11".repeat(32)}`));
+  assert.match(report, /Live publish decision: paused-stale-mempool/);
+  assert.match(report, /Live publish stale to Core tip: yes/);
+  assert.match(report, /Publish decision: publish-skipped-no-candidate/);
+  assert.doesNotMatch(report, /Current txid:/);
+});
+
 test("mine status text renders competitiveness gate diagnostics", () => {
   const report = formatMineStatusReport(createMiningControlPlaneView({
     runtime: createMiningRuntimeStatus({

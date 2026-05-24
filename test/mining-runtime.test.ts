@@ -458,6 +458,113 @@ test("mining runtime snapshot preserves active provider wait and live publish me
   assert.equal(livePublishSnapshot.currentSentenceDisplay, "Live sentence");
   assert.equal(livePublishSnapshot.currentTxid, "aa".repeat(32));
   assert.equal(livePublishSnapshot.livePublishInMempool, true);
+  assert.equal(livePublishSnapshot.targetBlockHeight, 141);
+  assert.equal(livePublishSnapshot.referencedBlockHashDisplay, "14".repeat(32));
+  assert.equal(livePublishSnapshot.attemptTargetBlockHeight, 141);
+  assert.equal(livePublishSnapshot.attemptReferencedBlockHashDisplay, "14".repeat(32));
+  assert.equal(livePublishSnapshot.livePublishTargetBlockHeight, 141);
+  assert.equal(livePublishSnapshot.livePublishReferencedBlockHashDisplay, "14".repeat(32));
+  assert.equal(livePublishSnapshot.livePublishTxid, "aa".repeat(32));
+  assert.equal(livePublishSnapshot.livePublishStaleToCoreTip, false);
+});
+
+test("mining runtime snapshot separates stale live publish metadata from the current Core target", async () => {
+  const oldHashHex = "14".repeat(32);
+  const freshHashHex = "15".repeat(32);
+  const walletState = createWalletState({
+    miningState: createMiningState({
+      state: "paused-stale",
+      currentPublishState: "in-mempool",
+      currentBlockTargetHeight: 141,
+      currentReferencedBlockHashDisplay: oldHashHex,
+      currentDomain: "cogdemo",
+      currentDomainId: 7,
+      currentSentence: "Old live sentence",
+      currentScore: "123",
+      currentTxid: "aa".repeat(32),
+      currentWtxid: "bb".repeat(32),
+      livePublishInMempool: true,
+      currentPublishDecision: "paused-stale-mempool",
+    }),
+  });
+  const context = createWalletReadContext({
+    localState: {
+      availability: "ready",
+      clientPasswordReadiness: "ready",
+      unlockRequired: false,
+      walletRootId: walletState.walletRootId,
+      state: walletState,
+      source: "primary",
+      hasPrimaryStateFile: true,
+      hasBackupStateFile: false,
+      message: null,
+    },
+    nodeStatus: {
+      ready: true,
+      chain: "mainnet",
+      nodeBestHeight: 141,
+      nodeBestHashHex: freshHashHex,
+      walletReplica: {
+        proofStatus: "ready",
+      },
+    },
+    indexer: {
+      health: "synced",
+      message: null,
+      status: {
+        state: "synced",
+        heartbeatAtUnixMs: 1,
+        updatedAtUnixMs: 1,
+        ipcReady: true,
+        rpcReachable: true,
+        coreBestHeight: 141,
+        coreBestHash: freshHashHex,
+        appliedTipHeight: 141,
+        appliedTipHash: freshHashHex,
+        reorgDepth: null,
+      },
+      source: "lease",
+      daemonInstanceId: "daemon-1",
+      snapshotSeq: "seq-141",
+      openedAtUnixMs: 1,
+      snapshotTip: {
+        height: 141,
+        blockHashHex: freshHashHex,
+        previousHashHex: oldHashHex,
+        stateHashHex: null,
+      },
+    },
+  }) as any;
+
+  const snapshot = await buildMiningRuntimeStatusSnapshotForTesting({
+    nowUnixMs: 8_000,
+    localState: context.localState,
+    bitcoind: context.bitcoind,
+    nodeStatus: context.nodeStatus,
+    provider: createMiningControlPlaneView().provider,
+    nodeHealth: "synced",
+    indexer: context.indexer,
+    tipsAligned: true,
+    lastEventAtUnixMs: null,
+    existingRuntime: createMiningRuntimeStatus({
+      currentPhase: "publishing",
+      targetBlockHeight: 141,
+      referencedBlockHashDisplay: oldHashHex,
+      currentTxid: "cc".repeat(32),
+      livePublishInMempool: true,
+    }),
+  });
+
+  assert.equal(snapshot.targetBlockHeight, 142);
+  assert.equal(snapshot.referencedBlockHashDisplay, freshHashHex);
+  assert.equal(snapshot.attemptTargetBlockHeight, 142);
+  assert.equal(snapshot.attemptReferencedBlockHashDisplay, freshHashHex);
+  assert.equal(snapshot.attemptIndexerSnapshotSeq, "seq-141");
+  assert.equal(snapshot.livePublishTargetBlockHeight, 141);
+  assert.equal(snapshot.livePublishReferencedBlockHashDisplay, oldHashHex);
+  assert.equal(snapshot.livePublishTxid, "aa".repeat(32));
+  assert.equal(snapshot.livePublishDecision, "paused-stale-mempool");
+  assert.equal(snapshot.livePublishStaleToCoreTip, true);
 });
 
 async function runCompetitivenessGateForTesting(options: {
@@ -3467,6 +3574,140 @@ test("performMiningCycle pauses before generation when mining funding is insuffi
   assert.equal(snapshot?.lastError, "Bitcoin Core could not fund the next mining publish with safe BTC.");
 });
 
+test("performMiningCycle keeps current target fields after no-candidate skip with stale live publish", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-no-candidate-current-target");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const oldHashHex = "11".repeat(32);
+  const freshHashHex = "22".repeat(32);
+  const liveTxid = "aa".repeat(32);
+  const readContext = createReadyMiningReadContext({
+    miningState: createMiningState({
+      runMode: "foreground",
+      state: "paused-stale",
+      pauseReason: "stale-block-context",
+      currentPublishState: "in-mempool",
+      currentDomain: "cogdemo",
+      currentDomainId: 7,
+      currentSentence: "old tip sentence",
+      currentScore: "1000",
+      currentTxid: liveTxid,
+      currentWtxid: "bb".repeat(32),
+      currentBlockTargetHeight: 101,
+      currentReferencedBlockHashDisplay: oldHashHex,
+      livePublishInMempool: true,
+      currentPublishDecision: "paused-stale-mempool",
+    }),
+  });
+  readContext.dataDir = homeDirectory;
+  readContext.databasePath = `${homeDirectory}/client.sqlite`;
+  readContext.nodeStatus = {
+    chain: "mainnet",
+    nodeBestHeight: 101,
+    nodeBestHashHex: freshHashHex,
+    walletReplica: {
+      proofStatus: "ready",
+    },
+    serviceStatus: {
+      serviceInstanceId: "svc-1",
+      processId: 9_001,
+    },
+  } as any;
+  readContext.indexer = {
+    ...readContext.indexer,
+    health: "synced",
+    message: null,
+    status: {
+      state: "synced",
+      heartbeatAtUnixMs: 1,
+      updatedAtUnixMs: 1,
+      ipcReady: true,
+      rpcReachable: true,
+      coreBestHeight: 101,
+      coreBestHash: freshHashHex,
+      appliedTipHeight: 101,
+      appliedTipHash: freshHashHex,
+      reorgDepth: null,
+    },
+    source: "lease",
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-101",
+    openedAtUnixMs: 1,
+    snapshotTip: {
+      height: 101,
+      blockHashHex: freshHashHex,
+      previousHashHex: oldHashHex,
+      stateHashHex: null,
+    },
+  };
+  readContext.snapshot = {
+    ...readContext.snapshot,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-101",
+    openedAtUnixMs: 1,
+    tip: {
+      height: 101,
+      blockHashHex: freshHashHex,
+      previousHashHex: oldHashHex,
+      stateHashHex: null,
+    },
+  };
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => readContext,
+    attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+    rpcFactory: () => createHealthyMiningRpc({
+      async getBlockchainInfo() {
+        return {
+          blocks: 101,
+          bestblockhash: freshHashHex,
+          initialblockdownload: false,
+        };
+      },
+      async getRawMempoolVerbose() {
+        return {
+          txids: [liveTxid],
+          mempool_sequence: "seq-live",
+        };
+      },
+      async getTransaction() {
+        return {
+          confirmations: 0,
+          walletconflicts: [],
+        };
+      },
+    }) as any,
+    loopState,
+    nowImpl: () => 1_000,
+    generateCandidatesForDomainsImpl: async () => [],
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.currentPhase, "idle");
+  assert.equal(snapshot?.currentPublishDecision, "publish-skipped-no-candidate");
+  assert.equal(snapshot?.targetBlockHeight, 102);
+  assert.equal(snapshot?.referencedBlockHashDisplay, freshHashHex);
+  assert.equal(snapshot?.attemptTargetBlockHeight, 102);
+  assert.equal(snapshot?.attemptReferencedBlockHashDisplay, freshHashHex);
+  assert.equal(snapshot?.attemptIndexerSnapshotSeq, "seq-101");
+  assert.equal(snapshot?.livePublishTargetBlockHeight, 101);
+  assert.equal(snapshot?.livePublishReferencedBlockHashDisplay, oldHashHex);
+  assert.equal(snapshot?.livePublishTxid, liveTxid);
+  assert.equal(snapshot?.livePublishDecision, "paused-stale-mempool");
+  assert.equal(snapshot?.livePublishStaleToCoreTip, true);
+});
+
 test("performMiningCycle keeps the insufficient-funding blocker active across repeated cycles", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-funding-gate-repeat");
   const paths = resolveWalletRuntimePathsForTesting({
@@ -4554,6 +4795,13 @@ test("publish candidate broadcasts when only safe 0-conf BTC funding is availabl
       return { rpc: {} } as any;
     },
     rpcFactory: () => ({
+      async getBlockchainInfo() {
+        return {
+          blocks: 100,
+          bestblockhash: "11".repeat(32),
+          initialblockdownload: false,
+        };
+      },
       async listUnspent(_walletName: string, minConf?: number) {
         observedListUnspentMinConfs.push(minConf);
         return [fundingUtxo];
@@ -5171,6 +5419,135 @@ test("publish candidate restarts when the Bitcoin tip changes before broadcast",
   assert.equal(result.decision, "publish-restart-tip-changed");
   assert.equal(result.candidate, null);
   assert.match(result.note, /Bitcoin tip changed/i);
+});
+
+test("publish candidate restarts when Core advances after read-context refresh", async () => {
+  let attachCalls = 0;
+  let sendRawTransactionCalls = 0;
+
+  const result = await publishCandidateForTesting({
+    candidate: createTestMiningCandidate(),
+    dataDir: "/tmp",
+    databasePath: "/tmp/test.db",
+    provider: {} as any,
+    paths: {} as any,
+    fallbackState: createReadyMiningReadContext({}).localState.state,
+    openReadContext: async () => createReadyMiningReadContext({}),
+    attachService: async () => {
+      attachCalls += 1;
+      return { rpc: {}, pid: 9_001 } as any;
+    },
+    rpcFactory: () => ({
+      async getBlockchainInfo() {
+        return {
+          blocks: 101,
+          bestblockhash: "22".repeat(32),
+          initialblockdownload: false,
+        };
+      },
+      async sendRawTransaction() {
+        sendRawTransactionCalls += 1;
+        throw new Error("sendRawTransaction should not run for stale Core tip");
+      },
+    }) as any,
+    runId: "run-1",
+    appendEventFn: async () => undefined,
+  });
+
+  assert.equal(result.restart, true);
+  assert.equal(result.txid, null);
+  assert.equal(result.decision, "publish-restart-tip-changed");
+  assert.equal(result.candidate, null);
+  assert.equal(attachCalls, 1);
+  assert.equal(sendRawTransactionCalls, 0);
+});
+
+test("publish candidate restarts when Core is ahead of the coherent indexer lease", async () => {
+  const coreHashHex = "22".repeat(32);
+  const indexedHashHex = "11".repeat(32);
+  let attachCalls = 0;
+  let sendRawTransactionCalls = 0;
+
+  const result = await publishCandidateForTesting({
+    candidate: createTestMiningCandidate({
+      targetBlockHeight: 102,
+      referencedBlockHashDisplay: coreHashHex,
+      provenance: createTestMiningCandidateProvenance({
+        indexerSnapshotSeq: "seq-100",
+        snapshotTipHeight: 100,
+        snapshotTipHash: indexedHashHex,
+      }),
+    }),
+    dataDir: "/tmp",
+    databasePath: "/tmp/test.db",
+    provider: {} as any,
+    paths: {} as any,
+    fallbackState: createReadyMiningReadContext({}).localState.state,
+    openReadContext: async () => createReadyMiningReadContext({
+      readContextOverrides: {
+        nodeStatus: {
+          chain: "mainnet",
+          nodeBestHeight: 101,
+          nodeBestHashHex: coreHashHex,
+          walletReplica: {
+            proofStatus: "ready",
+          },
+        },
+        indexer: {
+          health: "synced",
+          message: null,
+          status: {
+            state: "synced",
+            heartbeatAtUnixMs: 1,
+            updatedAtUnixMs: 1,
+            ipcReady: true,
+            rpcReachable: true,
+            coreBestHeight: 101,
+            coreBestHash: coreHashHex,
+            appliedTipHeight: 100,
+            appliedTipHash: indexedHashHex,
+            reorgDepth: null,
+          },
+          source: "lease",
+          daemonInstanceId: "daemon-1",
+          snapshotSeq: "seq-100",
+          openedAtUnixMs: 1,
+          snapshotTip: {
+            height: 100,
+            blockHashHex: indexedHashHex,
+            previousHashHex: "00".repeat(32),
+            stateHashHex: null,
+          },
+        },
+      },
+    }),
+    attachService: async () => {
+      attachCalls += 1;
+      return { rpc: {}, pid: 9_001 } as any;
+    },
+    rpcFactory: () => ({
+      async getBlockchainInfo() {
+        return {
+          blocks: 101,
+          bestblockhash: coreHashHex,
+          initialblockdownload: false,
+        };
+      },
+      async sendRawTransaction() {
+        sendRawTransactionCalls += 1;
+        throw new Error("sendRawTransaction should not run when indexer is behind Core");
+      },
+    }) as any,
+    runId: "run-1",
+    appendEventFn: async () => undefined,
+  });
+
+  assert.equal(result.restart, true);
+  assert.equal(result.txid, null);
+  assert.equal(result.decision, "publish-restart-snapshot-changed");
+  assert.equal(result.candidate, null);
+  assert.equal(attachCalls, 1);
+  assert.equal(sendRawTransactionCalls, 0);
 });
 
 test("publish candidate reports authorization loss without blaming snapshot alignment", async () => {

@@ -10,6 +10,29 @@ const MAX_EVENT_LOG_BYTES = 10 * 1024 * 1024;
 const MAX_EVENT_LOG_ROTATIONS = 4;
 const miningStatusWriteQueues = new Map<string, Promise<void>>();
 
+export interface MiningRuntimeTipStatusRefresh {
+  indexerDaemonState?: MiningRuntimeStatusV1["indexerDaemonState"];
+  indexerDaemonInstanceId?: string | null;
+  indexerSnapshotSeq?: string | null;
+  indexerSnapshotOpenedAtUnixMs?: number | null;
+  indexerTruthSource?: MiningRuntimeStatusV1["indexerTruthSource"];
+  indexerHeartbeatAtUnixMs?: number | null;
+  coreBestHeight: number | null;
+  coreBestHash: string | null;
+  indexerTipHeight: number | null;
+  indexerTipHash: string | null;
+  indexerStatusTipHeight?: number | null;
+  indexerStatusTipHash?: string | null;
+  indexerObservedAtUnixMs?: number | null;
+  indexerReorgDepth?: number | null;
+  indexerTipAligned?: boolean | null;
+  targetBlockHeight: number | null;
+  referencedBlockHashDisplay: string | null;
+  attemptTargetBlockHeight: number | null;
+  attemptReferencedBlockHashDisplay: string | null;
+  attemptIndexerSnapshotSeq: string | null;
+}
+
 export function resolveRotatedMiningEventsPath(eventsPath: string): string {
   return `${eventsPath}.1`;
 }
@@ -48,6 +71,7 @@ export async function loadMiningRuntimeStatus(
       livePublishInMempool?: boolean | null;
       liveMiningFamilyInMempool?: boolean | null;
     };
+    const livePublishInMempool = parsed.livePublishInMempool ?? parsed.liveMiningFamilyInMempool ?? null;
     return {
       ...parsed,
       foregroundPid: parsed.foregroundPid ?? null,
@@ -56,12 +80,23 @@ export async function loadMiningRuntimeStatus(
       miningState: normalizeMiningLifecycleStatus(parsed.miningState),
       providerState: normalizeLegacyMiningProviderState(parsed.providerState),
       currentPublishState: normalizeMiningPublishState(parsed.currentPublishState),
-      livePublishInMempool: parsed.livePublishInMempool ?? parsed.liveMiningFamilyInMempool ?? null,
+      livePublishInMempool,
       readinessBlocker: parsed.readinessBlocker ?? null,
       indexerStatusTipHeight: parsed.indexerStatusTipHeight ?? null,
       indexerStatusTipHash: parsed.indexerStatusTipHash ?? null,
       indexerObservedAtUnixMs: parsed.indexerObservedAtUnixMs ?? null,
       indexerReorgDepth: parsed.indexerReorgDepth ?? null,
+      attemptTargetBlockHeight: parsed.attemptTargetBlockHeight ?? parsed.targetBlockHeight ?? null,
+      attemptReferencedBlockHashDisplay: parsed.attemptReferencedBlockHashDisplay ?? parsed.referencedBlockHashDisplay ?? null,
+      attemptIndexerSnapshotSeq: parsed.attemptIndexerSnapshotSeq ?? parsed.indexerSnapshotSeq ?? null,
+      livePublishTargetBlockHeight: parsed.livePublishTargetBlockHeight
+        ?? (livePublishInMempool === true ? parsed.targetBlockHeight ?? null : null),
+      livePublishReferencedBlockHashDisplay: parsed.livePublishReferencedBlockHashDisplay
+        ?? (livePublishInMempool === true ? parsed.referencedBlockHashDisplay ?? null : null),
+      livePublishTxid: parsed.livePublishTxid ?? (livePublishInMempool === true ? parsed.currentTxid ?? null : null),
+      livePublishDecision: parsed.livePublishDecision
+        ?? (livePublishInMempool === true ? parsed.currentPublishDecision ?? null : null),
+      livePublishStaleToCoreTip: parsed.livePublishStaleToCoreTip ?? null,
       cycleStartedAtUnixMs: parsed.cycleStartedAtUnixMs ?? null,
       phaseEnteredAtUnixMs: parsed.phaseEnteredAtUnixMs ?? null,
       sameDomainCompetitorSuppressed: parsed.sameDomainCompetitorSuppressed ?? null,
@@ -124,6 +159,7 @@ export async function saveForegroundMiningHeartbeatStatus(options: {
   foregroundPid: number;
   foregroundRunId: string;
   heartbeatAtUnixMs: number;
+  tipStatus?: MiningRuntimeTipStatusRefresh | null;
 }): Promise<MiningRuntimeStatusV1 | null> {
   return await runSerializedMiningStatusWrite(options.statusPath, async () => {
     const snapshot = await loadMiningRuntimeStatus(options.statusPath);
@@ -143,6 +179,7 @@ export async function saveForegroundMiningHeartbeatStatus(options: {
 
     const nextSnapshot: MiningRuntimeStatusV1 = {
       ...snapshot,
+      ...(options.tipStatus ?? {}),
       foregroundPid: options.foregroundPid,
       foregroundRunId: options.foregroundRunId,
       foregroundHeartbeatAtUnixMs: options.heartbeatAtUnixMs,

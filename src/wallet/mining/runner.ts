@@ -60,7 +60,11 @@ import type {
   WalletStateV1,
 } from "../types.js";
 import { serializeMine } from "../cogop/index.js";
-import { appendMiningEvent, saveForegroundMiningHeartbeatStatus } from "./runtime-artifacts.js";
+import {
+  appendMiningEvent,
+  saveForegroundMiningHeartbeatStatus,
+  type MiningRuntimeTipStatusRefresh,
+} from "./runtime-artifacts.js";
 import { loadClientConfig } from "./config.js";
 import {
   MINING_LOOP_INTERVAL_MS,
@@ -193,6 +197,22 @@ const BEST_BLOCK_POLL_INTERVAL_MS = 500;
 const MINING_SUSPEND_HEARTBEAT_INTERVAL_MS = 1_000;
 
 type MiningRunnerStatusOverrides = MiningRuntimeStatusOverrides;
+
+interface MiningCycleResult {
+  restartImmediately: boolean;
+}
+
+function continueMiningCycleNormally(): MiningCycleResult {
+  return {
+    restartImmediately: false,
+  };
+}
+
+function restartMiningCycleImmediately(): MiningCycleResult {
+  return {
+    restartImmediately: true,
+  };
+}
 
 interface RunnerDependencies {
   openReadContext?: typeof openWalletReadContext;
@@ -451,6 +471,46 @@ function createForegroundMiningLivenessOverrides(options: {
   };
 }
 
+function resolveMiningRuntimeTipStatusRefresh(readContext: WalletReadContext): MiningRuntimeTipStatusRefresh {
+  const coreBestHeight = readContext.nodeStatus?.nodeBestHeight ?? readContext.indexer.status?.coreBestHeight ?? null;
+  const coreBestHash = readContext.nodeStatus?.nodeBestHashHex ?? readContext.indexer.status?.coreBestHash ?? null;
+  const indexerTipHeight = readContext.indexer.snapshotTip?.height ?? null;
+  const indexerTipHash = readContext.indexer.snapshotTip?.blockHashHex ?? null;
+  const tipsAligned = coreBestHeight === null || indexerTipHeight === null
+    ? null
+    : coreBestHeight === indexerTipHeight
+      && (
+        coreBestHash === null
+        || indexerTipHash === null
+        || coreBestHash === indexerTipHash
+      );
+
+  return {
+    indexerDaemonState: readContext.indexer.health,
+    indexerDaemonInstanceId: readContext.indexer.daemonInstanceId ?? null,
+    indexerSnapshotSeq: readContext.indexer.snapshotSeq ?? null,
+    indexerSnapshotOpenedAtUnixMs: readContext.indexer.openedAtUnixMs ?? null,
+    indexerTruthSource: readContext.indexer.source ?? "none",
+    indexerHeartbeatAtUnixMs: readContext.indexer.status?.heartbeatAtUnixMs ?? null,
+    coreBestHeight,
+    coreBestHash,
+    indexerTipHeight,
+    indexerTipHash,
+    indexerStatusTipHeight: readContext.indexer.status?.appliedTipHeight ?? null,
+    indexerStatusTipHash: readContext.indexer.status?.appliedTipHash ?? null,
+    indexerObservedAtUnixMs: readContext.indexer.status?.updatedAtUnixMs
+      ?? readContext.indexer.status?.heartbeatAtUnixMs
+      ?? null,
+    indexerReorgDepth: readContext.indexer.status?.reorgDepth ?? null,
+    indexerTipAligned: tipsAligned,
+    targetBlockHeight: coreBestHeight === null ? null : coreBestHeight + 1,
+    referencedBlockHashDisplay: coreBestHash,
+    attemptTargetBlockHeight: coreBestHeight === null ? null : coreBestHeight + 1,
+    attemptReferencedBlockHashDisplay: coreBestHash,
+    attemptIndexerSnapshotSeq: readContext.indexer.snapshotSeq ?? null,
+  };
+}
+
 function startForegroundMiningStatusHeartbeat(options: {
   paths: WalletRuntimePaths;
   runMode: "foreground" | "background";
@@ -458,6 +518,7 @@ function startForegroundMiningStatusHeartbeat(options: {
   foregroundRunId: string | null;
   intervalMs: number;
   nowUnixMs: () => number;
+  loadTipStatus?: () => Promise<MiningRuntimeTipStatusRefresh | null>;
 }): () => void {
   if (options.runMode !== "foreground" || options.foregroundRunId === null || options.foregroundPid === null) {
     return () => undefined;
@@ -467,11 +528,13 @@ function startForegroundMiningStatusHeartbeat(options: {
   const timer = setInterval(() => {
     const heartbeatAtUnixMs = options.nowUnixMs();
     pending = pending.then(async () => {
+      const tipStatus = await options.loadTipStatus?.().catch(() => null) ?? null;
       await saveForegroundMiningHeartbeatStatus({
         statusPath: options.paths.miningStatusPath,
         foregroundPid: options.foregroundPid!,
         foregroundRunId: options.foregroundRunId!,
         heartbeatAtUnixMs,
+        tipStatus,
       });
     }).catch(() => undefined);
   }, options.intervalMs);
@@ -582,7 +645,7 @@ async function performMiningCycle(options: {
   visualizer?: MiningFollowVisualizer;
   loopState: MiningLoopState;
   nowImpl?: () => number;
-}): Promise<void> {
+}): Promise<MiningCycleResult> {
   const now = options.nowImpl ?? Date.now;
   const cycleStartedAtUnixMs = now();
   const runtimeRunId = resolveMiningRunId(options);
@@ -629,6 +692,7 @@ async function performMiningCycle(options: {
             nowUnixMs: statusNowUnixMs,
           }),
           cycleStartedAtUnixMs,
+          ...resolveMiningRuntimeTipStatusRefresh(readContext),
           ...resolvedOverrides,
         },
         nowUnixMs: statusNowUnixMs,
@@ -670,7 +734,7 @@ async function performMiningCycle(options: {
         lastError: null,
         note: "Wallet state must be locally available for mining to continue.",
       });
-      return;
+      return continueMiningCycleNormally();
     }
 
     const service = await options.attachService({
@@ -776,7 +840,7 @@ async function performMiningCycle(options: {
         readinessBlocker: readiness.blocker,
         note: readiness.note,
       });
-      return;
+      return continueMiningCycleNormally();
     }
 
     if (reconciledMiningStateChanged) {
@@ -796,7 +860,7 @@ async function performMiningCycle(options: {
         readinessBlocker: "indexer-snapshot",
         note: "Mining is waiting for a coherent indexer snapshot lease.",
       });
-      return;
+      return continueMiningCycleNormally();
     }
 
     if (readyReadContext.localState.state.miningState.state === "repair-required") {
@@ -807,7 +871,7 @@ async function performMiningCycle(options: {
         lastError: null,
         note: "Mining is blocked until the current mining publish is repaired or reconciled.",
       });
-      return;
+      return continueMiningCycleNormally();
     }
 
     if (hasBlockingMutation(readyReadContext.localState.state)) {
@@ -835,7 +899,7 @@ async function performMiningCycle(options: {
         lastError: null,
         note: "Mining is paused while another wallet mutation is active.",
       });
-      return;
+      return continueMiningCycleNormally();
     }
 
     const preemptionRequest = await readMiningPreemptionRequest(options.paths);
@@ -865,7 +929,7 @@ async function performMiningCycle(options: {
         lastError: null,
         note: "Mining is paused while another wallet command is preempting sentence generation.",
       });
-      return;
+      return continueMiningCycleNormally();
     }
 
     const [blockchainInfo, networkInfo, mempoolInfo] = await Promise.all([
@@ -895,7 +959,7 @@ async function performMiningCycle(options: {
         readinessBlocker: publishReadiness.blocker,
         note: publishReadiness.note,
       });
-      return;
+      return continueMiningCycleNormally();
     }
 
     if (targetBlockHeight !== null && getBlockRewardCogtoshi(targetBlockHeight) === 0n) {
@@ -931,10 +995,10 @@ async function performMiningCycle(options: {
           runId: runtimeRunId,
         },
       ));
-      return;
+      return continueMiningCycleNormally();
     }
 
-    await runMiningPhaseMachine({
+    const phaseResult = await runMiningPhaseMachine({
       dataDir: options.dataDir,
       databasePath: options.databasePath,
       provider: options.provider,
@@ -970,9 +1034,55 @@ async function performMiningCycle(options: {
         throwIfMiningSuspendDetected(options.suspendDetector);
       },
     });
+    if (phaseResult.restartImmediately) {
+      if (readContext !== null && !readContextClosed) {
+        await readContext.close();
+        readContextClosed = true;
+      }
+
+      let freshReadContext = await options.openReadContext({
+        dataDir: options.dataDir,
+        databasePath: options.databasePath,
+        secretProvider: options.provider,
+        paths: options.paths,
+      });
+      readContext = freshReadContext;
+      readContextClosed = false;
+      freshReadContext = await reacquireIndexerSnapshotReadContext({
+        readContext: freshReadContext,
+        dataDir: options.dataDir,
+        databasePath: options.databasePath,
+        provider: options.provider,
+        paths: options.paths,
+        openReadContext: options.openReadContext,
+        signal: options.signal,
+        throwIfInterrupted: () => {
+          throwIfStopping();
+          throwIfMiningSuspendDetected(options.suspendDetector);
+        },
+      });
+      readContext = freshReadContext;
+
+      const freshReadiness = resolveMiningReadiness(freshReadContext);
+      const freshCoreBestHeight = freshReadContext.nodeStatus?.nodeBestHeight ?? null;
+      const freshTargetBlockHeight = freshCoreBestHeight === null ? null : freshCoreBestHeight + 1;
+      await saveCycleStatus(freshReadContext, {
+        runMode: options.runMode,
+        currentPhase: freshReadiness.ready ? "idle" : freshReadiness.currentPhase,
+        readinessBlocker: freshReadiness.blocker,
+        currentPublishDecision: null,
+        targetBlockHeight: freshTargetBlockHeight,
+        referencedBlockHashDisplay: freshReadContext.nodeStatus?.nodeBestHashHex ?? null,
+        lastError: null,
+        note: freshReadiness.ready ? null : freshReadiness.note,
+      });
+      return restartMiningCycleImmediately();
+    }
+
+    return continueMiningCycleNormally();
   } catch (error) {
     if (isMiningStopRequestedError(error)) {
-      return;
+      return continueMiningCycleNormally();
     }
 
     if (error instanceof MiningSuspendDetectedError) {
@@ -996,7 +1106,7 @@ async function performMiningCycle(options: {
         visualizer: options.visualizer,
         loopState: options.loopState,
       });
-      return;
+      return continueMiningCycleNormally();
     }
 
     if (readContext !== null && isRecoverableMiningBitcoindError(error)) {
@@ -1017,7 +1127,7 @@ async function performMiningCycle(options: {
         nowUnixMs: now(),
         visualizer: options.visualizer,
       });
-      return;
+      return continueMiningCycleNormally();
     }
 
     throw error;
@@ -1083,6 +1193,23 @@ async function runMiningLoop(options: {
     foregroundRunId,
     intervalMs: options.foregroundHeartbeatIntervalMs ?? MINING_STATUS_HEARTBEAT_INTERVAL_MS,
     nowUnixMs: now,
+    loadTipStatus: async () => {
+      if (options.signal?.aborted) {
+        return null;
+      }
+
+      const readContext = await options.openReadContext({
+        dataDir: options.dataDir,
+        databasePath: options.databasePath,
+        secretProvider: options.provider,
+        paths: options.paths,
+      });
+      try {
+        return resolveMiningRuntimeTipStatusRefresh(readContext);
+      } finally {
+        await readContext.close().catch(() => undefined);
+      }
+    },
   });
 
   try {
@@ -1126,8 +1253,9 @@ async function runMiningLoop(options: {
         continue;
       }
 
+      let cycleResult = continueMiningCycleNormally();
       try {
-        await performMiningCycle({
+        cycleResult = await performMiningCycle({
           ...options,
           foregroundPid,
           foregroundRunId,
@@ -1149,6 +1277,9 @@ async function runMiningLoop(options: {
 
       if (options.signal?.aborted) {
         break;
+      }
+      if (cycleResult.restartImmediately) {
+        continue;
       }
       await sleepImpl(Math.min(MINING_LOOP_INTERVAL_MS, MINING_STATUS_HEARTBEAT_INTERVAL_MS), options.signal);
     }

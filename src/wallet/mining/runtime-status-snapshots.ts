@@ -90,6 +90,9 @@ function createStoppedMiningRuntimeSnapshot(options: {
     currentPublishState: "none",
     targetBlockHeight: null,
     referencedBlockHashDisplay: null,
+    attemptTargetBlockHeight: null,
+    attemptReferencedBlockHashDisplay: null,
+    attemptIndexerSnapshotSeq: null,
     currentDomainId: null,
     currentDomainName: null,
     currentSentenceDisplay: null,
@@ -97,6 +100,11 @@ function createStoppedMiningRuntimeSnapshot(options: {
     currentTxid: null,
     currentWtxid: null,
     livePublishInMempool: null,
+    livePublishTargetBlockHeight: null,
+    livePublishReferencedBlockHashDisplay: null,
+    livePublishTxid: null,
+    livePublishDecision: null,
+    livePublishStaleToCoreTip: null,
     currentFeeRateSatVb: null,
     currentAbsoluteFeeSats: null,
     currentBlockFeeSpentSats: "0",
@@ -268,6 +276,10 @@ export function createMiningReadinessSnapshot(options: {
     note: null,
   });
   const waitingForIndexer = !isObservedIndexerReady(status);
+  const targetBlockHeight = status?.coreBestHeight === null || status?.coreBestHeight === undefined
+    ? null
+    : status.coreBestHeight + 1;
+  const referencedBlockHashDisplay = status?.coreBestHash ?? null;
   const readinessBlocker: MiningRuntimeStatusV1["readinessBlocker"] = status === null
     ? "indexer-daemon"
     : status.state !== "synced"
@@ -305,10 +317,11 @@ export function createMiningReadinessSnapshot(options: {
     indexerTipAligned,
     corePublishState: bitcoindReachable ? "healthy" : null,
     currentPhase: waitingForIndexer ? "waiting-indexer" : "waiting",
-    targetBlockHeight: status?.coreBestHeight === null || status?.coreBestHeight === undefined
-      ? null
-      : status.coreBestHeight + 1,
-    referencedBlockHashDisplay: status?.coreBestHash ?? null,
+    targetBlockHeight,
+    referencedBlockHashDisplay,
+    attemptTargetBlockHeight: targetBlockHeight,
+    attemptReferencedBlockHashDisplay: referencedBlockHashDisplay,
+    attemptIndexerSnapshotSeq: status?.snapshotSeq ?? null,
     providerConfigured: true,
     bitcoindHealth: bitcoindReachable ? "ready" : status === null ? "starting" : "unavailable",
     bitcoindServiceState: bitcoindReachable ? "ready" : status === null ? "starting" : null,

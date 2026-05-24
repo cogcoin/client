@@ -56,6 +56,22 @@ interface RuntimeMiningCycleState extends MiningCycleState {
   generatedCandidates: MiningCandidate[] | null;
 }
 
+export interface MiningPhaseMachineResult {
+  restartImmediately: boolean;
+}
+
+function continueMiningNormally(): MiningPhaseMachineResult {
+  return {
+    restartImmediately: false,
+  };
+}
+
+function restartMiningImmediately(): MiningPhaseMachineResult {
+  return {
+    restartImmediately: true,
+  };
+}
+
 function createInitialState(options: {
   targetBlockHeight: number | null;
   tipKey: string | null;
@@ -150,7 +166,7 @@ export async function runMiningPhaseMachine(options: {
   appendEvent: (event: MiningEventRecord) => Promise<void>;
   throwIfStopping?: () => void;
   throwIfSuspendDetected?: () => void;
-}): Promise<void> {
+}): Promise<MiningPhaseMachineResult> {
   const now = options.nowImpl ?? Date.now;
   const generateCandidatesImpl = options.generateCandidatesForDomainsImpl ?? generateCandidatesForDomains;
   const runGateImpl = options.runCompetitivenessGateImpl ?? runCompetitivenessGate;
@@ -162,18 +178,24 @@ export async function runMiningPhaseMachine(options: {
 
   const indexerTruthKey = getIndexerTruthKey(options.readContext);
   const walletRootId = options.readContext.localState.walletRootId;
-  const ensureCurrentIndexerTruthOrRestart = async (): Promise<boolean> => {
+  const clearTransientRestartWork = () => {
+    clearMiningProviderWait(options.loopState);
+    clearSelectedCandidate(options.loopState);
+    options.loopState.waitingNote = null;
+  };
+  const ensureCurrentIndexerTruthOrStopCycle = async (): Promise<MiningPhaseMachineResult | null> => {
     try {
       await ensureIndexerTruthIsCurrent({
         dataDir: options.readContext.dataDir,
         truthKey: indexerTruthKey,
       });
-      return true;
+      return null;
     } catch (error) {
       if (!(error instanceof Error) || error.message !== "mining_generation_stale_indexer_truth") {
         throw error;
       }
 
+      clearTransientRestartWork();
       clearMiningGateCache(walletRootId);
       await options.appendEvent(createMiningEventRecord(
         "generation-restarted-indexer-truth",
@@ -185,7 +207,7 @@ export async function runMiningPhaseMachine(options: {
           runId: options.backgroundWorkerRunId,
         },
       ));
-      return false;
+      return continueMiningNormally();
     }
   };
   const throwIfInterrupted = () => {
@@ -206,7 +228,7 @@ export async function runMiningPhaseMachine(options: {
             readinessBlocker: "bitcoin-core",
             note: "Mining is waiting for the local Bitcoin node to become publishable.",
           });
-          return;
+          return continueMiningNormally();
         }
 
         if (options.readContext.indexer.health !== "synced" || options.readContext.nodeHealth !== "synced") {
@@ -223,7 +245,7 @@ export async function runMiningPhaseMachine(options: {
               ? "Mining is waiting for managed indexer readiness."
               : "Mining is waiting for the local Bitcoin node to become publishable.",
           });
-          return;
+          return continueMiningNormally();
         }
 
         if (state.targetBlockHeight === null) {
@@ -234,7 +256,7 @@ export async function runMiningPhaseMachine(options: {
             readinessBlocker: "bitcoin-core",
             note: "Mining is waiting for the local Bitcoin node to become publishable.",
           });
-          return;
+          return continueMiningNormally();
         }
 
         const eligibleDomains = resolveEligibleAnchoredRoots(options.readContext);
@@ -250,7 +272,7 @@ export async function runMiningPhaseMachine(options: {
               lastError: null,
               note: "No locally controlled anchored root domains are currently eligible to mine.",
             });
-            return;
+            return continueMiningNormally();
           }
 
           try {
@@ -274,7 +296,7 @@ export async function runMiningPhaseMachine(options: {
                 lastError: createInsufficientFundsMiningPublishErrorMessage(),
                 note: createInsufficientFundsMiningPublishWaitingNote(),
               });
-              return;
+              return continueMiningNormally();
             }
 
             throw error;
@@ -297,7 +319,7 @@ export async function runMiningPhaseMachine(options: {
               lastError: options.loopState.providerWaitLastError,
               note: resolveWaitingProviderNote(options.loopState.providerWaitState),
             });
-            return;
+            return continueMiningNormally();
           }
 
           if (
@@ -313,7 +335,7 @@ export async function runMiningPhaseMachine(options: {
               lastError: options.loopState.providerWaitLastError,
               note: resolveWaitingProviderNote(options.loopState.providerWaitState),
             });
-            return;
+            return continueMiningNormally();
           }
 
           clearMiningProviderWait(
@@ -329,7 +351,7 @@ export async function runMiningPhaseMachine(options: {
             lastError: null,
             note: options.loopState.waitingNote ?? "Waiting for the next block after the last mining attempt on this tip.",
           });
-          return;
+          return continueMiningNormally();
         }
 
         state.phase = state.selectedCandidate === null ? "generating" : "publishing";
@@ -406,10 +428,11 @@ export async function runMiningPhaseMachine(options: {
                 runId: options.backgroundWorkerRunId,
               },
             ));
-            return;
+            return continueMiningNormally();
           }
 
           if (error instanceof Error && error.message === "mining_generation_stale_tip") {
+            clearTransientRestartWork();
             await options.appendEvent(createMiningEventRecord(
               "generation-restarted-new-tip",
               "Detected a new best tip during sentence generation; restarting on the next tick.",
@@ -420,11 +443,11 @@ export async function runMiningPhaseMachine(options: {
                 runId: options.backgroundWorkerRunId,
               },
             ));
-            return;
+            return restartMiningImmediately();
           }
 
           if (error instanceof Error && error.message === "mining_generation_stale_indexer_truth") {
-            clearMiningProviderWait(options.loopState);
+            clearTransientRestartWork();
             clearMiningGateCache(walletRootId);
             await options.appendEvent(createMiningEventRecord(
               "generation-restarted-indexer-truth",
@@ -436,7 +459,7 @@ export async function runMiningPhaseMachine(options: {
                 runId: options.backgroundWorkerRunId,
               },
             ));
-            return;
+            return restartMiningImmediately();
           }
 
           if (error instanceof Error && error.message === "mining_generation_preempted") {
@@ -451,7 +474,7 @@ export async function runMiningPhaseMachine(options: {
                 runId: options.backgroundWorkerRunId,
               },
             ));
-            return;
+            return continueMiningNormally();
           }
 
           clearMiningProviderWait(options.loopState);
@@ -479,7 +502,7 @@ export async function runMiningPhaseMachine(options: {
               runId: options.backgroundWorkerRunId,
             },
           ));
-          return;
+          return continueMiningNormally();
         }
 
         state.phase = "scoring";
@@ -521,11 +544,12 @@ export async function runMiningPhaseMachine(options: {
               runId: options.backgroundWorkerRunId,
             },
           ));
-          return;
+          return continueMiningNormally();
         }
 
-        if (!await ensureCurrentIndexerTruthOrRestart()) {
-          return;
+        const scoringTruthResult = await ensureCurrentIndexerTruthOrStopCycle();
+        if (scoringTruthResult !== null) {
+          return scoringTruthResult;
         }
 
         options.loopState.ui.recentWin = null;
@@ -720,7 +744,7 @@ export async function runMiningPhaseMachine(options: {
               reason: gateWasIndeterminate ? gate.indeterminateReason ?? gate.decision : gate.decision,
             },
           ));
-          return;
+          return continueMiningNormally();
         }
 
         state.phase = "publishing";
@@ -730,7 +754,7 @@ export async function runMiningPhaseMachine(options: {
       case "replacing": {
         const selectedCandidate = state.selectedCandidate;
         if (selectedCandidate === null) {
-          return;
+          return continueMiningNormally();
         }
 
         options.loopState.ui.recentWin = null;
@@ -740,8 +764,9 @@ export async function runMiningPhaseMachine(options: {
           options.readContext.localState.state.miningState,
         );
 
-        if (!await ensureCurrentIndexerTruthOrRestart()) {
-          return;
+        const publishTruthResult = await ensureCurrentIndexerTruthOrStopCycle();
+        if (publishTruthResult !== null) {
+          return publishTruthResult;
         }
 
         const prePublishStatusStartedAt = performance.now();
@@ -799,8 +824,9 @@ export async function runMiningPhaseMachine(options: {
         });
 
         try {
-          if (!await ensureCurrentIndexerTruthOrRestart()) {
-            return;
+          const lockedTruthResult = await ensureCurrentIndexerTruthOrStopCycle();
+          if (lockedTruthResult !== null) {
+            return lockedTruthResult;
           }
 
           throwIfInterrupted();
@@ -855,7 +881,7 @@ export async function runMiningPhaseMachine(options: {
               note: published.note,
               livePublishInMempool: published.state.miningState.livePublishInMempool,
             });
-            return;
+            return continueMiningNormally();
           }
           if (published.retryable === true) {
             cacheSelectedCandidateForTip(
@@ -889,7 +915,7 @@ export async function runMiningPhaseMachine(options: {
               note: published.note,
               livePublishInMempool: published.state.miningState.livePublishInMempool,
             });
-            return;
+            return continueMiningNormally();
           }
           if (published.skipped === true) {
             clearSelectedCandidate(options.loopState);
@@ -925,7 +951,7 @@ export async function runMiningPhaseMachine(options: {
               note: published.note,
               livePublishInMempool: published.state.miningState.livePublishInMempool,
             });
-            return;
+            return continueMiningNormally();
           }
           clearSelectedCandidate(options.loopState);
           if (published.txid !== null) {
@@ -967,13 +993,13 @@ export async function runMiningPhaseMachine(options: {
             note: options.loopState.waitingNote,
             livePublishInMempool: published.state.miningState.livePublishInMempool,
           });
-          return;
+          return continueMiningNormally();
         } finally {
           await publishLock.release();
         }
       }
       default:
-        return;
+        return continueMiningNormally();
     }
   }
 }

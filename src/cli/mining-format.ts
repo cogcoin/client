@@ -147,8 +147,34 @@ export function formatMineStatusReport(mining: MiningControlPlaneView): string {
   if (mining.runtime.currentDomainName !== null) {
     lines.push(`Current domain: ${mining.runtime.currentDomainName}`);
   }
-  if (mining.runtime.currentTxid !== null) {
+  if (mining.runtime.targetBlockHeight !== null) {
+    lines.push(`Current target height: ${mining.runtime.targetBlockHeight}`);
+  }
+  if (mining.runtime.referencedBlockHashDisplay !== null) {
+    lines.push(`Current referenced block: ${mining.runtime.referencedBlockHashDisplay}`);
+  }
+  const livePublishTxid = mining.runtime.livePublishTxid
+    ?? (mining.runtime.livePublishInMempool === true ? mining.runtime.currentTxid : null);
+  if (livePublishTxid !== null) {
+    lines.push(`Live publish txid: ${livePublishTxid}`);
+  } else if (mining.runtime.currentTxid !== null) {
     lines.push(`Current txid: ${mining.runtime.currentTxid}`);
+  }
+  const livePublishTargetBlockHeight = mining.runtime.livePublishTargetBlockHeight ?? null;
+  if (livePublishTargetBlockHeight !== null) {
+    lines.push(`Live publish target height: ${livePublishTargetBlockHeight}`);
+  }
+  const livePublishReferencedBlockHashDisplay = mining.runtime.livePublishReferencedBlockHashDisplay ?? null;
+  if (livePublishReferencedBlockHashDisplay !== null) {
+    lines.push(`Live publish referenced block: ${livePublishReferencedBlockHashDisplay}`);
+  }
+  const livePublishDecision = mining.runtime.livePublishDecision
+    ?? (mining.runtime.livePublishInMempool === true ? mining.runtime.currentPublishDecision : null);
+  if (livePublishDecision !== null && livePublishDecision !== mining.runtime.currentPublishDecision) {
+    lines.push(`Live publish decision: ${livePublishDecision}`);
+  }
+  if (mining.runtime.livePublishStaleToCoreTip === true) {
+    lines.push("Live publish stale to Core tip: yes");
   }
   lines.push(`Publish state: ${mining.runtime.currentPublishState}`);
   if (mining.runtime.currentPublishDecision !== null) {

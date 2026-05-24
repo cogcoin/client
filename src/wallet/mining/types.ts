@@ -184,6 +184,9 @@ export interface MiningRuntimeStatusV1 {
     | "in-mempool";
   targetBlockHeight: number | null;
   referencedBlockHashDisplay: string | null;
+  attemptTargetBlockHeight?: number | null;
+  attemptReferencedBlockHashDisplay?: string | null;
+  attemptIndexerSnapshotSeq?: string | null;
   currentDomainId: number | null;
   currentDomainName: string | null;
   currentSentenceDisplay: string | null;
@@ -191,6 +194,11 @@ export interface MiningRuntimeStatusV1 {
   currentTxid: string | null;
   currentWtxid: string | null;
   livePublishInMempool: boolean | null;
+  livePublishTargetBlockHeight?: number | null;
+  livePublishReferencedBlockHashDisplay?: string | null;
+  livePublishTxid?: string | null;
+  livePublishDecision?: string | null;
+  livePublishStaleToCoreTip?: boolean | null;
   currentFeeRateSatVb: number | null;
   currentAbsoluteFeeSats: number | null;
   currentBlockFeeSpentSats: string;

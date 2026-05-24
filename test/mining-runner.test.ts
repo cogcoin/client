@@ -223,6 +223,81 @@ function createSynchronizedLoopReadContext(overrides: Record<string, unknown> = 
   });
 }
 
+function createSynchronizedLoopReadContextAtTip(options: {
+  height: number;
+  blockHashHex: string;
+  previousHashHex?: string;
+  snapshotSeq: string;
+  dataDir: string;
+  databasePath: string;
+}) {
+  const base = createSynchronizedLoopReadContext({
+    dataDir: options.dataDir,
+    databasePath: options.databasePath,
+  });
+  const previousHashHex = options.previousHashHex ?? "00".repeat(32);
+  const tip = {
+    height: options.height,
+    blockHashHex: options.blockHashHex,
+    previousHashHex,
+  };
+
+  return {
+    ...base,
+    indexer: {
+      ...base.indexer,
+      health: "synced",
+      message: null,
+      status: {
+        serviceApiVersion: INDEXER_DAEMON_SERVICE_API_VERSION,
+        schemaVersion: INDEXER_DAEMON_SCHEMA_VERSION,
+        walletRootId: base.localState.walletRootId,
+        daemonInstanceId: "daemon-1",
+        binaryVersion: CURRENT_CLIENT_VERSION,
+        buildId: "test-build",
+        processId: 9_001,
+        startedAtUnixMs: 1,
+        state: "synced",
+        ipcReady: true,
+        rpcReachable: true,
+        heartbeatAtUnixMs: options.height,
+        updatedAtUnixMs: options.height,
+        coreBestHeight: options.height,
+        coreBestHash: options.blockHashHex,
+        appliedTipHeight: options.height,
+        appliedTipHash: options.blockHashHex,
+        snapshotSeq: options.snapshotSeq,
+        backlogBlocks: 0,
+        reorgDepth: null,
+        lastAppliedAtUnixMs: options.height,
+        activeSnapshotCount: 0,
+        lastError: null,
+        backgroundFollowActive: true,
+        bootstrapPhase: null,
+        bootstrapProgress: null,
+        cogcoinSyncHeight: options.height,
+        cogcoinSyncTargetHeight: options.height,
+      },
+      source: "lease",
+      daemonInstanceId: "daemon-1",
+      snapshotSeq: options.snapshotSeq,
+      openedAtUnixMs: options.height,
+      snapshotTip: tip,
+    },
+    nodeStatus: {
+      ...base.nodeStatus,
+      nodeBestHeight: options.height,
+      nodeBestHashHex: options.blockHashHex,
+    },
+    snapshot: {
+      ...base.snapshot,
+      daemonInstanceId: "daemon-1",
+      snapshotSeq: options.snapshotSeq,
+      tip,
+    },
+  } as any;
+}
+
 async function seedBuiltInMiningConfig(options: {
   paths: WalletRuntimePaths;
   provider: ReturnType<typeof createMemoryWalletSecretProviderForTesting>;
@@ -584,6 +659,132 @@ test("runMiningLoop stays alive when mining read context is not structurally rea
   assert.equal(snapshot?.note, "Mining is waiting for managed indexer readiness.");
 });
 
+async function runStaleGenerationRestartStatusTest(
+  t: TestContext,
+  options: {
+    errorMessage: string;
+    expectedEventKind: string;
+    directoryPrefix: string;
+  },
+): Promise<void> {
+  const homeDirectory = await createTrackedTempDirectory(t, options.directoryPrefix);
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const abortController = new AbortController();
+  const databasePath = join(homeDirectory, "indexer.sqlite");
+  const oldHashHex = "11".repeat(32);
+  const freshHashHex = "22".repeat(32);
+  const oldContext = createSynchronizedLoopReadContextAtTip({
+    dataDir: homeDirectory,
+    databasePath,
+    height: 100,
+    blockHashHex: oldHashHex,
+    snapshotSeq: "seq-100",
+  });
+  const freshStatusContext = createSynchronizedLoopReadContextAtTip({
+    dataDir: homeDirectory,
+    databasePath,
+    height: 101,
+    blockHashHex: freshHashHex,
+    previousHashHex: oldHashHex,
+    snapshotSeq: "seq-101",
+  });
+  const freshRetryContext = createSynchronizedLoopReadContextAtTip({
+    dataDir: homeDirectory,
+    databasePath,
+    height: 101,
+    blockHashHex: freshHashHex,
+    previousHashHex: oldHashHex,
+    snapshotSeq: "seq-101",
+  });
+  const readContexts = [oldContext, freshStatusContext, freshRetryContext];
+  let openReadContextCalls = 0;
+  let generateCalls = 0;
+  let sleepCalls = 0;
+
+  await assert.doesNotReject(async () => {
+    await runMiningLoopForTesting({
+      dataDir: homeDirectory,
+      databasePath,
+      provider,
+      paths,
+      runMode: "foreground",
+      backgroundWorkerPid: null,
+      backgroundWorkerRunId: null,
+      signal: abortController.signal,
+      openReadContext: async () => {
+        openReadContextCalls += 1;
+        const next = readContexts.shift() ?? freshRetryContext;
+        if (openReadContextCalls === 3) {
+          abortController.abort(createMiningStopRequestedError());
+        }
+        return next;
+      },
+      attachService: async () => ({
+        rpc: {},
+        pid: 9_001,
+        refreshServiceStatus: async () => ({
+          serviceInstanceId: "svc-1",
+          processId: 9_001,
+        }),
+      }) as any,
+      rpcFactory: () => createLoopMiningRpc({
+        async getBlockchainInfo() {
+          return {
+            blocks: 101,
+            bestblockhash: freshHashHex,
+            initialblockdownload: false,
+          };
+        },
+      }) as any,
+      generateCandidatesForDomainsImpl: async () => {
+        generateCalls += 1;
+        throw new Error(options.errorMessage);
+      },
+      sleepImpl: async () => {
+        sleepCalls += 1;
+      },
+    });
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  const events = await readMiningEvents({
+    eventsPath: paths.miningEventsPath,
+    all: true,
+  });
+
+  assert.equal(generateCalls, 1);
+  assert.equal(openReadContextCalls, 3);
+  assert.equal(sleepCalls, 0);
+  assert.equal(snapshot?.currentPhase, "idle");
+  assert.equal(snapshot?.coreBestHeight, 101);
+  assert.equal(snapshot?.coreBestHash, freshHashHex);
+  assert.equal(snapshot?.indexerTipHeight, 101);
+  assert.equal(snapshot?.indexerTipHash, freshHashHex);
+  assert.equal(snapshot?.indexerStatusTipHeight, 101);
+  assert.equal(snapshot?.indexerStatusTipHash, freshHashHex);
+  assert.equal(snapshot?.indexerSnapshotSeq, "seq-101");
+  assert.equal(snapshot?.targetBlockHeight, 102);
+  assert.equal(snapshot?.referencedBlockHashDisplay, freshHashHex);
+  assert.equal(events.filter((event) => event.kind === options.expectedEventKind).length, 1);
+}
+
+test("runMiningLoop refreshes status and restarts immediately after stale Bitcoin tip generation", async (t) => {
+  await runStaleGenerationRestartStatusTest(t, {
+    errorMessage: "mining_generation_stale_tip",
+    expectedEventKind: "generation-restarted-new-tip",
+    directoryPrefix: "cogcoin-runner-loop-stale-tip-restart",
+  });
+});
+
+test("runMiningLoop refreshes status and restarts immediately after stale indexer truth generation", async (t) => {
+  await runStaleGenerationRestartStatusTest(t, {
+    errorMessage: "mining_generation_stale_indexer_truth",
+    expectedEventKind: "generation-restarted-indexer-truth",
+    directoryPrefix: "cogcoin-runner-loop-stale-indexer-restart",
+  });
+});
+
 test("heartbeat-backed suspend detection ignores long work while heartbeats keep advancing", () => {
   const suspendClock = createMiningSuspendTestClock();
   const detector = createMiningSuspendDetectorForTesting({
@@ -774,8 +975,15 @@ test("runMiningLoop advances foreground heartbeat while a cycle phase is blocked
     generateCandidatesForDomainsImpl: async () => [candidate],
     runCompetitivenessGateImpl: async () => {
       scoringSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
-      await new Promise((resolve) => setTimeout(resolve, 35));
-      heartbeatSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+      const initialHeartbeatAtUnixMs = scoringSnapshot?.foregroundHeartbeatAtUnixMs ?? 0;
+      const deadline = Date.now() + 500;
+      do {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        heartbeatSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+      } while (
+        (heartbeatSnapshot?.foregroundHeartbeatAtUnixMs ?? 0) <= initialHeartbeatAtUnixMs
+        && Date.now() < deadline
+      );
       return {
         allowed: false,
         decision: "suppressed-top5-mempool" as const,

@@ -35,6 +35,14 @@ test("mining runtime artifacts normalize new optional status fields to null", as
   delete legacy["indexerStatusTipHeight"];
   delete legacy["indexerStatusTipHash"];
   delete legacy["indexerObservedAtUnixMs"];
+  delete legacy["attemptTargetBlockHeight"];
+  delete legacy["attemptReferencedBlockHashDisplay"];
+  delete legacy["attemptIndexerSnapshotSeq"];
+  delete legacy["livePublishTargetBlockHeight"];
+  delete legacy["livePublishReferencedBlockHashDisplay"];
+  delete legacy["livePublishTxid"];
+  delete legacy["livePublishDecision"];
+  delete legacy["livePublishStaleToCoreTip"];
 
   await writeFile(statusPath, `${JSON.stringify(legacy)}\n`, "utf8");
 
@@ -47,6 +55,47 @@ test("mining runtime artifacts normalize new optional status fields to null", as
   assert.equal(loaded?.indexerStatusTipHeight, null);
   assert.equal(loaded?.indexerStatusTipHash, null);
   assert.equal(loaded?.indexerObservedAtUnixMs, null);
+  assert.equal(loaded?.attemptTargetBlockHeight, null);
+  assert.equal(loaded?.attemptReferencedBlockHashDisplay, null);
+  assert.equal(loaded?.attemptIndexerSnapshotSeq, null);
+  assert.equal(loaded?.livePublishTargetBlockHeight, null);
+  assert.equal(loaded?.livePublishReferencedBlockHashDisplay, null);
+  assert.equal(loaded?.livePublishTxid, null);
+  assert.equal(loaded?.livePublishDecision, null);
+  assert.equal(loaded?.livePublishStaleToCoreTip, null);
+});
+
+test("mining runtime artifacts backfill live publish fields from legacy status", async (t) => {
+  const dir = await createTrackedTempDirectory(t, "cogcoin-mining-runtime-artifacts-live-publish-legacy");
+  const statusPath = join(dir, "status.json");
+  const legacy = createMiningRuntimeStatus({
+    targetBlockHeight: 101,
+    referencedBlockHashDisplay: "11".repeat(32),
+    indexerSnapshotSeq: "seq-100",
+    currentTxid: "aa".repeat(32),
+    livePublishInMempool: true,
+    currentPublishDecision: "kept-live-publish",
+  }) as unknown as Record<string, unknown>;
+  delete legacy["attemptTargetBlockHeight"];
+  delete legacy["attemptReferencedBlockHashDisplay"];
+  delete legacy["attemptIndexerSnapshotSeq"];
+  delete legacy["livePublishTargetBlockHeight"];
+  delete legacy["livePublishReferencedBlockHashDisplay"];
+  delete legacy["livePublishTxid"];
+  delete legacy["livePublishDecision"];
+  delete legacy["livePublishStaleToCoreTip"];
+
+  await writeFile(statusPath, `${JSON.stringify(legacy)}\n`, "utf8");
+
+  const loaded = await loadMiningRuntimeStatus(statusPath);
+  assert.equal(loaded?.attemptTargetBlockHeight, 101);
+  assert.equal(loaded?.attemptReferencedBlockHashDisplay, "11".repeat(32));
+  assert.equal(loaded?.attemptIndexerSnapshotSeq, "seq-100");
+  assert.equal(loaded?.livePublishTargetBlockHeight, 101);
+  assert.equal(loaded?.livePublishReferencedBlockHashDisplay, "11".repeat(32));
+  assert.equal(loaded?.livePublishTxid, "aa".repeat(32));
+  assert.equal(loaded?.livePublishDecision, "kept-live-publish");
+  assert.equal(loaded?.livePublishStaleToCoreTip, null);
 });
 
 test("foreground mining heartbeat writes preserve newer full cycle snapshots", async (t) => {
@@ -73,6 +122,22 @@ test("foreground mining heartbeat writes preserve newer full cycle snapshots", a
     foregroundPid: 123,
     foregroundRunId: "run-1",
     heartbeatAtUnixMs: 10_500,
+    tipStatus: {
+      coreBestHeight: 101,
+      coreBestHash: "11".repeat(32),
+      indexerTipHeight: 101,
+      indexerTipHash: "11".repeat(32),
+      indexerStatusTipHeight: 101,
+      indexerStatusTipHash: "11".repeat(32),
+      indexerSnapshotSeq: "seq-101",
+      indexerTruthSource: "lease",
+      indexerTipAligned: true,
+      targetBlockHeight: 102,
+      referencedBlockHashDisplay: "11".repeat(32),
+      attemptTargetBlockHeight: 102,
+      attemptReferencedBlockHashDisplay: "11".repeat(32),
+      attemptIndexerSnapshotSeq: "seq-101",
+    },
   });
 
   let loaded = await loadMiningRuntimeStatus(statusPath);
@@ -81,7 +146,15 @@ test("foreground mining heartbeat writes preserve newer full cycle snapshots", a
   assert.equal(loaded?.cycleStartedAtUnixMs, 9_000);
   assert.equal(loaded?.phaseEnteredAtUnixMs, 9_500);
   assert.equal(loaded?.currentPhase, "scoring");
-  assert.equal(loaded?.targetBlockHeight, 101);
+  assert.equal(loaded?.coreBestHeight, 101);
+  assert.equal(loaded?.indexerTipHeight, 101);
+  assert.equal(loaded?.indexerStatusTipHeight, 101);
+  assert.equal(loaded?.indexerSnapshotSeq, "seq-101");
+  assert.equal(loaded?.targetBlockHeight, 102);
+  assert.equal(loaded?.referencedBlockHashDisplay, "11".repeat(32));
+  assert.equal(loaded?.attemptTargetBlockHeight, 102);
+  assert.equal(loaded?.attemptReferencedBlockHashDisplay, "11".repeat(32));
+  assert.equal(loaded?.attemptIndexerSnapshotSeq, "seq-101");
   assert.equal(loaded?.currentDomainName, "cogdemo");
   assert.equal(loaded?.lastError, "full snapshot error");
   assert.equal(loaded?.note, "full snapshot note");
