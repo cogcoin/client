@@ -332,9 +332,13 @@ async function startFakeIndexerDaemonStatusServer(
     walletRootId: string;
     daemonInstanceId: string;
     snapshotSeq: string;
+    height?: number;
+    blockHashHex?: string;
   },
 ): Promise<void> {
   const paths = resolveManagedServicePaths(options.dataDir, options.walletRootId);
+  const height = options.height ?? 100;
+  const blockHashHex = options.blockHashHex ?? "11".repeat(32);
   await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
 
   const sockets = new Set<net.Socket>();
@@ -386,10 +390,10 @@ async function startFakeIndexerDaemonStatusServer(
             state: "synced",
             heartbeatAtUnixMs: 1,
             rpcReachable: true,
-            coreBestHeight: 100,
-            coreBestHash: "11".repeat(32),
-            appliedTipHeight: 100,
-            appliedTipHash: "11".repeat(32),
+            coreBestHeight: height,
+            coreBestHash: blockHashHex,
+            appliedTipHeight: height,
+            appliedTipHash: blockHashHex,
             snapshotSeq: options.snapshotSeq,
             backlogBlocks: 0,
             reorgDepth: null,
@@ -399,8 +403,8 @@ async function startFakeIndexerDaemonStatusServer(
             backgroundFollowActive: true,
             bootstrapPhase: null,
             bootstrapProgress: null,
-            cogcoinSyncHeight: 100,
-            cogcoinSyncTargetHeight: 100,
+            cogcoinSyncHeight: height,
+            cogcoinSyncTargetHeight: height,
           },
         })}\n`);
       }
@@ -1114,7 +1118,7 @@ test("runMiningLoop advances foreground heartbeat while a cycle phase is blocked
       return currentNowUnixMs;
     },
     sleepImpl: async () => {
-      abortController.abort();
+      abortController.abort(createMiningStopRequestedError());
     },
     generateCandidatesForDomainsImpl: async () => [candidate],
     runCompetitivenessGateImpl: async () => {
@@ -1168,6 +1172,135 @@ test("runMiningLoop advances foreground heartbeat while a cycle phase is blocked
   assert.equal(heartbeatSnapshotValue.cycleStartedAtUnixMs, scoringSnapshotValue.cycleStartedAtUnixMs);
   assert.equal(heartbeatSnapshotValue.phaseEnteredAtUnixMs, scoringSnapshotValue.phaseEnteredAtUnixMs);
   assert.equal(heartbeatSnapshotValue.targetBlockHeight, scoringSnapshotValue.targetBlockHeight);
+});
+
+test("runMiningLoop foreground heartbeat refreshes live tip from daemon status without opening snapshots", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-loop-foreground-heartbeat-live-tip");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const abortController = new AbortController();
+  const candidate = createLoopMiningCandidate();
+  const databasePath = join(homeDirectory, "indexer.sqlite");
+  const staleContext = createSynchronizedLoopReadContext({
+    dataDir: homeDirectory,
+    databasePath,
+  });
+  let currentNowUnixMs = 300_000;
+  let openReadContextCalls = 0;
+  let callsAtGateStart = 0;
+  let heartbeatSnapshot: MiningRuntimeStatusV1 | null = null;
+  const visualizerSnapshots: MiningRuntimeStatusV1[] = [];
+
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: staleContext.localState.state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+    height: 103,
+    blockHashHex: "33".repeat(32),
+  });
+
+  await runMiningLoopForTesting({
+    dataDir: homeDirectory,
+    databasePath,
+    provider,
+    paths,
+    runMode: "foreground",
+    foregroundPid: 555,
+    foregroundRunId: "foreground-run-live-tip",
+    foregroundHeartbeatIntervalMs: 10,
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    signal: abortController.signal,
+    openReadContext: async () => {
+      openReadContextCalls += 1;
+      return staleContext;
+    },
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    rpcFactory: () => createLoopMiningRpc({
+      async getRawMempoolVerbose() {
+        return {
+          txids: [],
+          mempool_sequence: "seq-100",
+        };
+      },
+      async getRawMempoolEntries() {
+        return {};
+      },
+    }) as any,
+    visualizer: {
+      update(snapshot: MiningRuntimeStatusV1) {
+        visualizerSnapshots.push(snapshot);
+      },
+    } as any,
+    nowImpl: () => {
+      currentNowUnixMs += 1_000;
+      return currentNowUnixMs;
+    },
+    sleepImpl: async () => {
+      abortController.abort(createMiningStopRequestedError());
+    },
+    generateCandidatesForDomainsImpl: async () => [candidate],
+    runCompetitivenessGateImpl: async () => {
+      callsAtGateStart = openReadContextCalls;
+      const deadline = Date.now() + 500;
+      do {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        heartbeatSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+      } while (
+        heartbeatSnapshot?.coreBestHeight !== 103
+        && Date.now() < deadline
+      );
+
+      abortController.abort(createMiningStopRequestedError());
+      return {
+        allowed: false,
+        decision: "suppressed-top5-mempool" as const,
+        sameDomainCompetitorSuppressed: false,
+        competitivenessGateIndeterminate: false,
+        indeterminateReason: null,
+        diagnostics: {
+          visibleMempoolTxCount: 0,
+          indexedContextCount: 0,
+          negativeTxCount: null,
+          unknownTxCount: 0,
+          hydratedTxCount: 0,
+          mempoolEntryCount: 0,
+          missingEntryCount: 0,
+          cacheStatus: "refreshed",
+          mempoolSequence: "seq-100",
+          candidateRank: 6,
+          higherRankedCompetitorDomainCount: 5,
+          dedupedCompetitorDomainCount: 5,
+        },
+        higherRankedCompetitorDomainCount: 5,
+        dedupedCompetitorDomainCount: 5,
+        mempoolSequenceCacheStatus: "refreshed",
+        lastMempoolSequence: "seq-100",
+        candidateRank: 6,
+        visibleBoardEntries: [],
+      };
+    },
+  });
+
+  const heartbeatSnapshotValue = heartbeatSnapshot as unknown as MiningRuntimeStatusV1;
+  assert.equal(heartbeatSnapshotValue.coreBestHeight, 103);
+  assert.equal(heartbeatSnapshotValue.coreBestHash, "33".repeat(32));
+  assert.equal(heartbeatSnapshotValue.indexerTipHeight, 103);
+  assert.equal(heartbeatSnapshotValue.indexerStatusTipHeight, 103);
+  assert.equal(heartbeatSnapshotValue.targetBlockHeight, 104);
+  assert.equal(heartbeatSnapshotValue.referencedBlockHashDisplay, "33".repeat(32));
+  assert.equal(heartbeatSnapshotValue.attemptTargetBlockHeight, 101);
+  assert.equal(heartbeatSnapshotValue.attemptReferencedBlockHashDisplay, "11".repeat(32));
+  assert.equal(openReadContextCalls, callsAtGateStart);
+  assert.equal(visualizerSnapshots.at(-1)?.targetBlockHeight, 104);
 });
 
 test("runMiningLoop still emits system-resumed after a real heartbeat gap", async (t) => {

@@ -12,6 +12,7 @@ import {
   MINING_WORKER_API_VERSION,
   MINING_WORKER_HEARTBEAT_STALE_MS,
 } from "./constants.js";
+import { resolveMiningCoreTipObservation } from "./engine-types.js";
 import type { MiningProviderInspection, MiningRuntimeStatusV1 } from "./types.js";
 
 export interface MiningRuntimeStatusOverrides {
@@ -161,14 +162,12 @@ function resolveCurrentTipStatus(options: {
   indexer: WalletIndexerStatus;
   existingRuntime: MiningRuntimeStatusV1 | null;
 }): MiningCurrentTipStatus {
-  const coreBestHeight = options.nodeStatus?.nodeBestHeight
-    ?? options.indexer.status?.coreBestHeight
-    ?? options.existingRuntime?.coreBestHeight
-    ?? null;
-  const coreBestHash = options.nodeStatus?.nodeBestHashHex
-    ?? options.indexer.status?.coreBestHash
-    ?? options.existingRuntime?.coreBestHash
-    ?? null;
+  const coreTip = resolveMiningCoreTipObservation({
+    nodeStatus: options.nodeStatus,
+    indexerStatus: options.indexer.status,
+  });
+  const coreBestHeight = coreTip.height ?? options.existingRuntime?.coreBestHeight ?? null;
+  const coreBestHash = coreTip.hash ?? options.existingRuntime?.coreBestHash ?? null;
 
   return {
     coreBestHeight,
@@ -383,21 +382,23 @@ function statusTipMatchesCore(options: {
   nodeStatus: WalletNodeStatus | null;
 }): boolean {
   const status = options.indexer.status;
-  const nodeBestHeight = options.nodeStatus?.nodeBestHeight ?? null;
-  const nodeBestHash = options.nodeStatus?.nodeBestHashHex ?? null;
+  const coreTip = resolveMiningCoreTipObservation({
+    nodeStatus: options.nodeStatus,
+    indexerStatus: status,
+  });
 
   return status !== null
     && status.state === "synced"
     && status.ipcReady === true
     && status.rpcReachable === true
-    && nodeBestHeight !== null
-    && status.appliedTipHeight === nodeBestHeight
+    && coreTip.height !== null
+    && status.appliedTipHeight === coreTip.height
     && (
       status.appliedTipHash === null
       || status.appliedTipHash === undefined
-      || nodeBestHash === null
-      || nodeBestHash === undefined
-      || status.appliedTipHash === nodeBestHash
+      || coreTip.hash === null
+      || coreTip.hash === undefined
+      || status.appliedTipHash === coreTip.hash
     );
 }
 

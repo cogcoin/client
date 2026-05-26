@@ -878,6 +878,52 @@ test("mining follow visualizer keeps the raw tip rail while labeling the older i
   assert.equal(capturedOptions?.extraLines?.[1], "1. @alpha: indexed sentence");
 });
 
+test("mining follow visualizer uses live indexer status height when the attempt lease is older", () => {
+  let capturedIndexedHeight: number | null | undefined;
+  let capturedNodeHeight: number | null | undefined;
+  let capturedOptions: FollowSceneRenderOptions | undefined;
+
+  const visualizer = new MiningFollowVisualizer({
+    progressOutput: "auto",
+    stream: new MemoryStream({ isTTY: true, columns: 120 }),
+    rendererFactory: () => ({
+      renderFollowScene(
+        _progress,
+        cogcoinSyncHeight,
+        cogcoinSyncTargetHeight,
+        _followScene,
+        _statusFieldText,
+        renderOptions,
+      ) {
+        capturedIndexedHeight = cogcoinSyncHeight;
+        capturedNodeHeight = cogcoinSyncTargetHeight;
+        capturedOptions = renderOptions;
+      },
+      close() {
+        // no-op
+      },
+    }),
+  });
+
+  visualizer.update(createSnapshot({
+    coreBestHeight: 102,
+    indexerTipHeight: 100,
+    indexerStatusTipHeight: 102,
+    currentPhase: "scoring",
+  }), createUiState({
+    settledBlockHeight: 100,
+    settledBoardEntries: [
+      createBoardEntry(1, "alpha", "older attempt sentence"),
+    ],
+  }));
+  visualizer.close();
+
+  assert.equal(capturedIndexedHeight, 102);
+  assert.equal(capturedNodeHeight, 102);
+  assert.equal(capturedOptions?.extraLines?.[0], createCenteredBoardTitle(100));
+  assert.equal(capturedOptions?.extraLines?.[1], "1. @alpha: older attempt sentence");
+});
+
 test("mining follow visualizer renders blank indexed rows when the ui state itself has no settled board entries", () => {
   let capturedOptions: FollowSceneRenderOptions | undefined;
 

@@ -15,6 +15,7 @@ import {
   markMiningGenerationActive,
   markMiningGenerationInactive,
 } from "./coordination.js";
+import { resolveReadContextCoreTip } from "./engine-types.js";
 import type {
   MiningCandidate,
   MiningCandidateAuthorizationRole,
@@ -326,13 +327,14 @@ export async function generateCandidatesForDomains(options: {
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 }): Promise<MiningCandidate[]> {
-  const bestBlockHash = options.readContext.nodeStatus?.nodeBestHashHex;
+  const coreTip = resolveReadContextCoreTip(options.readContext);
+  const bestBlockHash = coreTip.hash;
 
   if (bestBlockHash === null || bestBlockHash === undefined) {
     return [];
   }
 
-  const targetBlockHeight = (options.readContext.nodeStatus?.nodeBestHeight ?? 0) + 1;
+  const targetBlockHeight = (coreTip.height ?? 0) + 1;
   const referencedBlockHashInternal = Buffer.from(displayToInternalBlockhash(bestBlockHash), "hex");
   const rootDomains = options.domains.map((domain) => ({
     ...domain,

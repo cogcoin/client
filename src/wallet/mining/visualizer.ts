@@ -360,6 +360,24 @@ function miningFollowSceneShouldSettle(
   );
 }
 
+function resolveMiningVisualizerTipHeights(snapshot: MiningRuntimeStatusV1): {
+  indexedHeight: number | null;
+  nodeHeight: number | null;
+} {
+  const indexedHeight = snapshot.indexerStatusTipHeight
+    ?? snapshot.indexerTipHeight
+    ?? snapshot.coreBestHeight
+    ?? null;
+  const nodeHeight = snapshot.coreBestHeight
+    ?? snapshot.indexerStatusTipHeight
+    ?? indexedHeight;
+
+  return {
+    indexedHeight,
+    nodeHeight,
+  };
+}
+
 const VISUALIZER_PROGRESS_SNAPSHOT = {
   url: "",
   filename: "mining-follow-visualizer",
@@ -533,8 +551,7 @@ export class MiningFollowVisualizer {
       this.#latestUiState = cloneMiningFollowVisualizerState(uiState);
     }
     replaceFollowBlockTimes(this.#scene, this.#latestUiState.visibleBlockTimesByHeight);
-    const indexedHeight = this.#latestSnapshot.indexerTipHeight ?? this.#latestSnapshot.coreBestHeight ?? null;
-    const nodeHeight = this.#latestSnapshot.coreBestHeight ?? indexedHeight;
+    const { indexedHeight, nodeHeight } = resolveMiningVisualizerTipHeights(this.#latestSnapshot);
     const settleLatest = miningFollowSceneShouldSettle(this.#latestSnapshot, this.#clock.now());
     syncFollowSceneState(this.#scene, {
       indexedHeight,
@@ -571,8 +588,7 @@ export class MiningFollowVisualizer {
 
     const snapshot = this.#latestSnapshot;
     const uiState = this.#latestUiState;
-    const indexedHeight = snapshot.indexerTipHeight ?? snapshot.coreBestHeight ?? null;
-    const nodeHeight = snapshot.coreBestHeight ?? indexedHeight;
+    const { indexedHeight, nodeHeight } = resolveMiningVisualizerTipHeights(snapshot);
 
     this.#progress.phase = "follow_tip";
     this.#progress.message = describeMiningVisualizerProgress(snapshot);

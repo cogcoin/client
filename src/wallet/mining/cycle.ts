@@ -6,6 +6,7 @@ import { openWalletReadContext, type WalletReadContext } from "../read/index.js"
 import type { WalletRuntimePaths } from "../runtime.js";
 import type { WalletSecretProvider } from "../state/provider.js";
 import { createMiningEventRecord } from "./events.js";
+import { resolveReadContextCoreTip } from "./engine-types.js";
 import type {
   CompetitivenessDecision,
   MiningCandidate,
@@ -153,9 +154,10 @@ function buildMiningAttemptStatusOverrides(
   candidate: Pick<MiningCandidate, "targetBlockHeight" | "referencedBlockHashDisplay" | "provenance"> | null,
   fallbackTargetBlockHeight: number | null,
 ): Pick<MiningRuntimeStatusOverrides, "attemptTargetBlockHeight" | "attemptReferencedBlockHashDisplay" | "attemptIndexerSnapshotSeq"> {
+  const coreTip = resolveReadContextCoreTip(readContext);
   return {
     attemptTargetBlockHeight: candidate?.targetBlockHeight ?? fallbackTargetBlockHeight,
-    attemptReferencedBlockHashDisplay: candidate?.referencedBlockHashDisplay ?? readContext.nodeStatus?.nodeBestHashHex ?? null,
+    attemptReferencedBlockHashDisplay: candidate?.referencedBlockHashDisplay ?? coreTip.hash,
     attemptIndexerSnapshotSeq: candidate?.provenance?.indexerSnapshotSeq ?? readContext.indexer.snapshotSeq ?? null,
   };
 }
@@ -232,7 +234,7 @@ export async function runMiningPhaseMachine(options: {
         {
           level: "warn",
           targetBlockHeight: state.targetBlockHeight,
-          referencedBlockHashDisplay: options.readContext.nodeStatus?.nodeBestHashHex ?? null,
+          referencedBlockHashDisplay: resolveReadContextCoreTip(options.readContext).hash,
           runId: options.backgroundWorkerRunId,
         },
       ));
@@ -357,7 +359,7 @@ export async function runMiningPhaseMachine(options: {
               walletName: options.readContext.localState.state.managedCoreWallet.walletName,
               state: options.readContext.localState.state,
               domains: eligibleDomains,
-              referencedBlockHashDisplay: options.readContext.nodeStatus?.nodeBestHashHex ?? "00".repeat(32),
+              referencedBlockHashDisplay: resolveReadContextCoreTip(options.readContext).hash ?? "00".repeat(32),
               targetBlockHeight: state.targetBlockHeight,
             });
           } catch (error) {
@@ -449,7 +451,7 @@ export async function runMiningPhaseMachine(options: {
           "Started mining sentence generation.",
           {
             targetBlockHeight: state.targetBlockHeight,
-            referencedBlockHashDisplay: options.readContext.nodeStatus?.nodeBestHashHex ?? null,
+            referencedBlockHashDisplay: resolveReadContextCoreTip(options.readContext).hash,
             runId: options.backgroundWorkerRunId,
           },
         ));
@@ -507,7 +509,7 @@ export async function runMiningPhaseMachine(options: {
               {
                 level: "warn",
                 targetBlockHeight: state.targetBlockHeight,
-                referencedBlockHashDisplay: options.readContext.nodeStatus?.nodeBestHashHex ?? null,
+                referencedBlockHashDisplay: resolveReadContextCoreTip(options.readContext).hash,
                 runId: options.backgroundWorkerRunId,
               },
             ));
@@ -522,7 +524,7 @@ export async function runMiningPhaseMachine(options: {
               {
                 level: "warn",
                 targetBlockHeight: state.targetBlockHeight,
-                referencedBlockHashDisplay: options.readContext.nodeStatus?.nodeBestHashHex ?? null,
+                referencedBlockHashDisplay: resolveReadContextCoreTip(options.readContext).hash,
                 runId: options.backgroundWorkerRunId,
               },
             ));
@@ -538,7 +540,7 @@ export async function runMiningPhaseMachine(options: {
               {
                 level: "warn",
                 targetBlockHeight: state.targetBlockHeight,
-                referencedBlockHashDisplay: options.readContext.nodeStatus?.nodeBestHashHex ?? null,
+                referencedBlockHashDisplay: resolveReadContextCoreTip(options.readContext).hash,
                 runId: options.backgroundWorkerRunId,
               },
             ));
@@ -553,7 +555,7 @@ export async function runMiningPhaseMachine(options: {
               {
                 level: "warn",
                 targetBlockHeight: state.targetBlockHeight,
-                referencedBlockHashDisplay: options.readContext.nodeStatus?.nodeBestHashHex ?? null,
+                referencedBlockHashDisplay: resolveReadContextCoreTip(options.readContext).hash,
                 runId: options.backgroundWorkerRunId,
               },
             ));
@@ -581,7 +583,7 @@ export async function runMiningPhaseMachine(options: {
             {
               level: "error",
               targetBlockHeight: state.targetBlockHeight,
-              referencedBlockHashDisplay: options.readContext.nodeStatus?.nodeBestHashHex ?? null,
+              referencedBlockHashDisplay: resolveReadContextCoreTip(options.readContext).hash,
               runId: options.backgroundWorkerRunId,
             },
           ));
@@ -623,7 +625,7 @@ export async function runMiningPhaseMachine(options: {
             "No publishable mining candidate passed scoring gates.",
             {
               targetBlockHeight: state.targetBlockHeight,
-              referencedBlockHashDisplay: options.readContext.nodeStatus?.nodeBestHashHex ?? null,
+              referencedBlockHashDisplay: resolveReadContextCoreTip(options.readContext).hash,
               runId: options.backgroundWorkerRunId,
             },
           ));

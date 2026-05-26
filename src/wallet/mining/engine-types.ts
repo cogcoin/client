@@ -136,17 +136,60 @@ function hashesMatchOrUnknown(left: string | null | undefined, right: string | n
   return left === null || left === undefined || right === null || right === undefined || left === right;
 }
 
+export interface MiningCoreTipObservation {
+  height: number | null;
+  hash: string | null;
+}
+
+export function resolveMiningCoreTipObservation(options: {
+  nodeStatus: WalletReadContext["nodeStatus"];
+  indexerStatus: WalletReadContext["indexer"]["status"];
+}): MiningCoreTipObservation {
+  const nodeHeight = options.nodeStatus?.nodeBestHeight ?? null;
+  const nodeHash = options.nodeStatus?.nodeBestHashHex ?? null;
+  const indexerCoreHeight = options.indexerStatus?.coreBestHeight ?? null;
+  const indexerCoreHash = options.indexerStatus?.coreBestHash ?? null;
+  const hasIndexerCoreTip = indexerCoreHeight !== null && indexerCoreHash !== null;
+  const hasNodeCoreTip = nodeHeight !== null && nodeHash !== null;
+
+  if (hasIndexerCoreTip && (!hasNodeCoreTip || indexerCoreHeight !== nodeHeight || indexerCoreHash !== nodeHash)) {
+    return {
+      height: indexerCoreHeight,
+      hash: indexerCoreHash,
+    };
+  }
+
+  if (hasNodeCoreTip) {
+    return {
+      height: nodeHeight,
+      hash: nodeHash,
+    };
+  }
+
+  return {
+    height: nodeHeight ?? indexerCoreHeight,
+    hash: nodeHash ?? indexerCoreHash,
+  };
+}
+
+export function resolveReadContextCoreTip(readContext: WalletReadContext): MiningCoreTipObservation {
+  return resolveMiningCoreTipObservation({
+    nodeStatus: readContext.nodeStatus,
+    indexerStatus: readContext.indexer.status,
+  });
+}
+
 export function observedIndexerStatusMatchesCoreTip(readContext: WalletReadContext): boolean {
   const status = readContext.indexer.status;
-  const nodeHeight = readContext.nodeStatus?.nodeBestHeight ?? null;
+  const coreTip = resolveReadContextCoreTip(readContext);
 
   return status !== null
     && status.state === "synced"
     && status.ipcReady === true
     && status.rpcReachable === true
-    && nodeHeight !== null
-    && status.appliedTipHeight === nodeHeight
-    && hashesMatchOrUnknown(status.appliedTipHash, readContext.nodeStatus?.nodeBestHashHex ?? null);
+    && coreTip.height !== null
+    && status.appliedTipHeight === coreTip.height
+    && hashesMatchOrUnknown(status.appliedTipHash, coreTip.hash);
 }
 
 export function resolveMiningReadiness(readContext: WalletReadContext, options: {
@@ -220,12 +263,11 @@ export function resolveMiningReadiness(readContext: WalletReadContext, options: 
     };
   }
 
-  const nodeBestHeight = readContext.nodeStatus?.nodeBestHeight ?? null;
-  const nodeBestHash = readContext.nodeStatus?.nodeBestHashHex ?? null;
+  const coreTip = resolveReadContextCoreTip(readContext);
   if (
-    nodeBestHeight === null
-    || indexedTip.height !== nodeBestHeight
-    || !hashesMatchOrUnknown(indexedTip.blockHashHex, nodeBestHash)
+    coreTip.height === null
+    || indexedTip.height !== coreTip.height
+    || !hashesMatchOrUnknown(indexedTip.blockHashHex, coreTip.hash)
   ) {
     return {
       ready: false,

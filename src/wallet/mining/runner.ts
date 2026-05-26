@@ -14,7 +14,7 @@ import {
   settleBlock,
 } from "@cogcoin/scoring";
 
-import { probeIndexerDaemon } from "../../bitcoind/indexer-daemon.js";
+import { probeIndexerDaemon, readObservedIndexerDaemonStatus } from "../../bitcoind/indexer-daemon.js";
 import { isRetryableManagedRpcError } from "../../bitcoind/retryable-rpc.js";
 import { FOLLOW_VISIBLE_PRIOR_BLOCKS } from "../../bitcoind/client/follow-block-times.js";
 import {
@@ -23,7 +23,7 @@ import {
   stopManagedBitcoindService,
 } from "../../bitcoind/service.js";
 import { createRpcClient } from "../../bitcoind/node.js";
-import type { ProgressOutputMode } from "../../bitcoind/types.js";
+import type { ManagedIndexerDaemonObservedStatus, ProgressOutputMode } from "../../bitcoind/types.js";
 import { COG_OPCODES, COG_PREFIX } from "../cogop/constants.js";
 import { extractOpReturnPayloadFromScriptHex } from "../tx/register.js";
 import {
@@ -62,6 +62,7 @@ import type {
 import { serializeMine } from "../cogop/index.js";
 import {
   appendMiningEvent,
+  loadMiningRuntimeStatus,
   saveForegroundMiningHeartbeatStatus,
   type MiningRuntimeTipStatusRefresh,
 } from "./runtime-artifacts.js";
@@ -141,6 +142,7 @@ import type {
 } from "./engine-types.js";
 import {
   observedIndexerStatusMatchesCoreTip,
+  resolveReadContextCoreTip,
   resolveMiningReadiness,
   resolveReadyMiningReadContext,
 } from "./engine-types.js";
@@ -473,12 +475,65 @@ function createForegroundMiningLivenessOverrides(options: {
   };
 }
 
+function mapIndexerDaemonStatusStateForMining(
+  state: ManagedIndexerDaemonObservedStatus["state"] | undefined,
+): MiningRuntimeStatusV1["indexerDaemonState"] {
+  switch (state) {
+    case "synced":
+    case "catching-up":
+    case "reorging":
+    case "failed":
+    case "schema-mismatch":
+    case "service-version-mismatch":
+      return state;
+    case "starting":
+    case "stopping":
+      return "starting";
+    default:
+      return "unavailable";
+  }
+}
+
+function resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(
+  status: ManagedIndexerDaemonObservedStatus,
+): MiningRuntimeTipStatusRefresh {
+  const tipsAligned = status.coreBestHeight === null || status.appliedTipHeight === null
+    ? null
+    : status.coreBestHeight === status.appliedTipHeight
+      && (
+        status.coreBestHash === null
+        || status.appliedTipHash === null
+        || status.coreBestHash === status.appliedTipHash
+      );
+
+  return {
+    indexerDaemonState: mapIndexerDaemonStatusStateForMining(status.state),
+    indexerDaemonInstanceId: status.daemonInstanceId ?? null,
+    indexerSnapshotSeq: status.snapshotSeq ?? null,
+    indexerSnapshotOpenedAtUnixMs: null,
+    indexerTruthSource: "status-file",
+    indexerHeartbeatAtUnixMs: status.heartbeatAtUnixMs ?? null,
+    coreBestHeight: status.coreBestHeight ?? null,
+    coreBestHash: status.coreBestHash ?? null,
+    indexerTipHeight: status.appliedTipHeight ?? null,
+    indexerTipHash: status.appliedTipHash ?? null,
+    indexerStatusTipHeight: status.appliedTipHeight ?? null,
+    indexerStatusTipHash: status.appliedTipHash ?? null,
+    indexerObservedAtUnixMs: status.updatedAtUnixMs ?? status.heartbeatAtUnixMs ?? null,
+    indexerReorgDepth: status.reorgDepth ?? null,
+    indexerTipAligned: tipsAligned,
+    targetBlockHeight: status.coreBestHeight === null ? null : status.coreBestHeight + 1,
+    referencedBlockHashDisplay: status.coreBestHash ?? null,
+  };
+}
+
 function resolveMiningRuntimeTipStatusRefresh(
   readContext: WalletReadContext,
   options: { includeAttemptFields?: boolean } = {},
 ): MiningRuntimeTipStatusRefresh {
-  const coreBestHeight = readContext.nodeStatus?.nodeBestHeight ?? readContext.indexer.status?.coreBestHeight ?? null;
-  const coreBestHash = readContext.nodeStatus?.nodeBestHashHex ?? readContext.indexer.status?.coreBestHash ?? null;
+  const coreTip = resolveReadContextCoreTip(readContext);
+  const coreBestHeight = coreTip.height;
+  const coreBestHash = coreTip.hash;
   const indexerTipHeight = readContext.indexer.snapshotTip?.height ?? null;
   const indexerTipHash = readContext.indexer.snapshotTip?.blockHashHex ?? null;
   const tipsAligned = coreBestHeight === null || indexerTipHeight === null
@@ -576,6 +631,7 @@ function startForegroundMiningStatusHeartbeat(options: {
   }, options.intervalMs);
 
   timer.unref();
+  runRefresh();
   return () => {
     clearInterval(timer);
   };
@@ -850,11 +906,12 @@ async function performMiningCycle(options: {
         rawTxTopic: serviceZmq.rawTxTopic,
       }).catch(() => false);
     }
+    const effectiveCoreTip = resolveReadContextCoreTip(readContext);
     const reconciliation = await reconcileLiveMiningState({
       state: readContext.localState.state,
       rpc,
-      nodeBestHash: readContext.nodeStatus?.nodeBestHashHex ?? null,
-      nodeBestHeight: readContext.nodeStatus?.nodeBestHeight ?? null,
+      nodeBestHash: effectiveCoreTip.hash,
+      nodeBestHeight: effectiveCoreTip.height,
       snapshotState: readContext.snapshot?.state ?? null,
     });
     throwIfStopping();
@@ -899,8 +956,8 @@ async function performMiningCycle(options: {
       snapshotState: effectiveReadContext.snapshot?.state ?? null,
       snapshotTipHeight: effectiveReadContext.snapshot?.tip?.height ?? effectiveReadContext.indexer.snapshotTip?.height ?? null,
       snapshotTipPreviousHashHex: effectiveReadContext.snapshot?.tip?.previousHashHex ?? effectiveReadContext.indexer.snapshotTip?.previousHashHex ?? null,
-      nodeBestHeight: effectiveReadContext.nodeStatus?.nodeBestHeight ?? null,
-      nodeBestHash: effectiveReadContext.nodeStatus?.nodeBestHashHex ?? null,
+      nodeBestHeight: resolveReadContextCoreTip(effectiveReadContext).height,
+      nodeBestHash: resolveReadContextCoreTip(effectiveReadContext).hash,
       recentWin: reconciliation.recentWin,
     });
     if (tipChanged) {
@@ -1072,7 +1129,7 @@ async function performMiningCycle(options: {
         "Skipped mining because the target block reward is zero.",
         {
           targetBlockHeight,
-          referencedBlockHashDisplay: readyReadContext.nodeStatus?.nodeBestHashHex ?? null,
+          referencedBlockHashDisplay: resolveReadContextCoreTip(readyReadContext).hash,
           runId: runtimeRunId,
         },
       ));
@@ -1146,7 +1203,8 @@ async function performMiningCycle(options: {
       readContext = freshReadContext;
 
       const freshReadiness = resolveMiningReadiness(freshReadContext);
-      const freshCoreBestHeight = freshReadContext.nodeStatus?.nodeBestHeight ?? null;
+      const freshCoreTip = resolveReadContextCoreTip(freshReadContext);
+      const freshCoreBestHeight = freshCoreTip.height;
       const freshTargetBlockHeight = freshCoreBestHeight === null ? null : freshCoreBestHeight + 1;
       await saveCycleStatus(freshReadContext, {
         runMode: options.runMode,
@@ -1154,7 +1212,7 @@ async function performMiningCycle(options: {
         readinessBlocker: freshReadiness.blocker,
         currentPublishDecision: null,
         targetBlockHeight: freshTargetBlockHeight,
-        referencedBlockHashDisplay: freshReadContext.nodeStatus?.nodeBestHashHex ?? null,
+        referencedBlockHashDisplay: freshCoreTip.hash,
         lastError: null,
         note: phaseResult.restartNote ?? (freshReadiness.ready ? null : freshReadiness.note),
       });
@@ -1280,17 +1338,29 @@ async function runMiningLoop(options: {
         return null;
       }
 
-      const readContext = await options.openReadContext({
-        dataDir: options.dataDir,
-        databasePath: options.databasePath,
-        secretProvider: options.provider,
-        paths: options.paths,
-      });
-      try {
-        return resolveMiningRuntimeTipStatusRefresh(readContext, { includeAttemptFields: false });
-      } finally {
-        await readContext.close().catch(() => undefined);
+      const runtime = await loadMiningRuntimeStatus(options.paths.miningStatusPath).catch(() => null);
+      const walletRootId = runtime?.walletRootId ?? null;
+      if (walletRootId === null) {
+        return null;
       }
+
+      const probe = await probeIndexerDaemon({
+        dataDir: options.dataDir,
+        walletRootId,
+      }).catch(() => null);
+      try {
+        if (probe?.status !== null && probe?.status !== undefined) {
+          return resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(probe.status);
+        }
+      } finally {
+        await probe?.client?.close().catch(() => undefined);
+      }
+
+      const status = await readObservedIndexerDaemonStatus({
+        dataDir: options.dataDir,
+        walletRootId,
+      });
+      return status === null ? null : resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(status);
     },
     onSavedSnapshot: (snapshot) => {
       options.visualizer?.update(snapshot, loopState.ui);

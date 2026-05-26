@@ -33,6 +33,7 @@ import {
   type MiningPublishRetryResult,
   type MiningRpcClient,
   type ReadyMiningReadContext,
+  resolveReadContextCoreTip,
   resolveReadyMiningReadContext,
 } from "./engine-types.js";
 import {
@@ -717,8 +718,8 @@ export async function publishCandidateOnce(options: {
   let state = (await reconcileLiveMiningState({
     state: options.readContext.localState.state,
     rpc,
-    nodeBestHash: options.readContext.nodeStatus?.nodeBestHashHex ?? null,
-    nodeBestHeight: options.readContext.nodeStatus?.nodeBestHeight ?? null,
+    nodeBestHash: coreTip.hash,
+    nodeBestHeight: coreTip.height,
     snapshotState: options.readContext.snapshot.state,
   })).state;
   options.throwIfStopping?.();
