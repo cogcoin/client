@@ -6,6 +6,7 @@ import type {
 } from "../tx/common.js";
 import type { WalletStateV1 } from "../types.js";
 import type { MiningRuntimeStatusV1 } from "./types.js";
+import { resolveCorePublishStateNote } from "./publishability.js";
 import type {
   MiningCompetitivenessGateDiagnostics,
   MiningCompetitivenessGateReason,
@@ -216,7 +217,8 @@ export function resolveMiningReadiness(readContext: WalletReadContext, options: 
       ready: false,
       blocker: "bitcoin-core",
       currentPhase: "waiting-bitcoin-network",
-      note: "Mining is waiting for the local Bitcoin node to become publishable.",
+      note: resolveCorePublishStateNote(options.corePublishState ?? null)
+        ?? "Mining is waiting for the local Bitcoin node to become publishable.",
     };
   }
 

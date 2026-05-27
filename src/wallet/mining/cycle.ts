@@ -7,6 +7,7 @@ import type { WalletRuntimePaths } from "../runtime.js";
 import type { WalletSecretProvider } from "../state/provider.js";
 import { createMiningEventRecord } from "./events.js";
 import { resolveReadContextCoreTip } from "./engine-types.js";
+import { resolveCorePublishStateNote } from "./publishability.js";
 import type {
   CompetitivenessDecision,
   MiningCandidate,
@@ -304,7 +305,8 @@ export async function runMiningPhaseMachine(options: {
             currentPhase: "waiting-bitcoin-network",
             corePublishState: options.corePublishState,
             readinessBlocker: "bitcoin-core",
-            note: "Mining is waiting for the local Bitcoin node to become publishable.",
+            note: resolveCorePublishStateNote(options.corePublishState)
+              ?? "Mining is waiting for the local Bitcoin node to become publishable.",
           });
           return continueMiningNormally();
         }
@@ -332,7 +334,8 @@ export async function runMiningPhaseMachine(options: {
             runMode: options.runMode,
             currentPhase: "waiting-bitcoin-network",
             readinessBlocker: "bitcoin-core",
-            note: "Mining is waiting for the local Bitcoin node to become publishable.",
+            note: resolveCorePublishStateNote(options.corePublishState)
+              ?? "Mining is waiting for the local Bitcoin node to become publishable.",
           });
           return continueMiningNormally();
         }

@@ -4,6 +4,7 @@ import type {
   MiningDomainPromptMutationResult,
   MiningEventRecord,
 } from "../wallet/mining/index.js";
+import { resolveCorePublishStateNote } from "../wallet/mining/publishability.js";
 import { resolveWaitingProviderNote } from "../wallet/mining/projection.js";
 
 function formatMaybeIso(unixMs: number | null): string {
@@ -52,7 +53,9 @@ function resolveMiningRuntimeNote(mining: MiningControlPlaneView): string | null
       ? mining.runtime.note
       : mining.runtime.currentPhase === "waiting-provider"
         ? resolveWaitingProviderNote(mining.runtime.providerState)
-        : null;
+        : mining.runtime.currentPhase === "waiting-bitcoin-network"
+          ? resolveCorePublishStateNote(mining.runtime.corePublishState)
+          : null;
 }
 
 function formatGateDiagnosticsCounts(mining: MiningControlPlaneView): string | null {

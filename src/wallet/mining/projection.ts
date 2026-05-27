@@ -13,6 +13,7 @@ import {
   MINING_WORKER_HEARTBEAT_STALE_MS,
 } from "./constants.js";
 import { resolveMiningCoreTipObservation } from "./engine-types.js";
+import { resolveCorePublishStateNote } from "./publishability.js";
 import type { MiningProviderInspection, MiningRuntimeStatusV1 } from "./types.js";
 
 export interface MiningRuntimeStatusOverrides {
@@ -441,12 +442,14 @@ function inferMiningReadinessBlocker(options: {
 export function resolveReadinessBlockerNote(
   blocker: MiningRuntimeStatusV1["readinessBlocker"],
   indexerHealth?: WalletIndexerStatus["health"],
+  corePublishState?: MiningRuntimeStatusV1["corePublishState"],
 ): string | null {
   switch (blocker) {
     case "wallet-state":
       return "Wallet state must be locally available for mining to continue.";
     case "bitcoin-core":
-      return "Mining is waiting for the local Bitcoin node to become publishable.";
+      return resolveCorePublishStateNote(corePublishState ?? null)
+        ?? "Mining is waiting for the local Bitcoin node to become publishable.";
     case "indexer-daemon":
       return indexerHealth === "reorging"
         ? "Mining remains stopped while the indexer replays a reorg and refreshes the coherent snapshot."
@@ -703,7 +706,7 @@ export async function buildMiningRuntimeStatusSnapshot(options: {
           : clearWaitingCarryover
             ? null
           : readinessBlocker !== null
-            ? resolveReadinessBlockerNote(readinessBlocker, options.indexer.health)
+            ? resolveReadinessBlockerNote(readinessBlocker, options.indexer.health, corePublishState)
             : state?.state === "repair-required"
               ? "Mining is blocked until the current mining publish is reconciled or `cogcoin repair` completes."
               : state?.state === "paused-stale" && state.livePublishInMempool

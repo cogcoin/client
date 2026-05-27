@@ -3,6 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { writeRuntimeStatusFile } from "../fs/status-file.js";
+import { resolveCorePublishStateNote } from "./publishability.js";
 import { normalizeMiningLifecycleStatus, normalizeMiningPublishState } from "./state.js";
 import type { MiningEventRecord, MiningRuntimeStatusV1 } from "./types.js";
 
@@ -17,17 +18,18 @@ export interface MiningRuntimeTipStatusRefresh {
   indexerSnapshotOpenedAtUnixMs?: number | null;
   indexerTruthSource?: MiningRuntimeStatusV1["indexerTruthSource"];
   indexerHeartbeatAtUnixMs?: number | null;
-  coreBestHeight: number | null;
-  coreBestHash: string | null;
-  indexerTipHeight: number | null;
-  indexerTipHash: string | null;
+  coreBestHeight?: number | null;
+  coreBestHash?: string | null;
+  indexerTipHeight?: number | null;
+  indexerTipHash?: string | null;
   indexerStatusTipHeight?: number | null;
   indexerStatusTipHash?: string | null;
   indexerObservedAtUnixMs?: number | null;
   indexerReorgDepth?: number | null;
   indexerTipAligned?: boolean | null;
-  targetBlockHeight: number | null;
-  referencedBlockHashDisplay: string | null;
+  corePublishState?: MiningRuntimeStatusV1["corePublishState"];
+  targetBlockHeight?: number | null;
+  referencedBlockHashDisplay?: string | null;
   attemptTargetBlockHeight?: number | null;
   attemptReferencedBlockHashDisplay?: string | null;
   attemptIndexerSnapshotSeq?: string | null;
@@ -177,9 +179,31 @@ export async function saveForegroundMiningHeartbeatStatus(options: {
       return snapshot;
     }
 
+    const tipStatus = options.tipStatus ?? {};
+    const waitingBitcoinNetwork = snapshot.currentPhase === "waiting-bitcoin-network"
+      && snapshot.readinessBlocker === "bitcoin-core";
+    const publishabilityRecovered = waitingBitcoinNetwork && tipStatus.corePublishState === "healthy";
+    const publishabilityNote = waitingBitcoinNetwork && tipStatus.corePublishState !== undefined
+      ? resolveCorePublishStateNote(tipStatus.corePublishState)
+      : null;
+    const waitingBitcoinNetworkPatch: Partial<MiningRuntimeStatusV1> = publishabilityRecovered
+      ? {
+        currentPhase: "idle",
+        readinessBlocker: null,
+        note: null,
+      }
+      : publishabilityNote !== null
+        ? {
+          currentPhase: "waiting-bitcoin-network",
+          readinessBlocker: "bitcoin-core",
+          note: publishabilityNote,
+        }
+        : {};
+
     const nextSnapshot: MiningRuntimeStatusV1 = {
       ...snapshot,
-      ...(options.tipStatus ?? {}),
+      ...tipStatus,
+      ...waitingBitcoinNetworkPatch,
       foregroundPid: options.foregroundPid,
       foregroundRunId: options.foregroundRunId,
       foregroundHeartbeatAtUnixMs: options.heartbeatAtUnixMs,

@@ -404,6 +404,20 @@ test("mining visualizer progress uses provider-specific waiting text without cha
   assert.equal(describeMiningVisualizerStatus(snapshot), "Waiting for provider");
 });
 
+test("mining visualizer progress surfaces concrete Bitcoin publishability blockers", () => {
+  const snapshot = createSnapshot({
+    currentPhase: "waiting-bitcoin-network",
+    corePublishState: "mempool-loading",
+    note: null,
+  });
+
+  assert.equal(describeMiningVisualizerStatus(snapshot), "Bitcoin mempool loading");
+  assert.equal(
+    describeMiningVisualizerProgress(snapshot),
+    "Mining is waiting because Bitcoin Core is still loading its mempool.",
+  );
+});
+
 test("mining visualizer status surfaces mempool gate reason codes", () => {
   const snapshot = createSnapshot({
     currentPhase: "waiting",

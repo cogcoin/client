@@ -77,6 +77,21 @@ test("mine status text shows the insufficient-funds next step from publish decis
   assert.doesNotMatch(report, /Note: Insufficient funds for mining\./);
 });
 
+test("mine status text shows concrete Bitcoin publishability blockers", () => {
+  const report = formatMineStatusReport(createMiningControlPlaneView({
+    runtime: createMiningRuntimeStatus({
+      currentPhase: "waiting-bitcoin-network",
+      readinessBlocker: "bitcoin-core",
+      corePublishState: "mempool-loading",
+      note: null,
+    }),
+  }));
+
+  assert.match(report, /Readiness blocker: bitcoin-core/);
+  assert.match(report, /Core publishability: mempool-loading/);
+  assert.match(report, /Note: Mining is waiting because Bitcoin Core is still loading its mempool\./);
+});
+
 test("mine status text separates current target from stale live publish tx", () => {
   const report = formatMineStatusReport(createMiningControlPlaneView({
     runtime: createMiningRuntimeStatus({

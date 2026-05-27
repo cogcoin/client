@@ -190,3 +190,79 @@ test("foreground mining heartbeat writes preserve newer full cycle snapshots", a
   assert.equal(loaded?.currentDomainName, "newdomain");
   assert.equal(loaded?.note, "new full snapshot");
 });
+
+test("foreground mining heartbeat explains waiting-bitcoin-network publishability reason", async (t) => {
+  const dir = await createTrackedTempDirectory(t, "cogcoin-mining-runtime-artifacts-heartbeat-publishability");
+  const statusPath = join(dir, "status.json");
+
+  await saveMiningRuntimeStatus(statusPath, createMiningRuntimeStatus({
+    runMode: "foreground",
+    foregroundPid: 123,
+    foregroundRunId: "run-1",
+    foregroundHeartbeatAtUnixMs: 1_000,
+    currentPhase: "waiting-bitcoin-network",
+    readinessBlocker: "bitcoin-core",
+    corePublishState: "unknown",
+    note: "Mining is waiting for the local Bitcoin node to become publishable.",
+  }));
+
+  await saveForegroundMiningHeartbeatStatus({
+    statusPath,
+    foregroundPid: 123,
+    foregroundRunId: "run-1",
+    heartbeatAtUnixMs: 2_000,
+    tipStatus: {
+      coreBestHeight: 117,
+      coreBestHash: "77".repeat(32),
+      corePublishState: "mempool-loading",
+      targetBlockHeight: 118,
+      referencedBlockHashDisplay: "77".repeat(32),
+    },
+  });
+
+  const loaded = await loadMiningRuntimeStatus(statusPath);
+  assert.equal(loaded?.currentPhase, "waiting-bitcoin-network");
+  assert.equal(loaded?.readinessBlocker, "bitcoin-core");
+  assert.equal(loaded?.corePublishState, "mempool-loading");
+  assert.equal(loaded?.note, "Mining is waiting because Bitcoin Core is still loading its mempool.");
+  assert.equal(loaded?.coreBestHeight, 117);
+  assert.equal(loaded?.targetBlockHeight, 118);
+});
+
+test("foreground mining heartbeat clears stale waiting-bitcoin-network when Core becomes publishable", async (t) => {
+  const dir = await createTrackedTempDirectory(t, "cogcoin-mining-runtime-artifacts-heartbeat-publishable");
+  const statusPath = join(dir, "status.json");
+
+  await saveMiningRuntimeStatus(statusPath, createMiningRuntimeStatus({
+    runMode: "foreground",
+    foregroundPid: 123,
+    foregroundRunId: "run-1",
+    foregroundHeartbeatAtUnixMs: 1_000,
+    currentPhase: "waiting-bitcoin-network",
+    readinessBlocker: "bitcoin-core",
+    corePublishState: "mempool-loading",
+    note: "Mining is waiting because Bitcoin Core is still loading its mempool.",
+  }));
+
+  await saveForegroundMiningHeartbeatStatus({
+    statusPath,
+    foregroundPid: 123,
+    foregroundRunId: "run-1",
+    heartbeatAtUnixMs: 2_000,
+    tipStatus: {
+      coreBestHeight: 118,
+      coreBestHash: "88".repeat(32),
+      corePublishState: "healthy",
+      targetBlockHeight: 119,
+      referencedBlockHashDisplay: "88".repeat(32),
+    },
+  });
+
+  const loaded = await loadMiningRuntimeStatus(statusPath);
+  assert.equal(loaded?.currentPhase, "idle");
+  assert.equal(loaded?.readinessBlocker, null);
+  assert.equal(loaded?.corePublishState, "healthy");
+  assert.equal(loaded?.note, null);
+  assert.equal(loaded?.coreBestHeight, 118);
+  assert.equal(loaded?.targetBlockHeight, 119);
+});

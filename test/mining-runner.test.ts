@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import net from "node:net";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
-import { INDEXER_DAEMON_SCHEMA_VERSION, INDEXER_DAEMON_SERVICE_API_VERSION } from "../src/bitcoind/types.js";
+import { INDEXER_DAEMON_SCHEMA_VERSION, INDEXER_DAEMON_SERVICE_API_VERSION, MANAGED_BITCOIND_SERVICE_API_VERSION, type BitcoindRpcConfig } from "../src/bitcoind/types.js";
 import { resolveManagedServicePaths } from "../src/bitcoind/service-paths.js";
 import { createRpcClient } from "../src/bitcoind/node.js";
 import {
@@ -334,11 +335,13 @@ async function startFakeIndexerDaemonStatusServer(
     snapshotSeq: string;
     height?: number;
     blockHashHex?: string;
+    observedAtUnixMs?: number;
   },
 ): Promise<void> {
   const paths = resolveManagedServicePaths(options.dataDir, options.walletRootId);
   const height = options.height ?? 100;
   const blockHashHex = options.blockHashHex ?? "11".repeat(32);
+  const observedAtUnixMs = options.observedAtUnixMs ?? Date.now();
   await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
 
   const sockets = new Set<net.Socket>();
@@ -385,10 +388,12 @@ async function startFakeIndexerDaemonStatusServer(
             daemonInstanceId: options.daemonInstanceId,
             binaryVersion: CURRENT_CLIENT_VERSION,
             buildId: "test-build",
+            updatedAtUnixMs: observedAtUnixMs,
             processId: 9_001,
             startedAtUnixMs: 1,
             state: "synced",
-            heartbeatAtUnixMs: 1,
+            heartbeatAtUnixMs: observedAtUnixMs,
+            ipcReady: true,
             rpcReachable: true,
             coreBestHeight: height,
             coreBestHash: blockHashHex,
@@ -428,6 +433,130 @@ async function startFakeIndexerDaemonStatusServer(
     });
     await rm(paths.indexerDaemonSocketPath, { force: true }).catch(() => undefined);
   });
+}
+
+async function startFakeBitcoindRpcServer(
+  t: TestContext,
+  options: {
+    blocks: number;
+    bestblockhash: string;
+    initialblockdownload?: boolean;
+    networkactive?: boolean;
+    connections_out?: number;
+    mempoolLoaded?: boolean;
+  },
+): Promise<{ rpc: BitcoindRpcConfig; calls: string[] }> {
+  const calls: string[] = [];
+  const server = createHttpServer((request, response) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      const payload = JSON.parse(body) as { id: string; method: string };
+      calls.push(payload.method);
+      const result = payload.method === "getblockchaininfo"
+        ? {
+          chain: "main",
+          blocks: options.blocks,
+          headers: options.blocks,
+          bestblockhash: options.bestblockhash,
+          pruned: false,
+          verificationprogress: 1,
+          initialblockdownload: options.initialblockdownload ?? false,
+        }
+        : payload.method === "getnetworkinfo"
+          ? {
+            networkactive: options.networkactive ?? true,
+            connections: options.connections_out ?? 8,
+            connections_out: options.connections_out ?? 8,
+          }
+          : payload.method === "getmempoolinfo"
+            ? {
+              loaded: options.mempoolLoaded ?? true,
+              size: 0,
+            }
+            : null;
+
+      response.writeHead(result === null ? 500 : 200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        result,
+        error: result === null ? { code: -32601, message: "method not found" } : null,
+        id: payload.id,
+      }));
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+
+  t.after(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  });
+
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string");
+  return {
+    rpc: {
+      url: `http://127.0.0.1:${address.port}`,
+      cookieFile: "",
+      port: address.port,
+    },
+    calls,
+  };
+}
+
+async function writeFakeBitcoindStatus(options: {
+  dataDir: string;
+  walletRootId: string;
+  rpc: BitcoindRpcConfig;
+  cookieFile: string;
+  nowUnixMs?: number;
+}): Promise<void> {
+  const paths = resolveManagedServicePaths(options.dataDir, options.walletRootId);
+  const nowUnixMs = options.nowUnixMs ?? Date.now();
+  await mkdir(paths.walletRuntimeRoot, { recursive: true });
+  await writeFile(options.cookieFile, "user:pass\n");
+  await writeFile(paths.bitcoindStatusPath, `${JSON.stringify({
+    serviceApiVersion: MANAGED_BITCOIND_SERVICE_API_VERSION,
+    binaryVersion: CURRENT_CLIENT_VERSION,
+    buildId: "test-build",
+    serviceInstanceId: "bitcoind-service-1",
+    state: "ready",
+    processId: 9_002,
+    walletRootId: options.walletRootId,
+    chain: "main",
+    dataDir: options.dataDir,
+    runtimeRoot: paths.walletRuntimeRoot,
+    startHeight: 0,
+    rpc: {
+      ...options.rpc,
+      cookieFile: options.cookieFile,
+    },
+    zmq: {
+      endpoint: "tcp://127.0.0.1:1",
+      topic: "hashblock",
+      rawTxTopic: "rawtx",
+      port: 1,
+      pollIntervalMs: 1_000,
+    },
+    p2pPort: 1,
+    getblockArchiveEndHeight: null,
+    getblockArchiveSha256: null,
+    walletReplica: null,
+    startedAtUnixMs: nowUnixMs,
+    heartbeatAtUnixMs: nowUnixMs,
+    updatedAtUnixMs: nowUnixMs,
+    lastError: null,
+  })}\n`);
 }
 
 function createMiningSuspendTestClock() {
@@ -1250,7 +1379,7 @@ test("runMiningLoop foreground heartbeat refreshes live tip from daemon status w
     generateCandidatesForDomainsImpl: async () => [candidate],
     runCompetitivenessGateImpl: async () => {
       callsAtGateStart = openReadContextCalls;
-      const deadline = Date.now() + 500;
+      const deadline = Date.now() + 2_000;
       do {
         await new Promise((resolve) => setTimeout(resolve, 10));
         heartbeatSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
@@ -1301,6 +1430,111 @@ test("runMiningLoop foreground heartbeat refreshes live tip from daemon status w
   assert.equal(heartbeatSnapshotValue.attemptReferencedBlockHashDisplay, "11".repeat(32));
   assert.equal(openReadContextCalls, callsAtGateStart);
   assert.equal(visualizerSnapshots.at(-1)?.targetBlockHeight, 104);
+});
+
+test("runMiningLoop foreground heartbeat falls back to bounded Core probe when daemon tip status is stale", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-loop-foreground-heartbeat-core-fallback");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const abortController = new AbortController();
+  const databasePath = join(homeDirectory, "indexer.sqlite");
+  const staleContext = createSynchronizedLoopReadContext({
+    dataDir: homeDirectory,
+    databasePath,
+  });
+  const rpcServer = await startFakeBitcoindRpcServer(t, {
+    blocks: 117,
+    bestblockhash: "77".repeat(32),
+    mempoolLoaded: false,
+  });
+  await writeFakeBitcoindStatus({
+    dataDir: homeDirectory,
+    walletRootId: staleContext.localState.state.walletRootId,
+    rpc: rpcServer.rpc,
+    cookieFile: join(homeDirectory, "bitcoin.cookie"),
+    nowUnixMs: 300_000,
+  });
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: staleContext.localState.state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+    height: 99,
+    blockHashHex: "99".repeat(32),
+    observedAtUnixMs: 1,
+  });
+
+  let currentNowUnixMs = 300_000;
+  let openReadContextCalls = 0;
+  let heartbeatSnapshot: MiningRuntimeStatusV1 | null = null;
+
+  await runMiningLoopForTesting({
+    dataDir: homeDirectory,
+    databasePath,
+    provider,
+    paths,
+    runMode: "foreground",
+    foregroundPid: 555,
+    foregroundRunId: "foreground-run-core-fallback",
+    foregroundHeartbeatIntervalMs: 10,
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    signal: abortController.signal,
+    openReadContext: async () => {
+      openReadContextCalls += 1;
+      return staleContext;
+    },
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    rpcFactory: () => createLoopMiningRpc({
+      async getMempoolInfo() {
+        return { loaded: false };
+      },
+    }) as any,
+    nowImpl: () => {
+      currentNowUnixMs += 1_000;
+      return currentNowUnixMs;
+    },
+    sleepImpl: async () => {
+      const deadline = Date.now() + 2_000;
+      do {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        heartbeatSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+      } while (
+        heartbeatSnapshot?.coreBestHeight !== 117
+        && Date.now() < deadline
+      );
+      abortController.abort(createMiningStopRequestedError());
+    },
+  });
+
+  const heartbeatSnapshotValue = heartbeatSnapshot as unknown as MiningRuntimeStatusV1;
+  assert.equal(heartbeatSnapshotValue.currentPhase, "waiting-bitcoin-network");
+  assert.equal(heartbeatSnapshotValue.readinessBlocker, "bitcoin-core");
+  assert.equal(heartbeatSnapshotValue.corePublishState, "mempool-loading");
+  assert.equal(heartbeatSnapshotValue.note, "Mining is waiting because Bitcoin Core is still loading its mempool.");
+  assert.equal(heartbeatSnapshotValue.coreBestHeight, 117);
+  assert.equal(heartbeatSnapshotValue.coreBestHash, "77".repeat(32));
+  assert.equal(heartbeatSnapshotValue.targetBlockHeight, 118);
+  assert.equal(heartbeatSnapshotValue.referencedBlockHashDisplay, "77".repeat(32));
+  assert.equal(openReadContextCalls, 1);
+  assert.ok(rpcServer.calls.includes("getblockchaininfo"));
+  assert.ok(rpcServer.calls.includes("getnetworkinfo"));
+  assert.ok(rpcServer.calls.includes("getmempoolinfo"));
+  const events = await readMiningEvents({
+    eventsPath: paths.miningEventsPath,
+    all: true,
+  });
+  assert.equal(events.filter((event) => event.kind === "timing-publishability-getblockchaininfo").length, 1);
+  assert.equal(events.filter((event) => event.kind === "timing-publishability-getnetworkinfo").length, 1);
+  assert.equal(events.filter((event) => event.kind === "timing-publishability-getmempoolinfo").length, 1);
+  assert.equal(events.filter((event) => event.kind === "timing-publishability-status-write").length, 1);
 });
 
 test("runMiningLoop still emits system-resumed after a real heartbeat gap", async (t) => {

@@ -15,6 +15,7 @@ import {
 } from "@cogcoin/scoring";
 
 import { probeIndexerDaemon, readObservedIndexerDaemonStatus } from "../../bitcoind/indexer-daemon.js";
+import { readManagedBitcoindObservedStatus } from "../../bitcoind/managed-runtime/bitcoind-status.js";
 import { isRetryableManagedRpcError } from "../../bitcoind/retryable-rpc.js";
 import { FOLLOW_VISIBLE_PRIOR_BLOCKS } from "../../bitcoind/client/follow-block-times.js";
 import {
@@ -23,7 +24,7 @@ import {
   stopManagedBitcoindService,
 } from "../../bitcoind/service.js";
 import { createRpcClient } from "../../bitcoind/node.js";
-import type { ManagedIndexerDaemonObservedStatus, ProgressOutputMode } from "../../bitcoind/types.js";
+import type { ManagedBitcoindObservedStatus, ManagedIndexerDaemonObservedStatus, ProgressOutputMode } from "../../bitcoind/types.js";
 import { COG_OPCODES, COG_PREFIX } from "../cogop/constants.js";
 import { extractOpReturnPayloadFromScriptHex } from "../tx/register.js";
 import {
@@ -197,6 +198,8 @@ import {
 
 const BEST_BLOCK_POLL_INTERVAL_MS = 500;
 const MINING_SUSPEND_HEARTBEAT_INTERVAL_MS = 1_000;
+const MINING_FOREGROUND_TIP_STATUS_STALE_MS = 15_000;
+const MINING_FOREGROUND_CORE_PROBE_TIMEOUT_MS = 3_000;
 
 type MiningRunnerStatusOverrides = MiningRuntimeStatusOverrides;
 
@@ -440,6 +443,54 @@ function createEvent(
   return createMiningEventRecord(kind, message, options);
 }
 
+async function appendRuntimeTimingEvent(
+  paths: WalletRuntimePaths,
+  kind: string,
+  message: string,
+  options: Partial<MiningEventRecord>,
+): Promise<void> {
+  try {
+    await appendEvent(paths, createEvent(kind, message, options));
+  } catch {
+    // Timing telemetry must not alter the mining decision path.
+  }
+}
+
+async function timeMiningPublishabilityRpc<T>(options: {
+  paths: WalletRuntimePaths;
+  runId: string | null;
+  kind: string;
+  message: string;
+  method: string;
+  operation: () => Promise<T>;
+}): Promise<T> {
+  const startedAt = performance.now();
+  try {
+    const result = await options.operation();
+    await appendRuntimeTimingEvent(options.paths, options.kind, options.message, {
+      runId: options.runId,
+      durationMs: performance.now() - startedAt,
+      metrics: {
+        outcome: "success",
+        rpcMethod: options.method,
+      },
+    });
+    return result;
+  } catch (error) {
+    await appendRuntimeTimingEvent(options.paths, options.kind, options.message, {
+      level: "warn",
+      runId: options.runId,
+      durationMs: performance.now() - startedAt,
+      metrics: {
+        outcome: "error",
+        rpcMethod: options.method,
+        errorName: error instanceof Error ? error.name : "unknown",
+      },
+    });
+    throw error;
+  }
+}
+
 function createMiningLoopState(): MiningLoopState {
   return createMiningRuntimeLoopState();
 }
@@ -527,6 +578,51 @@ function resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(
   };
 }
 
+function indexerDaemonStatusIsFresh(
+  status: ManagedIndexerDaemonObservedStatus,
+  nowUnixMs: number,
+): boolean {
+  const observedAtUnixMs = status.updatedAtUnixMs ?? status.heartbeatAtUnixMs ?? null;
+
+  return observedAtUnixMs !== null
+    && (nowUnixMs - observedAtUnixMs) <= MINING_FOREGROUND_TIP_STATUS_STALE_MS
+    && status.coreBestHeight !== null
+    && status.coreBestHash !== null;
+}
+
+async function resolveMiningRuntimeTipStatusRefreshFromCoreProbe(options: {
+  status: ManagedBitcoindObservedStatus | null;
+  signal?: AbortSignal;
+}): Promise<MiningRuntimeTipStatusRefresh | null> {
+  if (options.status === null || options.status.state !== "ready") {
+    return null;
+  }
+
+  const rpc = createRpcClient(options.status.rpc, {
+    requestTimeoutMs: MINING_FOREGROUND_CORE_PROBE_TIMEOUT_MS,
+    abortSignal: options.signal,
+  });
+
+  const [blockchain, network, mempool] = await Promise.all([
+    rpc.getBlockchainInfo(),
+    rpc.getNetworkInfo(),
+    rpc.getMempoolInfo(),
+  ]);
+  const corePublishState = determineCorePublishState({
+    blockchain,
+    network,
+    mempool,
+  });
+
+  return {
+    coreBestHeight: blockchain.blocks,
+    coreBestHash: blockchain.bestblockhash,
+    corePublishState,
+    targetBlockHeight: blockchain.blocks + 1,
+    referencedBlockHashDisplay: blockchain.bestblockhash,
+  };
+}
+
 function resolveMiningRuntimeTipStatusRefresh(
   readContext: WalletReadContext,
   options: { includeAttemptFields?: boolean } = {},
@@ -586,7 +682,7 @@ function startForegroundMiningStatusHeartbeat(options: {
   foregroundRunId: string | null;
   intervalMs: number;
   nowUnixMs: () => number;
-  loadTipStatus?: () => Promise<MiningRuntimeTipStatusRefresh | null>;
+  loadTipStatus?: (nowUnixMs: number) => Promise<MiningRuntimeTipStatusRefresh | null>;
   onSavedSnapshot?: (snapshot: MiningRuntimeStatusV1) => void;
 }): () => void {
   if (options.runMode !== "foreground" || options.foregroundRunId === null || options.foregroundPid === null) {
@@ -606,7 +702,7 @@ function startForegroundMiningStatusHeartbeat(options: {
       while (refreshRequested) {
         refreshRequested = false;
         const heartbeatAtUnixMs = options.nowUnixMs();
-        const tipStatus = await options.loadTipStatus?.().catch(() => null) ?? null;
+        const tipStatus = await options.loadTipStatus?.(heartbeatAtUnixMs).catch(() => null) ?? null;
         const snapshot = await saveForegroundMiningHeartbeatStatus({
           statusPath: options.paths.miningStatusPath,
           foregroundPid: options.foregroundPid!,
@@ -1071,9 +1167,30 @@ async function performMiningCycle(options: {
     }
 
     const [blockchainInfo, networkInfo, mempoolInfo] = await Promise.all([
-      rpc.getBlockchainInfo(),
-      rpc.getNetworkInfo(),
-      rpc.getMempoolInfo(),
+      timeMiningPublishabilityRpc({
+        paths: options.paths,
+        runId: runtimeRunId,
+        kind: "timing-publishability-getblockchaininfo",
+        message: "Checked Bitcoin Core blockchain status for mining publishability.",
+        method: "getblockchaininfo",
+        operation: async () => await rpc.getBlockchainInfo(),
+      }),
+      timeMiningPublishabilityRpc({
+        paths: options.paths,
+        runId: runtimeRunId,
+        kind: "timing-publishability-getnetworkinfo",
+        message: "Checked Bitcoin Core network status for mining publishability.",
+        method: "getnetworkinfo",
+        operation: async () => await rpc.getNetworkInfo(),
+      }),
+      timeMiningPublishabilityRpc({
+        paths: options.paths,
+        runId: runtimeRunId,
+        kind: "timing-publishability-getmempoolinfo",
+        message: "Checked Bitcoin Core mempool status for mining publishability.",
+        method: "getmempoolinfo",
+        operation: async () => await rpc.getMempoolInfo(),
+      }),
     ]);
     throwIfStopping();
     throwIfMiningSuspendDetected(options.suspendDetector);
@@ -1090,13 +1207,48 @@ async function performMiningCycle(options: {
     const publishReadiness = resolveMiningReadiness(readyReadContext, { corePublishState });
     if (!publishReadiness.ready) {
       clearMiningProviderWait(options.loopState);
-      await saveCycleStatus(readyReadContext, {
-        runMode: options.runMode,
-        currentPhase: publishReadiness.currentPhase,
-        corePublishState,
-        readinessBlocker: publishReadiness.blocker,
-        note: publishReadiness.note,
-      });
+      const statusWriteStartedAt = performance.now();
+      try {
+        await saveCycleStatus(readyReadContext, {
+          runMode: options.runMode,
+          currentPhase: publishReadiness.currentPhase,
+          corePublishState,
+          readinessBlocker: publishReadiness.blocker,
+          note: publishReadiness.note,
+        });
+        await appendRuntimeTimingEvent(
+          options.paths,
+          "timing-publishability-status-write",
+          "Wrote mining publishability wait status.",
+          {
+            runId: runtimeRunId,
+            durationMs: performance.now() - statusWriteStartedAt,
+            metrics: {
+              outcome: "success",
+              corePublishState,
+              readinessBlocker: publishReadiness.blocker ?? null,
+            },
+          },
+        );
+      } catch (error) {
+        await appendRuntimeTimingEvent(
+          options.paths,
+          "timing-publishability-status-write",
+          "Wrote mining publishability wait status.",
+          {
+            level: "warn",
+            runId: runtimeRunId,
+            durationMs: performance.now() - statusWriteStartedAt,
+            metrics: {
+              outcome: "error",
+              corePublishState,
+              readinessBlocker: publishReadiness.blocker ?? null,
+              errorName: error instanceof Error ? error.name : "unknown",
+            },
+          },
+        );
+        throw error;
+      }
       return continueMiningCycleNormally();
     }
 
@@ -1333,7 +1485,7 @@ async function runMiningLoop(options: {
     foregroundRunId,
     intervalMs: options.foregroundHeartbeatIntervalMs ?? MINING_STATUS_HEARTBEAT_INTERVAL_MS,
     nowUnixMs: now,
-    loadTipStatus: async () => {
+    loadTipStatus: async (heartbeatAtUnixMs) => {
       if (options.signal?.aborted) {
         return null;
       }
@@ -1349,7 +1501,11 @@ async function runMiningLoop(options: {
         walletRootId,
       }).catch(() => null);
       try {
-        if (probe?.status !== null && probe?.status !== undefined) {
+        if (
+          probe?.status !== null
+          && probe?.status !== undefined
+          && indexerDaemonStatusIsFresh(probe.status, heartbeatAtUnixMs)
+        ) {
           return resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(probe.status);
         }
       } finally {
@@ -1359,8 +1515,19 @@ async function runMiningLoop(options: {
       const status = await readObservedIndexerDaemonStatus({
         dataDir: options.dataDir,
         walletRootId,
-      });
-      return status === null ? null : resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(status);
+      }).catch(() => null);
+      if (status !== null && indexerDaemonStatusIsFresh(status, heartbeatAtUnixMs)) {
+        return resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(status);
+      }
+
+      const bitcoindStatus = await readManagedBitcoindObservedStatus({
+        dataDir: options.dataDir,
+        walletRootId,
+      }).catch(() => null);
+      return await resolveMiningRuntimeTipStatusRefreshFromCoreProbe({
+        status: bitcoindStatus,
+        signal: options.signal,
+      }).catch(() => null);
     },
     onSavedSnapshot: (snapshot) => {
       options.visualizer?.update(snapshot, loopState.ui);

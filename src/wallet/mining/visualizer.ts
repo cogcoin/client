@@ -15,6 +15,7 @@ import {
   type TtyRenderStream,
 } from "../../bitcoind/progress/render-policy.js";
 import { TtyProgressRenderer, type FollowSceneRenderOptions } from "../../bitcoind/progress/tty-renderer.js";
+import { resolveCorePublishStateNote, resolveCorePublishStateShortLabel } from "./publishability.js";
 import { resolveWaitingProviderNote } from "./projection.js";
 import type { MiningRuntimeStatusV1 } from "./types.js";
 
@@ -404,7 +405,7 @@ export function describeMiningVisualizerStatus(
         ? "Indexer replaying reorg"
         : "Waiting for indexer";
     case "waiting-bitcoin-network":
-      return "Waiting for Bitcoin node";
+      return resolveCorePublishStateShortLabel(snapshot.corePublishState);
     case "generating":
       return "Generating candidates";
     case "scoring":
@@ -466,7 +467,8 @@ export function describeMiningVisualizerProgress(
     case "waiting-indexer":
       return "Mining is waiting for Bitcoin Core and the indexer to align.";
     case "waiting-bitcoin-network":
-      return "Mining is waiting for the local Bitcoin node to become publishable.";
+      return resolveCorePublishStateNote(snapshot.corePublishState)
+        ?? "Mining is waiting for the local Bitcoin node to become publishable.";
     case "generating":
       return "Generating mining sentences for eligible root domains.";
     case "scoring":
