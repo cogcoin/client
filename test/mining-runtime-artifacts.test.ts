@@ -266,3 +266,110 @@ test("foreground mining heartbeat clears stale waiting-bitcoin-network when Core
   assert.equal(loaded?.coreBestHeight, 118);
   assert.equal(loaded?.targetBlockHeight, 119);
 });
+
+test("foreground mining heartbeat projects quiescent Core/indexer mismatch as tip-alignment wait", async (t) => {
+  const dir = await createTrackedTempDirectory(t, "cogcoin-mining-runtime-artifacts-heartbeat-tip-alignment");
+  const statusPath = join(dir, "status.json");
+  const indexedHash = "11".repeat(32);
+  const coreHash = "22".repeat(32);
+
+  await saveMiningRuntimeStatus(statusPath, createMiningRuntimeStatus({
+    runMode: "foreground",
+    foregroundPid: 123,
+    foregroundRunId: "run-1",
+    foregroundHeartbeatAtUnixMs: 1_000,
+    currentPhase: "waiting",
+    readinessBlocker: null,
+    coreBestHeight: 951_397,
+    coreBestHash: indexedHash,
+    indexerStatusTipHeight: 951_397,
+    indexerStatusTipHash: indexedHash,
+    targetBlockHeight: 951_398,
+    referencedBlockHashDisplay: indexedHash,
+    note: "Waiting for the next block after the last mining attempt on this tip.",
+  }));
+
+  await saveForegroundMiningHeartbeatStatus({
+    statusPath,
+    foregroundPid: 123,
+    foregroundRunId: "run-1",
+    heartbeatAtUnixMs: 2_000,
+    tipStatus: {
+      coreBestHeight: 951_398,
+      coreBestHash: coreHash,
+      indexerStatusTipHeight: 951_397,
+      indexerStatusTipHash: indexedHash,
+      indexerTipAligned: false,
+      tipsAligned: false,
+      targetBlockHeight: 951_399,
+      referencedBlockHashDisplay: coreHash,
+    },
+  });
+
+  const loaded = await loadMiningRuntimeStatus(statusPath);
+  assert.equal(loaded?.coreBestHeight, 951_398);
+  assert.equal(loaded?.coreBestHash, coreHash);
+  assert.equal(loaded?.indexerStatusTipHeight, 951_397);
+  assert.equal(loaded?.indexerStatusTipHash, indexedHash);
+  assert.equal(loaded?.targetBlockHeight, 951_399);
+  assert.equal(loaded?.referencedBlockHashDisplay, coreHash);
+  assert.equal(loaded?.currentPhase, "waiting-indexer");
+  assert.equal(loaded?.readinessBlocker, "tip-alignment");
+  assert.equal(loaded?.tipsAligned, false);
+  assert.equal(loaded?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
+});
+
+test("foreground mining heartbeat preserves active phase and attempt fields while live Core tip advances", async (t) => {
+  const dir = await createTrackedTempDirectory(t, "cogcoin-mining-runtime-artifacts-heartbeat-active-mismatch");
+  const statusPath = join(dir, "status.json");
+  const indexedHash = "11".repeat(32);
+  const coreHash = "22".repeat(32);
+
+  await saveMiningRuntimeStatus(statusPath, createMiningRuntimeStatus({
+    runMode: "foreground",
+    foregroundPid: 123,
+    foregroundRunId: "run-1",
+    foregroundHeartbeatAtUnixMs: 1_000,
+    currentPhase: "scoring",
+    readinessBlocker: null,
+    coreBestHeight: 951_397,
+    coreBestHash: indexedHash,
+    indexerStatusTipHeight: 951_397,
+    indexerStatusTipHash: indexedHash,
+    targetBlockHeight: 951_398,
+    referencedBlockHashDisplay: indexedHash,
+    attemptTargetBlockHeight: 951_398,
+    attemptReferencedBlockHashDisplay: indexedHash,
+    attemptIndexerSnapshotSeq: "seq-951397",
+    note: "Scoring mining candidates for block #951398.",
+  }));
+
+  await saveForegroundMiningHeartbeatStatus({
+    statusPath,
+    foregroundPid: 123,
+    foregroundRunId: "run-1",
+    heartbeatAtUnixMs: 2_000,
+    tipStatus: {
+      coreBestHeight: 951_398,
+      coreBestHash: coreHash,
+      indexerStatusTipHeight: 951_397,
+      indexerStatusTipHash: indexedHash,
+      indexerTipAligned: false,
+      tipsAligned: false,
+      targetBlockHeight: 951_399,
+      referencedBlockHashDisplay: coreHash,
+    },
+  });
+
+  const loaded = await loadMiningRuntimeStatus(statusPath);
+  assert.equal(loaded?.coreBestHeight, 951_398);
+  assert.equal(loaded?.targetBlockHeight, 951_399);
+  assert.equal(loaded?.referencedBlockHashDisplay, coreHash);
+  assert.equal(loaded?.attemptTargetBlockHeight, 951_398);
+  assert.equal(loaded?.attemptReferencedBlockHashDisplay, indexedHash);
+  assert.equal(loaded?.attemptIndexerSnapshotSeq, "seq-951397");
+  assert.equal(loaded?.currentPhase, "scoring");
+  assert.equal(loaded?.readinessBlocker, null);
+  assert.equal(loaded?.tipsAligned, false);
+  assert.equal(loaded?.note, "Scoring mining candidates for block #951398.");
+});

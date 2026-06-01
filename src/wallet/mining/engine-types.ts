@@ -153,17 +153,17 @@ export function resolveMiningCoreTipObservation(options: {
   const hasIndexerCoreTip = indexerCoreHeight !== null && indexerCoreHash !== null;
   const hasNodeCoreTip = nodeHeight !== null && nodeHash !== null;
 
-  if (hasIndexerCoreTip && (!hasNodeCoreTip || indexerCoreHeight !== nodeHeight || indexerCoreHash !== nodeHash)) {
-    return {
-      height: indexerCoreHeight,
-      hash: indexerCoreHash,
-    };
-  }
-
   if (hasNodeCoreTip) {
     return {
       height: nodeHeight,
       hash: nodeHash,
+    };
+  }
+
+  if (hasIndexerCoreTip) {
+    return {
+      height: indexerCoreHeight,
+      hash: indexerCoreHash,
     };
   }
 

@@ -7,6 +7,8 @@ import { resolveCorePublishStateNote } from "./publishability.js";
 import { normalizeMiningLifecycleStatus, normalizeMiningPublishState } from "./state.js";
 import type { MiningEventRecord, MiningRuntimeStatusV1 } from "./types.js";
 
+const MINING_TIP_ALIGNMENT_NOTE = "Mining is waiting for Bitcoin Core and the indexer to align.";
+
 const MAX_EVENT_LOG_BYTES = 10 * 1024 * 1024;
 const MAX_EVENT_LOG_ROTATIONS = 4;
 const miningStatusWriteQueues = new Map<string, Promise<void>>();
@@ -27,6 +29,7 @@ export interface MiningRuntimeTipStatusRefresh {
   indexerObservedAtUnixMs?: number | null;
   indexerReorgDepth?: number | null;
   indexerTipAligned?: boolean | null;
+  tipsAligned?: boolean | null;
   corePublishState?: MiningRuntimeStatusV1["corePublishState"];
   targetBlockHeight?: number | null;
   referencedBlockHashDisplay?: string | null;
@@ -180,6 +183,37 @@ export async function saveForegroundMiningHeartbeatStatus(options: {
     }
 
     const tipStatus = options.tipStatus ?? {};
+    const tipStatusHasIndexerObservation = tipStatus.indexerStatusTipHeight !== undefined
+      || tipStatus.indexerTipHeight !== undefined;
+    const nextCoreBestHeight = tipStatus.coreBestHeight ?? snapshot.coreBestHeight;
+    const nextCoreBestHash = tipStatus.coreBestHash ?? snapshot.coreBestHash;
+    const nextIndexerTipHeight = tipStatus.indexerStatusTipHeight
+      ?? snapshot.indexerStatusTipHeight
+      ?? tipStatus.indexerTipHeight
+      ?? snapshot.indexerTipHeight;
+    const nextIndexerTipHash = tipStatus.indexerStatusTipHash
+      ?? snapshot.indexerStatusTipHash
+      ?? tipStatus.indexerTipHash
+      ?? snapshot.indexerTipHash;
+    const tipsVisiblyMisaligned = tipStatusHasIndexerObservation
+      && nextCoreBestHeight !== null
+      && nextCoreBestHeight !== undefined
+      && nextIndexerTipHeight !== null
+      && nextIndexerTipHeight !== undefined
+      && (
+        nextCoreBestHeight !== nextIndexerTipHeight
+        || (
+          nextCoreBestHash !== null
+          && nextCoreBestHash !== undefined
+          && nextIndexerTipHash !== null
+          && nextIndexerTipHash !== undefined
+          && nextCoreBestHash !== nextIndexerTipHash
+        )
+      );
+    const quiescentPhase = snapshot.currentPhase === "idle"
+      || snapshot.currentPhase === "waiting"
+      || snapshot.currentPhase === "waiting-indexer"
+      || snapshot.currentPhase === "waiting-bitcoin-network";
     const waitingBitcoinNetwork = snapshot.currentPhase === "waiting-bitcoin-network"
       && snapshot.readinessBlocker === "bitcoin-core";
     const publishabilityRecovered = waitingBitcoinNetwork && tipStatus.corePublishState === "healthy";
@@ -199,11 +233,21 @@ export async function saveForegroundMiningHeartbeatStatus(options: {
           note: publishabilityNote,
         }
         : {};
+    const tipAlignmentPatch: Partial<MiningRuntimeStatusV1> = tipsVisiblyMisaligned && quiescentPhase
+      ? {
+        currentPhase: "waiting-indexer",
+        readinessBlocker: "tip-alignment",
+        indexerTipAligned: false,
+        tipsAligned: false,
+        note: MINING_TIP_ALIGNMENT_NOTE,
+      }
+      : {};
 
     const nextSnapshot: MiningRuntimeStatusV1 = {
       ...snapshot,
       ...tipStatus,
       ...waitingBitcoinNetworkPatch,
+      ...tipAlignmentPatch,
       foregroundPid: options.foregroundPid,
       foregroundRunId: options.foregroundRunId,
       foregroundHeartbeatAtUnixMs: options.heartbeatAtUnixMs,

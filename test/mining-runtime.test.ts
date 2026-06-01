@@ -2841,6 +2841,9 @@ test("performMiningCycle uses align wording only for real Core/indexer tip misma
     backgroundWorkerPid: null,
     backgroundWorkerRunId: null,
     openReadContext: async () => createReadyMiningReadContext({
+      miningState: createMiningState({
+        livePublishInMempool: false,
+      }),
       readContextOverrides: {
         snapshot: {
           tip: {
@@ -2898,6 +2901,210 @@ test("performMiningCycle uses align wording only for real Core/indexer tip misma
   assert.equal(snapshot?.currentPhase, "waiting-indexer");
   assert.equal(snapshot?.readinessBlocker, "tip-alignment");
   assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
+});
+
+test("performMiningCycle treats live node tip ahead of coherent lease as tip-alignment instead of old attempted-tip wait", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-node-ahead-attempted-tip");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const indexedHash = "11".repeat(32);
+  const liveHash = "22".repeat(32);
+  loopState.attemptedTipKey = `${indexedHash}:951398`;
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => createReadyMiningReadContext({
+      miningState: createMiningState({
+        livePublishInMempool: false,
+      }),
+      readContextOverrides: {
+        snapshot: {
+          tip: {
+            height: 951_397,
+            blockHashHex: indexedHash,
+            previousHashHex: "00".repeat(32),
+            stateHashHex: null,
+          },
+          state: {
+            consensus: {
+              domainIdsByName: new Map([["cogdemo", 7]]),
+              domainsById: new Map([[7, {
+                domainId: 7,
+                name: "cogdemo",
+                anchored: true,
+                anchorHeight: 951_397,
+                ownerScriptPubKey: Buffer.from("0014" + "11".repeat(20), "hex"),
+                endpoint: null,
+              }]]),
+              balances: new Map(),
+            },
+            history: {
+              foundingMessageByDomain: new Map(),
+              blockWinnersByHeight: new Map(),
+            },
+          },
+        },
+        indexer: {
+          health: "synced",
+          message: null,
+          status: {
+            state: "synced",
+            heartbeatAtUnixMs: 1_000,
+            updatedAtUnixMs: 1_100,
+            ipcReady: true,
+            rpcReachable: true,
+            coreBestHeight: 951_397,
+            coreBestHash: indexedHash,
+            appliedTipHeight: 951_397,
+            appliedTipHash: indexedHash,
+            reorgDepth: null,
+          },
+          source: "lease",
+          daemonInstanceId: "daemon-1",
+          snapshotSeq: "seq-951397",
+          openedAtUnixMs: 900,
+          snapshotTip: {
+            height: 951_397,
+            blockHashHex: indexedHash,
+            previousHashHex: "00".repeat(32),
+            stateHashHex: null,
+          },
+        },
+        nodeStatus: {
+          chain: "mainnet",
+          nodeBestHeight: 951_398,
+          nodeBestHashHex: liveHash,
+          walletReplica: {
+            proofStatus: "ready",
+          },
+        },
+      },
+    }),
+    attachService: async () => ({ rpc: {}, pid: 9_001 } as any),
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.coreBestHeight, 951_398);
+  assert.equal(snapshot?.coreBestHash, liveHash);
+  assert.equal(snapshot?.indexerStatusTipHeight, 951_397);
+  assert.equal(snapshot?.indexerStatusTipHash, indexedHash);
+  assert.equal(snapshot?.targetBlockHeight, 951_399);
+  assert.equal(snapshot?.referencedBlockHashDisplay, liveHash);
+  assert.equal(snapshot?.currentPhase, "waiting-indexer");
+  assert.equal(snapshot?.readinessBlocker, "tip-alignment");
+  assert.equal(snapshot?.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
+});
+
+test("performMiningCycle preserves already-attempted waiting behavior when Core and indexer are aligned", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-aligned-attempted-tip");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const tipHash = "11".repeat(32);
+  loopState.attemptedTipKey = `${tipHash}:951398`;
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => createReadyMiningReadContext({
+      miningState: createMiningState({
+        livePublishInMempool: false,
+      }),
+      readContextOverrides: {
+        snapshot: {
+          tip: {
+            height: 951_397,
+            blockHashHex: tipHash,
+            previousHashHex: "00".repeat(32),
+            stateHashHex: null,
+          },
+          state: {
+            consensus: {
+              domainIdsByName: new Map([["cogdemo", 7]]),
+              domainsById: new Map([[7, {
+                domainId: 7,
+                name: "cogdemo",
+                anchored: true,
+                anchorHeight: 951_397,
+                ownerScriptPubKey: Buffer.from("0014" + "11".repeat(20), "hex"),
+                endpoint: null,
+              }]]),
+              balances: new Map(),
+            },
+            history: {
+              foundingMessageByDomain: new Map(),
+              blockWinnersByHeight: new Map(),
+            },
+          },
+        },
+        indexer: {
+          health: "synced",
+          message: null,
+          status: {
+            state: "synced",
+            heartbeatAtUnixMs: 1_000,
+            updatedAtUnixMs: 1_100,
+            ipcReady: true,
+            rpcReachable: true,
+            coreBestHeight: 951_397,
+            coreBestHash: tipHash,
+            appliedTipHeight: 951_397,
+            appliedTipHash: tipHash,
+            reorgDepth: null,
+          },
+          source: "lease",
+          daemonInstanceId: "daemon-1",
+          snapshotSeq: "seq-951397",
+          openedAtUnixMs: 900,
+          snapshotTip: {
+            height: 951_397,
+            blockHashHex: tipHash,
+            previousHashHex: "00".repeat(32),
+            stateHashHex: null,
+          },
+        },
+        nodeStatus: {
+          chain: "mainnet",
+          nodeBestHeight: 951_397,
+          nodeBestHashHex: tipHash,
+          walletReplica: {
+            proofStatus: "ready",
+          },
+        },
+      },
+    }),
+    attachService: async () => ({ rpc: {}, pid: 9_001 } as any),
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  assert.equal(snapshot?.coreBestHeight, 951_397);
+  assert.equal(snapshot?.indexerStatusTipHeight, 951_397);
+  assert.equal(snapshot?.targetBlockHeight, 951_398);
+  assert.equal(snapshot?.currentPhase, "waiting");
+  assert.equal(snapshot?.readinessBlocker, null);
+  assert.equal(snapshot?.note, "Waiting for the next block after the last mining attempt on this tip.");
 });
 
 test("performMiningCycle continues after auto-clearing an empty repair-required mining publish", async (t) => {

@@ -548,14 +548,12 @@ function mapIndexerDaemonStatusStateForMining(
 function resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(
   status: ManagedIndexerDaemonObservedStatus,
 ): MiningRuntimeTipStatusRefresh {
-  const tipsAligned = status.coreBestHeight === null || status.appliedTipHeight === null
-    ? null
-    : status.coreBestHeight === status.appliedTipHeight
-      && (
-        status.coreBestHash === null
-        || status.appliedTipHash === null
-        || status.coreBestHash === status.appliedTipHash
-      );
+  const tipsAligned = resolveObservedTipAlignment({
+    coreBestHeight: status.coreBestHeight ?? null,
+    coreBestHash: status.coreBestHash ?? null,
+    indexerTipHeight: status.appliedTipHeight ?? null,
+    indexerTipHash: status.appliedTipHash ?? null,
+  });
 
   return {
     indexerDaemonState: mapIndexerDaemonStatusStateForMining(status.state),
@@ -573,8 +571,67 @@ function resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(
     indexerObservedAtUnixMs: status.updatedAtUnixMs ?? status.heartbeatAtUnixMs ?? null,
     indexerReorgDepth: status.reorgDepth ?? null,
     indexerTipAligned: tipsAligned,
+    tipsAligned,
     targetBlockHeight: status.coreBestHeight === null ? null : status.coreBestHeight + 1,
     referencedBlockHashDisplay: status.coreBestHash ?? null,
+  };
+}
+
+function resolveObservedTipAlignment(options: {
+  coreBestHeight: number | null;
+  coreBestHash: string | null;
+  indexerTipHeight: number | null;
+  indexerTipHash: string | null;
+}): boolean | null {
+  if (options.coreBestHeight === null || options.indexerTipHeight === null) {
+    return null;
+  }
+
+  if (options.coreBestHeight !== options.indexerTipHeight) {
+    return false;
+  }
+
+  return options.coreBestHash === null
+    || options.indexerTipHash === null
+    || options.coreBestHash === options.indexerTipHash;
+}
+
+function mergeMiningRuntimeTipStatusRefresh(options: {
+  indexerStatus: MiningRuntimeTipStatusRefresh | null;
+  coreStatus: MiningRuntimeTipStatusRefresh | null;
+}): MiningRuntimeTipStatusRefresh | null {
+  if (options.indexerStatus === null) {
+    return options.coreStatus;
+  }
+
+  if (options.coreStatus === null) {
+    return options.indexerStatus;
+  }
+
+  const coreBestHeight = options.coreStatus.coreBestHeight ?? options.indexerStatus.coreBestHeight ?? null;
+  const coreBestHash = options.coreStatus.coreBestHash ?? options.indexerStatus.coreBestHash ?? null;
+  const indexerTipHeight = options.indexerStatus.indexerStatusTipHeight
+    ?? options.indexerStatus.indexerTipHeight
+    ?? null;
+  const indexerTipHash = options.indexerStatus.indexerStatusTipHash
+    ?? options.indexerStatus.indexerTipHash
+    ?? null;
+  const tipsAligned = resolveObservedTipAlignment({
+    coreBestHeight,
+    coreBestHash,
+    indexerTipHeight,
+    indexerTipHash,
+  });
+
+  return {
+    ...options.indexerStatus,
+    coreBestHeight,
+    coreBestHash,
+    corePublishState: options.coreStatus.corePublishState ?? options.indexerStatus.corePublishState ?? null,
+    targetBlockHeight: coreBestHeight === null ? null : coreBestHeight + 1,
+    referencedBlockHashDisplay: coreBestHash,
+    indexerTipAligned: tipsAligned,
+    tipsAligned,
   };
 }
 
@@ -632,14 +689,12 @@ function resolveMiningRuntimeTipStatusRefresh(
   const coreBestHash = coreTip.hash;
   const indexerTipHeight = readContext.indexer.snapshotTip?.height ?? null;
   const indexerTipHash = readContext.indexer.snapshotTip?.blockHashHex ?? null;
-  const tipsAligned = coreBestHeight === null || indexerTipHeight === null
-    ? null
-    : coreBestHeight === indexerTipHeight
-      && (
-        coreBestHash === null
-        || indexerTipHash === null
-        || coreBestHash === indexerTipHash
-      );
+  const tipsAligned = resolveObservedTipAlignment({
+    coreBestHeight,
+    coreBestHash,
+    indexerTipHeight,
+    indexerTipHash,
+  });
 
   const liveStatus: MiningRuntimeTipStatusRefresh = {
     indexerDaemonState: readContext.indexer.health,
@@ -659,6 +714,7 @@ function resolveMiningRuntimeTipStatusRefresh(
       ?? null,
     indexerReorgDepth: readContext.indexer.status?.reorgDepth ?? null,
     indexerTipAligned: tipsAligned,
+    tipsAligned,
     targetBlockHeight: coreBestHeight === null ? null : coreBestHeight + 1,
     referencedBlockHashDisplay: coreBestHash,
   };
@@ -1496,6 +1552,7 @@ async function runMiningLoop(options: {
         return null;
       }
 
+      let indexerTipStatus: MiningRuntimeTipStatusRefresh | null = null;
       const probe = await probeIndexerDaemon({
         dataDir: options.dataDir,
         walletRootId,
@@ -1506,28 +1563,34 @@ async function runMiningLoop(options: {
           && probe?.status !== undefined
           && indexerDaemonStatusIsFresh(probe.status, heartbeatAtUnixMs)
         ) {
-          return resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(probe.status);
+          indexerTipStatus = resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(probe.status);
         }
       } finally {
         await probe?.client?.close().catch(() => undefined);
       }
 
-      const status = await readObservedIndexerDaemonStatus({
-        dataDir: options.dataDir,
-        walletRootId,
-      }).catch(() => null);
-      if (status !== null && indexerDaemonStatusIsFresh(status, heartbeatAtUnixMs)) {
-        return resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(status);
+      if (indexerTipStatus === null) {
+        const status = await readObservedIndexerDaemonStatus({
+          dataDir: options.dataDir,
+          walletRootId,
+        }).catch(() => null);
+        if (status !== null && indexerDaemonStatusIsFresh(status, heartbeatAtUnixMs)) {
+          indexerTipStatus = resolveMiningRuntimeTipStatusRefreshFromIndexerStatus(status);
+        }
       }
 
       const bitcoindStatus = await readManagedBitcoindObservedStatus({
         dataDir: options.dataDir,
         walletRootId,
       }).catch(() => null);
-      return await resolveMiningRuntimeTipStatusRefreshFromCoreProbe({
+      const coreTipStatus = await resolveMiningRuntimeTipStatusRefreshFromCoreProbe({
         status: bitcoindStatus,
         signal: options.signal,
       }).catch(() => null);
+      return mergeMiningRuntimeTipStatusRefresh({
+        indexerStatus: indexerTipStatus,
+        coreStatus: coreTipStatus,
+      });
     },
     onSavedSnapshot: (snapshot) => {
       options.visualizer?.update(snapshot, loopState.ui);

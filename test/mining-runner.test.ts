@@ -16,8 +16,10 @@ import {
 import { clearMiningGateCache } from "../src/wallet/mining/competitiveness.js";
 import { buildMiningGenerationRequest as buildMiningGenerationRequestForTesting } from "../src/wallet/mining/candidate.js";
 import { saveClientConfig } from "../src/wallet/mining/config.js";
+import { createMiningRuntimeLoopState } from "../src/wallet/mining/engine-state.js";
 import { loadMiningRuntimeStatus, readMiningEvents } from "../src/wallet/mining/runtime-artifacts.js";
 import type { MiningRuntimeStatusV1 } from "../src/wallet/mining/types.js";
+import { describeMiningVisualizerProgress } from "../src/wallet/mining/visualizer.js";
 import { resolveWalletRuntimePathsForTesting, type WalletRuntimePaths } from "../src/wallet/runtime.js";
 import {
   createMemoryWalletSecretProviderForTesting,
@@ -1430,6 +1432,277 @@ test("runMiningLoop foreground heartbeat refreshes live tip from daemon status w
   assert.equal(heartbeatSnapshotValue.attemptReferencedBlockHashDisplay, "11".repeat(32));
   assert.equal(openReadContextCalls, callsAtGateStart);
   assert.equal(visualizerSnapshots.at(-1)?.targetBlockHeight, 104);
+});
+
+test("runMiningLoop foreground heartbeat merges live Core tip with fresh indexer status while waiting", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-loop-foreground-heartbeat-merged-tip");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const abortController = new AbortController();
+  const databasePath = join(homeDirectory, "indexer.sqlite");
+  const indexedHash = "11".repeat(32);
+  const coreHash = "22".repeat(32);
+  const staleContext = createSynchronizedLoopReadContextAtTip({
+    height: 951_397,
+    blockHashHex: indexedHash,
+    snapshotSeq: "seq-951397",
+    dataDir: homeDirectory,
+    databasePath,
+  });
+  const loopState = createMiningRuntimeLoopState();
+  loopState.attemptedTipKey = `${indexedHash}:951398`;
+  const visualizerSnapshots: MiningRuntimeStatusV1[] = [];
+  const rpcServer = await startFakeBitcoindRpcServer(t, {
+    blocks: 951_398,
+    bestblockhash: coreHash,
+  });
+  await writeFakeBitcoindStatus({
+    dataDir: homeDirectory,
+    walletRootId: staleContext.localState.state.walletRootId,
+    rpc: rpcServer.rpc,
+    cookieFile: join(homeDirectory, "bitcoin.cookie"),
+    nowUnixMs: 400_000,
+  });
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: staleContext.localState.state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-951397",
+    height: 951_397,
+    blockHashHex: indexedHash,
+    observedAtUnixMs: 400_000,
+  });
+
+  let currentNowUnixMs = 400_000;
+  let openReadContextCalls = 0;
+  let heartbeatSnapshot: MiningRuntimeStatusV1 | null = null;
+
+  await runMiningLoopForTesting({
+    dataDir: homeDirectory,
+    databasePath,
+    provider,
+    paths,
+    runMode: "foreground",
+    foregroundPid: 555,
+    foregroundRunId: "foreground-run-merged-tip",
+    foregroundHeartbeatIntervalMs: 10,
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    signal: abortController.signal,
+    loopState,
+    openReadContext: async () => {
+      openReadContextCalls += 1;
+      return staleContext;
+    },
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    rpcFactory: () => createLoopMiningRpc({
+      async getBlockchainInfo() {
+        return {
+          blocks: 951_397,
+          bestblockhash: indexedHash,
+          initialblockdownload: false,
+        };
+      },
+    }) as any,
+    visualizer: {
+      update(snapshot: MiningRuntimeStatusV1) {
+        visualizerSnapshots.push(snapshot);
+      },
+    } as any,
+    nowImpl: () => {
+      currentNowUnixMs += 1_000;
+      return currentNowUnixMs;
+    },
+    sleepImpl: async () => {
+      const deadline = Date.now() + 2_000;
+      do {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        heartbeatSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+      } while (
+        (
+          heartbeatSnapshot?.coreBestHeight !== 951_398
+          || heartbeatSnapshot?.currentPhase !== "waiting-indexer"
+          || visualizerSnapshots.at(-1)?.coreBestHeight !== 951_398
+        )
+        && Date.now() < deadline
+      );
+      abortController.abort(createMiningStopRequestedError());
+    },
+  });
+
+  const heartbeatSnapshotValue = heartbeatSnapshot as unknown as MiningRuntimeStatusV1;
+  assert.equal(heartbeatSnapshotValue.coreBestHeight, 951_398);
+  assert.equal(heartbeatSnapshotValue.coreBestHash, coreHash);
+  assert.equal(heartbeatSnapshotValue.indexerStatusTipHeight, 951_397);
+  assert.equal(heartbeatSnapshotValue.indexerStatusTipHash, indexedHash);
+  assert.equal(heartbeatSnapshotValue.targetBlockHeight, 951_399);
+  assert.equal(heartbeatSnapshotValue.referencedBlockHashDisplay, coreHash);
+  assert.equal(heartbeatSnapshotValue.currentPhase, "waiting-indexer");
+  assert.equal(heartbeatSnapshotValue.readinessBlocker, "tip-alignment");
+  assert.equal(heartbeatSnapshotValue.tipsAligned, false);
+  assert.equal(heartbeatSnapshotValue.note, "Mining is waiting for Bitcoin Core and the indexer to align.");
+  assert.equal(describeMiningVisualizerProgress(heartbeatSnapshotValue), "Mining is waiting for Bitcoin Core and the indexer to align.");
+  assert.equal(openReadContextCalls, 1);
+  assert.equal(visualizerSnapshots.at(-1)?.coreBestHeight, 951_398);
+  assert.equal(visualizerSnapshots.at(-1)?.targetBlockHeight, 951_399);
+  assert.ok(rpcServer.calls.includes("getblockchaininfo"));
+  assert.ok(rpcServer.calls.includes("getnetworkinfo"));
+  assert.ok(rpcServer.calls.includes("getmempoolinfo"));
+});
+
+test("runMiningLoop foreground heartbeat preserves scoring phase while live Core tip advances ahead of indexer", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-runner-loop-foreground-heartbeat-active-merged-tip");
+  const paths = createRuntimePaths(homeDirectory);
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const abortController = new AbortController();
+  const databasePath = join(homeDirectory, "indexer.sqlite");
+  const indexedHash = "11".repeat(32);
+  const coreHash = "22".repeat(32);
+  const staleContext = createSynchronizedLoopReadContextAtTip({
+    height: 951_397,
+    blockHashHex: indexedHash,
+    snapshotSeq: "seq-951397",
+    dataDir: homeDirectory,
+    databasePath,
+  });
+  const candidate = createLoopMiningCandidate({
+    targetBlockHeight: 951_398,
+    referencedBlockHashDisplay: indexedHash,
+  });
+  const rpcServer = await startFakeBitcoindRpcServer(t, {
+    blocks: 951_398,
+    bestblockhash: coreHash,
+  });
+  await writeFakeBitcoindStatus({
+    dataDir: homeDirectory,
+    walletRootId: staleContext.localState.state.walletRootId,
+    rpc: rpcServer.rpc,
+    cookieFile: join(homeDirectory, "bitcoin.cookie"),
+    nowUnixMs: 500_000,
+  });
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: staleContext.localState.state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-951397",
+    height: 951_397,
+    blockHashHex: indexedHash,
+    observedAtUnixMs: 500_000,
+  });
+
+  let currentNowUnixMs = 500_000;
+  let heartbeatSnapshot: MiningRuntimeStatusV1 | null = null;
+
+  await runMiningLoopForTesting({
+    dataDir: homeDirectory,
+    databasePath,
+    provider,
+    paths,
+    runMode: "foreground",
+    foregroundPid: 555,
+    foregroundRunId: "foreground-run-active-merged-tip",
+    foregroundHeartbeatIntervalMs: 10,
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    signal: abortController.signal,
+    openReadContext: async () => staleContext,
+    attachService: async () => ({
+      rpc: {},
+      pid: 9_001,
+      refreshServiceStatus: async () => ({
+        serviceInstanceId: "svc-1",
+        processId: 9_001,
+      }),
+    }) as any,
+    rpcFactory: () => createLoopMiningRpc({
+      async getBlockchainInfo() {
+        return {
+          blocks: 951_397,
+          bestblockhash: indexedHash,
+          initialblockdownload: false,
+        };
+      },
+      async getRawMempoolVerbose() {
+        return {
+          txids: [],
+          mempool_sequence: "seq-951397",
+        };
+      },
+      async getRawMempoolEntries() {
+        return {};
+      },
+    }) as any,
+    nowImpl: () => {
+      currentNowUnixMs += 1_000;
+      return currentNowUnixMs;
+    },
+    sleepImpl: async () => {
+      abortController.abort(createMiningStopRequestedError());
+    },
+    generateCandidatesForDomainsImpl: async () => [candidate],
+    runCompetitivenessGateImpl: async () => {
+      const deadline = Date.now() + 2_000;
+      do {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        heartbeatSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+      } while (
+        (
+          heartbeatSnapshot?.coreBestHeight !== 951_398
+          || heartbeatSnapshot?.currentPhase !== "scoring"
+        )
+        && Date.now() < deadline
+      );
+
+      abortController.abort(createMiningStopRequestedError());
+      return {
+        allowed: false,
+        decision: "suppressed-top5-mempool" as const,
+        sameDomainCompetitorSuppressed: false,
+        competitivenessGateIndeterminate: false,
+        indeterminateReason: null,
+        diagnostics: {
+          visibleMempoolTxCount: 0,
+          indexedContextCount: 0,
+          negativeTxCount: null,
+          unknownTxCount: 0,
+          hydratedTxCount: 0,
+          mempoolEntryCount: 0,
+          missingEntryCount: 0,
+          cacheStatus: "refreshed",
+          mempoolSequence: "seq-951397",
+          candidateRank: 6,
+          higherRankedCompetitorDomainCount: 5,
+          dedupedCompetitorDomainCount: 5,
+        },
+        higherRankedCompetitorDomainCount: 5,
+        dedupedCompetitorDomainCount: 5,
+        mempoolSequenceCacheStatus: "refreshed",
+        lastMempoolSequence: "seq-951397",
+        candidateRank: 6,
+        visibleBoardEntries: [],
+      };
+    },
+  });
+
+  const heartbeatSnapshotValue = heartbeatSnapshot as unknown as MiningRuntimeStatusV1;
+  assert.equal(heartbeatSnapshotValue.coreBestHeight, 951_398);
+  assert.equal(heartbeatSnapshotValue.coreBestHash, coreHash);
+  assert.equal(heartbeatSnapshotValue.indexerStatusTipHeight, 951_397);
+  assert.equal(heartbeatSnapshotValue.targetBlockHeight, 951_399);
+  assert.equal(heartbeatSnapshotValue.referencedBlockHashDisplay, coreHash);
+  assert.equal(heartbeatSnapshotValue.attemptTargetBlockHeight, 951_398);
+  assert.equal(heartbeatSnapshotValue.attemptReferencedBlockHashDisplay, indexedHash);
+  assert.equal(heartbeatSnapshotValue.attemptIndexerSnapshotSeq, "seq-951397");
+  assert.equal(heartbeatSnapshotValue.currentPhase, "scoring");
+  assert.equal(heartbeatSnapshotValue.readinessBlocker, null);
+  assert.equal(heartbeatSnapshotValue.tipsAligned, false);
 });
 
 test("runMiningLoop foreground heartbeat falls back to bounded Core probe when daemon tip status is stale", async (t) => {
