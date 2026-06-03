@@ -1,6 +1,6 @@
 # `@cogcoin/client`
 
-`@cogcoin/client@1.2.15` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
+`@cogcoin/client@1.2.19` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
 
 Use Node 22 or newer.
 
@@ -121,10 +121,13 @@ The published package depends on:
 - `@scure/bip32@^2.0.1`
 - `@scure/bip39@^2.0.1`
 - `better-sqlite3@12.8.0`
-- `hash-wasm@^4.12.0`
 - `zeromq@6.5.0`
 
 `@cogcoin/vectors@1.0.1` is kept as a repository development dependency for conformance tests and is not part of the published runtime dependency surface.
+
+## Upgrade Notes For `1.2.19`
+
+`@cogcoin/client@1.2.19` makes live Bitcoin Core status authoritative for the mining panel whenever the bounded Core probe succeeds. The indexer daemon's observed Core fields remain a fallback when live Core status is unavailable, while quiescent Core/indexer disagreement now renders as a `waiting-indexer` tip-alignment wait instead of reporting that mining is ready on an older tip. Candidate generation, scoring, and publishing still require coherent indexer truth aligned to the live Core tip before any transaction is broadcast.
 
 ## Upgrade Notes For `1.2.15`
 
