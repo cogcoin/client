@@ -1005,6 +1005,7 @@ export async function runMiningPhaseMachine(options: {
             provider: options.provider,
             paths: options.paths,
             fallbackState: options.readContext.localState.state,
+            currentReadContext: options.readContext,
             openReadContext: options.openReadContext,
             attachService: options.attachService,
             rpcFactory: options.rpcFactory,

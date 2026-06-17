@@ -8,6 +8,7 @@ import { serializeMine } from "../cogop/index.js";
 import { openWalletReadContext, type WalletReadContext } from "../read/index.js";
 import type { WalletRuntimePaths } from "../runtime.js";
 import type { WalletSecretProvider } from "../state/provider.js";
+import { loadWalletState } from "../state/storage.js";
 import {
   assertFixedInputPrefixMatches,
   buildWalletMutationTransaction,
@@ -53,7 +54,9 @@ import {
   miningPublishMayStillExist,
 } from "./state.js";
 import {
+  ensureIndexerTruthIsCurrent,
   refreshMiningCandidateFromCurrentStateDetailed,
+  getIndexerTruthKey,
   type MiningCandidateRefreshFailureReason,
   type MiningEligibleAnchoredRoot,
 } from "./candidate.js";
@@ -467,6 +470,150 @@ function candidateTargetsCurrentNodeTip(
     && nodeBestHash !== null
     && candidate.targetBlockHeight === nodeBestHeight + 1
     && candidate.referencedBlockHashDisplay === nodeBestHash;
+}
+
+type PublishFastRevalidationResult =
+  | { ok: true }
+  | {
+    ok: false;
+    reason: string;
+    errorName?: string | null;
+  };
+
+function managedCoreWalletIdentityMatches(
+  current: WalletStateV1["managedCoreWallet"],
+  loaded: WalletStateV1["managedCoreWallet"],
+): boolean {
+  return loaded.walletName === current.walletName
+    && loaded.internalPassphrase === current.internalPassphrase
+    && loaded.descriptorChecksum === current.descriptorChecksum
+    && (loaded.walletAddress ?? null) === (current.walletAddress ?? null)
+    && (loaded.walletScriptPubKeyHex ?? null) === (current.walletScriptPubKeyHex ?? null)
+    && loaded.proofStatus === current.proofStatus;
+}
+
+function walletPublishIdentityMatches(
+  context: ReadyMiningReadContext,
+  loaded: WalletStateV1,
+): boolean {
+  const current = context.localState.state;
+  return loaded.stateRevision === current.stateRevision
+    && loaded.walletRootId === current.walletRootId
+    && loaded.walletRootId === context.localState.walletRootId
+    && loaded.network === current.network
+    && loaded.descriptor.publicExternal === current.descriptor.publicExternal
+    && loaded.descriptor.checksum === current.descriptor.checksum
+    && loaded.funding.address === current.funding.address
+    && loaded.funding.scriptPubKeyHex === current.funding.scriptPubKeyHex
+    && managedCoreWalletIdentityMatches(current.managedCoreWallet, loaded.managedCoreWallet);
+}
+
+async function validateFastPublishReadContext(options: {
+  readContext: ReadyMiningReadContext;
+  candidate: MiningCandidate;
+  dataDir: string;
+  provider: WalletSecretProvider;
+  paths: WalletRuntimePaths;
+  throwIfStopping?: () => void;
+}): Promise<PublishFastRevalidationResult> {
+  options.throwIfStopping?.();
+
+  if (options.candidate.provenance === undefined) {
+    return {
+      ok: false,
+      reason: "missing-candidate-provenance",
+    };
+  }
+
+  if (candidateProvenanceSnapshotChanged(options.readContext, options.candidate)) {
+    return {
+      ok: false,
+      reason: "candidate-provenance-changed",
+    };
+  }
+
+  const truthKey = getIndexerTruthKey(options.readContext);
+  if (truthKey === null) {
+    return {
+      ok: false,
+      reason: "missing-snapshot-lease",
+    };
+  }
+
+  try {
+    await ensureIndexerTruthIsCurrent({
+      dataDir: options.dataDir,
+      truthKey,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "indexer-truth-changed",
+      errorName: error instanceof Error ? error.name : "unknown",
+    };
+  }
+
+  let loadedState: WalletStateV1;
+  try {
+    loadedState = (await loadWalletState({
+      primaryPath: options.paths.walletStatePath,
+      backupPath: options.paths.walletStateBackupPath,
+    }, {
+      provider: options.provider,
+    })).state;
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "wallet-state-unavailable",
+      errorName: error instanceof Error ? error.name : "unknown",
+    };
+  }
+
+  if (!walletPublishIdentityMatches(options.readContext, loadedState)) {
+    return {
+      ok: false,
+      reason: "wallet-state-changed",
+    };
+  }
+
+  return { ok: true };
+}
+
+async function appendFastPublishRevalidationEvent(options: {
+  appendEventFn: AppendMiningEventFn;
+  paths: WalletRuntimePaths;
+  candidate: MiningCandidate;
+  runId: string | null;
+  readContext: ReadyMiningReadContext;
+  durationMs: number;
+  result: PublishFastRevalidationResult;
+}): Promise<void> {
+  await appendPublishTimingEvent(
+    options.appendEventFn,
+    options.paths,
+    "timing-publish-fast-revalidation",
+    options.result.ok
+      ? "Validated current mining read context before publish."
+      : "Current mining read context needs a publish-time refresh.",
+    createPublishTimingContext({
+      candidate: options.candidate,
+      runId: options.runId,
+      level: options.result.ok ? "info" : "warn",
+      durationMs: options.durationMs,
+      metrics: {
+        outcome: options.result.ok ? "success" : "fallback",
+        reason: options.result.ok ? null : options.result.reason,
+        errorName: options.result.ok ? null : options.result.errorName ?? null,
+        snapshotSeq: options.readContext.snapshot.snapshotSeq ?? options.readContext.indexer.snapshotSeq ?? null,
+        daemonInstanceId: options.readContext.snapshot.daemonInstanceId ?? options.readContext.indexer.daemonInstanceId ?? null,
+        stateRevision: options.readContext.localState.state.stateRevision,
+        coreBestHeight: options.readContext.nodeStatus?.nodeBestHeight ?? null,
+        coreBestHash: options.readContext.nodeStatus?.nodeBestHashHex ?? null,
+        indexerTipHeight: options.readContext.snapshot.tip?.height ?? options.readContext.indexer.snapshotTip?.height ?? null,
+        indexerTipHash: options.readContext.snapshot.tip?.blockHashHex ?? options.readContext.indexer.snapshotTip?.blockHashHex ?? null,
+      },
+    }),
+  );
 }
 
 interface MiningCoreTip {
@@ -1178,6 +1325,7 @@ export async function publishCandidate(options: {
   provider: WalletSecretProvider;
   paths: WalletRuntimePaths;
   fallbackState: WalletStateV1;
+  currentReadContext?: ReadyMiningReadContext;
   openReadContext: typeof openWalletReadContext;
   attachService: typeof attachOrStartManagedBitcoindService;
   rpcFactory: (config: Parameters<typeof createRpcClient>[0]) => MiningRpcClient;
@@ -1290,66 +1438,9 @@ export async function publishCandidate(options: {
     };
   };
 
-  options.throwIfStopping?.();
-  const readContextRefreshStartedAt = performance.now();
-  let lockedReadContext: WalletReadContext;
-  try {
-    lockedReadContext = await options.openReadContext({
-      dataDir: options.dataDir,
-      databasePath: options.databasePath,
-      secretProvider: options.provider,
-      walletControlLockHeld: true,
-      paths: options.paths,
-    });
-  } catch (error) {
-    await appendPublishTimingEvent(
-      options.appendEventFn,
-      options.paths,
-      "timing-read-context-refresh",
-      "Refreshed mining read context before publish.",
-      createPublishTimingContext({
-        candidate: options.candidate,
-        runId: options.runId,
-        level: "warn",
-        durationMs: performance.now() - readContextRefreshStartedAt,
-        metrics: {
-          outcome: "error",
-          errorName: error instanceof Error ? error.name : "unknown",
-        },
-      }),
-    );
-    throw error;
-  }
-
-  try {
-    options.throwIfStopping?.();
-    const readyReadContext = resolveReadyMiningReadContext(lockedReadContext);
-    await appendPublishTimingEvent(
-      options.appendEventFn,
-      options.paths,
-      "timing-read-context-refresh",
-      "Refreshed mining read context before publish.",
-      createPublishTimingContext({
-        candidate: options.candidate,
-        runId: options.runId,
-        durationMs: performance.now() - readContextRefreshStartedAt,
-        metrics: {
-          outcome: readyReadContext === null ? "snapshot-unavailable" : "success",
-          indexerTruthSource: lockedReadContext.indexer.source ?? null,
-          snapshotSeq: lockedReadContext.snapshot?.snapshotSeq ?? lockedReadContext.indexer.snapshotSeq ?? null,
-          daemonInstanceId: lockedReadContext.snapshot?.daemonInstanceId ?? lockedReadContext.indexer.daemonInstanceId ?? null,
-          hasSnapshot: lockedReadContext.snapshot !== null,
-          hasModel: lockedReadContext.model !== null,
-          coreBestHeight: lockedReadContext.nodeStatus?.nodeBestHeight ?? null,
-          coreBestHash: lockedReadContext.nodeStatus?.nodeBestHashHex ?? null,
-          indexerTipHeight: lockedReadContext.snapshot?.tip?.height ?? lockedReadContext.indexer.snapshotTip?.height ?? null,
-          indexerTipHash: lockedReadContext.snapshot?.tip?.blockHashHex ?? lockedReadContext.indexer.snapshotTip?.blockHashHex ?? null,
-        },
-      }),
-    );
-    if (readyReadContext === null) {
-      return await createSnapshotUnavailableRetryResult();
-    }
+  const publishWithReadyReadContext = async (
+    readyReadContext: ReadyMiningReadContext,
+  ): Promise<MiningPublishOutcome> => {
     if (!candidateTargetsCurrentNodeTip(readyReadContext, options.candidate)) {
       return await createRestartResult(
         readyReadContext.localState.state,
@@ -1495,6 +1586,94 @@ export async function publishCandidate(options: {
 
       throw error;
     }
+  };
+
+  if (options.currentReadContext !== undefined) {
+    const fastRevalidationStartedAt = performance.now();
+    const fastRevalidationResult = await validateFastPublishReadContext({
+      readContext: options.currentReadContext,
+      candidate: options.candidate,
+      dataDir: options.dataDir,
+      provider: options.provider,
+      paths: options.paths,
+      throwIfStopping: options.throwIfStopping,
+    });
+    await appendFastPublishRevalidationEvent({
+      appendEventFn: options.appendEventFn,
+      paths: options.paths,
+      candidate: options.candidate,
+      runId: options.runId,
+      readContext: options.currentReadContext,
+      durationMs: performance.now() - fastRevalidationStartedAt,
+      result: fastRevalidationResult,
+    });
+
+    if (fastRevalidationResult.ok) {
+      return await publishWithReadyReadContext(options.currentReadContext);
+    }
+  }
+
+  options.throwIfStopping?.();
+  const readContextRefreshStartedAt = performance.now();
+  let lockedReadContext: WalletReadContext;
+  try {
+    lockedReadContext = await options.openReadContext({
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      secretProvider: options.provider,
+      walletControlLockHeld: true,
+      paths: options.paths,
+    });
+  } catch (error) {
+    await appendPublishTimingEvent(
+      options.appendEventFn,
+      options.paths,
+      "timing-read-context-refresh",
+      "Refreshed mining read context before publish.",
+      createPublishTimingContext({
+        candidate: options.candidate,
+        runId: options.runId,
+        level: "warn",
+        durationMs: performance.now() - readContextRefreshStartedAt,
+        metrics: {
+          outcome: "error",
+          errorName: error instanceof Error ? error.name : "unknown",
+        },
+      }),
+    );
+    throw error;
+  }
+
+  try {
+    options.throwIfStopping?.();
+    const readyReadContext = resolveReadyMiningReadContext(lockedReadContext);
+    await appendPublishTimingEvent(
+      options.appendEventFn,
+      options.paths,
+      "timing-read-context-refresh",
+      "Refreshed mining read context before publish.",
+      createPublishTimingContext({
+        candidate: options.candidate,
+        runId: options.runId,
+        durationMs: performance.now() - readContextRefreshStartedAt,
+        metrics: {
+          outcome: readyReadContext === null ? "snapshot-unavailable" : "success",
+          indexerTruthSource: lockedReadContext.indexer.source ?? null,
+          snapshotSeq: lockedReadContext.snapshot?.snapshotSeq ?? lockedReadContext.indexer.snapshotSeq ?? null,
+          daemonInstanceId: lockedReadContext.snapshot?.daemonInstanceId ?? lockedReadContext.indexer.daemonInstanceId ?? null,
+          hasSnapshot: lockedReadContext.snapshot !== null,
+          hasModel: lockedReadContext.model !== null,
+          coreBestHeight: lockedReadContext.nodeStatus?.nodeBestHeight ?? null,
+          coreBestHash: lockedReadContext.nodeStatus?.nodeBestHashHex ?? null,
+          indexerTipHeight: lockedReadContext.snapshot?.tip?.height ?? lockedReadContext.indexer.snapshotTip?.height ?? null,
+          indexerTipHash: lockedReadContext.snapshot?.tip?.blockHashHex ?? lockedReadContext.indexer.snapshotTip?.blockHashHex ?? null,
+        },
+      }),
+    );
+    if (readyReadContext === null) {
+      return await createSnapshotUnavailableRetryResult();
+    }
+    return await publishWithReadyReadContext(readyReadContext);
   } finally {
     await lockedReadContext.close();
   }

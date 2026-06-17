@@ -79,6 +79,7 @@ import {
   createMemoryWalletSecretProviderForTesting,
   createWalletSecretReference,
 } from "../src/wallet/state/provider.js";
+import { saveWalletState } from "../src/wallet/state/storage.js";
 import { MiningProviderRequestError } from "../src/wallet/mining/sentences.js";
 import type { MiningFollowVisualizerState } from "../src/wallet/mining/visualizer.js";
 import {
@@ -1177,6 +1178,72 @@ function createReadyMiningReadContext(options: {
     }),
     close: options.close ?? (async () => undefined),
   } as any;
+}
+
+function createSnapshotLeaseReadyMiningReadContext(options: {
+  dataDir: string;
+  databasePath: string;
+  daemonInstanceId?: string;
+  snapshotSeq?: string;
+  miningState?: ReturnType<typeof createMiningState>;
+  readContextOverrides?: Record<string, unknown>;
+}) {
+  const daemonInstanceId = options.daemonInstanceId ?? "daemon-1";
+  const snapshotSeq = options.snapshotSeq ?? "seq-100";
+  const context = createReadyMiningReadContext({
+    miningState: options.miningState,
+    readContextOverrides: {
+      dataDir: options.dataDir,
+      databasePath: options.databasePath,
+      ...options.readContextOverrides,
+    },
+  });
+
+  context.snapshot = {
+    ...context.snapshot,
+    daemonInstanceId,
+    snapshotSeq,
+  };
+  context.indexer = {
+    ...context.indexer,
+    daemonInstanceId,
+    snapshotSeq,
+  };
+  return context;
+}
+
+function createTestMiningCandidateForReadContext(
+  readContext: ReturnType<typeof createSnapshotLeaseReadyMiningReadContext>,
+  overrides: Record<string, unknown> = {},
+) {
+  const candidateOverrides = {
+    provenance: createTestMiningCandidateProvenance({
+      walletRootId: readContext.localState.state.walletRootId,
+      walletScriptPubKeyHex: readContext.model.walletScriptPubKeyHex,
+      indexerDaemonInstanceId: readContext.snapshot.daemonInstanceId ?? readContext.indexer.daemonInstanceId ?? null,
+      indexerSnapshotSeq: readContext.snapshot.snapshotSeq ?? readContext.indexer.snapshotSeq ?? null,
+      snapshotTipHeight: readContext.snapshot.tip?.height ?? readContext.indexer.snapshotTip?.height ?? null,
+      snapshotTipHash: readContext.snapshot.tip?.blockHashHex ?? readContext.indexer.snapshotTip?.blockHashHex ?? null,
+    }),
+    ...overrides,
+  };
+  return createTestMiningCandidate(candidateOverrides);
+}
+
+async function saveWalletStateForMiningPublishTest(
+  paths: ReturnType<typeof resolveWalletRuntimePathsForTesting>,
+  provider: ReturnType<typeof createMemoryWalletSecretProviderForTesting>,
+  state: ReturnType<typeof createWalletState>,
+) {
+  const secretReference = createWalletSecretReference(state.walletRootId);
+  await provider.storeSecret(secretReference.keyId, new Uint8Array(32).fill(7));
+  await saveWalletState({
+    primaryPath: paths.walletStatePath,
+    backupPath: paths.walletStateBackupPath,
+  }, state, {
+    provider,
+    secretReference,
+  });
 }
 
 function createManagedBitcoindTimeoutMessage(method = "getblockchaininfo"): string {
@@ -4265,6 +4332,116 @@ test("pre-publish status overrides clear stale competitiveness gate diagnostics"
   assert.equal(overrides.competitivenessGateDiagnostics, null);
 });
 
+test("performMiningCycle publishes with current read context without an extra publish refresh", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-fast-publish-cycle");
+  const databasePath = `${homeDirectory}/client.sqlite`;
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const readContext = createSnapshotLeaseReadyMiningReadContext({
+    dataDir: homeDirectory,
+    databasePath,
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+  });
+  const state = readContext.localState.state;
+  const publishableSentence = "a".repeat(60);
+  const candidate = createTestMiningCandidateForReadContext(readContext, {
+    sentence: publishableSentence,
+    encodedSentenceBytes: Buffer.from(publishableSentence, "utf8"),
+  });
+  let openReadContextCalls = 0;
+
+  await saveWalletStateForMiningPublishTest(paths, provider, state);
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+  });
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: "run-1",
+    openReadContext: async () => {
+      openReadContextCalls += 1;
+      return createSnapshotLeaseReadyMiningReadContext({
+        dataDir: homeDirectory,
+        databasePath,
+        miningState: createMiningState({
+          livePublishInMempool: false,
+        }),
+      });
+    },
+    attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+    rpcFactory: () => createHealthyMiningRpc({
+      async walletPassphrase() {
+        return null;
+      },
+      async walletProcessPsbt() {
+        return {
+          psbt: "signed-psbt",
+          complete: true,
+        };
+      },
+      async walletLock() {
+        return null;
+      },
+      async finalizePsbt() {
+        return {
+          complete: true,
+          hex: "raw-hex",
+        };
+      },
+      async decodeRawTransaction() {
+        return {
+          txid: "bb".repeat(32),
+          hash: "cc".repeat(32),
+        } as never;
+      },
+      async testMempoolAccept() {
+        return [{ allowed: true }];
+      },
+      async sendRawTransaction() {
+        return "bb".repeat(32);
+      },
+    }, {
+      fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    }) as any,
+    loopState,
+    nowImpl: () => 1_000,
+    generateCandidatesForDomainsImpl: async () => [candidate],
+    mempoolCheck: false,
+    runCompetitivenessGateImpl: async () => {
+      throw new Error("competitiveness gate should be skipped for bare mining");
+    },
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  const events = await readMiningEvents({
+    eventsPath: paths.miningEventsPath,
+    all: true,
+  });
+
+  assert.equal(snapshot?.currentPublishDecision, "broadcast");
+  assert.equal(openReadContextCalls, 1);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-publish-fast-revalidation"
+    && event.metrics?.outcome === "success"
+    && event.durationMs !== null
+  ), true);
+  assert.equal(events.some((event) => event.kind === "timing-read-context-refresh"), false);
+});
+
 test("performMiningCycle retries managed Core wallet relocks on later ticks without regenerating candidates", async (t) => {
   const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-managed-core-relock-cycle");
   const paths = resolveWalletRuntimePathsForTesting({
@@ -5135,6 +5312,350 @@ test("publish candidate pauses with a waiting result after insufficient funds", 
   assert.equal(pausedEvent?.reason, "insufficient-funds");
   assert.doesNotMatch(pausedEvent?.message ?? "", /walletcreatefundedpsbt/i);
   assert.match(pausedEvent?.message ?? "", /with safe BTC/i);
+});
+
+test("publish candidate reuses current read context when publish provenance is still current", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-fast-publish");
+  const databasePath = `${homeDirectory}/client.sqlite`;
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const readContext = createSnapshotLeaseReadyMiningReadContext({
+    dataDir: homeDirectory,
+    databasePath,
+  });
+  const state = readContext.localState.state;
+  const candidate = createTestMiningCandidateForReadContext(readContext);
+  const events: any[] = [];
+  let openReadContextCalls = 0;
+  let publishAttemptReadContext: unknown = null;
+
+  await saveWalletStateForMiningPublishTest(paths, provider, state);
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+  });
+
+  const result = await publishCandidateForTesting({
+    candidate,
+    dataDir: homeDirectory,
+    databasePath,
+    provider,
+    paths,
+    fallbackState: state,
+    currentReadContext: readContext,
+    openReadContext: async () => {
+      openReadContextCalls += 1;
+      throw new Error("openReadContext should not be called on the fast publish path");
+    },
+    attachService: async () => {
+      throw new Error("attachService should not be called when publishAttempt is stubbed");
+    },
+    rpcFactory: () => {
+      throw new Error("rpcFactory should not be called when publishAttempt is stubbed");
+    },
+    runId: "run-1",
+    publishAttempt: async ({ readContext: attemptReadContext }) => {
+      publishAttemptReadContext = attemptReadContext;
+      return {
+        state: attemptReadContext.localState.state,
+        txid: "bb".repeat(32),
+        decision: "broadcast",
+      };
+    },
+    appendEventFn: async (_paths, event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(result.decision, "broadcast");
+  assert.equal(result.txid, "bb".repeat(32));
+  assert.equal(openReadContextCalls, 0);
+  assert.equal(publishAttemptReadContext, readContext);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-publish-fast-revalidation"
+    && event.metrics?.outcome === "success"
+    && event.durationMs >= 0
+  ), true);
+  assert.equal(events.some((event) => event.kind === "timing-read-context-refresh"), false);
+});
+
+test("publish candidate fast path restarts when live Core advances before broadcast", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-fast-publish-core-advance");
+  const databasePath = `${homeDirectory}/client.sqlite`;
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const readContext = createSnapshotLeaseReadyMiningReadContext({
+    dataDir: homeDirectory,
+    databasePath,
+  });
+  const state = readContext.localState.state;
+  const candidate = createTestMiningCandidateForReadContext(readContext);
+  const events: any[] = [];
+  let openReadContextCalls = 0;
+
+  await saveWalletStateForMiningPublishTest(paths, provider, state);
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+  });
+
+  const result = await publishCandidateForTesting({
+    candidate,
+    dataDir: homeDirectory,
+    databasePath,
+    provider,
+    paths,
+    fallbackState: state,
+    currentReadContext: readContext,
+    openReadContext: async () => {
+      openReadContextCalls += 1;
+      throw new Error("openReadContext should not be called before live Core restart");
+    },
+    attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+    rpcFactory: () => createHealthyMiningRpc({
+      async getBlockchainInfo() {
+        return {
+          blocks: 101,
+          bestblockhash: "22".repeat(32),
+          initialblockdownload: false,
+        };
+      },
+    }, {
+      fundingScriptPubKeyHex: state.funding.scriptPubKeyHex,
+    }) as any,
+    runId: "run-1",
+    appendEventFn: async (_paths, event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(result.restart, true);
+  assert.equal(result.decision, "publish-restart-tip-changed");
+  assert.equal(openReadContextCalls, 0);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-publish-fast-revalidation"
+    && event.metrics?.outcome === "success"
+  ), true);
+  assert.equal(events.some((event) => event.kind === "timing-read-context-refresh"), false);
+});
+
+test("publish candidate falls back to full read context when local wallet state changes", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-fast-publish-wallet-fallback");
+  const databasePath = `${homeDirectory}/client.sqlite`;
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const readContext = createSnapshotLeaseReadyMiningReadContext({
+    dataDir: homeDirectory,
+    databasePath,
+  });
+  const state = readContext.localState.state;
+  const candidate = createTestMiningCandidateForReadContext(readContext);
+  const events: any[] = [];
+  let openReadContextCalls = 0;
+  let publishAttempts = 0;
+
+  await saveWalletStateForMiningPublishTest(paths, provider, {
+    ...state,
+    stateRevision: state.stateRevision + 1,
+    lastWrittenAtUnixMs: state.lastWrittenAtUnixMs + 1,
+  });
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+  });
+
+  const result = await publishCandidateForTesting({
+    candidate,
+    dataDir: homeDirectory,
+    databasePath,
+    provider,
+    paths,
+    fallbackState: state,
+    currentReadContext: readContext,
+    openReadContext: async () => {
+      openReadContextCalls += 1;
+      return readContext;
+    },
+    attachService: async () => {
+      throw new Error("attachService should not be called when publishAttempt is stubbed");
+    },
+    rpcFactory: () => {
+      throw new Error("rpcFactory should not be called when publishAttempt is stubbed");
+    },
+    runId: "run-1",
+    publishAttempt: async ({ readContext: attemptReadContext }) => {
+      publishAttempts += 1;
+      return {
+        state: attemptReadContext.localState.state,
+        txid: "bb".repeat(32),
+        decision: "broadcast",
+      };
+    },
+    appendEventFn: async (_paths, event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(result.decision, "broadcast");
+  assert.equal(openReadContextCalls, 1);
+  assert.equal(publishAttempts, 1);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-publish-fast-revalidation"
+    && event.metrics?.outcome === "fallback"
+    && event.metrics?.reason === "wallet-state-changed"
+  ), true);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-read-context-refresh"
+    && event.metrics?.outcome === "success"
+  ), true);
+});
+
+test("publish candidate falls back and restarts when current indexer truth is stale", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-fast-publish-indexer-fallback");
+  const databasePath = `${homeDirectory}/client.sqlite`;
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const readContext = createSnapshotLeaseReadyMiningReadContext({
+    dataDir: homeDirectory,
+    databasePath,
+    snapshotSeq: "seq-100",
+  });
+  const refreshedReadContext = createSnapshotLeaseReadyMiningReadContext({
+    dataDir: homeDirectory,
+    databasePath,
+    snapshotSeq: "seq-101",
+  });
+  const state = readContext.localState.state;
+  const candidate = createTestMiningCandidateForReadContext(readContext);
+  const events: any[] = [];
+  let openReadContextCalls = 0;
+
+  await saveWalletStateForMiningPublishTest(paths, provider, state);
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-101",
+  });
+
+  const result = await publishCandidateForTesting({
+    candidate,
+    dataDir: homeDirectory,
+    databasePath,
+    provider,
+    paths,
+    fallbackState: state,
+    currentReadContext: readContext,
+    openReadContext: async () => {
+      openReadContextCalls += 1;
+      return refreshedReadContext;
+    },
+    attachService: async () => {
+      throw new Error("attachService should not be called when publish restarts before broadcast");
+    },
+    rpcFactory: () => {
+      throw new Error("rpcFactory should not be called when publish restarts before broadcast");
+    },
+    runId: "run-1",
+    publishAttempt: async () => {
+      throw new Error("publishAttempt should not be called when snapshot provenance changed");
+    },
+    appendEventFn: async (_paths, event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(result.restart, true);
+  assert.equal(result.decision, "publish-restart-snapshot-changed");
+  assert.equal(openReadContextCalls, 1);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-publish-fast-revalidation"
+    && event.metrics?.outcome === "fallback"
+    && event.metrics?.reason === "indexer-truth-changed"
+  ), true);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-read-context-refresh"
+    && event.metrics?.outcome === "success"
+  ), true);
+});
+
+test("publish candidate falls back when current read context has no snapshot lease identity", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-fast-publish-missing-snapshot");
+  const databasePath = `${homeDirectory}/client.sqlite`;
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const currentReadContext = createReadyMiningReadContext({
+    readContextOverrides: {
+      dataDir: homeDirectory,
+      databasePath,
+    },
+  });
+  const refreshedReadContext = createSnapshotLeaseReadyMiningReadContext({
+    dataDir: homeDirectory,
+    databasePath,
+  });
+  const state = currentReadContext.localState.state;
+  const candidate = createTestMiningCandidateForReadContext(refreshedReadContext);
+  const events: any[] = [];
+  let openReadContextCalls = 0;
+
+  const result = await publishCandidateForTesting({
+    candidate,
+    dataDir: homeDirectory,
+    databasePath,
+    provider,
+    paths,
+    fallbackState: state,
+    currentReadContext,
+    openReadContext: async () => {
+      openReadContextCalls += 1;
+      return refreshedReadContext;
+    },
+    attachService: async () => {
+      throw new Error("attachService should not be called when publishAttempt is stubbed");
+    },
+    rpcFactory: () => {
+      throw new Error("rpcFactory should not be called when publishAttempt is stubbed");
+    },
+    runId: "run-1",
+    publishAttempt: async ({ readContext }) => ({
+      state: readContext.localState.state,
+      txid: "bb".repeat(32),
+      decision: "broadcast",
+    }),
+    appendEventFn: async (_paths, event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(result.decision, "broadcast");
+  assert.equal(openReadContextCalls, 1);
+  assert.equal(events.some((event) =>
+    event.kind === "timing-publish-fast-revalidation"
+    && event.metrics?.outcome === "fallback"
+    && event.metrics?.reason === "missing-snapshot-lease"
+  ), true);
 });
 
 test("publish candidate broadcasts when only safe 0-conf BTC funding is available", async (t) => {
