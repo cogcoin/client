@@ -14,6 +14,8 @@ test("help text reflects the one-address model", () => {
   assert.match(HELP_TEXT, /cogcoin register alpha --satvb 12\.5/);
   assert.match(HELP_TEXT, /update\s+Show the current and latest client versions and install updates/i);
   assert.match(HELP_TEXT, /mine prompt\s+Show per-domain mining prompt state/i);
+  assert.match(HELP_TEXT, /mine \[--mempool-check\]\s+Run the miner in the foreground/i);
+  assert.match(HELP_TEXT, /--mempool-check\s+Enable mining mempool competitor checks before publishing/i);
   assert.match(HELP_TEXT, /mine prompt <domain>\s+Configure a per-domain mining prompt override/i);
   assert.match(HELP_TEXT, /mine prompt list\s+Alias for mine prompt/i);
   assert.match(HELP_TEXT, /client change-password\s+Rotate the client password that protects local wallet secrets/i);
@@ -133,6 +135,20 @@ test("parser accepts mine prompt and mine prompt list", () => {
   assert.equal(parseCliArgs(["mine", "prompt"]).command, "mine-prompt-list");
   assert.equal(parseCliArgs(["mine", "prompt", "alpha"]).command, "mine-prompt");
   assert.equal(parseCliArgs(["mine", "prompt", "list"]).command, "mine-prompt-list");
+});
+
+test("parser accepts mempool check only for foreground mining", () => {
+  const defaultMine = parseCliArgs(["mine"]);
+  const checkedMine = parseCliArgs(["mine", "--mempool-check"]);
+
+  assert.equal(defaultMine.command, "mine");
+  assert.equal(defaultMine.mempoolCheck, false);
+  assert.equal(checkedMine.command, "mine");
+  assert.equal(checkedMine.mempoolCheck, true);
+  assert.throws(
+    () => parseCliArgs(["status", "--mempool-check"]),
+    /cli_mempool_check_not_supported_for_command/,
+  );
 });
 
 test("parser routes removed mining background commands through generic unknown-command handling", () => {

@@ -239,6 +239,7 @@ test("mine text auto-runs provider setup, then syncs managed services and starts
     prompter: unknown;
     builtInSetupEnsured: boolean | undefined;
     paths: unknown;
+    mempoolCheck: boolean | undefined;
   } | null = null;
   const context = createDefaultContext({
     stdout: stdout.stream,
@@ -273,6 +274,7 @@ test("mine text auto-runs provider setup, then syncs managed services and starts
         prompter: options.prompter,
         builtInSetupEnsured: options.builtInSetupEnsured,
         paths: options.paths,
+        mempoolCheck: options.mempoolCheck,
       };
       events.push("run");
     },
@@ -300,6 +302,40 @@ test("mine text auto-runs provider setup, then syncs managed services and starts
   assert.equal(actualRunOptions.prompter, prompter);
   assert.equal(actualRunOptions.builtInSetupEnsured, true);
   assert.deepEqual(actualRunOptions.paths, runtimePaths);
+  assert.equal(actualRunOptions.mempoolCheck, false);
+});
+
+test("mine text passes mempool check opt-in to foreground mining", async (t) => {
+  const stdout = createStringWriter();
+  const stderr = createStringWriter();
+  const resolvePaths = createTestRuntimePaths(await createTrackedTempDirectory(t, "cogcoin-mine-runtime-mempool-check"));
+  let mempoolCheck: boolean | undefined;
+  const context = createDefaultContext({
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {
+      ...process.env,
+      COGCOIN_DISABLE_UPDATE_CHECK: "1",
+    },
+    signalSource: QUIET_SIGNAL_SOURCE,
+    walletSecretProvider: createMemoryWalletSecretProviderForTesting(),
+    createPrompter,
+    resolveWalletRuntimePaths: () => resolvePaths(),
+    resolveDefaultBitcoindDataDir: () => "/tmp/bitcoind",
+    resolveDefaultClientDatabasePath: () => "/tmp/cogcoin.db",
+    ensureBuiltInMiningSetupIfNeeded: async () => true,
+    loadRawWalletStateEnvelope: async () => createWalletRootEnvelope(),
+    openManagedIndexerMonitor: async () => createCompletedSyncMonitor([]) as any,
+    runForegroundMining: async (options) => {
+      mempoolCheck = options.mempoolCheck;
+    },
+  });
+
+  const exitCode = await runMiningRuntimeCommand(parseCliArgs(["mine", "--mempool-check"]), context);
+
+  assert.equal(exitCode, 0);
+  assert.equal(stdout.read(), "");
+  assert.equal(mempoolCheck, true);
 });
 
 test("mine preflight refreshes stale mining runtime status while waiting for the indexer", async (t) => {

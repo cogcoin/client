@@ -363,6 +363,7 @@ export interface RunForegroundMiningOptions extends RunnerDependencies {
   stderr?: { isTTY?: boolean; columns?: number; write(chunk: string): boolean | void };
   signal?: AbortSignal;
   progressOutput?: ProgressOutputMode;
+  mempoolCheck?: boolean;
   paths?: WalletRuntimePaths;
   visualizer?: MiningFollowVisualizer;
 }
@@ -886,6 +887,7 @@ async function performMiningCycle(options: {
   assaySentencesImpl?: typeof assaySentences;
   cooperativeYieldImpl?: MiningCooperativeYield;
   cooperativeYieldEvery?: number;
+  mempoolCheck?: boolean;
   visualizer?: MiningFollowVisualizer;
   loopState: MiningLoopState;
   nowImpl?: () => number;
@@ -1366,6 +1368,7 @@ async function performMiningCycle(options: {
       assaySentencesImpl: options.assaySentencesImpl,
       cooperativeYieldImpl: options.cooperativeYieldImpl,
       cooperativeYieldEvery: options.cooperativeYieldEvery,
+      mempoolCheck: options.mempoolCheck === true,
       mempoolIndex: {
         rawTxSupported: mempoolIndexRawTxSupported,
         cachePath: mempoolIndexCachePath,
@@ -1515,6 +1518,7 @@ async function runMiningLoop(options: {
   assaySentencesImpl?: typeof assaySentences;
   cooperativeYieldImpl?: MiningCooperativeYield;
   cooperativeYieldEvery?: number;
+  mempoolCheck?: boolean;
   foregroundHeartbeatIntervalMs?: number;
 }): Promise<void> {
   const now = options.nowImpl ?? Date.now;
@@ -1751,6 +1755,7 @@ export async function runForegroundMining(options: RunForegroundMiningOptions): 
     stderr: options.stderr,
     signal: options.signal,
     progressOutput: options.progressOutput,
+    mempoolCheck: options.mempoolCheck === true,
     visualizer: options.visualizer,
     fetchImpl: options.fetchImpl,
     shutdownGraceMs: options.shutdownGraceMs,
@@ -1795,6 +1800,7 @@ export async function performMiningCycleForTesting(options: {
   assaySentencesImpl?: typeof assaySentences;
   cooperativeYieldImpl?: MiningCooperativeYield;
   cooperativeYieldEvery?: number;
+  mempoolCheck?: boolean;
 }): Promise<void> {
   await performMiningCycle({
     ...options,
@@ -1835,6 +1841,7 @@ export async function runMiningLoopForTesting(options: {
   assaySentencesImpl?: typeof assaySentences;
   cooperativeYieldImpl?: MiningCooperativeYield;
   cooperativeYieldEvery?: number;
+  mempoolCheck?: boolean;
   foregroundHeartbeatIntervalMs?: number;
 }): Promise<void> {
   await runMiningLoop({

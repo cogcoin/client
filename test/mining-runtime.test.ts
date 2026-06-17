@@ -61,6 +61,7 @@ import {
 import {
   loadMiningRuntimeStatus,
   readMiningEvents,
+  saveMiningRuntimeStatus,
 } from "../src/wallet/mining/runtime-artifacts.js";
 import { createMiningEventRecord } from "../src/wallet/mining/events.js";
 import { serializeMine } from "../src/wallet/cogop/index.js";
@@ -2588,6 +2589,7 @@ test("performMiningCycle retries publish-time snapshot lease loss without markin
     generateCandidatesForDomainsImpl: async () => [createTestMiningCandidate({
       provenance: createTestMiningCandidateProvenance(),
     })],
+    mempoolCheck: true,
     runCompetitivenessGateImpl: async () => ({
       allowed: true,
       decision: "allowed",
@@ -2617,6 +2619,178 @@ test("performMiningCycle retries publish-time snapshot lease loss without markin
     && event.metrics?.outcome === "success"
     && event.durationMs !== undefined
   ), true);
+});
+
+test("performMiningCycle skips mempool gate by default and clears stale gate status fields", async (t) => {
+  const homeDirectory = await createTrackedTempDirectory(t, "cogcoin-mining-default-skips-mempool-gate");
+  const paths = resolveWalletRuntimePathsForTesting({
+    homeDirectory,
+    platform: "linux",
+  });
+  const provider = createMemoryWalletSecretProviderForTesting();
+  const loopState = createMiningLoopStateForTesting();
+  const readyReadContext = createReadyMiningReadContext({
+    miningState: createMiningState({
+      livePublishInMempool: false,
+    }),
+    readContextOverrides: {
+      dataDir: homeDirectory,
+      databasePath: `${homeDirectory}/client.sqlite`,
+      snapshot: {
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-100",
+        tip: {
+          height: 100,
+          blockHashHex: "11".repeat(32),
+          previousHashHex: "00".repeat(32),
+          stateHashHex: null,
+        },
+        state: {
+          consensus: {
+            domainIdsByName: new Map([["cogdemo", 7]]),
+            domainsById: new Map([[7, {
+              domainId: 7,
+              name: "cogdemo",
+              anchored: true,
+              anchorHeight: 100,
+              ownerScriptPubKey: Buffer.from("0014" + "11".repeat(20), "hex"),
+              endpoint: null,
+            }]]),
+            balances: new Map(),
+          },
+          history: {
+            foundingMessageByDomain: new Map(),
+            blockWinnersByHeight: new Map(),
+          },
+        },
+      },
+      indexer: {
+        health: "synced",
+        message: null,
+        status: null,
+        source: "lease",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-100",
+        openedAtUnixMs: 1,
+        snapshotTip: {
+          height: 100,
+          blockHashHex: "11".repeat(32),
+          previousHashHex: "00".repeat(32),
+          stateHashHex: null,
+        },
+      },
+      nodeHealth: "synced",
+    },
+  });
+  const missingSnapshotContext = {
+    ...createWalletReadContext({
+      localState: readyReadContext.localState,
+      nodeStatus: readyReadContext.nodeStatus,
+      nodeHealth: "synced",
+      snapshot: null,
+      model: null,
+      indexer: {
+        health: "unavailable",
+        message: "snapshot unavailable",
+        status: {
+          state: "synced",
+          heartbeatAtUnixMs: 1,
+          updatedAtUnixMs: 1,
+          ipcReady: true,
+          rpcReachable: true,
+          coreBestHeight: 100,
+          coreBestHash: "11".repeat(32),
+          appliedTipHeight: 100,
+          appliedTipHash: "11".repeat(32),
+          reorgDepth: null,
+        },
+        source: "status-file",
+        daemonInstanceId: "daemon-1",
+        snapshotSeq: "seq-100",
+        openedAtUnixMs: null,
+        snapshotTip: null,
+      },
+    }),
+    close: async () => undefined,
+  } as any;
+  const contexts = [readyReadContext, missingSnapshotContext];
+  let gateCalls = 0;
+
+  await saveMiningRuntimeStatus(paths.miningStatusPath, createMiningRuntimeStatus({
+    walletRootId: readyReadContext.localState.state.walletRootId,
+    sameDomainCompetitorSuppressed: true,
+    higherRankedCompetitorDomainCount: 5,
+    dedupedCompetitorDomainCount: 6,
+    competitivenessGateIndeterminate: true,
+    competitivenessGateReason: "mempool_index_hydration_incomplete",
+    competitivenessGateDiagnostics: {
+      visibleMempoolTxCount: 10,
+      indexedContextCount: 9,
+      negativeTxCount: 1,
+      unknownTxCount: 2,
+      hydratedTxCount: 3,
+      mempoolEntryCount: 4,
+      missingEntryCount: 0,
+      cacheStatus: "index-warming",
+      mempoolSequence: "seq-stale",
+      candidateRank: 6,
+      higherRankedCompetitorDomainCount: 5,
+      dedupedCompetitorDomainCount: 6,
+    },
+    mempoolSequenceCacheStatus: "index-warming",
+    lastMempoolSequence: "seq-stale",
+    lastCompetitivenessGateAtUnixMs: 999,
+  }));
+
+  await startFakeIndexerDaemonStatusServer(t, {
+    dataDir: homeDirectory,
+    walletRootId: readyReadContext.localState.state.walletRootId,
+    daemonInstanceId: "daemon-1",
+    snapshotSeq: "seq-100",
+  });
+
+  await performMiningCycleForTesting({
+    dataDir: homeDirectory,
+    databasePath: `${homeDirectory}/client.sqlite`,
+    provider,
+    paths,
+    runMode: "foreground",
+    backgroundWorkerPid: null,
+    backgroundWorkerRunId: null,
+    openReadContext: async () => contexts.shift()!,
+    attachService: async () => ({ rpc: {}, pid: 9_001 }) as any,
+    rpcFactory: () => createHealthyMiningRpc() as any,
+    loopState,
+    nowImpl: () => 1_000,
+    generateCandidatesForDomainsImpl: async () => [createTestMiningCandidate({
+      provenance: createTestMiningCandidateProvenance(),
+    })],
+    runCompetitivenessGateImpl: async () => {
+      gateCalls += 1;
+      throw new Error("default mining should skip the mempool gate");
+    },
+  });
+
+  const snapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
+  const events = await readMiningEvents({
+    eventsPath: paths.miningEventsPath,
+    all: true,
+  });
+  assert.equal(gateCalls, 0);
+  assert.equal(snapshot?.currentPublishDecision, "publish-retry-pending");
+  assert.equal(snapshot?.sameDomainCompetitorSuppressed, null);
+  assert.equal(snapshot?.higherRankedCompetitorDomainCount, null);
+  assert.equal(snapshot?.dedupedCompetitorDomainCount, null);
+  assert.equal(snapshot?.competitivenessGateIndeterminate, null);
+  assert.equal(snapshot?.competitivenessGateReason, null);
+  assert.equal(snapshot?.competitivenessGateDiagnostics, null);
+  assert.equal(snapshot?.mempoolSequenceCacheStatus, null);
+  assert.equal(snapshot?.lastMempoolSequence, null);
+  assert.equal(snapshot?.lastCompetitivenessGateAtUnixMs, null);
+  assert.equal(events.some((event) => event.kind === "candidate-selected"), true);
+  assert.equal(events.some((event) => event.kind === "timing-prepublish-status-write"), true);
+  assert.equal(events.some((event) => event.kind === "timing-mempool-gate-start"), false);
+  assert.equal(events.some((event) => event.kind === "timing-mempool-gate-end"), false);
 });
 
 test("performMiningCycle retries a synced status-file indexer view before waiting for snapshot lease", async (t) => {
@@ -4017,6 +4191,7 @@ test("performMiningCycle persists competitiveness gate diagnostics on indetermin
     loopState,
     nowImpl: () => 10_000,
     generateCandidatesForDomainsImpl: async () => [createTestMiningCandidate()],
+    mempoolCheck: true,
     runCompetitivenessGateImpl: async () => ({
       allowed: false,
       decision: "indeterminate-mempool-gate",
@@ -4247,6 +4422,7 @@ test("performMiningCycle retries managed Core wallet relocks on later ticks with
         generateCalls += 1;
         return [candidate];
       },
+      mempoolCheck: true,
       runCompetitivenessGateImpl: async () => {
         gateCalls += 1;
         return {
@@ -4328,6 +4504,7 @@ test("performMiningCycle backs off transient provider failures and retries witho
         }
         return [createTestMiningCandidate()];
       },
+      mempoolCheck: true,
       runCompetitivenessGateImpl: async () => ({
         allowed: false,
         decision: "indeterminate-mempool-gate",

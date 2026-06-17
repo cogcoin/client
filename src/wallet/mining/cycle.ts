@@ -64,6 +64,7 @@ import { isMiningStopRequestedError } from "./stop.js";
 
 interface RuntimeMiningCycleState extends MiningCycleState {
   generatedCandidates: MiningCandidate[] | null;
+  gateCheckedAtUnixMs: number | null;
 }
 
 export interface MiningPhaseMachineResult {
@@ -95,6 +96,7 @@ function createInitialState(options: {
     tipKey: options.tipKey,
     selectedCandidate: getSelectedCandidateForTip(options.loopState, options.tipKey),
     generatedCandidates: null,
+    gateCheckedAtUnixMs: null,
     gateSnapshot: {
       higherRankedCompetitorDomainCount: 0,
       dedupedCompetitorDomainCount: 0,
@@ -131,6 +133,36 @@ function formatGateDiagnosticsSummary(
   ].filter((part): part is string => part !== null);
 
   return parts.length === 0 ? "" : ` ${parts.join(" ")}`;
+}
+
+function buildPublishGateStatusOverrides(
+  state: RuntimeMiningCycleState,
+): MiningRuntimeStatusOverrides {
+  if (state.gateCheckedAtUnixMs === null) {
+    return {
+      sameDomainCompetitorSuppressed: null,
+      higherRankedCompetitorDomainCount: null,
+      dedupedCompetitorDomainCount: null,
+      competitivenessGateIndeterminate: null,
+      competitivenessGateReason: null,
+      competitivenessGateDiagnostics: null,
+      mempoolSequenceCacheStatus: null,
+      lastMempoolSequence: null,
+      lastCompetitivenessGateAtUnixMs: null,
+    };
+  }
+
+  return {
+    sameDomainCompetitorSuppressed: false,
+    higherRankedCompetitorDomainCount: state.gateSnapshot.higherRankedCompetitorDomainCount,
+    dedupedCompetitorDomainCount: state.gateSnapshot.dedupedCompetitorDomainCount,
+    competitivenessGateIndeterminate: false,
+    competitivenessGateReason: null,
+    competitivenessGateDiagnostics: null,
+    mempoolSequenceCacheStatus: state.gateSnapshot.mempoolSequenceCacheStatus,
+    lastMempoolSequence: state.gateSnapshot.lastMempoolSequence,
+    lastCompetitivenessGateAtUnixMs: state.gateCheckedAtUnixMs,
+  };
 }
 
 async function appendTimingEvent(
@@ -186,6 +218,7 @@ export async function runMiningPhaseMachine(options: {
   assaySentencesImpl?: typeof assaySentences;
   cooperativeYieldImpl?: MiningCooperativeYield;
   cooperativeYieldEvery?: number;
+  mempoolCheck: boolean;
   mempoolIndex?: MiningMempoolIndexGateOptions;
   nowImpl?: () => number;
   saveCycleStatus: (
@@ -662,6 +695,11 @@ export async function runMiningPhaseMachine(options: {
           },
         ));
 
+        if (!options.mempoolCheck) {
+          state.phase = "publishing";
+          continue;
+        }
+
         let lastScoringProgressProcessed = -1;
         let lastScoringProgressSavedAtUnixMs = 0;
         let scoringProgressWrite = Promise.resolve();
@@ -819,6 +857,7 @@ export async function runMiningPhaseMachine(options: {
           mempoolSequenceCacheStatus: gate.mempoolSequenceCacheStatus,
           lastMempoolSequence: gate.lastMempoolSequence,
         };
+        state.gateCheckedAtUnixMs = now();
 
         if (!gate.allowed) {
           if (state.tipKey !== null) {
@@ -905,6 +944,7 @@ export async function runMiningPhaseMachine(options: {
               state: options.readContext.localState.state,
               candidate: selectedCandidate,
             }),
+            ...buildPublishGateStatusOverrides(state),
           });
           await appendTimingEvent(
             options.appendEvent,
@@ -996,15 +1036,7 @@ export async function runMiningPhaseMachine(options: {
               currentPhase: published.currentPhase ?? "waiting",
               readinessBlocker: published.readinessBlocker,
               currentPublishDecision: published.decision,
-              sameDomainCompetitorSuppressed: false,
-              higherRankedCompetitorDomainCount: state.gateSnapshot.higherRankedCompetitorDomainCount,
-              dedupedCompetitorDomainCount: state.gateSnapshot.dedupedCompetitorDomainCount,
-              competitivenessGateIndeterminate: false,
-              competitivenessGateReason: null,
-              competitivenessGateDiagnostics: null,
-              mempoolSequenceCacheStatus: state.gateSnapshot.mempoolSequenceCacheStatus,
-              lastMempoolSequence: state.gateSnapshot.lastMempoolSequence,
-              lastCompetitivenessGateAtUnixMs: now(),
+              ...buildPublishGateStatusOverrides(state),
               lastError: published.lastError ?? null,
               note: published.note,
               livePublishInMempool: published.state.miningState.livePublishInMempool,
@@ -1030,15 +1062,7 @@ export async function runMiningPhaseMachine(options: {
               currentPhase: published.currentPhase ?? "waiting",
               readinessBlocker: published.readinessBlocker,
               currentPublishDecision: published.decision,
-              sameDomainCompetitorSuppressed: false,
-              higherRankedCompetitorDomainCount: state.gateSnapshot.higherRankedCompetitorDomainCount,
-              dedupedCompetitorDomainCount: state.gateSnapshot.dedupedCompetitorDomainCount,
-              competitivenessGateIndeterminate: false,
-              competitivenessGateReason: null,
-              competitivenessGateDiagnostics: null,
-              mempoolSequenceCacheStatus: state.gateSnapshot.mempoolSequenceCacheStatus,
-              lastMempoolSequence: state.gateSnapshot.lastMempoolSequence,
-              lastCompetitivenessGateAtUnixMs: now(),
+              ...buildPublishGateStatusOverrides(state),
               lastError: published.lastError ?? null,
               note: published.note,
               livePublishInMempool: published.state.miningState.livePublishInMempool,
@@ -1066,15 +1090,7 @@ export async function runMiningPhaseMachine(options: {
               runMode: options.runMode,
               currentPhase: "waiting",
               currentPublishDecision: published.decision,
-              sameDomainCompetitorSuppressed: false,
-              higherRankedCompetitorDomainCount: state.gateSnapshot.higherRankedCompetitorDomainCount,
-              dedupedCompetitorDomainCount: state.gateSnapshot.dedupedCompetitorDomainCount,
-              competitivenessGateIndeterminate: false,
-              competitivenessGateReason: null,
-              competitivenessGateDiagnostics: null,
-              mempoolSequenceCacheStatus: state.gateSnapshot.mempoolSequenceCacheStatus,
-              lastMempoolSequence: state.gateSnapshot.lastMempoolSequence,
-              lastCompetitivenessGateAtUnixMs: now(),
+              ...buildPublishGateStatusOverrides(state),
               lastError,
               note: published.note,
               livePublishInMempool: published.state.miningState.livePublishInMempool,
@@ -1108,15 +1124,7 @@ export async function runMiningPhaseMachine(options: {
             runMode: options.runMode,
             currentPhase: "waiting",
             currentPublishDecision: published.decision,
-            sameDomainCompetitorSuppressed: false,
-            higherRankedCompetitorDomainCount: state.gateSnapshot.higherRankedCompetitorDomainCount,
-            dedupedCompetitorDomainCount: state.gateSnapshot.dedupedCompetitorDomainCount,
-            competitivenessGateIndeterminate: false,
-            competitivenessGateReason: null,
-            competitivenessGateDiagnostics: null,
-            mempoolSequenceCacheStatus: state.gateSnapshot.mempoolSequenceCacheStatus,
-            lastMempoolSequence: state.gateSnapshot.lastMempoolSequence,
-            lastCompetitivenessGateAtUnixMs: now(),
+            ...buildPublishGateStatusOverrides(state),
             lastError: null,
             note: options.loopState.waitingNote,
             livePublishInMempool: published.state.miningState.livePublishInMempool,

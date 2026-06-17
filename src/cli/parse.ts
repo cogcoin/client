@@ -21,6 +21,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
   let dbPath: string | null = null;
   let dataDir: string | null = null;
   let progressOutput: ProgressOutput = "auto";
+  let mempoolCheck = false;
   let unlockFor: string | null = null;
   let assumeYes = false;
   let force = false;
@@ -97,6 +98,11 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
       }
 
       progressOutput = value;
+      continue;
+    }
+
+    if (token === "--mempool-check") {
+      mempoolCheck = true;
       continue;
     }
 
@@ -602,6 +608,10 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     throw new Error("cli_live_not_supported_for_command");
   }
 
+  if (mempoolCheck && command !== "mine") {
+    throw new Error("cli_mempool_check_not_supported_for_command");
+  }
+
   if (command === "mine-log" && follow && (listAll || listLimit !== null)) {
     throw new Error("cli_follow_limit_not_supported");
   }
@@ -633,6 +643,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     dbPath,
     dataDir,
     progressOutput,
+    mempoolCheck,
     unlockFor,
     assumeYes,
     force,

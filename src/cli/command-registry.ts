@@ -375,7 +375,7 @@ const commandSpecs = [
     aliases: [{ tokens: ["mine"], matchMode: "end-or-flag" }],
     helpEntries: [
       {
-        usage: "mine",
+        usage: "mine [--mempool-check]",
         description: "Run the miner in the foreground",
       },
     ],
@@ -1048,6 +1048,7 @@ const optionsSection = `Options:
   --limit <n>      Limit list rows (1..1000)
   --all            Show all rows for list commands
   --follow         Follow mining log output
+  --mempool-check  Enable mining mempool competitor checks before publishing
   --progress <mode> Progress output mode: auto, tty, or none
   --force          Reserved for future use
   --force-race      Allow a visible root registration race

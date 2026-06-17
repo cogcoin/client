@@ -35,6 +35,7 @@ function createParsed(command: ParsedCliArgs["command"], args: string[]): Parsed
     dbPath: null,
     dataDir: null,
     progressOutput: "auto",
+    mempoolCheck: false,
     unlockFor: null,
     assumeYes: false,
     force: false,

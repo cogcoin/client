@@ -62,6 +62,7 @@ interface MiningLoopRunnerOptions {
   rpcFactory: RpcFactory;
   stdout?: { write(chunk: string): void };
   visualizer?: MiningFollowVisualizer;
+  mempoolCheck?: boolean;
 }
 
 type RunMiningLoop = (options: MiningLoopRunnerOptions) => Promise<void>;
@@ -392,6 +393,7 @@ export async function runForegroundMining(options: {
   visualizer?: MiningFollowVisualizer;
   fetchImpl?: typeof fetch;
   shutdownGraceMs?: number;
+  mempoolCheck?: boolean;
   runtime: MiningSupervisorRuntimeContext;
   deps?: Partial<MiningSupervisorDependencies>;
 }): Promise<void> {
@@ -486,6 +488,7 @@ export async function runForegroundMining(options: {
           rpcFactory: options.runtime.rpcFactory,
           stdout: options.stdout,
           visualizer,
+          mempoolCheck: options.mempoolCheck === true,
         });
       } catch (error) {
         if (isIndexerBackgroundFollowRecoveryFailure(error)) {

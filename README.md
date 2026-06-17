@@ -1,6 +1,6 @@
 # `@cogcoin/client`
 
-`@cogcoin/client@1.2.19` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
+`@cogcoin/client@1.2.20` is the reference Cogcoin client package for applications that want a local wallet, durable SQLite-backed state, and a managed Bitcoin Core integration around `@cogcoin/indexer`. It publishes the reusable client APIs, the SQLite adapter, the managed `bitcoind` integration, and the first-party `cogcoin` CLI in one package.
 
 Use Node 22 or newer.
 
@@ -33,7 +33,8 @@ cogcoin address  # Send 0.0015 BTC to address
 cogcoin register <domainname> # 6+ character domain for 0.001 BTC
 cogcoin anchor <domainname> # You can leave a founding message permanently on Bitcoin!
 cogcoin mine setup
-cogcoin mine # Use remaining ~0.0005 BTC for mining tx, ~1000 sats per entry (0.00001 BTC)
+cogcoin mine # Skips the mempool competitor scan by default
+cogcoin mine --mempool-check # Optional slower competitor scan before publishing
 ```
 
 ## Preview
@@ -125,9 +126,11 @@ The published package depends on:
 
 `@cogcoin/vectors@1.0.1` is kept as a repository development dependency for conformance tests and is not part of the published runtime dependency surface.
 
-## Upgrade Notes For `1.2.19`
+## Upgrade Notes For `1.2.20`
 
-`@cogcoin/client@1.2.19` makes live Bitcoin Core status authoritative for the mining panel whenever the bounded Core probe succeeds. The indexer daemon's observed Core fields remain a fallback when live Core status is unavailable, while quiescent Core/indexer disagreement now renders as a `waiting-indexer` tip-alignment wait instead of reporting that mining is ready on an older tip. Candidate generation, scoring, and publishing still require coherent indexer truth aligned to the live Core tip before any transaction is broadcast.
+`@cogcoin/client@1.2.20` makes live Bitcoin Core status authoritative for the mining panel whenever the bounded Core probe succeeds. The indexer daemon's observed Core fields remain a fallback when live Core status is unavailable, while quiescent Core/indexer disagreement now renders as a `waiting-indexer` tip-alignment wait instead of reporting that mining is ready on an older tip. Candidate generation, scoring, and publishing still require coherent indexer truth aligned to the live Core tip before any transaction is broadcast.
+
+Bare `cogcoin mine` now skips the time-intensive mempool competitiveness gate by default. Use `cogcoin mine --mempool-check` to opt back into the slower same-domain/top-5 mempool competitor scan before publishing; lightweight Bitcoin Core publishability probes still run either way.
 
 ## Upgrade Notes For `1.2.15`
 

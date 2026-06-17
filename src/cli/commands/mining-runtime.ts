@@ -493,6 +493,7 @@ export async function runMiningRuntimeCommand(
           stdout: context.stdout,
           stderr: context.stderr,
           progressOutput: parsed.progressOutput,
+          mempoolCheck: parsed.mempoolCheck,
           builtInSetupEnsured: true,
           paths: runtimePaths,
           visualizer: visualizer ?? undefined,

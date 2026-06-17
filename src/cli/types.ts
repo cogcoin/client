@@ -94,6 +94,7 @@ export interface ParsedCliArgs {
   dbPath: string | null;
   dataDir: string | null;
   progressOutput: ProgressOutput;
+  mempoolCheck: boolean;
   unlockFor: string | null;
   assumeYes: boolean;
   force: boolean;

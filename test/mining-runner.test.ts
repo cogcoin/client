@@ -1032,6 +1032,7 @@ test("runMiningLoop refreshes status and restarts immediately after stale scorin
         }
         return [candidate];
       },
+      mempoolCheck: true,
       sleepImpl: async () => {
         sleepCalls += 1;
       },
@@ -1143,6 +1144,7 @@ test("runMiningLoop keeps progressing through long async gate work without false
       suspendMonotonicNowImpl: () => suspendClock.now(),
       suspendScheduler: suspendClock.scheduler,
       generateCandidatesForDomainsImpl: async () => [candidate],
+      mempoolCheck: true,
       runCompetitivenessGateImpl: async () => {
         gateCalls += 1;
         suspendClock.advance(16_000);
@@ -1252,6 +1254,7 @@ test("runMiningLoop advances foreground heartbeat while a cycle phase is blocked
       abortController.abort(createMiningStopRequestedError());
     },
     generateCandidatesForDomainsImpl: async () => [candidate],
+    mempoolCheck: true,
     runCompetitivenessGateImpl: async () => {
       scoringSnapshot = await loadMiningRuntimeStatus(paths.miningStatusPath);
       const initialHeartbeatAtUnixMs = scoringSnapshot?.foregroundHeartbeatAtUnixMs ?? 0;
@@ -1379,6 +1382,7 @@ test("runMiningLoop foreground heartbeat refreshes live tip from daemon status w
       abortController.abort(createMiningStopRequestedError());
     },
     generateCandidatesForDomainsImpl: async () => [candidate],
+    mempoolCheck: true,
     runCompetitivenessGateImpl: async () => {
       callsAtGateStart = openReadContextCalls;
       const deadline = Date.now() + 2_000;
@@ -1647,6 +1651,7 @@ test("runMiningLoop foreground heartbeat preserves scoring phase while live Core
       abortController.abort(createMiningStopRequestedError());
     },
     generateCandidatesForDomainsImpl: async () => [candidate],
+    mempoolCheck: true,
     runCompetitivenessGateImpl: async () => {
       const deadline = Date.now() + 2_000;
       do {
@@ -2030,6 +2035,7 @@ test("runMiningLoop exits on the next competitiveness yield after stop is reques
         },
       }) as any,
       generateCandidatesForDomainsImpl: async () => [candidate],
+      mempoolCheck: true,
       cooperativeYieldEvery: 1,
       cooperativeYieldImpl: async () => {
         cooperativeYieldCalls += 1;
@@ -2122,6 +2128,7 @@ test("runMiningLoop refreshes the scoring note with mempool warmup progress duri
       },
     }) as any,
     generateCandidatesForDomainsImpl: async () => [candidate],
+    mempoolCheck: true,
     cooperativeYieldEvery: 1,
     cooperativeYieldImpl: async () => undefined,
     sleepImpl: async () => undefined,
