@@ -463,7 +463,8 @@ export async function runMiningPhaseMachine(options: {
             runMode: options.runMode,
             currentPhase: "waiting",
             lastError: null,
-            note: options.loopState.waitingNote ?? "Waiting for the next block after the last mining attempt on this tip.",
+            note: options.loopState.waitingNote
+              ?? "Mining already attempted the current Bitcoin tip and is waiting for Bitcoin Core to report the next block.",
           });
           return continueMiningNormally();
         }
@@ -1107,7 +1108,7 @@ export async function runMiningPhaseMachine(options: {
             published.state.miningState,
           );
           options.loopState.waitingNote = published.decision === "kept-live-publish"
-            ? "Existing live mining publish already covers this block attempt. Waiting for the next block."
+            ? "Existing live mining publish already covers this block attempt; waiting for Bitcoin Core to report the next block."
             : published.txid === null
               ? "Mining candidate was evaluated but the existing live publish stayed in place."
               : `Mining candidate ${published.decision === "replaced"

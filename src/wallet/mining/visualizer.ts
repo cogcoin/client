@@ -483,7 +483,7 @@ export function describeMiningVisualizerProgress(
     case "replacing":
       return "Replacing the live mining transaction for the current tip.";
     default:
-      return "Waiting for the next block while mining stays ready on the current tip.";
+      return "Mining is ready and idle after handling the current Bitcoin tip; waiting for Bitcoin Core to report the next block.";
   }
 }
 

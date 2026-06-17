@@ -286,7 +286,7 @@ test("foreground mining heartbeat projects quiescent Core/indexer mismatch as ti
     indexerStatusTipHash: indexedHash,
     targetBlockHeight: 951_398,
     referencedBlockHashDisplay: indexedHash,
-    note: "Waiting for the next block after the last mining attempt on this tip.",
+    note: "Mining already attempted the current Bitcoin tip and is waiting for Bitcoin Core to report the next block.",
   }));
 
   await saveForegroundMiningHeartbeatStatus({

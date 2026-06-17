@@ -3278,7 +3278,10 @@ test("performMiningCycle preserves already-attempted waiting behavior when Core 
   assert.equal(snapshot?.targetBlockHeight, 951_398);
   assert.equal(snapshot?.currentPhase, "waiting");
   assert.equal(snapshot?.readinessBlocker, null);
-  assert.equal(snapshot?.note, "Waiting for the next block after the last mining attempt on this tip.");
+  assert.equal(
+    snapshot?.note,
+    "Mining already attempted the current Bitcoin tip and is waiting for Bitcoin Core to report the next block.",
+  );
 });
 
 test("performMiningCycle continues after auto-clearing an empty repair-required mining publish", async (t) => {

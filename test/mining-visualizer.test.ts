@@ -390,6 +390,18 @@ test("mining visualizer descriptions surface zero-reward and note overrides", ()
   assert.equal(describeMiningVisualizerProgress(notedSnapshot), "Custom mining note.");
 });
 
+test("mining visualizer progress explains idle current-tip wait without implying stale services", () => {
+  const snapshot = createSnapshot({
+    currentPhase: "waiting",
+    note: null,
+  });
+
+  assert.equal(
+    describeMiningVisualizerProgress(snapshot),
+    "Mining is ready and idle after handling the current Bitcoin tip; waiting for Bitcoin Core to report the next block.",
+  );
+});
+
 test("mining visualizer progress uses provider-specific waiting text without changing the short status label", () => {
   const snapshot = createSnapshot({
     currentPhase: "waiting-provider",
